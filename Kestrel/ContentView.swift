@@ -4,8 +4,17 @@ struct ContentView: View {
     @Environment(RecordingManager.self) private var manager
 
     var body: some View {
-        ZStack {
-            Color.clear.ignoresSafeArea()
+        VStack(spacing: 0) {
+            resultsView
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if let message = manager.errorMessage {
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal)
+                    .padding(.bottom, 8)
+            }
 
             Button {
                 Task { await manager.toggle() }
@@ -22,6 +31,41 @@ struct ContentView: View {
             .controlSize(.extraLarge)
             .tint(manager.isRecording ? .red : .accentColor)
             .animation(.snappy, value: manager.isRecording)
+            .padding(.bottom, 24)
+        }
+    }
+
+    @ViewBuilder
+    private var resultsView: some View {
+        if manager.detections.isEmpty {
+            ContentUnavailableView {
+                Label(
+                    manager.isRecording ? "Listening…" : "No detections yet",
+                    systemImage: manager.isRecording ? "waveform" : "bird"
+                )
+            } description: {
+                Text(manager.isRecording
+                     ? "Analyzing 3-second windows of audio."
+                     : "Tap Start Recording to begin identifying birds.")
+            }
+        } else {
+            List(manager.detections) { detection in
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(detection.commonName)
+                            .font(.headline)
+                        Text(detection.scientificName)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .italic()
+                    }
+                    Spacer()
+                    Text(String(format: "%.0f%%", detection.confidence * 100))
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .listStyle(.plain)
         }
     }
 }

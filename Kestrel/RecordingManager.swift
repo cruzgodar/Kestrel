@@ -6,9 +6,12 @@ import Observation
 @MainActor
 final class RecordingManager {
     private(set) var isRecording = false
-    private(set) var currentRecordingURL: URL?
+    private(set) var detections: [Detection] = []
+    private(set) var errorMessage: String?
 
-    private var recorder: AVAudioRecorder?
+    private let pipeline = AudioPipeline()
+    private var classifier: BirdNETClassifier?
+    private var detectionMap: [String: Detection] = [:]
     private nonisolated(unsafe) var interruptionObserver: NSObjectProtocol?
 
     init() {
@@ -31,53 +34,73 @@ final class RecordingManager {
 
     func start() async {
         guard !isRecording else { return }
+        errorMessage = nil
+
         guard await requestMicrophonePermission() else {
-            print("Kestrel: microphone permission denied")
+            errorMessage = "Microphone permission denied."
             return
         }
 
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(
-                .playAndRecord,
-                mode: .default,
-                options: [.allowBluetooth, .defaultToSpeaker]
-            )
-            try session.setActive(true, options: [])
-
-            let url = makeRecordingURL()
-            let settings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: 44_100,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-            ]
-
-            let recorder = try AVAudioRecorder(url: url, settings: settings)
-            recorder.prepareToRecord()
-            guard recorder.record() else {
-                print("Kestrel: recorder.record() returned false")
+        if classifier == nil {
+            do {
+                classifier = try BirdNETClassifier()
+            } catch {
+                errorMessage = "Failed to load BirdNET: \(error)"
+                print("Kestrel: \(error)")
                 return
             }
+        }
 
-            self.recorder = recorder
-            self.currentRecordingURL = url
-            self.isRecording = true
+        detections = []
+        detectionMap = [:]
+
+        do {
+            try pipeline.start { [weak self] window in
+                guard let self else { return }
+                Task { await self.process(window: window) }
+            }
+            isRecording = true
         } catch {
-            print("Kestrel: failed to start recording — \(error)")
+            errorMessage = "Failed to start audio: \(error.localizedDescription)"
+            print("Kestrel: failed to start pipeline — \(error)")
         }
     }
 
     func stop() {
         guard isRecording else { return }
-        recorder?.stop()
-        recorder = nil
+        pipeline.stop()
         isRecording = false
+    }
 
+    private func process(window: [Float]) async {
+        guard let classifier else { return }
         do {
-            try AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
+            let results = try await classifier.classify(window)
+            await MainActor.run { self.merge(results) }
         } catch {
-            print("Kestrel: failed to deactivate session — \(error)")
+            print("Kestrel: inference error — \(error)")
+        }
+    }
+
+    private func merge(_ results: [Detection]) {
+        var changed = false
+        for d in results {
+            if let existing = detectionMap[d.id] {
+                if d.confidence > existing.confidence {
+                    detectionMap[d.id] = d
+                    changed = true
+                } else {
+                    var updated = existing
+                    updated.lastSeen = d.lastSeen
+                    detectionMap[d.id] = updated
+                }
+            } else {
+                detectionMap[d.id] = d
+                changed = true
+            }
+        }
+        if changed || detections.count != detectionMap.count {
+            detections = detectionMap.values.sorted { $0.confidence > $1.confidence }
         }
     }
 
@@ -90,14 +113,6 @@ final class RecordingManager {
         @unknown default:
             return false
         }
-    }
-
-    private func makeRecordingURL() -> URL {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let name = "recording-\(formatter.string(from: Date())).m4a"
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return documents.appendingPathComponent(name)
     }
 
     private func registerInterruptionObserver() {
@@ -122,12 +137,10 @@ final class RecordingManager {
 
         switch type {
         case .began:
-            recorder?.pause()
+            if isRecording { pipeline.stop(); isRecording = false }
         case .ended:
-            if let optionsValue = info[AVAudioSessionInterruptionOptionKey] as? UInt,
-               AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume) {
-                recorder?.record()
-            }
+            // User can tap record again — don't auto-resume the engine here.
+            break
         @unknown default:
             break
         }

@@ -1,0 +1,6 @@
+framework module Pods_Kestrel {
+  umbrella header "Pods-Kestrel-umbrella.h"
+
+  export *
+  module * { export * }
+}
