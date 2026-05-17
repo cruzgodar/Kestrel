@@ -1,24 +1,32 @@
-//
-//  ContentView.swift
-//  Kestrel
-//
-//  Created by Cruz Godar on 5/16/26.
-//
-
 import SwiftUI
 
 struct ContentView: View {
+    @Environment(RecordingManager.self) private var manager
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        ZStack {
+            Color.clear.ignoresSafeArea()
+
+            Button {
+                Task { await manager.toggle() }
+            } label: {
+                Label(
+                    manager.isRecording ? "Stop Recording" : "Start Recording",
+                    systemImage: manager.isRecording ? "stop.fill" : "mic.fill"
+                )
+                .font(.title3.weight(.semibold))
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.extraLarge)
+            .tint(manager.isRecording ? .red : .accentColor)
+            .animation(.snappy, value: manager.isRecording)
         }
-        .padding()
     }
 }
 
 #Preview {
     ContentView()
+        .environment(RecordingManager())
 }
