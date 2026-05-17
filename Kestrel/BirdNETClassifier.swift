@@ -11,7 +11,7 @@ enum BirdNETError: Error {
 
 actor BirdNETClassifier {
     static let sampleCount = 144_000  // 3 s @ 48 kHz mono
-    static let detectionThreshold: Float = 0.1
+    static let detectionThreshold: Float = 0.5
 
     private let env: ORTEnv
     private let session: ORTSession
@@ -62,7 +62,7 @@ actor BirdNETClassifier {
         print("BirdNET: loaded — input=\(inName), output=\(outName), labels=\(labels.count)")
     }
 
-    func classify(_ samples: [Float]) throws -> [Detection] {
+    func classify(_ samples: [Float], allowedIndices: Set<Int>? = nil) throws -> [Detection] {
         guard samples.count == Self.sampleCount else {
             throw BirdNETError.wrongSampleCount(samples.count)
         }
@@ -98,6 +98,7 @@ actor BirdNETClassifier {
         var results: [Detection] = []
         results.reserveCapacity(32)
         for (index, logit) in logits.enumerated() {
+            if let allowedIndices, !allowedIndices.contains(index) { continue }
             // Model emits raw logits; apply sigmoid for [0,1] confidences.
             let confidence = 1.0 / (1.0 + expf(-logit))
             if confidence >= Self.detectionThreshold {

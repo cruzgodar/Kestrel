@@ -8,6 +8,14 @@ struct ContentView: View {
             resultsView
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
+            if let status = manager.locationStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal)
+                    .padding(.bottom, 6)
+            }
+
             if let message = manager.errorMessage {
                 Text(message)
                     .font(.footnote)
@@ -31,7 +39,7 @@ struct ContentView: View {
             .controlSize(.extraLarge)
             .tint(manager.isRecording ? .red : .accentColor)
             .animation(.snappy, value: manager.isRecording)
-            .padding(.bottom, 24)
+            .padding(.bottom, 8)
         }
     }
 

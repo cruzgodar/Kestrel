@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreLocation
 import Foundation
 import Observation
 
@@ -8,9 +9,13 @@ final class RecordingManager {
     private(set) var isRecording = false
     private(set) var detections: [Detection] = []
     private(set) var errorMessage: String?
+    private(set) var locationStatus: String?
 
     private let pipeline = AudioPipeline()
+    private let locationProvider = LocationProvider()
     private var classifier: BirdNETClassifier?
+    private var rangeFilter: SpeciesRangeFilter?
+    private var allowedIndices: Set<Int>?
     private var detectionMap: [String: Detection] = [:]
     private nonisolated(unsafe) var interruptionObserver: NSObjectProtocol?
 
@@ -51,8 +56,17 @@ final class RecordingManager {
             }
         }
 
+        if rangeFilter == nil {
+            do {
+                rangeFilter = try SpeciesRangeFilter()
+            } catch {
+                print("Kestrel: range filter unavailable — \(error)")
+            }
+        }
+
         detections = []
         detectionMap = [:]
+        await refreshSpeciesFilter()
 
         do {
             try pipeline.start { [weak self] window in
@@ -66,6 +80,38 @@ final class RecordingManager {
         }
     }
 
+    private func refreshSpeciesFilter() async {
+        guard let rangeFilter else {
+            allowedIndices = nil
+            locationStatus = "Showing all species"
+            return
+        }
+        let location = await locationProvider.currentLocation()
+        let week = SpeciesRangeFilter.birdnetWeek()
+        if let location {
+            do {
+                let allowed = try await rangeFilter.computeAndCache(
+                    lat: location.coordinate.latitude,
+                    lon: location.coordinate.longitude,
+                    week: week
+                )
+                allowedIndices = allowed
+                locationStatus = "Filtered to \(allowed.count) species near you"
+                return
+            } catch {
+                print("Kestrel: geo inference failed — \(error)")
+            }
+        }
+        // Fallback path: no fresh fix, or geo inference failed.
+        if let cached = await rangeFilter.loadCached() {
+            allowedIndices = cached
+            locationStatus = "Using last-known list (\(cached.count) species)"
+        } else {
+            allowedIndices = nil
+            locationStatus = "Showing all species (no location yet)"
+        }
+    }
+
     func stop() {
         guard isRecording else { return }
         pipeline.stop()
@@ -75,7 +121,7 @@ final class RecordingManager {
     private func process(window: [Float]) async {
         guard let classifier else { return }
         do {
-            let results = try await classifier.classify(window)
+            let results = try await classifier.classify(window, allowedIndices: allowedIndices)
             await MainActor.run { self.merge(results) }
         } catch {
             print("Kestrel: inference error — \(error)")
