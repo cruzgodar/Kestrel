@@ -7,26 +7,17 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             if manager.isRecording {
-                SpectrogramView(
-                    renderer: manager.spectrogram,
-                    fpsCounter: manager.fpsCounter
-                )
-                .frame(height: 80)
-                .frame(maxWidth: .infinity)
-                .clipped()
-                .overlay(alignment: .topTrailing) {
-                    Text("\(Int(manager.fpsCounter.fps.rounded())) fps")
-                        .font(.caption2.monospacedDigit().weight(.semibold))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(.regularMaterial, in: Capsule())
-                        .padding(6)
-                }
-                .transition(.move(edge: .top).combined(with: .opacity))
+                SpectrogramView(renderer: manager.spectrogram)
+                    .frame(height: 80)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .transition(.opacity)
             }
 
             resultsView
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .animation(.easeOut(duration: 0.15), value: manager.isRecording)
+                .animation(.easeOut(duration: 0.15), value: manager.detections.isEmpty)
 
             if let status = manager.locationStatus {
                 Text(status)
@@ -44,39 +35,36 @@ struct ContentView: View {
                     .padding(.bottom, 8)
             }
 
-            Button {
-                Task { await manager.toggle() }
-            } label: {
-                Label(
-                    manager.isRecording ? "Stop Recording" : "Start Recording",
-                    systemImage: manager.isRecording ? "stop.fill" : "mic.fill"
-                )
-                .font(.title3.weight(.semibold))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.extraLarge)
-            .tint(manager.isRecording ? .red : .accentColor)
-            .animation(.snappy, value: manager.isRecording)
-            .padding(.bottom, 8)
+            recordButton
+                .padding(.bottom, 8)
         }
+        .animation(.snappy(duration: 0.2), value: manager.isRecording)
+    }
+
+    private var recordButton: some View {
+        Button {
+            Task { await manager.toggle() }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: manager.isRecording ? "stop.fill" : "mic.fill")
+                    .contentTransition(.opacity)
+                if !manager.isRecording {
+                    Text("Start Recording")
+                        .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                }
+            }
+            .font(.title3.weight(.semibold))
+            .frame(height: 28)
+            .padding(.horizontal, 8)
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.extraLarge)
+        .tint(manager.isRecording ? .red : .accentColor)
     }
 
     @ViewBuilder
     private var resultsView: some View {
-        if manager.detections.isEmpty {
-            ContentUnavailableView {
-                Label(
-                    manager.isRecording ? "Listening…" : "No detections yet",
-                    systemImage: manager.isRecording ? "waveform" : "bird"
-                )
-            } description: {
-                Text(manager.isRecording
-                     ? "Analyzing 3-second windows of audio."
-                     : "Tap Start Recording to begin identifying birds.")
-            }
-        } else {
+        if !manager.detections.isEmpty {
             List(manager.detections) { detection in
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -94,6 +82,15 @@ struct ContentView: View {
                 }
             }
             .listStyle(.plain)
+        } else if !manager.isRecording {
+            ContentUnavailableView {
+                Label("No detections yet", systemImage: "bird")
+            } description: {
+                Text("Tap Start Recording to begin identifying birds.")
+            }
+            .transition(.opacity)
+        } else {
+            Color.clear
         }
     }
 }
@@ -105,13 +102,11 @@ struct ContentView: View {
 
 private struct SpectrogramView: UIViewRepresentable {
     let renderer: SpectrogramRenderer
-    let fpsCounter: FPSCounter
     @Environment(\.colorScheme) private var colorScheme
 
     func makeUIView(context: Context) -> SpectrogramHostView {
         let v = SpectrogramHostView()
         v.renderer = renderer
-        v.fpsCounter = fpsCounter
         v.invert = colorScheme == .light
         v.start()
         return v
@@ -119,7 +114,6 @@ private struct SpectrogramView: UIViewRepresentable {
 
     func updateUIView(_ uiView: SpectrogramHostView, context: Context) {
         uiView.renderer = renderer
-        uiView.fpsCounter = fpsCounter
         uiView.invert = colorScheme == .light
     }
 
@@ -134,7 +128,6 @@ private struct SpectrogramView: UIViewRepresentable {
 /// `CADisableMinimumFrameDurationOnPhone`.
 final class SpectrogramHostView: UIView {
     var renderer: SpectrogramRenderer?
-    var fpsCounter: FPSCounter?
     var invert: Bool = false {
         didSet { backgroundColor = invert ? .white : .black }
     }
@@ -144,7 +137,6 @@ final class SpectrogramHostView: UIView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         backgroundColor = .black
-        // Stretch the CGImage to fill the layer bounds; bilinear filtering.
         layer.contentsGravity = .resize
         layer.magnificationFilter = .linear
         layer.minificationFilter = .linear
@@ -167,7 +159,6 @@ final class SpectrogramHostView: UIView {
     }
 
     @objc private func tick(_ link: CADisplayLink) {
-        fpsCounter?.tick(link.timestamp)
         renderer?.pumpColumns(at: link.targetTimestamp)
         guard let image = renderer?.snapshot(inverted: invert) else { return }
         CATransaction.begin()

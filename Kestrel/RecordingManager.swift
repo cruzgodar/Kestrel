@@ -12,12 +12,11 @@ final class RecordingManager {
     private(set) var locationStatus: String?
 
     let spectrogram = SpectrogramRenderer()
-    let fpsCounter = FPSCounter()
 
     private let pipeline = AudioPipeline()
     private let locationProvider = LocationProvider()
-    private var classifier: BirdNETClassifier?
-    private var rangeFilter: SpeciesRangeFilter?
+    private var classifierTask: Task<BirdNETClassifier, Error>?
+    private var rangeFilterTask: Task<SpeciesRangeFilter, Error>?
     private var allowedIndices: Set<Int>?
     private var detectionMap: [String: Detection] = [:]
     private nonisolated(unsafe) var interruptionObserver: NSObjectProtocol?
@@ -29,6 +28,33 @@ final class RecordingManager {
     deinit {
         if let interruptionObserver {
             NotificationCenter.default.removeObserver(interruptionObserver)
+        }
+    }
+
+    /// Begins loading the BirdNET classifier and the species-range model in
+    /// background tasks so the first Start Recording tap is fast. Safe to call
+    /// multiple times; subsequent calls are no-ops.
+    func preload() {
+        if classifierTask == nil {
+            classifierTask = Task.detached(priority: .userInitiated) {
+                try BirdNETClassifier()
+            }
+        }
+        if rangeFilterTask == nil {
+            rangeFilterTask = Task.detached(priority: .utility) {
+                try SpeciesRangeFilter()
+            }
+        }
+
+        // Pre-configure the audio session category so the first `setActive`
+        // call inside `pipeline.start()` is fast. Doesn't activate the session,
+        // so other apps' audio is untouched.
+        Task.detached(priority: .utility) {
+            try? AVAudioSession.sharedInstance().setCategory(
+                .playAndRecord,
+                mode: .measurement,
+                options: [.allowBluetooth, .defaultToSpeaker]
+            )
         }
     }
 
@@ -49,30 +75,13 @@ final class RecordingManager {
             return
         }
 
-        if classifier == nil {
-            do {
-                classifier = try BirdNETClassifier()
-            } catch {
-                errorMessage = "Failed to load BirdNET: \(error)"
-                print("Kestrel: \(error)")
-                return
-            }
-        }
-
-        if rangeFilter == nil {
-            do {
-                rangeFilter = try SpeciesRangeFilter()
-            } catch {
-                print("Kestrel: range filter unavailable — \(error)")
-            }
-        }
-
         detections = []
         detectionMap = [:]
         spectrogram.reset()
-        fpsCounter.reset()
-        await refreshSpeciesFilter()
+        locationStatus = nil
 
+        // Start the audio pipeline + spectrogram immediately. Heavy ML loads
+        // and the location-based filter resolve in the background.
         do {
             let spectrogram = self.spectrogram
             try pipeline.start(
@@ -88,39 +97,13 @@ final class RecordingManager {
         } catch {
             errorMessage = "Failed to start audio: \(error.localizedDescription)"
             print("Kestrel: failed to start pipeline — \(error)")
-        }
-    }
-
-    private func refreshSpeciesFilter() async {
-        guard let rangeFilter else {
-            allowedIndices = nil
-            locationStatus = "Showing all species"
             return
         }
-        let location = await locationProvider.currentLocation()
-        let week = SpeciesRangeFilter.birdnetWeek()
-        if let location {
-            do {
-                let allowed = try await rangeFilter.computeAndCache(
-                    lat: location.coordinate.latitude,
-                    lon: location.coordinate.longitude,
-                    week: week
-                )
-                allowedIndices = allowed
-                locationStatus = "Filtered to \(allowed.count) species near you"
-                return
-            } catch {
-                print("Kestrel: geo inference failed — \(error)")
-            }
-        }
-        // Fallback path: no fresh fix, or geo inference failed.
-        if let cached = await rangeFilter.loadCached() {
-            allowedIndices = cached
-            locationStatus = "Using last-known list (\(cached.count) species)"
-        } else {
-            allowedIndices = nil
-            locationStatus = "Showing all species (no location yet)"
-        }
+
+        // Kick off the preload (no-op if already running), then resolve the
+        // species filter in the background.
+        preload()
+        Task { await self.refreshSpeciesFilter() }
     }
 
     func stop() {
@@ -129,8 +112,33 @@ final class RecordingManager {
         isRecording = false
     }
 
+    // MARK: - Model accessors
+
+    private func getClassifier() async -> BirdNETClassifier? {
+        if classifierTask == nil { preload() }
+        do {
+            return try await classifierTask?.value
+        } catch {
+            errorMessage = "Failed to load BirdNET: \(error.localizedDescription)"
+            print("Kestrel: classifier load — \(error)")
+            return nil
+        }
+    }
+
+    private func getRangeFilter() async -> SpeciesRangeFilter? {
+        if rangeFilterTask == nil { preload() }
+        do {
+            return try await rangeFilterTask?.value
+        } catch {
+            print("Kestrel: range filter unavailable — \(error)")
+            return nil
+        }
+    }
+
+    // MARK: - Per-window inference
+
     private func process(window: [Float]) async {
-        guard let classifier else { return }
+        guard let classifier = await getClassifier() else { return }
         do {
             let results = try await classifier.classify(window, allowedIndices: allowedIndices)
             if !results.isEmpty {
@@ -163,6 +171,41 @@ final class RecordingManager {
             detections = detectionMap.values.sorted { $0.confidence > $1.confidence }
         }
     }
+
+    // MARK: - Location + species filter
+
+    private func refreshSpeciesFilter() async {
+        guard let rangeFilter = await getRangeFilter() else {
+            allowedIndices = nil
+            locationStatus = "Showing all species"
+            return
+        }
+        let location = await locationProvider.currentLocation()
+        let week = SpeciesRangeFilter.birdnetWeek()
+        if let location {
+            do {
+                let allowed = try await rangeFilter.computeAndCache(
+                    lat: location.coordinate.latitude,
+                    lon: location.coordinate.longitude,
+                    week: week
+                )
+                allowedIndices = allowed
+                locationStatus = "Filtered to \(allowed.count) species near you"
+                return
+            } catch {
+                print("Kestrel: geo inference failed — \(error)")
+            }
+        }
+        if let cached = await rangeFilter.loadCached() {
+            allowedIndices = cached
+            locationStatus = "Using last-known list (\(cached.count) species)"
+        } else {
+            allowedIndices = nil
+            locationStatus = "Showing all species (no location yet)"
+        }
+    }
+
+    // MARK: - System plumbing
 
     private func requestMicrophonePermission() async -> Bool {
         switch AVAudioApplication.shared.recordPermission {
@@ -199,7 +242,6 @@ final class RecordingManager {
         case .began:
             if isRecording { pipeline.stop(); isRecording = false }
         case .ended:
-            // User can tap record again — don't auto-resume the engine here.
             break
         @unknown default:
             break
