@@ -11,7 +11,7 @@ enum BirdNETError: Error {
 
 actor BirdNETClassifier {
     static let sampleCount = 144_000  // 3 s @ 48 kHz mono
-    static let detectionThreshold: Float = 0.5
+    static let detectionThreshold: Float = 0.3
 
     private let env: ORTEnv
     private let session: ORTSession

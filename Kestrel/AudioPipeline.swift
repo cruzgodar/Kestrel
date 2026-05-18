@@ -21,6 +21,7 @@ final class AudioPipeline {
 
     private var converter: AVAudioConverter?
     private var converterInputFormat: AVAudioFormat?
+    private var highPass = BiquadHighPass(cutoffHz: 150, sampleRate: AudioPipeline.targetSampleRate)
 
     private let bufferLock = OSAllocatedUnfairLock(initialState: [Float]())
     private var onWindow: (@Sendable ([Float]) -> Void)?
@@ -42,6 +43,7 @@ final class AudioPipeline {
         converterInputFormat = hwFormat
 
         bufferLock.withLock { $0.removeAll(keepingCapacity: true) }
+        highPass.reset()
 
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 4_800, format: hwFormat) { [weak self] buffer, _ in
@@ -89,7 +91,10 @@ final class AudioPipeline {
         let frames = Int(outBuffer.frameLength)
         guard frames > 0, let ptr = outBuffer.floatChannelData?[0] else { return }
 
-        let newSamples = Array(UnsafeBufferPointer(start: ptr, count: frames))
+        var newSamples = Array(UnsafeBufferPointer(start: ptr, count: frames))
+        // Remove low-frequency rumble (wind, footsteps, pocket thump) before BirdNET.
+        // Filter state persists across taps so window boundaries are click-free.
+        highPass.process(&newSamples)
 
         // Append, slice off complete windows, deliver each.
         var completed: [[Float]] = []
@@ -104,6 +109,48 @@ final class AudioPipeline {
 
         if let onWindow {
             for window in completed { onWindow(window) }
+        }
+    }
+}
+
+/// Biquad Butterworth high-pass (RBJ cookbook, Q=1/√2). Stateful so it can be
+/// called incrementally on consecutive buffers without introducing clicks at the
+/// boundary.
+struct BiquadHighPass {
+    private let b0, b1, b2, a1, a2: Float
+    private var x1: Float = 0
+    private var x2: Float = 0
+    private var y1: Float = 0
+    private var y2: Float = 0
+
+    init(cutoffHz: Double, sampleRate: Double, q: Double = 0.7071067811865476) {
+        let w0 = 2.0 * .pi * cutoffHz / sampleRate
+        let cosW0 = cos(w0)
+        let alpha = sin(w0) / (2.0 * q)
+        let a0 = 1.0 + alpha
+        let b0 = (1.0 + cosW0) / 2.0
+        let b1 = -(1.0 + cosW0)
+        let b2 = (1.0 + cosW0) / 2.0
+        let a1 = -2.0 * cosW0
+        let a2 = 1.0 - alpha
+        self.b0 = Float(b0 / a0)
+        self.b1 = Float(b1 / a0)
+        self.b2 = Float(b2 / a0)
+        self.a1 = Float(a1 / a0)
+        self.a2 = Float(a2 / a0)
+    }
+
+    mutating func reset() {
+        x1 = 0; x2 = 0; y1 = 0; y2 = 0
+    }
+
+    mutating func process(_ samples: inout [Float]) {
+        for i in 0..<samples.count {
+            let x = samples[i]
+            let y = b0 * x + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+            x2 = x1; x1 = x
+            y2 = y1; y1 = y
+            samples[i] = y
         }
     }
 }
