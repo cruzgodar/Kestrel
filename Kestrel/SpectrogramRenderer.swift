@@ -16,8 +16,9 @@ final class SpectrogramRenderer: @unchecked Sendable {
     static let fftSize: Int = 1024
     static let log2n: vDSP_Length = 10
     static let hop: Int = 256                         // 187 cols/sec
-    static let displayBins: Int = 320
-    static let columnCount: Int = 480                 // ~2.6 s of history
+    static let displayBins: Int = 240                 // matches 80pt @ 3× retina exactly
+    static let columnCount: Int = 720                 // ~3.85 s of history
+    static let columnsPerSecond: Double = Double(sampleRate) / Double(hop)
     static let sampleRate: Float = 48_000
     static let freqMin: Float = 100                   // Hz — bottom of display
     static let freqMax: Float = 14_000                // Hz — top of display
@@ -29,14 +30,23 @@ final class SpectrogramRenderer: @unchecked Sendable {
 
     private let lock = NSLock()
     private var pending: [Float] = []
+    private var pumpAnchorTime: CFTimeInterval = 0
+    private var pumpAnchorColumn: Int = 0
+    private var totalColumnsGenerated: Int = 0
     /// RGBA8 columns laid out side-by-side in *ring* order. `writeColumn` is the
     /// position of the next column to write; the column at `writeColumn` is the
     /// oldest in display order.
     private var ringPixels: [UInt8]
-    /// Reused scratch for snapshot, in display order (left = oldest, right = newest).
-    private var linearPixels: [UInt8]
     private let rowBytes: Int
     private var writeColumn: Int = 0
+
+    /// Double-buffered output: snapshot alternates between these two so we never
+    /// allocate per frame and the previously-displayed CGImage's backing memory
+    /// stays valid until the buffer is reused on the next-next snapshot.
+    private let snapshotByteCount: Int
+    private let snapshotBufferA: UnsafeMutableRawPointer
+    private let snapshotBufferB: UnsafeMutableRawPointer
+    private var useBufferA: Bool = true
 
     // FFT scratch
     private let fft: vDSP.FFT<DSPSplitComplex>
@@ -84,10 +94,17 @@ final class SpectrogramRenderer: @unchecked Sendable {
 
         let pixelCount = Self.columnCount * Self.displayBins * 4
         self.ringPixels = [UInt8](repeating: 0, count: pixelCount)
-        self.linearPixels = [UInt8](repeating: 0, count: pixelCount)
         self.rowBytes = Self.columnCount * 4
         for i in stride(from: 3, to: ringPixels.count, by: 4) { ringPixels[i] = 255 }
-        for i in stride(from: 3, to: linearPixels.count, by: 4) { linearPixels[i] = 255 }
+
+        self.snapshotByteCount = pixelCount
+        self.snapshotBufferA = UnsafeMutableRawPointer.allocate(byteCount: pixelCount, alignment: 16)
+        self.snapshotBufferB = UnsafeMutableRawPointer.allocate(byteCount: pixelCount, alignment: 16)
+    }
+
+    deinit {
+        snapshotBufferA.deallocate()
+        snapshotBufferB.deallocate()
     }
 
     // MARK: API
@@ -99,16 +116,53 @@ final class SpectrogramRenderer: @unchecked Sendable {
             ringPixels[i] = (i % 4 == 3) ? 255 : 0
         }
         writeColumn = 0
+        pumpAnchorTime = 0
+        pumpAnchorColumn = 0
+        totalColumnsGenerated = 0
     }
 
-    /// Safe to call from any thread.
+    /// Audio thread: just buffers samples. FFT/column generation happens in
+    /// `pumpColumns(at:)` on the display thread for uniform pacing.
     func ingest(_ samples: [Float]) {
         lock.lock(); defer { lock.unlock() }
         pending.append(contentsOf: samples)
-        while pending.count >= Self.fftSize {
-            // Use the first fftSize samples as the FFT frame; advance by hop.
+        // Bound runaway growth (~1 s cap) in pathological cases.
+        let maxPending = Int(Self.sampleRate)
+        if pending.count > maxPending {
+            pending.removeFirst(pending.count - maxPending)
+        }
+    }
+
+    /// Display thread: generates exactly the number of columns that should exist
+    /// at `displayTime`, paced to wall-clock time. Smooths bursty audio delivery
+    /// into uniform per-frame motion.
+    func pumpColumns(at displayTime: CFTimeInterval) {
+        lock.lock(); defer { lock.unlock() }
+        // Anchor on the first pump that has audio.
+        if pumpAnchorTime == 0 {
+            guard pending.count >= Self.fftSize else { return }
+            pumpAnchorTime = displayTime
+            pumpAnchorColumn = totalColumnsGenerated
+        }
+
+        let elapsed = displayTime - pumpAnchorTime
+        let targetTotal = pumpAnchorColumn + Int(elapsed * Self.columnsPerSecond)
+        let needed = targetTotal - totalColumnsGenerated
+        guard needed > 0 else { return }
+
+        var generated = 0
+        while pending.count >= Self.fftSize && generated < needed {
             renderColumnLocked()
             pending.removeFirst(Self.hop)
+            totalColumnsGenerated += 1
+            generated += 1
+        }
+
+        // If audio has fallen wildly behind (e.g. system hiccup) and our anchor
+        // is drifting, rebase so we don't try to burst-render hundreds of cols.
+        if needed - generated > 30 {
+            pumpAnchorTime = displayTime
+            pumpAnchorColumn = totalColumnsGenerated
         }
     }
 
@@ -123,17 +177,53 @@ final class SpectrogramRenderer: @unchecked Sendable {
     }
 
     /// Returns a CGImage representing the current spectrogram in display order
-    /// (oldest on left, newest on right).
-    func snapshot() -> CGImage? {
+    /// (oldest on left, newest on right). When `inverted` is true, RGB channels
+    /// are flipped (alpha kept) for light-mode display.
+    ///
+    /// Uses a ping-pong pair of pre-allocated buffers, so the snapshot is
+    /// allocation-free in steady state. The CGImage's CGDataProvider keeps a
+    /// non-owning reference; the buffer's lifetime is the renderer's lifetime.
+    func snapshot(inverted: Bool = false) -> CGImage? {
+        let buffer = useBufferA ? snapshotBufferA : snapshotBufferB
+        useBufferA.toggle()
+        let byteCount = snapshotByteCount
+
         lock.lock()
-        copyRingToLinearLocked()
-        let snapshotCopy = linearPixels   // copy-on-write; ARC'd into the CFData below
-        let writeColSnapshot = writeColumn
-        _ = writeColSnapshot
+        let writeCol = writeColumn
+        let rightStartBytes = writeCol * 4
+        let rightSizeBytes = (Self.columnCount - writeCol) * 4
+        let leftSizeBytes = writeCol * 4
+        ringPixels.withUnsafeBufferPointer { srcBP in
+            guard let src = srcBP.baseAddress else { return }
+            let dst = buffer.assumingMemoryBound(to: UInt8.self)
+            for y in 0..<Self.displayBins {
+                let rowOffset = y * rowBytes
+                memcpy(dst + rowOffset, src + rowOffset + rightStartBytes, rightSizeBytes)
+                memcpy(dst + rowOffset + rightSizeBytes, src + rowOffset, leftSizeBytes)
+            }
+        }
         lock.unlock()
 
+        if inverted {
+            // XOR every RGBA word with 0x00FFFFFF: flips R/G/B, leaves A alone.
+            buffer.withMemoryRebound(to: UInt32.self, capacity: byteCount / 4) { wp in
+                for i in 0..<(byteCount / 4) {
+                    wp[i] ^= 0x00FF_FFFF
+                }
+            }
+        }
+
         let cs = CGColorSpaceCreateDeviceRGB()
-        guard let provider = CGDataProvider(data: Data(snapshotCopy) as CFData) else { return nil }
+        // Non-owning release callback: renderer manages buffer lifetime.
+        let release: CGDataProviderReleaseDataCallback = { _, _, _ in }
+        guard let provider = CGDataProvider(
+            dataInfo: nil,
+            data: buffer,
+            size: byteCount,
+            releaseData: release
+        ) else {
+            return nil
+        }
         return CGImage(
             width: Self.columnCount,
             height: Self.displayBins,
@@ -147,29 +237,6 @@ final class SpectrogramRenderer: @unchecked Sendable {
             shouldInterpolate: false,
             intent: .defaultIntent
         )
-    }
-
-    // MARK: Ring → linear
-
-    /// Rearranges the ring buffer into `linearPixels` such that column 0 = oldest,
-    /// columnCount-1 = newest. Two memcpys per row.
-    private func copyRingToLinearLocked() {
-        let writeCol = writeColumn
-        let rightStartBytes = writeCol * 4
-        let rightSizeBytes = (Self.columnCount - writeCol) * 4
-        let leftSizeBytes = writeCol * 4
-        ringPixels.withUnsafeBufferPointer { srcBP in
-            linearPixels.withUnsafeMutableBufferPointer { dstBP in
-                guard let src = srcBP.baseAddress, let dst = dstBP.baseAddress else { return }
-                for y in 0..<Self.displayBins {
-                    let rowOffset = y * rowBytes
-                    // Right half of source (from writeCol to end) goes to left of dest.
-                    memcpy(dst + rowOffset, src + rowOffset + rightStartBytes, rightSizeBytes)
-                    // Left half of source (0..writeCol) goes to right of dest.
-                    memcpy(dst + rowOffset + rightSizeBytes, src + rowOffset, leftSizeBytes)
-                }
-            }
-        }
     }
 
     // MARK: Column generation
@@ -221,7 +288,7 @@ final class SpectrogramRenderer: @unchecked Sendable {
         // typically lands in:  silence ≈ -10…+0 dB,  birdsong ≈ +15…+30 dB,
         // very loud peaks ≈ +35 dB+. Picking a wide range with a lifted floor
         // means quiet rooms vanish into background while songs sit in mid-gray.
-        let floorDB: Float = -5
+        let floorDB: Float = -35
         let ceilDB: Float  = 30
         let range = ceilDB - floorDB
         let xOffset = writeColumn * 4

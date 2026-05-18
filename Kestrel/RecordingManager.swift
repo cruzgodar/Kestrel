@@ -12,6 +12,7 @@ final class RecordingManager {
     private(set) var locationStatus: String?
 
     let spectrogram = SpectrogramRenderer()
+    let fpsCounter = FPSCounter()
 
     private let pipeline = AudioPipeline()
     private let locationProvider = LocationProvider()
@@ -69,6 +70,7 @@ final class RecordingManager {
         detections = []
         detectionMap = [:]
         spectrogram.reset()
+        fpsCounter.reset()
         await refreshSpeciesFilter()
 
         do {

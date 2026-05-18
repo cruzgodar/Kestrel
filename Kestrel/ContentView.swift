@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @Environment(RecordingManager.self) private var manager
@@ -6,11 +7,22 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             if manager.isRecording {
-                SpectrogramView(renderer: manager.spectrogram)
-                    .frame(height: 80)
-                    .frame(maxWidth: .infinity)
-                    .clipped()
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                SpectrogramView(
+                    renderer: manager.spectrogram,
+                    fpsCounter: manager.fpsCounter
+                )
+                .frame(height: 80)
+                .frame(maxWidth: .infinity)
+                .clipped()
+                .overlay(alignment: .topTrailing) {
+                    Text("\(Int(manager.fpsCounter.fps.rounded())) fps")
+                        .font(.caption2.monospacedDigit().weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.regularMaterial, in: Capsule())
+                        .padding(6)
+                }
+                .transition(.move(edge: .top).combined(with: .opacity))
             }
 
             resultsView
@@ -91,35 +103,76 @@ struct ContentView: View {
         .environment(RecordingManager())
 }
 
-private struct SpectrogramView: View {
+private struct SpectrogramView: UIViewRepresentable {
     let renderer: SpectrogramRenderer
+    let fpsCounter: FPSCounter
     @Environment(\.colorScheme) private var colorScheme
 
-    var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 120.0, paused: false)) { _ in
-            content
-        }
+    func makeUIView(context: Context) -> SpectrogramHostView {
+        let v = SpectrogramHostView()
+        v.renderer = renderer
+        v.fpsCounter = fpsCounter
+        v.invert = colorScheme == .light
+        v.start()
+        return v
     }
 
-    @ViewBuilder
-    private var content: some View {
-        let inverted = colorScheme == .light
-        ZStack {
-            (inverted ? Color.white : Color.black)
-            if let image = renderer.snapshot() {
-                Image(decorative: image, scale: 1.0, orientation: .up)
-                    .resizable()
-                    .interpolation(.medium)
-                    .scaledToFill()
-                    .colorInvert(when: inverted)
-            }
-        }
+    func updateUIView(_ uiView: SpectrogramHostView, context: Context) {
+        uiView.renderer = renderer
+        uiView.fpsCounter = fpsCounter
+        uiView.invert = colorScheme == .light
+    }
+
+    static func dismantleUIView(_ uiView: SpectrogramHostView, coordinator: ()) {
+        uiView.stop()
     }
 }
 
-private extension View {
-    @ViewBuilder
-    func colorInvert(when condition: Bool) -> some View {
-        if condition { self.colorInvert() } else { self }
+/// Backing `UIView` whose `layer.contents` is refreshed every display frame by
+/// a `CADisplayLink`. Driven directly at display refresh — 60 Hz on standard
+/// displays, up to 120 Hz on ProMotion when the app opts in via
+/// `CADisableMinimumFrameDurationOnPhone`.
+final class SpectrogramHostView: UIView {
+    var renderer: SpectrogramRenderer?
+    var fpsCounter: FPSCounter?
+    var invert: Bool = false {
+        didSet { backgroundColor = invert ? .white : .black }
+    }
+
+    private var displayLink: CADisplayLink?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .black
+        // Stretch the CGImage to fill the layer bounds; bilinear filtering.
+        layer.contentsGravity = .resize
+        layer.magnificationFilter = .linear
+        layer.minificationFilter = .linear
+        layer.isOpaque = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func start() {
+        stop()
+        let link = CADisplayLink(target: self, selector: #selector(tick))
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
+        link.add(to: .main, forMode: .common)
+        displayLink = link
+    }
+
+    func stop() {
+        displayLink?.invalidate()
+        displayLink = nil
+    }
+
+    @objc private func tick(_ link: CADisplayLink) {
+        fpsCounter?.tick(link.timestamp)
+        renderer?.pumpColumns(at: link.targetTimestamp)
+        guard let image = renderer?.snapshot(inverted: invert) else { return }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.contents = image
+        CATransaction.commit()
     }
 }
