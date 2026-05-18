@@ -25,11 +25,16 @@ final class AudioPipeline {
 
     private let bufferLock = OSAllocatedUnfairLock(initialState: [Float]())
     private var onWindow: (@Sendable ([Float]) -> Void)?
+    private var onChunk: (@Sendable ([Float]) -> Void)?
 
     var isRunning: Bool { engine.isRunning }
 
-    func start(onWindow: @escaping @Sendable ([Float]) -> Void) throws {
+    func start(
+        onWindow: @escaping @Sendable ([Float]) -> Void,
+        onChunk: (@Sendable ([Float]) -> Void)? = nil
+    ) throws {
         self.onWindow = onWindow
+        self.onChunk = onChunk
 
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
@@ -45,8 +50,10 @@ final class AudioPipeline {
         bufferLock.withLock { $0.removeAll(keepingCapacity: true) }
         highPass.reset()
 
+        // Small buffer = frequent callbacks → smooth spectrogram updates.
+        // The system may still coalesce; this is advisory.
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 4_800, format: hwFormat) { [weak self] buffer, _ in
+        input.installTap(onBus: 0, bufferSize: 256, format: hwFormat) { [weak self] buffer, _ in
             self?.handleTap(buffer: buffer)
         }
 
@@ -60,6 +67,7 @@ final class AudioPipeline {
         }
         engine.inputNode.removeTap(onBus: 0)
         onWindow = nil
+        onChunk = nil
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
@@ -95,6 +103,9 @@ final class AudioPipeline {
         // Remove low-frequency rumble (wind, footsteps, pocket thump) before BirdNET.
         // Filter state persists across taps so window boundaries are click-free.
         highPass.process(&newSamples)
+
+        // Forward to the spectrogram renderer (if any) before chunking into windows.
+        onChunk?(newSamples)
 
         // Append, slice off complete windows, deliver each.
         var completed: [[Float]] = []

@@ -5,6 +5,14 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            if manager.isRecording {
+                SpectrogramView(renderer: manager.spectrogram)
+                    .frame(height: 80)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+
             resultsView
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
@@ -81,4 +89,37 @@ struct ContentView: View {
 #Preview {
     ContentView()
         .environment(RecordingManager())
+}
+
+private struct SpectrogramView: View {
+    let renderer: SpectrogramRenderer
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 120.0, paused: false)) { _ in
+            content
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        let inverted = colorScheme == .light
+        ZStack {
+            (inverted ? Color.white : Color.black)
+            if let image = renderer.snapshot() {
+                Image(decorative: image, scale: 1.0, orientation: .up)
+                    .resizable()
+                    .interpolation(.medium)
+                    .scaledToFill()
+                    .colorInvert(when: inverted)
+            }
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func colorInvert(when condition: Bool) -> some View {
+        if condition { self.colorInvert() } else { self }
+    }
 }

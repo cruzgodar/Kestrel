@@ -11,6 +11,8 @@ final class RecordingManager {
     private(set) var errorMessage: String?
     private(set) var locationStatus: String?
 
+    let spectrogram = SpectrogramRenderer()
+
     private let pipeline = AudioPipeline()
     private let locationProvider = LocationProvider()
     private var classifier: BirdNETClassifier?
@@ -66,13 +68,20 @@ final class RecordingManager {
 
         detections = []
         detectionMap = [:]
+        spectrogram.reset()
         await refreshSpeciesFilter()
 
         do {
-            try pipeline.start { [weak self] window in
-                guard let self else { return }
-                Task { await self.process(window: window) }
-            }
+            let spectrogram = self.spectrogram
+            try pipeline.start(
+                onWindow: { [weak self] window in
+                    guard let self else { return }
+                    Task { await self.process(window: window) }
+                },
+                onChunk: { chunk in
+                    spectrogram.ingest(chunk)
+                }
+            )
             isRecording = true
         } catch {
             errorMessage = "Failed to start audio: \(error.localizedDescription)"
@@ -122,6 +131,9 @@ final class RecordingManager {
         guard let classifier else { return }
         do {
             let results = try await classifier.classify(window, allowedIndices: allowedIndices)
+            if !results.isEmpty {
+                spectrogram.markDetection()
+            }
             await MainActor.run { self.merge(results) }
         } catch {
             print("Kestrel: inference error — \(error)")
