@@ -2,6 +2,7 @@ import AVFoundation
 import CoreLocation
 import Foundation
 import Observation
+import SwiftUI
 
 @Observable
 @MainActor
@@ -10,6 +11,9 @@ final class RecordingManager {
     private(set) var detections: [Detection] = []
     private(set) var errorMessage: String?
     private(set) var locationStatus: String?
+    /// IDs (scientific names) of detections whose confidence was just upgraded;
+    /// the UI flashes their row yellow while they're in this set.
+    private(set) var flashIDs: Set<String> = []
 
     let spectrogram = SpectrogramRenderer()
 
@@ -92,6 +96,7 @@ final class RecordingManager {
 
         detections = []
         detectionMap = [:]
+        flashIDs = []
         spectrogram.reset()
         // Don't clear locationStatus — leave the previous filter visible until
         // refreshSpeciesFilter overwrites it, otherwise the text flickers.
@@ -203,12 +208,12 @@ final class RecordingManager {
     }
 
     private func merge(_ results: [Detection]) {
-        var changed = false
+        var improvedIDs: [String] = []
         for d in results {
             if let existing = detectionMap[d.id] {
                 if d.confidence > existing.confidence {
-                    detectionMap[d.id] = d
-                    changed = true
+                    detectionMap[d.id] = d  // takes new confidence + new lastSeen
+                    improvedIDs.append(d.id)
                 } else {
                     var updated = existing
                     updated.lastSeen = d.lastSeen
@@ -216,11 +221,27 @@ final class RecordingManager {
                 }
             } else {
                 detectionMap[d.id] = d
-                changed = true
             }
         }
-        if changed || detections.count != detectionMap.count {
-            detections = detectionMap.values.sorted { $0.confidence > $1.confidence }
+
+        // Mark improved rows for the yellow flash. Inserted outside the
+        // animated transaction so the highlight appears instantly; the row's
+        // own .animation modifier handles the fade-out when we remove it.
+        for id in improvedIDs {
+            flashIDs.insert(id)
+        }
+
+        // Sort by lastSeen so the most recently heard species is always at
+        // the top. Reorder is animated so rows visibly slide into place.
+        withAnimation(.easeInOut(duration: 0.3)) {
+            detections = detectionMap.values.sorted { $0.lastSeen > $1.lastSeen }
+        }
+
+        for id in improvedIDs {
+            Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(120))
+                await MainActor.run { _ = self?.flashIDs.remove(id) }
+            }
         }
     }
 

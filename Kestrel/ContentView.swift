@@ -75,6 +75,7 @@ struct ContentView: View {
     private var resultsView: some View {
         if !manager.detections.isEmpty {
             List(manager.detections) { detection in
+                let flashing = manager.flashIDs.contains(detection.id)
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(detection.commonName)
@@ -89,6 +90,16 @@ struct ContentView: View {
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
+                .listRowBackground(
+                    Color.yellow
+                        .opacity(flashing ? 0.4 : 0)
+                        // Asymmetric: instant on (snap to yellow), animated
+                        // fade off (smooth back to clear) — true "flash" feel.
+                        .animation(
+                            flashing ? nil : .easeOut(duration: 0.5),
+                            value: flashing
+                        )
+                )
             }
             .listStyle(.plain)
         } else if !manager.isRecording {
