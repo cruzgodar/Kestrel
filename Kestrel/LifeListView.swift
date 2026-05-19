@@ -38,6 +38,7 @@ struct LifeListView: View {
         }
         .navigationTitle("Life List")
         .navigationSubtitle(speciesCountText)
+        .toolbarTitleDisplayMode(.inlineLarge)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {

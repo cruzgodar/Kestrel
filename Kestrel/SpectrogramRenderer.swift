@@ -20,8 +20,8 @@ final class SpectrogramRenderer: @unchecked Sendable {
     static let columnCount: Int = 720                 // ~3.85 s of history
     static let columnsPerSecond: Double = Double(sampleRate) / Double(hop)
     static let sampleRate: Float = 48_000
-    static let freqMin: Float = 100                   // Hz — bottom of display
-    static let freqMax: Float = 14_000                // Hz — top of display
+    static let freqMin: Float = 100                   // full audible range now that HPF is gone
+    static let freqMax: Float = 16_000
 
     /// How many columns the most-recent BirdNET window covers (3 s / hop), clipped.
     static let highlightSpan: Int = min((48_000 * 3) / hop, columnCount)
