@@ -59,7 +59,7 @@ struct ContentView: View {
                 if !manager.isRecording {
                     Text("Start Recording")
                         .padding(.leading, 8)
-                        .transition(.opacity)
+                        .transition(.opacity.combined(with: .scale(scale: 0.92)))
                 }
             }
             .font(.title3.weight(.semibold))
@@ -111,8 +111,8 @@ struct ContentView: View {
 
 /// Custom record button style that replaces `.borderedProminent` so we have
 /// full control over the press animation. No spring overshoots, no Liquid
-/// Glass settling — just a tinted capsule whose only state change on press
-/// is a quick opacity dip.
+/// Glass settling — just a tinted capsule. On press the button briefly
+/// grows + dims, both with the same fast easeOut so they feel like one motion.
 private struct RecordButtonStyle: ButtonStyle {
     let tint: Color
 
@@ -125,8 +125,9 @@ private struct RecordButtonStyle: ButtonStyle {
             .background {
                 Capsule(style: .continuous).fill(tint)
             }
-            .opacity(configuration.isPressed ? 0.78 : 1.0)
-            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+            .scaleEffect(configuration.isPressed ? 1.1 : 1.0)
+            .opacity(configuration.isPressed ? 0.85 : 1.0)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

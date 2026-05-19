@@ -19,6 +19,9 @@ final class RecordingManager {
     private var rangeFilterTask: Task<SpeciesRangeFilter, Error>?
     private var allowedIndices: Set<Int>?
     private var detectionMap: [String: Detection] = [:]
+    /// Tracks the deferred audio engine start/stop task so rapid taps can
+    /// cancel a pending transition before its sleep elapses.
+    private var pendingTransitionTask: Task<Void, Never>?
     private nonisolated(unsafe) var interruptionObserver: NSObjectProtocol?
 
     init() {
@@ -63,36 +66,36 @@ final class RecordingManager {
     }
 
     func start() async {
-        PerfLog.log("start() entry")
+        // If a pending stop task is in its post-animation sleep, drop it before
+        // we kick off a fresh start. Same applies the other direction.
+        pendingTransitionTask?.cancel()
+        pendingTransitionTask = nil
+
         guard !isRecording else { return }
+
+        // If the engine is still running because we just cancelled a pending
+        // stop task before it could fire pipeline.stop, this is a "resume" of
+        // the same recording, not a fresh one. Flip the UI flag back and bail
+        // — re-running pipeline.start on an already-running engine causes the
+        // tap to be re-installed and audio to double-process.
+        if pipeline.isRunning {
+            isRecording = true
+            return
+        }
+
         errorMessage = nil
 
-        PerfLog.log("requesting mic permission")
         guard await requestMicrophonePermission() else {
             errorMessage = "Microphone permission denied."
             return
         }
-        PerfLog.log("mic permission granted")
 
         detections = []
         detectionMap = [:]
         spectrogram.reset()
-        locationStatus = nil
+        // Don't clear locationStatus — leave the previous filter visible until
+        // refreshSpeciesFilter overwrites it, otherwise the text flickers.
         isRecording = true
-        PerfLog.log("isRecording = true SET")
-
-        // Probe main-thread responsiveness. If main is free these fire on time;
-        // any lateness exposes a main-thread block.
-        let probeAnchor = CFAbsoluteTimeGetCurrent()
-        let schedule: [Double] = [0.0, 0.016, 0.05, 0.1, 0.15, 0.2, 0.3]
-        for delay in schedule {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                let now = CFAbsoluteTimeGetCurrent()
-                let late = ((now - probeAnchor) - delay) * 1000
-                PerfLog.log(String(format: "main probe +%.0fms fired (late by %.1fms)",
-                                    delay * 1000, late))
-            }
-        }
 
         // Audio engine startup secretly uses main-thread time even when called
         // from a detached task (AVAudioEngine posts route-change callbacks to
@@ -101,15 +104,16 @@ final class RecordingManager {
         // engine start until just after the animation has committed.
         let pipeline = self.pipeline
         let spectrogram = self.spectrogram
-        Task.detached(priority: .userInitiated) { [weak self] in
-            PerfLog.log("detached task running")
+        pendingTransitionTask = Task.detached(priority: .userInitiated) { [weak self] in
             await pipeline.awaitPrewarm()
-            PerfLog.log("prewarm awaited")
-            // Wait out the morph animation (~0.16s) plus a buffer so the
-            // animation transaction is fully committed and any layout
-            // settling has happened on main before the audio engine starts.
-            try? await Task.sleep(for: .milliseconds(280))
-            PerfLog.log("post-animation sleep, calling pipeline.start")
+            // Wait out the morph animation. Cancel-aware sleep so a rapid
+            // tap that flips us back to stop can short-circuit this task.
+            do {
+                try await Task.sleep(for: .milliseconds(280))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
             do {
                 try pipeline.start(
                     onWindow: { window in
@@ -121,7 +125,6 @@ final class RecordingManager {
                         spectrogram.ingest(chunk)
                     }
                 )
-                PerfLog.log("pipeline.start returned")
             } catch {
                 await MainActor.run {
                     self?.errorMessage = "Failed to start audio: \(error.localizedDescription)"
@@ -130,21 +133,33 @@ final class RecordingManager {
                 print("Kestrel: failed to start pipeline — \(error)")
             }
         }
-        PerfLog.log("start() returning to caller")
 
         preload()
         Task { await self.refreshSpeciesFilter() }
     }
 
     func stop() {
+        pendingTransitionTask?.cancel()
+        pendingTransitionTask = nil
+
         guard isRecording else { return }
-        // Same trick as start: engine.stop() + setActive(false) also tax main
-        // internally during teardown. Defer until after the SwiftUI morph
-        // animation has committed so the button transition feels instant.
         isRecording = false
+
+        // If the engine never actually started (we cancelled a pending start
+        // task before its 280ms sleep elapsed), there's nothing to tear down.
+        guard pipeline.isRunning else { return }
+
+        // engine.stop() + setActive(false) tax main internally during teardown.
+        // Defer until after the SwiftUI morph animation has committed so the
+        // button transition feels instant.
         let pipeline = self.pipeline
-        Task.detached(priority: .userInitiated) {
-            try? await Task.sleep(for: .milliseconds(200))
+        pendingTransitionTask = Task.detached(priority: .userInitiated) {
+            do {
+                try await Task.sleep(for: .milliseconds(280))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
             pipeline.stop()
         }
     }
