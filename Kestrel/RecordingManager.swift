@@ -46,19 +46,15 @@ final class RecordingManager {
             }
         }
 
-        // Pre-configure the audio session category so the first `setActive`
-        // call inside `pipeline.start()` is fast. Doesn't activate the session,
-        // so other apps' audio is untouched.
-        Task.detached(priority: .utility) {
-            try? AVAudioSession.sharedInstance().setCategory(
-                .playAndRecord,
-                mode: .measurement,
-                options: [.allowBluetooth, .defaultToSpeaker]
-            )
-        }
+        // Pre-warm the audio pipeline in the background. Runs at .userInitiated
+        // so it doesn't get scheduled behind the classifier load on the
+        // executor; pipeline.start() awaits this task before activating the
+        // session itself, so the two can't race on the shared AVAudioSession.
+        pipeline.startPrewarm()
     }
 
     func toggle() async {
+        PerfLog.log("toggle() entry")
         if isRecording {
             stop()
         } else {
@@ -67,51 +63,69 @@ final class RecordingManager {
     }
 
     func start() async {
+        PerfLog.log("start() entry")
         guard !isRecording else { return }
         errorMessage = nil
 
+        PerfLog.log("requesting mic permission")
         guard await requestMicrophonePermission() else {
             errorMessage = "Microphone permission denied."
             return
         }
+        PerfLog.log("mic permission granted")
 
-        // Flip to recording state up front so the button morphs immediately
-        // even before the engine and analysis are running. If pipeline.start
-        // fails below, we revert.
         detections = []
         detectionMap = [:]
         spectrogram.reset()
         locationStatus = nil
         isRecording = true
+        PerfLog.log("isRecording = true SET")
 
-        do {
-            let spectrogram = self.spectrogram
-            try pipeline.start(
-                onWindow: { [weak self] window in
-                    guard let self else { return }
-                    Task { await self.process(window: window) }
-                },
-                onChunk: { chunk in
-                    spectrogram.ingest(chunk)
+        // Spin up the audio engine off the main actor. AVAudioSession.setActive
+        // and AVAudioEngine.start collectively take ~100–300 ms; blocking main
+        // for that long would freeze the button morph animation. Also wait
+        // for any prewarm in flight so we don't contend for the audio session.
+        let pipeline = self.pipeline
+        let spectrogram = self.spectrogram
+        Task.detached(priority: .userInitiated) { [weak self] in
+            PerfLog.log("detached task running")
+            await pipeline.awaitPrewarm()
+            PerfLog.log("prewarm awaited")
+            do {
+                try pipeline.start(
+                    onWindow: { window in
+                        Task { @MainActor [weak self] in
+                            await self?.process(window: window)
+                        }
+                    },
+                    onChunk: { chunk in
+                        spectrogram.ingest(chunk)
+                    }
+                )
+                PerfLog.log("pipeline.start returned")
+            } catch {
+                await MainActor.run {
+                    self?.errorMessage = "Failed to start audio: \(error.localizedDescription)"
+                    self?.isRecording = false
                 }
-            )
-        } catch {
-            errorMessage = "Failed to start audio: \(error.localizedDescription)"
-            print("Kestrel: failed to start pipeline — \(error)")
-            isRecording = false
-            return
+                print("Kestrel: failed to start pipeline — \(error)")
+            }
         }
+        PerfLog.log("start() returning to caller")
 
-        // Kick off the preload (no-op if already running), then resolve the
-        // species filter in the background.
         preload()
         Task { await self.refreshSpeciesFilter() }
     }
 
     func stop() {
         guard isRecording else { return }
-        pipeline.stop()
+        // Flip UI state synchronously; tear down audio engine off-main so the
+        // 100+ ms engine.stop / setActive(false) calls don't block the morph.
         isRecording = false
+        let pipeline = self.pipeline
+        Task.detached(priority: .userInitiated) {
+            pipeline.stop()
+        }
     }
 
     // MARK: - Model accessors

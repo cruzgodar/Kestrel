@@ -38,12 +38,20 @@ struct ContentView: View {
             recordButton
                 .padding(.bottom, 8)
         }
-        .animation(.snappy(duration: 0.2), value: manager.isRecording)
+        .animation(.snappy(duration: 0.16), value: manager.isRecording)
+        .onChange(of: manager.isRecording) { _, new in
+            PerfLog.log("SwiftUI .onChange sees isRecording=\(new)")
+        }
     }
 
     private var recordButton: some View {
         Button {
-            Task { await manager.toggle() }
+            PerfLog.reset()
+            PerfLog.log("button tap action fired")
+            Task {
+                PerfLog.log("button Task running")
+                await manager.toggle()
+            }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: manager.isRecording ? "stop.fill" : "mic.fill")

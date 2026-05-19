@@ -112,8 +112,15 @@ final class SpectrogramRenderer: @unchecked Sendable {
     func reset() {
         lock.lock(); defer { lock.unlock() }
         pending.removeAll(keepingCapacity: true)
-        for i in 0..<ringPixels.count {
-            ringPixels[i] = (i % 4 == 3) ? 255 : 0
+        // Clear ~700 KB of pixels with a 4-byte RGBA pattern (0,0,0,255).
+        // On little-endian the in-memory layout is R,G,B,A → packed as
+        // UInt32 0xFF000000. memset_pattern4 is vectorized and ~100× faster
+        // than the Swift loop, especially in debug builds.
+        var pattern: UInt32 = 0xFF00_0000
+        ringPixels.withUnsafeMutableBufferPointer { bp in
+            if let base = bp.baseAddress {
+                memset_pattern4(base, &pattern, bp.count)
+            }
         }
         writeColumn = 0
         pumpAnchorTime = 0

@@ -27,21 +27,72 @@ final class AudioPipeline {
     private var onWindow: (@Sendable ([Float]) -> Void)?
     private var onChunk: (@Sendable ([Float]) -> Void)?
 
+    private let prewarmLock = NSLock()
+    private var prewarmTask: Task<Void, Never>?
+
     var isRunning: Bool { engine.isRunning }
+
+    /// Schedules background audio prewarm. Idempotent — subsequent calls return
+    /// the existing in-flight task. The prewarm briefly activates the session,
+    /// touches the input node so iOS resolves the hardware audio route, then
+    /// deactivates. Route + format remain cached afterward so the next
+    /// `setActive` + `inputFormat` calls inside `start()` are fast.
+    func startPrewarm() {
+        prewarmLock.lock()
+        defer { prewarmLock.unlock() }
+        guard prewarmTask == nil else { return }
+        prewarmTask = Task.detached(priority: .userInitiated) { [weak self] in
+            self?.runPrewarm()
+        }
+    }
+
+    /// Awaits any in-flight prewarm so start can run without contending for
+    /// the audio session.
+    func awaitPrewarm() async {
+        prewarmLock.lock()
+        let task = prewarmTask
+        prewarmLock.unlock()
+        await task?.value
+    }
+
+    private func runPrewarm() {
+        PerfLog.log("prewarm() begin")
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(
+                .playAndRecord,
+                mode: .measurement,
+                options: [.allowBluetooth, .defaultToSpeaker]
+            )
+            PerfLog.log("prewarm: setCategory done")
+            try session.setActive(true, options: [])
+            PerfLog.log("prewarm: setActive(true) done")
+            _ = engine.inputNode.inputFormat(forBus: 0)
+            PerfLog.log("prewarm: inputFormat queried")
+        } catch {
+            print("Kestrel: prewarm error \(error)")
+        }
+        try? session.setActive(false, options: [.notifyOthersOnDeactivation])
+        PerfLog.log("prewarm() end")
+    }
 
     func start(
         onWindow: @escaping @Sendable ([Float]) -> Void,
         onChunk: (@Sendable ([Float]) -> Void)? = nil
     ) throws {
+        PerfLog.log("pipeline.start() entry")
         self.onWindow = onWindow
         self.onChunk = onChunk
 
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
+        PerfLog.log("session setCategory done")
         try session.setActive(true, options: [])
+        PerfLog.log("session setActive(true) done")
 
         let input = engine.inputNode
         let hwFormat = input.inputFormat(forBus: 0)
+        PerfLog.log("inputNode + hwFormat fetched")
 
         // Reset converter when format changes.
         converter = AVAudioConverter(from: hwFormat, to: targetFormat)
@@ -55,9 +106,12 @@ final class AudioPipeline {
         input.installTap(onBus: 0, bufferSize: 256, format: hwFormat) { [weak self] buffer, _ in
             self?.handleTap(buffer: buffer)
         }
+        PerfLog.log("tap installed")
 
         engine.prepare()
+        PerfLog.log("engine.prepare() done")
         try engine.start()
+        PerfLog.log("engine.start() done")
     }
 
     func stop() {
