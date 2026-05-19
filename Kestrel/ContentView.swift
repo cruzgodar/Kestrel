@@ -53,27 +53,20 @@ struct ContentView: View {
                 await manager.toggle()
             }
         } label: {
-            // spacing: 0 so removing the Text doesn't also remove an extra 8pt
-            // of HStack-level spacing at the end of the morph. The Text owns
-            // its own leading padding so spacing + text disappear atomically.
             HStack(spacing: 0) {
                 Image(systemName: manager.isRecording ? "stop.fill" : "mic.fill")
                     .contentTransition(.opacity)
                 if !manager.isRecording {
                     Text("Start Recording")
                         .padding(.leading, 8)
-                        .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                        .transition(.opacity)
                 }
             }
             .font(.title3.weight(.semibold))
+            .frame(height: 26)
         }
         .buttonStyle(RecordButtonStyle(tint: Self.recordTint))
-        // Targeted transaction: only state changes driven by `isRecording`
-        // pick up the morph animation. Gesture-driven press state animates
-        // independently (and faster) inside the custom button style.
-        .transaction(value: manager.isRecording) { transaction in
-            transaction.animation = .smooth(duration: 0.16)
-        }
+        .animation(.easeOut(duration: 0.16), value: manager.isRecording)
     }
 
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)

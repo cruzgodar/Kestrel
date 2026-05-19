@@ -105,9 +105,10 @@ final class RecordingManager {
             PerfLog.log("detached task running")
             await pipeline.awaitPrewarm()
             PerfLog.log("prewarm awaited")
-            // Wait out the snappy animation duration (~0.16s) plus a small
-            // buffer so the animation transaction is fully committed first.
-            try? await Task.sleep(for: .milliseconds(200))
+            // Wait out the morph animation (~0.16s) plus a buffer so the
+            // animation transaction is fully committed and any layout
+            // settling has happened on main before the audio engine starts.
+            try? await Task.sleep(for: .milliseconds(280))
             PerfLog.log("post-animation sleep, calling pipeline.start")
             do {
                 try pipeline.start(
