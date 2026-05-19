@@ -67,8 +67,21 @@ final class AudioPipeline {
             PerfLog.log("prewarm: setCategory done")
             try session.setActive(true, options: [])
             PerfLog.log("prewarm: setActive(true) done")
-            _ = engine.inputNode.inputFormat(forBus: 0)
+            let format = engine.inputNode.inputFormat(forBus: 0)
             PerfLog.log("prewarm: inputFormat queried")
+
+            // Briefly run the engine end-to-end so iOS allocates the RemoteIO
+            // audio unit. The next engine.start() inside the user's first
+            // pipeline.start() should be much faster — the cost shifts from
+            // user-visible tap-time to background launch-time. The orange mic
+            // indicator may flash briefly here.
+            engine.inputNode.installTap(onBus: 0, bufferSize: 256, format: format) { _, _ in }
+            engine.prepare()
+            try engine.start()
+            PerfLog.log("prewarm: engine.start() done")
+            engine.stop()
+            engine.inputNode.removeTap(onBus: 0)
+            PerfLog.log("prewarm: engine stopped + tap removed")
         } catch {
             print("Kestrel: prewarm error \(error)")
         }

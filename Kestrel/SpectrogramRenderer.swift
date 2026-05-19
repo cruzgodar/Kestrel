@@ -48,6 +48,13 @@ final class SpectrogramRenderer: @unchecked Sendable {
     private let snapshotBufferB: UnsafeMutableRawPointer
     private var useBufferA: Bool = true
 
+    /// Cache so we can skip ~700 KB of memcpy and a CGImage build when no new
+    /// columns have been generated since the last snapshot. Cleared on reset
+    /// and whenever the inversion flag changes.
+    private var cachedImageWriteCol: Int = -1
+    private var cachedImageInverted: Bool = false
+    private var cachedImage: CGImage?
+
     // FFT scratch
     private let fft: vDSP.FFT<DSPSplitComplex>
     private let hann: [Float]
@@ -126,6 +133,8 @@ final class SpectrogramRenderer: @unchecked Sendable {
         pumpAnchorTime = 0
         pumpAnchorColumn = 0
         totalColumnsGenerated = 0
+        cachedImage = nil
+        cachedImageWriteCol = -1
     }
 
     /// Audio thread: just buffers samples. FFT/column generation happens in
@@ -187,16 +196,27 @@ final class SpectrogramRenderer: @unchecked Sendable {
     /// (oldest on left, newest on right). When `inverted` is true, RGB channels
     /// are flipped (alpha kept) for light-mode display.
     ///
-    /// Uses a ping-pong pair of pre-allocated buffers, so the snapshot is
-    /// allocation-free in steady state. The CGImage's CGDataProvider keeps a
-    /// non-owning reference; the buffer's lifetime is the renderer's lifetime.
+    /// Caches the resulting CGImage and returns it unchanged when no new
+    /// columns have been generated since the last call — important because
+    /// CADisplayLink calls this on main at 120 Hz, and rebuilding ~700 KB +
+    /// a CGImage every frame competes with SwiftUI's render work during
+    /// transitions and animations.
+    ///
+    /// Uses a ping-pong pair of pre-allocated buffers when rebuilding, so the
+    /// snapshot is allocation-free.
     func snapshot(inverted: Bool = false) -> CGImage? {
+        lock.lock()
+        let writeCol = writeColumn
+        if writeCol == cachedImageWriteCol && inverted == cachedImageInverted,
+           let cached = cachedImage {
+            lock.unlock()
+            return cached
+        }
+
         let buffer = useBufferA ? snapshotBufferA : snapshotBufferB
         useBufferA.toggle()
         let byteCount = snapshotByteCount
 
-        lock.lock()
-        let writeCol = writeColumn
         let rightStartBytes = writeCol * 4
         let rightSizeBytes = (Self.columnCount - writeCol) * 4
         let leftSizeBytes = writeCol * 4
@@ -212,7 +232,6 @@ final class SpectrogramRenderer: @unchecked Sendable {
         lock.unlock()
 
         if inverted {
-            // XOR every RGBA word with 0x00FFFFFF: flips R/G/B, leaves A alone.
             buffer.withMemoryRebound(to: UInt32.self, capacity: byteCount / 4) { wp in
                 for i in 0..<(byteCount / 4) {
                     wp[i] ^= 0x00FF_FFFF
@@ -221,7 +240,6 @@ final class SpectrogramRenderer: @unchecked Sendable {
         }
 
         let cs = CGColorSpaceCreateDeviceRGB()
-        // Non-owning release callback: renderer manages buffer lifetime.
         let release: CGDataProviderReleaseDataCallback = { _, _, _ in }
         guard let provider = CGDataProvider(
             dataInfo: nil,
@@ -231,7 +249,7 @@ final class SpectrogramRenderer: @unchecked Sendable {
         ) else {
             return nil
         }
-        return CGImage(
+        let image = CGImage(
             width: Self.columnCount,
             height: Self.displayBins,
             bitsPerComponent: 8,
@@ -244,6 +262,10 @@ final class SpectrogramRenderer: @unchecked Sendable {
             shouldInterpolate: false,
             intent: .defaultIntent
         )
+        cachedImage = image
+        cachedImageWriteCol = writeCol
+        cachedImageInverted = inverted
+        return image
     }
 
     // MARK: Column generation

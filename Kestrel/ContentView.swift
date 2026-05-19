@@ -11,7 +11,8 @@ struct ContentView: View {
                     .frame(height: 80)
                     .frame(maxWidth: .infinity)
                     .clipped()
-                    .transition(.opacity)
+                    .transition(.opacity.animation(.smooth(duration: 0.16)))
+
             }
 
             resultsView
@@ -38,7 +39,6 @@ struct ContentView: View {
             recordButton
                 .padding(.bottom, 8)
         }
-        .animation(.snappy(duration: 0.16), value: manager.isRecording)
         .onChange(of: manager.isRecording) { _, new in
             PerfLog.log("SwiftUI .onChange sees isRecording=\(new)")
         }
@@ -53,22 +53,30 @@ struct ContentView: View {
                 await manager.toggle()
             }
         } label: {
-            HStack(spacing: 8) {
+            // spacing: 0 so removing the Text doesn't also remove an extra 8pt
+            // of HStack-level spacing at the end of the morph. The Text owns
+            // its own leading padding so spacing + text disappear atomically.
+            HStack(spacing: 0) {
                 Image(systemName: manager.isRecording ? "stop.fill" : "mic.fill")
                     .contentTransition(.opacity)
                 if !manager.isRecording {
                     Text("Start Recording")
+                        .padding(.leading, 8)
                         .transition(.opacity.combined(with: .scale(scale: 0.92)))
                 }
             }
             .font(.title3.weight(.semibold))
-            .frame(height: 28)
-            .padding(.horizontal, 8)
         }
-        .buttonStyle(.borderedProminent)
-        .controlSize(.extraLarge)
-        .tint(Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0))
+        .buttonStyle(RecordButtonStyle(tint: Self.recordTint))
+        // Targeted transaction: only state changes driven by `isRecording`
+        // pick up the morph animation. Gesture-driven press state animates
+        // independently (and faster) inside the custom button style.
+        .transaction(value: manager.isRecording) { transaction in
+            transaction.animation = .smooth(duration: 0.16)
+        }
     }
+
+    private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
 
     @ViewBuilder
     private var resultsView: some View {
@@ -106,6 +114,27 @@ struct ContentView: View {
 #Preview {
     ContentView()
         .environment(RecordingManager())
+}
+
+/// Custom record button style that replaces `.borderedProminent` so we have
+/// full control over the press animation. No spring overshoots, no Liquid
+/// Glass settling — just a tinted capsule whose only state change on press
+/// is a quick opacity dip.
+private struct RecordButtonStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(.white)
+            .padding(.horizontal, 28)
+            .padding(.vertical, 16)
+            .frame(minHeight: 50)
+            .background {
+                Capsule(style: .continuous).fill(tint)
+            }
+            .opacity(configuration.isPressed ? 0.78 : 1.0)
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+    }
 }
 
 private struct SpectrogramView: UIViewRepresentable {
@@ -166,9 +195,15 @@ final class SpectrogramHostView: UIView {
         displayLink = nil
     }
 
+    private var lastSetImage: CGImage?
+
     @objc private func tick(_ link: CADisplayLink) {
         renderer?.pumpColumns(at: link.targetTimestamp)
         guard let image = renderer?.snapshot(inverted: invert) else { return }
+        // Skip the layer.contents write when the renderer returns the same
+        // cached image — saves a CoreAnimation transaction per idle frame.
+        if image === lastSetImage { return }
+        lastSetImage = image
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer.contents = image

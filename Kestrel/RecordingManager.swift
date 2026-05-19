@@ -81,16 +81,34 @@ final class RecordingManager {
         isRecording = true
         PerfLog.log("isRecording = true SET")
 
-        // Spin up the audio engine off the main actor. AVAudioSession.setActive
-        // and AVAudioEngine.start collectively take ~100–300 ms; blocking main
-        // for that long would freeze the button morph animation. Also wait
-        // for any prewarm in flight so we don't contend for the audio session.
+        // Probe main-thread responsiveness. If main is free these fire on time;
+        // any lateness exposes a main-thread block.
+        let probeAnchor = CFAbsoluteTimeGetCurrent()
+        let schedule: [Double] = [0.0, 0.016, 0.05, 0.1, 0.15, 0.2, 0.3]
+        for delay in schedule {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                let now = CFAbsoluteTimeGetCurrent()
+                let late = ((now - probeAnchor) - delay) * 1000
+                PerfLog.log(String(format: "main probe +%.0fms fired (late by %.1fms)",
+                                    delay * 1000, late))
+            }
+        }
+
+        // Audio engine startup secretly uses main-thread time even when called
+        // from a detached task (AVAudioEngine posts route-change callbacks to
+        // main during first activation). Letting it run concurrently with the
+        // button morph animation freezes the UI for ~200 ms. We defer the
+        // engine start until just after the animation has committed.
         let pipeline = self.pipeline
         let spectrogram = self.spectrogram
         Task.detached(priority: .userInitiated) { [weak self] in
             PerfLog.log("detached task running")
             await pipeline.awaitPrewarm()
             PerfLog.log("prewarm awaited")
+            // Wait out the snappy animation duration (~0.16s) plus a small
+            // buffer so the animation transaction is fully committed first.
+            try? await Task.sleep(for: .milliseconds(200))
+            PerfLog.log("post-animation sleep, calling pipeline.start")
             do {
                 try pipeline.start(
                     onWindow: { window in
@@ -119,11 +137,13 @@ final class RecordingManager {
 
     func stop() {
         guard isRecording else { return }
-        // Flip UI state synchronously; tear down audio engine off-main so the
-        // 100+ ms engine.stop / setActive(false) calls don't block the morph.
+        // Same trick as start: engine.stop() + setActive(false) also tax main
+        // internally during teardown. Defer until after the SwiftUI morph
+        // animation has committed so the button transition feels instant.
         isRecording = false
         let pipeline = self.pipeline
         Task.detached(priority: .userInitiated) {
+            try? await Task.sleep(for: .milliseconds(200))
             pipeline.stop()
         }
     }
