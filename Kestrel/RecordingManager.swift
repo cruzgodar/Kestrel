@@ -75,13 +75,15 @@ final class RecordingManager {
             return
         }
 
+        // Flip to recording state up front so the button morphs immediately
+        // even before the engine and analysis are running. If pipeline.start
+        // fails below, we revert.
         detections = []
         detectionMap = [:]
         spectrogram.reset()
         locationStatus = nil
+        isRecording = true
 
-        // Start the audio pipeline + spectrogram immediately. Heavy ML loads
-        // and the location-based filter resolve in the background.
         do {
             let spectrogram = self.spectrogram
             try pipeline.start(
@@ -93,10 +95,10 @@ final class RecordingManager {
                     spectrogram.ingest(chunk)
                 }
             )
-            isRecording = true
         } catch {
             errorMessage = "Failed to start audio: \(error.localizedDescription)"
             print("Kestrel: failed to start pipeline — \(error)")
+            isRecording = false
             return
         }
 
@@ -190,7 +192,7 @@ final class RecordingManager {
                     week: week
                 )
                 allowedIndices = allowed
-                locationStatus = "Filtered to \(allowed.count) species near you"
+                locationStatus = "Filtered to \(allowed.count) nearby species"
                 return
             } catch {
                 print("Kestrel: geo inference failed — \(error)")

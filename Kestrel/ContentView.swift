@@ -59,7 +59,7 @@ struct ContentView: View {
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.extraLarge)
-        .tint(manager.isRecording ? .red : .accentColor)
+        .tint(Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0))
     }
 
     @ViewBuilder
