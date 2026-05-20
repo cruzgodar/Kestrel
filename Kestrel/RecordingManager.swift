@@ -23,6 +23,10 @@ final class RecordingManager {
     private var rangeFilterTask: Task<SpeciesRangeFilter, Error>?
     private var allowedIndices: Set<Int>?
     private var detectionMap: [String: Detection] = [:]
+    /// Per-species timestamp of the last visual flash; used to enforce a
+    /// 5-second cooldown so a species doesn't strobe on every overlapping
+    /// 1.5 s window of inference.
+    private var lastFlashAt: [String: Date] = [:]
     /// Tracks the deferred audio engine start/stop task so rapid taps can
     /// cancel a pending transition before its sleep elapses.
     private var pendingTransitionTask: Task<Void, Never>?
@@ -97,6 +101,7 @@ final class RecordingManager {
         detections = []
         detectionMap = [:]
         flashIDs = []
+        lastFlashAt = [:]
         spectrogram.reset()
         // Don't clear locationStatus — leave the previous filter visible until
         // refreshSpeciesFilter overwrites it, otherwise the text flickers.
@@ -208,26 +213,32 @@ final class RecordingManager {
     }
 
     private func merge(_ results: [Detection]) {
-        var improvedIDs: [String] = []
+        // Flash any repeat match (regardless of confidence change), but
+        // enforce a per-species cooldown so the same row doesn't strobe on
+        // every overlapping inference window.
+        let now = Date()
+        let cooldown: TimeInterval = 5
+        var repeatedIDs: [String] = []
         for d in results {
             if let existing = detectionMap[d.id] {
                 if d.confidence > existing.confidence {
                     detectionMap[d.id] = d  // takes new confidence + new lastSeen
-                    improvedIDs.append(d.id)
                 } else {
                     var updated = existing
                     updated.lastSeen = d.lastSeen
                     detectionMap[d.id] = updated
+                }
+                let lastFlash = lastFlashAt[d.id]
+                if lastFlash == nil || now.timeIntervalSince(lastFlash!) >= cooldown {
+                    repeatedIDs.append(d.id)
+                    lastFlashAt[d.id] = now
                 }
             } else {
                 detectionMap[d.id] = d
             }
         }
 
-        // Mark improved rows for the yellow flash. Inserted outside the
-        // animated transaction so the highlight appears instantly; the row's
-        // own .animation modifier handles the fade-out when we remove it.
-        for id in improvedIDs {
+        for id in repeatedIDs {
             flashIDs.insert(id)
         }
 
@@ -237,7 +248,7 @@ final class RecordingManager {
             detections = detectionMap.values.sorted { $0.lastSeen > $1.lastSeen }
         }
 
-        for id in improvedIDs {
+        for id in repeatedIDs {
             Task { [weak self] in
                 try? await Task.sleep(for: .milliseconds(120))
                 await MainActor.run { _ = self?.flashIDs.remove(id) }

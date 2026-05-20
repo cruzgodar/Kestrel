@@ -39,6 +39,13 @@ final class SpectrogramRenderer: @unchecked Sendable {
     private var ringPixels: [UInt8]
     private let rowBytes: Int
     private var writeColumn: Int = 0
+    /// Per-column flag set by `markDetection()`. Tint is applied at snapshot
+    /// time *after* any color inversion so the yellow looks identical in light
+    /// and dark mode (instead of getting flipped to blue by the XOR pass).
+    private var columnTinted: [Bool]
+    /// Bumped whenever the tint state changes, so the snapshot cache knows to
+    /// rebuild even when `writeColumn` hasn't changed.
+    private var tintGeneration: UInt64 = 0
 
     /// Double-buffered output: snapshot alternates between these two so we never
     /// allocate per frame and the previously-displayed CGImage's backing memory
@@ -50,9 +57,10 @@ final class SpectrogramRenderer: @unchecked Sendable {
 
     /// Cache so we can skip ~700 KB of memcpy and a CGImage build when no new
     /// columns have been generated since the last snapshot. Cleared on reset
-    /// and whenever the inversion flag changes.
+    /// and whenever the inversion flag or tint state changes.
     private var cachedImageWriteCol: Int = -1
     private var cachedImageInverted: Bool = false
+    private var cachedImageTintGen: UInt64 = 0
     private var cachedImage: CGImage?
 
     // FFT scratch
@@ -103,6 +111,7 @@ final class SpectrogramRenderer: @unchecked Sendable {
         self.ringPixels = [UInt8](repeating: 0, count: pixelCount)
         self.rowBytes = Self.columnCount * 4
         for i in stride(from: 3, to: ringPixels.count, by: 4) { ringPixels[i] = 255 }
+        self.columnTinted = [Bool](repeating: false, count: Self.columnCount)
 
         self.snapshotByteCount = pixelCount
         self.snapshotBufferA = UnsafeMutableRawPointer.allocate(byteCount: pixelCount, alignment: 16)
@@ -133,6 +142,8 @@ final class SpectrogramRenderer: @unchecked Sendable {
         pumpAnchorTime = 0
         pumpAnchorColumn = 0
         totalColumnsGenerated = 0
+        for i in 0..<columnTinted.count { columnTinted[i] = false }
+        tintGeneration &+= 1
         cachedImage = nil
         cachedImageWriteCol = -1
     }
@@ -182,14 +193,16 @@ final class SpectrogramRenderer: @unchecked Sendable {
         }
     }
 
-    /// Retroactively tints the most-recent `highlightSpan` columns.
+    /// Retroactively tints the most-recent `highlightSpan` columns. Tint is
+    /// just a flag per column — the actual yellow is applied at snapshot time.
     func markDetection() {
         lock.lock(); defer { lock.unlock() }
         let n = min(Self.highlightSpan, Self.columnCount)
         for offset in 1...n {
             let storageCol = ((writeColumn - offset) % Self.columnCount + Self.columnCount) % Self.columnCount
-            tintRingColumnLocked(storageCol)
+            columnTinted[storageCol] = true
         }
+        tintGeneration &+= 1
     }
 
     /// Returns a CGImage representing the current spectrogram in display order
@@ -207,7 +220,10 @@ final class SpectrogramRenderer: @unchecked Sendable {
     func snapshot(inverted: Bool = false) -> CGImage? {
         lock.lock()
         let writeCol = writeColumn
-        if writeCol == cachedImageWriteCol && inverted == cachedImageInverted,
+        let tintGen = tintGeneration
+        if writeCol == cachedImageWriteCol
+            && inverted == cachedImageInverted
+            && tintGen == cachedImageTintGen,
            let cached = cachedImage {
             lock.unlock()
             return cached
@@ -220,6 +236,14 @@ final class SpectrogramRenderer: @unchecked Sendable {
         let rightStartBytes = writeCol * 4
         let rightSizeBytes = (Self.columnCount - writeCol) * 4
         let leftSizeBytes = writeCol * 4
+        // Snapshot which columns are currently tinted, in display order
+        // (left = oldest). Captured under the lock so it stays consistent with
+        // the pixel copy below.
+        var displayTinted = [Bool](repeating: false, count: Self.columnCount)
+        for x in 0..<Self.columnCount {
+            let ringCol = (writeCol + x) % Self.columnCount
+            displayTinted[x] = columnTinted[ringCol]
+        }
         ringPixels.withUnsafeBufferPointer { srcBP in
             guard let src = srcBP.baseAddress else { return }
             let dst = buffer.assumingMemoryBound(to: UInt8.self)
@@ -235,6 +259,37 @@ final class SpectrogramRenderer: @unchecked Sendable {
             buffer.withMemoryRebound(to: UInt32.self, capacity: byteCount / 4) { wp in
                 for i in 0..<(byteCount / 4) {
                     wp[i] ^= 0x00FF_FFFF
+                }
+            }
+        }
+
+        // Replace pixels in detection columns with a black/white → goldenrod
+        // gradient. Silence (no audio) blends into the background so only the
+        // loud frequencies are highlighted.
+        //   Dark mode:  silence = black,  loud = goldenrod (218, 165, 32)
+        //   Light mode: silence = white,  loud = goldenrod (218, 165, 32)
+        let loudR: UInt16 = 218
+        let loudG: UInt16 = 165
+        let loudB: UInt16 = 32
+        let bp = buffer.assumingMemoryBound(to: UInt8.self)
+        for x in 0..<Self.columnCount where displayTinted[x] {
+            let xOffset = x * 4
+            for y in 0..<Self.displayBins {
+                let idx = y * rowBytes + xOffset
+                // After the XOR pass above, R already encodes (255-original)
+                // in light mode; unwind that to get the original loudness.
+                let pixelR = UInt16(bp[idx + 0])
+                let loudness: UInt16 = inverted ? (255 - pixelR) : pixelR
+                if inverted {
+                    // White → amber as loudness rises.
+                    bp[idx + 0] = UInt8(255 - ((255 - loudR) * loudness) / 255)
+                    bp[idx + 1] = UInt8(255 - ((255 - loudG) * loudness) / 255)
+                    bp[idx + 2] = UInt8(255 - ((255 - loudB) * loudness) / 255)
+                } else {
+                    // Black → amber as loudness rises.
+                    bp[idx + 0] = UInt8((loudR * loudness) / 255)
+                    bp[idx + 1] = UInt8((loudG * loudness) / 255)
+                    bp[idx + 2] = UInt8((loudB * loudness) / 255)
                 }
             }
         }
@@ -265,6 +320,7 @@ final class SpectrogramRenderer: @unchecked Sendable {
         cachedImage = image
         cachedImageWriteCol = writeCol
         cachedImageInverted = inverted
+        cachedImageTintGen = tintGen
         return image
     }
 
@@ -340,17 +396,12 @@ final class SpectrogramRenderer: @unchecked Sendable {
             ringPixels[idx + 3] = 255
         }
 
-        writeColumn = (writeColumn + 1) % Self.columnCount
-    }
-
-    private func tintRingColumnLocked(_ x: Int) {
-        let xOffset = x * 4
-        for y in 0..<Self.displayBins {
-            let idx = y * rowBytes + xOffset
-            let g = ringPixels[idx + 0]
-            ringPixels[idx + 0] = g
-            ringPixels[idx + 1] = UInt8(Float(g) * 0.55)
-            ringPixels[idx + 2] = 0
+        // Any tint on the slot we just overwrote no longer applies — that
+        // detection scrolled off the end of the ring.
+        if columnTinted[writeColumn] {
+            columnTinted[writeColumn] = false
+            tintGeneration &+= 1
         }
+        writeColumn = (writeColumn + 1) % Self.columnCount
     }
 }

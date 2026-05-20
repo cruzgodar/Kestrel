@@ -1,0 +1,2 @@
+slug	scientific	common	reason
+accipiter_gularis	Accipiter gularis	Japanese Sparrowhawk	ERROR: download/resize: 429 Client Error: Your request does not comply with our robot policy, https://w.wiki/4wJS. Please contact noc@wikimedia.org for further information (0fa5166) for url: https://upload.wikimedia.org/wikipedia/commons/thumb/0/0c/20100710_tumi_nagoya_03.jpg/330px-20100710_tumi_nagoya_03.jpg

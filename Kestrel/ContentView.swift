@@ -76,7 +76,7 @@ struct ContentView: View {
         if !manager.detections.isEmpty {
             List(manager.detections) { detection in
                 let flashing = manager.flashIDs.contains(detection.id)
-                HStack {
+                HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(detection.commonName)
                             .font(.headline)
@@ -89,9 +89,12 @@ struct ContentView: View {
                     Text(String(format: "%.0f%%", detection.confidence * 100))
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
+                    SpeciesThumbnail(scientificName: detection.scientificName)
                 }
                 .listRowBackground(
-                    Color.yellow
+                    // Pastel desaturated yellow — bright enough to read, mild
+                    // enough not to be visually jarring on every repeat.
+                    Color(hue: 50.0/360.0, saturation: 0.45, brightness: 1.0)
                         .opacity(flashing ? 0.4 : 0)
                         // Asymmetric: instant on (snap to yellow), animated
                         // fade off (smooth back to clear) — true "flash" feel.
@@ -175,6 +178,8 @@ final class SpectrogramHostView: UIView {
     }
 
     private var displayLink: CADisplayLink?
+    /// True while the app's scene is active (foreground + not locked).
+    private var isAppActive: Bool = true
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -183,6 +188,16 @@ final class SpectrogramHostView: UIView {
         layer.magnificationFilter = .linear
         layer.minificationFilter = .linear
         layer.isOpaque = true
+
+        let nc = NotificationCenter.default
+        nc.addObserver(self, selector: #selector(handleResignActive),
+                       name: UIApplication.willResignActiveNotification, object: nil)
+        nc.addObserver(self, selector: #selector(handleBecomeActive),
+                       name: UIApplication.didBecomeActiveNotification, object: nil)
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -193,11 +208,36 @@ final class SpectrogramHostView: UIView {
         link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
         link.add(to: .main, forMode: .common)
         displayLink = link
+        updatePauseState()
     }
 
     func stop() {
         displayLink?.invalidate()
         displayLink = nil
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        // SwiftUI removes the view from its window when the Identify tab is
+        // not visible; pause the link so we do zero render work.
+        updatePauseState()
+    }
+
+    @objc private func handleResignActive() {
+        isAppActive = false
+        updatePauseState()
+    }
+
+    @objc private func handleBecomeActive() {
+        isAppActive = true
+        updatePauseState()
+    }
+
+    private func updatePauseState() {
+        // No work when: app inactive (backgrounded / screen off), or the view
+        // isn't currently attached to a window (e.g. user is on Life List).
+        let shouldPause = !isAppActive || window == nil
+        displayLink?.isPaused = shouldPause
     }
 
     private var lastSetImage: CGImage?

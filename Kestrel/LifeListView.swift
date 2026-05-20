@@ -18,19 +18,16 @@ struct LifeListView: View {
                 }
             } else {
                 List(store.entries) { entry in
-                    HStack {
+                    HStack(spacing: 12) {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.commonName)
                                 .font(.headline)
-                            Text(entry.scientificName)
-                                .font(.caption)
+                            Text(entry.firstSeen, format: .dateTime.year().month(.abbreviated).day())
+                                .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
-                                .italic()
                         }
                         Spacer()
-                        Text(entry.firstSeen, format: .dateTime.year().month(.abbreviated).day())
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
+                        SpeciesThumbnail(scientificName: entry.scientificName)
                     }
                 }
                 .listStyle(.plain)
