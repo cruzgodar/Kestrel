@@ -2,36 +2,24 @@
 """
 Fetch a thumbnail per BirdNET species and bundle them with the app.
 
-Reads `Kestrel/Models/BirdNET_GLOBAL_6K_V2.4_Labels.txt` (6,522 species),
-queries iNaturalist's public API (primary) and Wikipedia REST (fallback) for
-each scientific name, downloads the returned image, resizes so the longer
-side is 128 px (preserving aspect ratio — no cropping), and saves as
-JPEG quality 80 to `Kestrel/Models/SpeciesImages/<slug>.jpg`.
+Source: eBird species pages (the Macaulay Library "featured photo" each
+species page links via `og:image`). Same image Merlin uses. No fallback —
+species without an eBird image are skipped and logged.
 
-Idempotent: skips any species that already has a file on disk. Misses are
-logged to `scripts/species_images_missing.txt`.
+Personal-use only. Conservative rate limiting (~1 request per 2 seconds per
+host, with backoff on 429) so we don't get kicked.
 
 Usage:
-    python3 scripts/fetch_species_images.py            # full run
+    python3 scripts/fetch_species_images.py            # full run (~hours)
     python3 scripts/fetch_species_images.py --limit 50 # first 50 only
-    python3 scripts/fetch_species_images.py --workers 8
-
-Why iNaturalist (not Merlin/eBird):
-    eBird's curated Macaulay Library photos require an API key. iNaturalist's
-    public API is auth-free, CC-licensed, designed for programmatic access
-    (S3-hosted images with no rate limiting), and has good coverage of bird
-    species. Wikipedia is kept as a fallback for the few cases iNaturalist
-    has no taxon for. To switch primary to eBird later, add a function that
-    uses your eBird API token + the v2 taxonomy endpoint, then scrapes
-    the og:image off https://ebird.org/species/<code>.
 """
 
 from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import csv
 import io
-import os
 import re
 import sys
 import threading
@@ -50,53 +38,51 @@ ROOT       = Path(__file__).resolve().parents[1]
 LABELS     = ROOT / "Kestrel" / "Models" / "BirdNET_GLOBAL_6K_V2.4_Labels.txt"
 OUT_DIR    = ROOT / "Kestrel" / "Models" / "SpeciesImages"
 MISSING    = ROOT / "scripts" / "species_images_missing.txt"
+TAXONOMY   = ROOT / "scripts" / ".ebird_taxonomy.csv"
+COOKIE_JAR = ROOT / "scripts" / ".ebird_cookies.txt"
 
 # ---------------------------------------------------------------------------
 # Config
 
-# Wikimedia's upload CDN rejects User-Agents that look bot-like (the
-# "Kestrel-Bird-ID/0.1 (contact)" style returns 403 from upload.wikimedia.org
-# even though that's the format their policy documents). Use a real browser UA.
+# eBird's frontend is fronted by Akamai. It rate-limits aggressively when
+# requests look bot-like. Browser-style UA + cookie persistence + slow pacing
+# is the difference between "works" and "kicked after 30 species".
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) "
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 )
+
 MAX_SIDE   = 128
 JPEG_Q     = 80
-TIMEOUT    = 15
-# iNaturalist asks API users to stay under 60 req/min sustained — call it
-# 1 req/sec to be safe. S3 image hosts don't really rate limit. Wikipedia
-# fallback hits upload.wikimedia.org which 429s aggressively, so we use the
-# same throttle there.
-MIN_INTERVAL_PER_HOST = 0.5  # ~2 req/sec ceiling per host
-MAX_RETRIES_429 = 4
+TIMEOUT    = 20
 
-# Skip BirdNET's non-bird event classes outright. They start with one of
-# these names and have no meaningful Wikipedia article match.
+# Per-host minimum interval between requests. Conservative; user explicitly
+# wants "slow enough not to get throttled". Adjust upward if you start
+# seeing 429s in the audit log.
+MIN_INTERVAL_PER_HOST = 2.0
+MAX_RETRIES_429 = 5
+
+EBIRD_TAXONOMY_URL = "https://api.ebird.org/v2/ref/taxonomy/ebird?fmt=csv"
+EBIRD_SPECIES_BASE = "https://ebird.org/species"
+
+# Non-bird BirdNET event classes that have no species page anywhere.
 NON_BIRD_PREFIXES = (
-    "Engine_",
-    "Fireworks_",
-    "Gun_",
-    "Human ",
-    "Noise_",
-    "Power tools",
-    "Siren_",
-    "Dog_",
+    "Engine_", "Fireworks_", "Gun_", "Human ", "Noise_", "Power tools",
+    "Siren_", "Dog_",
 )
 
 # ---------------------------------------------------------------------------
-# Slug helper. Must match SpeciesImage.slug(for:) in Swift.
+# Filename slug — must match SpeciesImage.slug(for:) in Swift.
 
 def slug_for(scientific_name: str) -> str:
     s = unicodedata.normalize("NFKD", scientific_name)
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = s.lower()
     s = re.sub(r"[^a-z0-9]+", "_", s)
-    s = s.strip("_")
-    return s
+    return s.strip("_")
 
 # ---------------------------------------------------------------------------
-# Per-host throttle.
+# Per-host throttle + retry-aware GET.
 
 class HostThrottle:
     def __init__(self, min_interval: float):
@@ -115,70 +101,96 @@ class HostThrottle:
 
 THROTTLE = HostThrottle(MIN_INTERVAL_PER_HOST)
 SESSION  = requests.Session()
-SESSION.headers["User-Agent"] = USER_AGENT
+SESSION.headers.update({
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+})
+
+def _load_cookies() -> None:
+    if not COOKIE_JAR.exists():
+        return
+    try:
+        with COOKIE_JAR.open() as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                name, _, value = line.partition("=")
+                if name and value:
+                    SESSION.cookies.set(name, value)
+    except Exception as e:
+        print(f"warning: could not load cookie jar: {e}", file=sys.stderr)
+
+def _save_cookies() -> None:
+    try:
+        COOKIE_JAR.parent.mkdir(parents=True, exist_ok=True)
+        with COOKIE_JAR.open("w") as f:
+            f.write("# eBird session cookies (regenerated each run)\n")
+            for c in SESSION.cookies:
+                f.write(f"{c.name}={c.value}\n")
+    except Exception as e:
+        print(f"warning: could not save cookie jar: {e}", file=sys.stderr)
 
 def get(url: str, **kwargs) -> requests.Response:
     host = urllib.parse.urlparse(url).netloc
     for attempt in range(MAX_RETRIES_429 + 1):
         THROTTLE.wait(host)
-        r = SESSION.get(url, timeout=TIMEOUT, **kwargs)
-        if r.status_code == 429 and attempt < MAX_RETRIES_429:
-            # Exponential backoff; honor Retry-After if present.
+        r = SESSION.get(url, timeout=TIMEOUT, allow_redirects=True, **kwargs)
+        if r.status_code in (429, 503) and attempt < MAX_RETRIES_429:
             retry_after = r.headers.get("Retry-After")
             try:
-                wait = float(retry_after) if retry_after else 2.0 * (attempt + 1)
+                wait = float(retry_after) if retry_after else 5.0 * (attempt + 1)
             except ValueError:
-                wait = 2.0 * (attempt + 1)
-            time.sleep(min(wait, 30.0))
+                wait = 5.0 * (attempt + 1)
+            print(f"  {host} returned {r.status_code}; backing off {wait:.0f}s",
+                  file=sys.stderr, flush=True)
+            time.sleep(min(wait, 60.0))
             continue
         return r
     return r
 
 # ---------------------------------------------------------------------------
-# Image sources.
+# eBird taxonomy: scientific name → species code.
 
-INAT_TAXA    = "https://api.inaturalist.org/v1/taxa"
-WIKI_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/"
+def load_taxonomy() -> dict[str, str]:
+    """Returns {scientific_name_lower: species_code}. Caches the CSV on disk."""
+    if not TAXONOMY.exists() or TAXONOMY.stat().st_size < 1000:
+        print(f"Downloading eBird taxonomy CSV → {TAXONOMY}", flush=True)
+        r = get(EBIRD_TAXONOMY_URL)
+        r.raise_for_status()
+        TAXONOMY.write_bytes(r.content)
+    mapping: dict[str, str] = {}
+    with TAXONOMY.open(newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            sci  = (row.get("SCIENTIFIC_NAME") or "").strip()
+            code = (row.get("SPECIES_CODE") or "").strip()
+            if sci and code:
+                mapping[sci.lower()] = code
+    print(f"Loaded {len(mapping)} species from eBird taxonomy", flush=True)
+    return mapping
 
-def inaturalist_image_url(scientific_name: str) -> str | None:
-    r = get(INAT_TAXA, params={
-        "q": scientific_name,
-        "rank": "species",
-        "per_page": 1,
-        "is_active": "true",
-    })
-    r.raise_for_status()
-    data = r.json()
-    results = data.get("results") or []
-    if not results:
-        return None
-    top = results[0]
-    # Confirm name match (case-insensitive) before trusting the search hit.
-    if top.get("name", "").lower() != scientific_name.lower():
-        return None
-    photo = top.get("default_photo")
-    if not isinstance(photo, dict):
-        return None
-    # medium_url is ~240px on the longest side — plenty for our 128 px target.
-    return photo.get("medium_url") or photo.get("url")
+# ---------------------------------------------------------------------------
+# Image source: eBird species page → og:image (Macaulay Library CDN).
 
-def wikipedia_image_url(scientific_name: str) -> str | None:
-    title = urllib.parse.quote(scientific_name.replace(" ", "_"))
-    r = get(f"{WIKI_SUMMARY}{title}")
-    if r.status_code == 404:
+OG_IMAGE_RE = re.compile(
+    r'<meta\s+property="og:image"\s+content="([^"]+)"', re.IGNORECASE
+)
+
+def ebird_image_url(species_code: str) -> str | None:
+    url = f"{EBIRD_SPECIES_BASE}/{species_code}"
+    r = get(url)
+    if r.status_code != 200:
         return None
-    r.raise_for_status()
-    data = r.json()
-    if data.get("type") == "disambiguation":
+    m = OG_IMAGE_RE.search(r.text)
+    if not m:
         return None
-    # Use the pre-resized thumbnail; the upload-CDN thumbnail path is more
-    # lenient than original-image fetches.
-    thumb = data.get("thumbnail")
-    if isinstance(thumb, dict) and thumb.get("source"):
-        return thumb["source"]
-    if "originalimage" in data and isinstance(data["originalimage"], dict):
-        return data["originalimage"].get("source")
-    return None
+    img = m.group(1)
+    # Skip the generic "no photo" placeholder.
+    if "placeholder" in img or img.endswith("/0"):
+        return None
+    return img
 
 # ---------------------------------------------------------------------------
 # Download + resize.
@@ -190,54 +202,45 @@ def download_and_save(image_url: str, dest: Path) -> None:
     if not ctype.lower().startswith("image/"):
         raise RuntimeError(f"non-image content-type: {ctype}")
     img = Image.open(io.BytesIO(r.content))
-    # Strip animations / palette quirks.
     if img.mode not in ("RGB", "L"):
         img = img.convert("RGB")
     w, h = img.size
     if max(w, h) > MAX_SIDE:
         if w >= h:
-            new_w = MAX_SIDE
-            new_h = max(1, round(h * MAX_SIDE / w))
+            new_w, new_h = MAX_SIDE, max(1, round(h * MAX_SIDE / w))
         else:
-            new_h = MAX_SIDE
-            new_w = max(1, round(w * MAX_SIDE / h))
+            new_w, new_h = max(1, round(w * MAX_SIDE / h)), MAX_SIDE
         img = img.resize((new_w, new_h), Image.LANCZOS)
-    # Atomic write so a crashed run never leaves a half-written file.
     tmp = dest.with_suffix(dest.suffix + ".tmp")
     img.save(tmp, format="JPEG", quality=JPEG_Q, optimize=True, progressive=True)
     tmp.replace(dest)
 
 # ---------------------------------------------------------------------------
-# Per-species worker.
+# Per-species pipeline.
 
-def process_species(scientific: str, common: str, dest: Path) -> tuple[str, str]:
-    """Returns ('ok' | 'skip' | 'miss' | 'err', reason)."""
+def process_species(scientific: str, common: str, dest: Path,
+                    taxonomy: dict[str, str]) -> tuple[str, str]:
     if dest.exists() and dest.stat().st_size > 0:
         return "skip", "already exists"
     if any(scientific.startswith(p) or common.startswith(p) for p in NON_BIRD_PREFIXES):
         return "miss", "non-bird event class"
-    # Primary: iNaturalist.
-    sources_tried: list[str] = []
-    url: str | None = None
+
+    code = taxonomy.get(scientific.lower())
+    if not code:
+        return "miss", "not in eBird taxonomy"
+
     try:
-        url = inaturalist_image_url(scientific)
-        sources_tried.append("inat")
+        img_url = ebird_image_url(code)
     except Exception as e:
-        sources_tried.append(f"inat-err:{e}")
-    # Fallback: Wikipedia.
-    if not url:
-        try:
-            url = wikipedia_image_url(scientific)
-            sources_tried.append("wiki")
-        except Exception as e:
-            sources_tried.append(f"wiki-err:{e}")
-    if not url:
-        return "miss", f"no image ({','.join(sources_tried)})"
+        return "err", f"ebird:{code} → {e}"
+    if not img_url:
+        return "miss", f"no og:image on eBird page (code={code})"
+
     try:
-        download_and_save(url, dest)
+        download_and_save(img_url, dest)
     except Exception as e:
-        return "err", f"download/resize: {e}"
-    return "ok", url
+        return "err", f"{img_url} → {e}"
+    return "ok", img_url
 
 # ---------------------------------------------------------------------------
 # Main.
@@ -249,22 +252,21 @@ def parse_labels() -> list[tuple[str, str]]:
             line = line.strip()
             if not line:
                 continue
-            if "_" in line:
-                sci, common = line.split("_", 1)
-            else:
-                sci, common = line, line
+            sci, common = (line.split("_", 1) + [line])[:2]
             rows.append((sci.strip(), common.strip()))
     return rows
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--limit", type=int, default=0,
-                    help="only process the first N species (for testing)")
-    ap.add_argument("--workers", type=int, default=4,
-                    help="parallel download workers (default 4)")
+    ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--workers", type=int, default=2,
+                    help="parallel workers (default 2; keep small to avoid 429)")
     args = ap.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+    _load_cookies()
+
+    taxonomy = load_taxonomy()
     rows = parse_labels()
     if args.limit > 0:
         rows = rows[: args.limit]
@@ -281,7 +283,8 @@ def main() -> int:
             if not slug:
                 continue
             dest = OUT_DIR / f"{slug}.jpg"
-            futures[pool.submit(process_species, sci, common, dest)] = (sci, common, dest)
+            futures[pool.submit(process_species, sci, common, dest, taxonomy)] = \
+                (sci, common, dest)
 
         for i, fut in enumerate(concurrent.futures.as_completed(futures), start=1):
             sci, common, dest = futures[fut]
@@ -299,15 +302,17 @@ def main() -> int:
             else:
                 err += 1
                 misses.append(f"{dest.stem}\t{sci}\t{common}\tERROR: {reason}")
-            if i % 50 == 0:
+            if i % 25 == 0:
                 elapsed = time.time() - started
                 rate = i / max(elapsed, 1)
                 eta_min = (len(rows) - i) / max(rate, 0.001) / 60
                 print(
                     f"  [{i}/{len(rows)}]  ok={ok} skip={skip} miss={miss} err={err}  "
-                    f"{rate:.1f}/s  eta {eta_min:.1f}m",
+                    f"{rate:.2f}/s  eta {eta_min:.1f}m",
                     flush=True,
                 )
+
+    _save_cookies()
 
     print(
         f"\nDone in {(time.time() - started)/60:.1f}m.  "
