@@ -24,6 +24,40 @@ final class LifeListStore {
         return merge(rows: rows)
     }
 
+    /// Adds a single species to the life list with `now` as the first-seen
+    /// date. No-op if the species is already in the list. Used by the
+    /// Identify tab's "swipe to add" gesture on detected birds.
+    @discardableResult
+    func add(scientificName: String, commonName: String, location: String? = nil) -> Bool {
+        guard !entries.contains(where: { $0.scientificName == scientificName }) else {
+            return false
+        }
+        let entry = LifeListEntry(
+            scientificName: scientificName,
+            commonName: commonName,
+            firstSeen: Date(),
+            firstLocation: location
+        )
+        entries.append(entry)
+        entries.sort { $0.firstSeen > $1.firstSeen }
+        save()
+        return true
+    }
+
+    /// Quick membership check by scientific name.
+    func contains(scientificName: String) -> Bool {
+        entries.contains(where: { $0.scientificName == scientificName })
+    }
+
+    /// Removes a species from the life list. No-op if it isn't present.
+    func remove(scientificName: String) {
+        guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {
+            return
+        }
+        entries.remove(at: idx)
+        save()
+    }
+
     private func merge(rows: [EBirdRawRow]) -> ImportSummary {
         var map: [String: LifeListEntry] = Dictionary(
             uniqueKeysWithValues: entries.map { ($0.scientificName, $0) }

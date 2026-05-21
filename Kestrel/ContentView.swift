@@ -3,6 +3,7 @@ import UIKit
 
 struct ContentView: View {
     @Environment(RecordingManager.self) private var manager
+    @Environment(LifeListStore.self) private var lifeListStore
 
     var body: some View {
         VStack(spacing: 0) {
@@ -39,19 +40,21 @@ struct ContentView: View {
             recordButton
                 .padding(.bottom, 8)
         }
-        .onChange(of: manager.isRecording) { _, new in
-            PerfLog.log("SwiftUI .onChange sees isRecording=\(new)")
+        .onChange(of: manager.isRecording) { wasRecording, isNowRecording in
+            if !wasRecording && isNowRecording {
+                // New session — push the current life-list IDs into the
+                // manager so both the rows and the spectrogram know which
+                // detections still need to be added.
+                manager.snapshotLifeList(
+                    Set(lifeListStore.entries.map(\.scientificName))
+                )
+            }
         }
     }
 
     private var recordButton: some View {
         Button {
-            PerfLog.reset()
-            PerfLog.log("button tap action fired")
-            Task {
-                PerfLog.log("button Task running")
-                await manager.toggle()
-            }
+            Task { await manager.toggle() }
         } label: {
             HStack(spacing: 0) {
                 Image(systemName: manager.isRecording ? "stop.fill" : "mic.fill")
@@ -76,6 +79,16 @@ struct ContentView: View {
         if !manager.detections.isEmpty {
             List(manager.detections) { detection in
                 let flashing = manager.flashIDs.contains(detection.id)
+                // "Not in life list at session start" — frozen for the
+                // duration of the recording, so the tint doesn't vanish the
+                // instant the user swipes to add.
+                let needsLifeListAdd = !manager.lifeListSnapshot.contains(detection.scientificName)
+                // Rows in the life list flash pastel yellow; rows that need
+                // to be added flash a mildly-deeper shade of the persistent
+                // purple — subtler than a saturated dark purple.
+                let flashColor: Color = needsLifeListAdd
+                    ? Color(hue: 252.0/360.0, saturation: 0.72, brightness: 0.85)
+                    : Color(hue: 50.0/360.0, saturation: 0.45, brightness: 1.0)
                 HStack(spacing: 12) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text(detection.commonName)
@@ -89,22 +102,50 @@ struct ContentView: View {
                     Text(String(format: "%.0f%%", detection.confidence * 100))
                         .font(.subheadline.monospacedDigit())
                         .foregroundStyle(.secondary)
+                    if needsLifeListAdd {
+                        Button {
+                            lifeListStore.add(
+                                scientificName: detection.scientificName,
+                                commonName: detection.commonName
+                            )
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 32, height: 32)
+                                .background(Self.recordTint, in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("Add \(detection.commonName) to Life List")
+                    }
                     SpeciesThumbnail(scientificName: detection.scientificName)
                 }
-                .listRowBackground(
-                    // Pastel desaturated yellow — bright enough to read, mild
-                    // enough not to be visually jarring on every repeat.
-                    Color(hue: 50.0/360.0, saturation: 0.45, brightness: 1.0)
-                        .opacity(flashing ? 0.4 : 0)
-                        // Asymmetric: instant on (snap to yellow), animated
-                        // fade off (smooth back to clear) — true "flash" feel.
-                        .animation(
-                            flashing ? nil : .easeOut(duration: 0.5),
-                            value: flashing
-                        )
+                .padding(.horizontal, 16)
+                .padding(.vertical, 4)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // .background lives *inside* the row's content view, so it
+                // stays glued to the row through any scroll rubberband.
+                // Using .listRowBackground would let the rubberband expose a
+                // sliver of the system background when swiping diagonally.
+                .background(
+                    ZStack {
+                        Self.recordTint
+                            .opacity(needsLifeListAdd ? 0.4 : 0)
+                        flashColor
+                            .opacity(flashing ? 0.4 : 0)
+                            .animation(
+                                flashing ? nil : .easeOut(duration: 0.5),
+                                value: flashing
+                            )
+                    }
                 )
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .scrollBounceBehavior(.basedOnSize)
         } else if !manager.isRecording {
             ContentUnavailableView {
                 Label("No detections yet", systemImage: "bird")

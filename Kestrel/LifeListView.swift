@@ -29,8 +29,22 @@ struct LifeListView: View {
                         Spacer()
                         SpeciesThumbnail(scientificName: entry.scientificName)
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                        Button(role: .destructive) {
+                            store.remove(scientificName: entry.scientificName)
+                        } label: {
+                            Label("Delete", systemImage: "trash")
+                        }
+                    }
                 }
                 .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .scrollBounceBehavior(.basedOnSize)
             }
         }
         .navigationTitle("Life List")

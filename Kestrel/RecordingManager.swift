@@ -14,6 +14,12 @@ final class RecordingManager {
     /// IDs (scientific names) of detections whose confidence was just upgraded;
     /// the UI flashes their row yellow while they're in this set.
     private(set) var flashIDs: Set<String> = []
+    /// Scientific names already in the life list when this recording session
+    /// began. Used both by the UI (to decide which rows get the purple tint)
+    /// and by `process(window:)` (to color the spectrogram detection band
+    /// purple instead of goldenrod). Captured by the view via
+    /// `snapshotLifeList(_:)` on the false → true transition of `isRecording`.
+    private(set) var lifeListSnapshot: Set<String> = []
 
     let spectrogram = SpectrogramRenderer()
 
@@ -65,7 +71,6 @@ final class RecordingManager {
     }
 
     func toggle() async {
-        PerfLog.log("toggle() entry")
         if isRecording {
             stop()
         } else {
@@ -204,12 +209,23 @@ final class RecordingManager {
         do {
             let results = try await classifier.classify(window, allowedIndices: allowedIndices)
             if !results.isEmpty {
-                spectrogram.markDetection()
+                // If any detected species isn't yet in the user's life list,
+                // tint the spectrogram band purple (a "you should add this!"
+                // signal) instead of the default goldenrod for known birds.
+                let needsAdd = results.contains { !lifeListSnapshot.contains($0.scientificName) }
+                spectrogram.markDetection(needsAdd: needsAdd)
             }
             await MainActor.run { self.merge(results) }
         } catch {
             print("Kestrel: inference error — \(error)")
         }
+    }
+
+    /// Captures the set of life-list scientific names at the moment a new
+    /// recording session starts. The UI calls this on the false → true
+    /// transition of `isRecording`.
+    func snapshotLifeList(_ scientificNames: Set<String>) {
+        lifeListSnapshot = scientificNames
     }
 
     private func merge(_ results: [Detection]) {

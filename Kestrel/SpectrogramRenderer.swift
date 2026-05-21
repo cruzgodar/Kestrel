@@ -39,10 +39,13 @@ final class SpectrogramRenderer: @unchecked Sendable {
     private var ringPixels: [UInt8]
     private let rowBytes: Int
     private var writeColumn: Int = 0
-    /// Per-column flag set by `markDetection()`. Tint is applied at snapshot
-    /// time *after* any color inversion so the yellow looks identical in light
-    /// and dark mode (instead of getting flipped to blue by the XOR pass).
-    private var columnTinted: [Bool]
+    /// Per-column tint code set by `markDetection(needsAdd:)`. Applied at
+    /// snapshot time *after* any color inversion so the tint looks identical
+    /// in light and dark mode (instead of getting flipped by the XOR pass).
+    ///   0 = no tint
+    ///   1 = "lifer" (species already in life list)   → goldenrod ramp
+    ///   2 = "needs add" (not yet in life list)       → purple ramp
+    private var columnTintKind: [UInt8]
     /// Bumped whenever the tint state changes, so the snapshot cache knows to
     /// rebuild even when `writeColumn` hasn't changed.
     private var tintGeneration: UInt64 = 0
@@ -111,7 +114,7 @@ final class SpectrogramRenderer: @unchecked Sendable {
         self.ringPixels = [UInt8](repeating: 0, count: pixelCount)
         self.rowBytes = Self.columnCount * 4
         for i in stride(from: 3, to: ringPixels.count, by: 4) { ringPixels[i] = 255 }
-        self.columnTinted = [Bool](repeating: false, count: Self.columnCount)
+        self.columnTintKind = [UInt8](repeating: 0, count: Self.columnCount)
 
         self.snapshotByteCount = pixelCount
         self.snapshotBufferA = UnsafeMutableRawPointer.allocate(byteCount: pixelCount, alignment: 16)
@@ -142,7 +145,7 @@ final class SpectrogramRenderer: @unchecked Sendable {
         pumpAnchorTime = 0
         pumpAnchorColumn = 0
         totalColumnsGenerated = 0
-        for i in 0..<columnTinted.count { columnTinted[i] = false }
+        for i in 0..<columnTintKind.count { columnTintKind[i] = 0 }
         tintGeneration &+= 1
         cachedImage = nil
         cachedImageWriteCol = -1
@@ -193,14 +196,17 @@ final class SpectrogramRenderer: @unchecked Sendable {
         }
     }
 
-    /// Retroactively tints the most-recent `highlightSpan` columns. Tint is
-    /// just a flag per column — the actual yellow is applied at snapshot time.
-    func markDetection() {
+    /// Retroactively tints the most-recent `highlightSpan` columns. The tint
+    /// kind is stored per column — the actual color is applied at snapshot.
+    /// `needsAdd: true` signals the detected species is not yet in the life
+    /// list, painting that band purple instead of goldenrod.
+    func markDetection(needsAdd: Bool) {
         lock.lock(); defer { lock.unlock() }
+        let kind: UInt8 = needsAdd ? 2 : 1
         let n = min(Self.highlightSpan, Self.columnCount)
         for offset in 1...n {
             let storageCol = ((writeColumn - offset) % Self.columnCount + Self.columnCount) % Self.columnCount
-            columnTinted[storageCol] = true
+            columnTintKind[storageCol] = kind
         }
         tintGeneration &+= 1
     }
@@ -239,10 +245,10 @@ final class SpectrogramRenderer: @unchecked Sendable {
         // Snapshot which columns are currently tinted, in display order
         // (left = oldest). Captured under the lock so it stays consistent with
         // the pixel copy below.
-        var displayTinted = [Bool](repeating: false, count: Self.columnCount)
+        var displayTintKind = [UInt8](repeating: 0, count: Self.columnCount)
         for x in 0..<Self.columnCount {
             let ringCol = (writeCol + x) % Self.columnCount
-            displayTinted[x] = columnTinted[ringCol]
+            displayTintKind[x] = columnTintKind[ringCol]
         }
         ringPixels.withUnsafeBufferPointer { srcBP in
             guard let src = srcBP.baseAddress else { return }
@@ -263,30 +269,31 @@ final class SpectrogramRenderer: @unchecked Sendable {
             }
         }
 
-        // Replace pixels in detection columns with a black/white → goldenrod
+        // Replace pixels in detection columns with a black/white → loudColor
         // gradient. Silence (no audio) blends into the background so only the
-        // loud frequencies are highlighted.
-        //   Dark mode:  silence = black,  loud = goldenrod (218, 165, 32)
-        //   Light mode: silence = white,  loud = goldenrod (218, 165, 32)
-        let loudR: UInt16 = 218
-        let loudG: UInt16 = 165
-        let loudB: UInt16 = 32
+        // loud frequencies are highlighted. Two distinct endpoint colors:
+        //   1 = lifer (already in life list) → goldenrod (218, 165, 32)
+        //   2 = needs-add (not yet in list)  → purple    (122,  89, 255)
+        // The endpoint maps the same way regardless of mode; light-mode
+        // inversion has already been applied to the underlying gray, so we
+        // un-invert here to recover the original loudness before painting.
         let bp = buffer.assumingMemoryBound(to: UInt8.self)
-        for x in 0..<Self.columnCount where displayTinted[x] {
+        for x in 0..<Self.columnCount {
+            let kind = displayTintKind[x]
+            guard kind != 0 else { continue }
+            let loudR: UInt16 = (kind == 1) ? 218 : 122
+            let loudG: UInt16 = (kind == 1) ? 165 :  89
+            let loudB: UInt16 = (kind == 1) ?  32 : 255
             let xOffset = x * 4
             for y in 0..<Self.displayBins {
                 let idx = y * rowBytes + xOffset
-                // After the XOR pass above, R already encodes (255-original)
-                // in light mode; unwind that to get the original loudness.
                 let pixelR = UInt16(bp[idx + 0])
                 let loudness: UInt16 = inverted ? (255 - pixelR) : pixelR
                 if inverted {
-                    // White → amber as loudness rises.
                     bp[idx + 0] = UInt8(255 - ((255 - loudR) * loudness) / 255)
                     bp[idx + 1] = UInt8(255 - ((255 - loudG) * loudness) / 255)
                     bp[idx + 2] = UInt8(255 - ((255 - loudB) * loudness) / 255)
                 } else {
-                    // Black → amber as loudness rises.
                     bp[idx + 0] = UInt8((loudR * loudness) / 255)
                     bp[idx + 1] = UInt8((loudG * loudness) / 255)
                     bp[idx + 2] = UInt8((loudB * loudness) / 255)
@@ -398,8 +405,8 @@ final class SpectrogramRenderer: @unchecked Sendable {
 
         // Any tint on the slot we just overwrote no longer applies — that
         // detection scrolled off the end of the ring.
-        if columnTinted[writeColumn] {
-            columnTinted[writeColumn] = false
+        if columnTintKind[writeColumn] != 0 {
+            columnTintKind[writeColumn] = 0
             tintGeneration &+= 1
         }
         writeColumn = (writeColumn + 1) % Self.columnCount

@@ -7,7 +7,7 @@ import SwiftUI
 /// (e.g. BirdNET's non-bird event classes like "Human whistle").
 struct SpeciesThumbnail: View {
     let scientificName: String
-    var height: CGFloat = 44
+    var height: CGFloat = 60
 
     var body: some View {
         Group {

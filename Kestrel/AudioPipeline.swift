@@ -56,7 +56,6 @@ final class AudioPipeline {
     }
 
     private func runPrewarm() {
-        PerfLog.log("prewarm() begin")
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(
@@ -64,30 +63,24 @@ final class AudioPipeline {
                 mode: .measurement,
                 options: [.allowBluetooth, .defaultToSpeaker]
             )
-            PerfLog.log("prewarm: setCategory done")
         } catch {
             print("Kestrel: prewarm error \(error)")
         }
-        PerfLog.log("prewarm() end")
     }
 
     func start(
         onWindow: @escaping @Sendable ([Float]) -> Void,
         onChunk: (@Sendable ([Float]) -> Void)? = nil
     ) throws {
-        PerfLog.log("pipeline.start() entry")
         self.onWindow = onWindow
         self.onChunk = onChunk
 
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
-        PerfLog.log("session setCategory done")
         try session.setActive(true, options: [])
-        PerfLog.log("session setActive(true) done")
 
         let input = engine.inputNode
         let hwFormat = input.inputFormat(forBus: 0)
-        PerfLog.log("inputNode + hwFormat fetched")
 
         // Reset converter when format changes.
         converter = AVAudioConverter(from: hwFormat, to: targetFormat)
@@ -101,12 +94,9 @@ final class AudioPipeline {
         input.installTap(onBus: 0, bufferSize: 256, format: hwFormat) { [weak self] buffer, _ in
             self?.handleTap(buffer: buffer)
         }
-        PerfLog.log("tap installed")
 
         engine.prepare()
-        PerfLog.log("engine.prepare() done")
         try engine.start()
-        PerfLog.log("engine.start() done")
     }
 
     func stop() {

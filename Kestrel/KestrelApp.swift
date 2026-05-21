@@ -18,15 +18,18 @@ struct KestrelApp: App {
             TabView {
                 Tab("Identify", systemImage: "magnifyingglass") {
                     ContentView()
-                        .environment(recordingManager)
                 }
                 Tab("Life List", systemImage: "bird") {
                     NavigationStack {
                         LifeListView()
                     }
-                    .environment(lifeListStore)
                 }
             }
+            // Both tabs need both stores: Identify reads the life list to
+            // decide which detections to tint purple and to add to it via
+            // swipe; Life List owns the list.
+            .environment(recordingManager)
+            .environment(lifeListStore)
         }
     }
 }
