@@ -49,6 +49,20 @@ final class LifeListStore {
         entries.contains(where: { $0.scientificName == scientificName })
     }
 
+    /// Sets or clears the "alert me" star on an existing entry.
+    func setStarred(scientificName: String, isStarred: Bool) {
+        guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }),
+              entries[idx].isStarred != isStarred else { return }
+        entries[idx].isStarred = isStarred
+        save()
+    }
+
+    /// Scientific names of every starred entry. Recomputed on access — cheap
+    /// at life-list sizes and saves us from having to keep a side cache in sync.
+    var starredNames: Set<String> {
+        Set(entries.lazy.filter(\.isStarred).map(\.scientificName))
+    }
+
     /// Removes a species from the life list. No-op if it isn't present.
     func remove(scientificName: String) {
         guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {

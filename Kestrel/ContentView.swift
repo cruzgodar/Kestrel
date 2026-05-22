@@ -72,6 +72,11 @@ struct ContentView: View {
                 )
             }
         }
+        // Mirror starred status into the manager so notifications + the
+        // spectrogram's blue band reflect mid-session star toggles.
+        .onChange(of: lifeListStore.starredNames, initial: true) { _, new in
+            manager.updateStarred(new)
+        }
     }
 
     private var recordButton: some View {
@@ -100,81 +105,10 @@ struct ContentView: View {
     private var resultsView: some View {
         if !manager.detections.isEmpty {
             List(manager.detections) { detection in
-                let flashing = manager.flashIDs.contains(detection.id)
-                // "Not in life list at session start" — frozen for the
-                // duration of the recording, so the tint doesn't vanish the
-                // instant the user swipes to add.
-                let needsLifeListAdd = !manager.lifeListSnapshot.contains(detection.scientificName)
-                // Once the user taps the plus, the species is in the live
-                // store even though the session snapshot still says it wasn't.
-                // That flip is how we know to swap plus → checkmark.
-                let alreadyAdded = lifeListStore.entries.contains { $0.scientificName == detection.scientificName }
-                // Rows in the life list flash pastel yellow; rows that need
-                // to be added flash a mildly-deeper shade of the persistent
-                // purple — subtler than a saturated dark purple.
-                let flashColor: Color = needsLifeListAdd
-                    ? Color(hue: 252.0/360.0, saturation: 0.72, brightness: 0.85)
-                    : Color(hue: 50.0/360.0, saturation: 0.45, brightness: 1.0)
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(detection.commonName)
-                            .font(.headline)
-                        Text(detection.scientificName)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .italic()
-                    }
-                    Spacer()
-                    if needsLifeListAdd {
-                        Button {
-                            guard !alreadyAdded else { return }
-                            lifeListStore.add(
-                                scientificName: detection.scientificName,
-                                commonName: detection.commonName
-                            )
-                        } label: {
-                            // Single Image whose symbol name swaps; the
-                            // .symbolEffect(.replace) content transition
-                            // morphs plus → checkmark in place.
-                            Image(systemName: alreadyAdded ? "checkmark" : "plus")
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(.white)
-                                .contentTransition(.symbolEffect(.replace))
-                                .frame(width: 32, height: 32)
-                                .background(Self.recordTint, in: Circle())
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(alreadyAdded)
-                        .accessibilityLabel(
-                            alreadyAdded
-                                ? "\(detection.commonName) added to Life List"
-                                : "Add \(detection.commonName) to Life List"
-                        )
-                    }
-                    SpeciesThumbnail(scientificName: detection.scientificName)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                // .background lives *inside* the row's content view, so it
-                // stays glued to the row through any scroll rubberband.
-                // Using .listRowBackground would let the rubberband expose a
-                // sliver of the system background when swiping diagonally.
-                .background(
-                    ZStack {
-                        Self.recordTint
-                            .opacity(needsLifeListAdd ? 0.4 : 0)
-                        flashColor
-                            .opacity(flashing ? 0.4 : 0)
-                            .animation(
-                                flashing ? nil : .easeOut(duration: 0.5),
-                                value: flashing
-                            )
-                    }
-                )
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
-                .listRowBackground(Color.clear)
+                detectionRow(for: detection)
+                    .listRowInsets(EdgeInsets())
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
@@ -184,6 +118,125 @@ struct ContentView: View {
             // isn't affected when the spectrogram appears above it.
             Color.clear
         }
+    }
+
+    // Faint blue persistent tint for starred species (alert-me list).
+    private static let starredTint = Color(hue: 215.0 / 360.0, saturation: 0.65, brightness: 1.0)
+
+    private func detectionRow(for detection: Detection) -> some View {
+        let flashing = manager.flashIDs.contains(detection.id)
+        // "Not in life list at session start" — frozen for the duration of
+        // the recording, so the tint doesn't vanish the instant the user
+        // taps the plus to add.
+        let needsLifeListAdd = !manager.lifeListSnapshot.contains(detection.scientificName)
+        // Once the user taps the plus, the species is in the live store
+        // even though the session snapshot still says it wasn't. That flip
+        // is how we know to swap plus → checkmark.
+        let alreadyAdded = lifeListStore.entries.contains { $0.scientificName == detection.scientificName }
+        let isStarred = lifeListStore.entries.first(where: { $0.scientificName == detection.scientificName })?.isStarred ?? false
+        // Flash color picks the same hue family as the persistent tint:
+        // purple for needs-add, blue for starred, yellow otherwise.
+        let flashColor: Color = needsLifeListAdd
+            ? Color(hue: 252.0/360.0, saturation: 0.72, brightness: 0.85)
+            : (isStarred
+                ? Color(hue: 215.0/360.0, saturation: 0.72, brightness: 0.95)
+                : Color(hue: 50.0/360.0, saturation: 0.45, brightness: 1.0))
+
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(detection.commonName)
+                        .font(.headline)
+                    Text(detection.scientificName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .italic()
+                }
+                Spacer()
+                if needsLifeListAdd {
+                    Button {
+                        guard !alreadyAdded else { return }
+                        lifeListStore.add(
+                            scientificName: detection.scientificName,
+                            commonName: detection.commonName
+                        )
+                    } label: {
+                        Image(systemName: alreadyAdded ? "checkmark" : "plus")
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .contentTransition(.symbolEffect(.replace))
+                            .frame(width: 32, height: 32)
+                            .background(Self.recordTint, in: Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(alreadyAdded)
+                    .accessibilityLabel(
+                        alreadyAdded
+                            ? "\(detection.commonName) added to Life List"
+                            : "Add \(detection.commonName) to Life List"
+                    )
+                } else {
+                    // Already in life list — show the thumbnail at the row's
+                    // trailing edge, same place the add button would occupy.
+                    SpeciesThumbnail(scientificName: detection.scientificName)
+                }
+            }
+
+            // Full-width hero image for unseen species. Starred / already-in-
+            // list rows skip this and keep the compact thumbnail above.
+            if needsLifeListAdd {
+                SpeciesHeroImage(scientificName: detection.scientificName)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // .background lives *inside* the row's content view, so it stays
+        // glued to the row through any scroll rubberband. Using
+        // .listRowBackground would let the rubberband expose a sliver of
+        // the system background when swiping diagonally.
+        .background(
+            ZStack {
+                Self.recordTint
+                    .opacity(needsLifeListAdd ? 0.4 : 0)
+                Self.starredTint
+                    .opacity(!needsLifeListAdd && isStarred ? 0.22 : 0)
+                flashColor
+                    .opacity(flashing ? 0.4 : 0)
+                    .animation(
+                        flashing ? nil : .easeOut(duration: 0.5),
+                        value: flashing
+                    )
+            }
+        )
+    }
+}
+
+/// Full-width image for an unseen species. Pinned to a 16:9 aspect box and
+/// cropped (`.scaledToFill`) so rows look uniform even though the bundled
+/// `SpeciesImagesLarge` files have varying aspect ratios.
+private struct SpeciesHeroImage: View {
+    let scientificName: String
+
+    var body: some View {
+        Group {
+            if let img = SpeciesImageCache.shared.image(for: scientificName) {
+                Image(uiImage: img)
+                    .resizable()
+                    .interpolation(.medium)
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Image(systemName: "bird")
+                    .font(.system(size: 36))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 32)
+                    .background(.fill.tertiary)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .aspectRatio(16.0 / 9.0, contentMode: .fit)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

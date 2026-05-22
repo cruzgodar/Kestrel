@@ -22,6 +22,36 @@ struct LifeListView: View {
             } else {
                 List(store.entries) { entry in
                     HStack(spacing: 12) {
+                        Button {
+                            store.setStarred(
+                                scientificName: entry.scientificName,
+                                isStarred: !entry.isStarred
+                            )
+                        } label: {
+                            // Same circular footprint as the Identify tab's
+                            // plus button — hollow gray when off, solid blue
+                            // when on. .symbolEffect(.replace) morphs between
+                            // the two without a layout jump.
+                            Image(systemName: entry.isStarred ? "star.fill" : "star")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(entry.isStarred ? .white : .secondary)
+                                .contentTransition(.symbolEffect(.replace))
+                                .frame(width: 32, height: 32)
+                                .background(
+                                    Circle().fill(
+                                        entry.isStarred
+                                            ? Self.starButtonTint
+                                            : Color.gray.opacity(0.18)
+                                    )
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            entry.isStarred
+                                ? "Turn off alerts for \(entry.commonName)"
+                                : "Alert me when \(entry.commonName) is heard"
+                        )
+
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.commonName)
                                 .font(.headline)
@@ -97,6 +127,11 @@ struct LifeListView: View {
             }
         }
     }
+
+    // Blue used by the "alert me" star toggle when on. Matches the blue
+    // tint used for starred-species spectrogram bands + row highlights in
+    // the Identify tab.
+    private static let starButtonTint = Color(hue: 215.0 / 360.0, saturation: 0.65, brightness: 1.0)
 
     private var speciesCountText: String {
         let n = store.entries.count

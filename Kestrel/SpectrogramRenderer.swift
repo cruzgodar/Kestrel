@@ -39,12 +39,13 @@ final class SpectrogramRenderer: @unchecked Sendable {
     private var ringPixels: [UInt8]
     private let rowBytes: Int
     private var writeColumn: Int = 0
-    /// Per-column tint code set by `markDetection(needsAdd:)`. Applied at
+    /// Per-column tint code set by `markDetection(kind:)`. Applied at
     /// snapshot time *after* any color inversion so the tint looks identical
     /// in light and dark mode (instead of getting flipped by the XOR pass).
     ///   0 = no tint
     ///   1 = "lifer" (species already in life list)   → goldenrod ramp
     ///   2 = "needs add" (not yet in life list)       → purple ramp
+    ///   3 = "starred" (alert-me species)             → blue ramp
     private var columnTintKind: [UInt8]
     /// Bumped whenever the tint state changes, so the snapshot cache knows to
     /// rebuild even when `writeColumn` hasn't changed.
@@ -195,17 +196,25 @@ final class SpectrogramRenderer: @unchecked Sendable {
         }
     }
 
+    /// Tint applied to a detection band on the spectrogram. Order matters:
+    /// when multiple species land in one window, the higher raw value wins
+    /// (starred > needsAdd > lifer) so the most attention-grabbing tint is
+    /// what the user actually sees.
+    enum TintKind: UInt8 {
+        case lifer = 1
+        case needsAdd = 2
+        case starred = 3
+    }
+
     /// Retroactively tints the most-recent `highlightSpan` columns. The tint
     /// kind is stored per column — the actual color is applied at snapshot.
-    /// `needsAdd: true` signals the detected species is not yet in the life
-    /// list, painting that band purple instead of goldenrod.
-    func markDetection(needsAdd: Bool) {
+    func markDetection(kind: TintKind) {
         lock.lock(); defer { lock.unlock() }
-        let kind: UInt8 = needsAdd ? 2 : 1
+        let value = kind.rawValue
         let n = min(Self.highlightSpan, Self.columnCount)
         for offset in 1...n {
             let storageCol = ((writeColumn - offset) % Self.columnCount + Self.columnCount) % Self.columnCount
-            columnTintKind[storageCol] = kind
+            columnTintKind[storageCol] = value
         }
         tintGeneration &+= 1
     }
@@ -270,9 +279,10 @@ final class SpectrogramRenderer: @unchecked Sendable {
 
         // Replace pixels in detection columns with a black/white → loudColor
         // gradient. Silence (no audio) blends into the background so only the
-        // loud frequencies are highlighted. Two distinct endpoint colors:
-        //   1 = lifer (already in life list) → goldenrod (218, 165, 32)
+        // loud frequencies are highlighted. Three distinct endpoint colors:
+        //   1 = lifer (already in life list) → goldenrod (218, 165,  32)
         //   2 = needs-add (not yet in list)  → purple    (122,  89, 255)
+        //   3 = starred (alert-me)           → blue      ( 40, 130, 255)
         // The endpoint maps the same way regardless of mode; light-mode
         // inversion has already been applied to the underlying gray, so we
         // un-invert here to recover the original loudness before painting.
@@ -280,9 +290,14 @@ final class SpectrogramRenderer: @unchecked Sendable {
         for x in 0..<Self.columnCount {
             let kind = displayTintKind[x]
             guard kind != 0 else { continue }
-            let loudR: UInt16 = (kind == 1) ? 218 : 122
-            let loudG: UInt16 = (kind == 1) ? 165 :  89
-            let loudB: UInt16 = (kind == 1) ?  32 : 255
+            let loudR: UInt16
+            let loudG: UInt16
+            let loudB: UInt16
+            switch kind {
+            case 1: loudR = 218; loudG = 165; loudB =  32
+            case 2: loudR = 122; loudG =  89; loudB = 255
+            default: loudR = 40; loudG = 130; loudB = 255
+            }
             let xOffset = x * 4
             for y in 0..<Self.displayBins {
                 let idx = y * rowBytes + xOffset

@@ -20,6 +20,11 @@ final class RecordingManager {
     /// purple instead of goldenrod). Captured by the view via
     /// `snapshotLifeList(_:)` on the false → true transition of `isRecording`.
     private(set) var lifeListSnapshot: Set<String> = []
+    /// Live set of scientific names the user has starred. The Identify UI
+    /// pushes this in via `updateStarred(_:)` whenever the life list changes,
+    /// so notifications/highlighting react to mid-session star toggles instead
+    /// of being frozen to a snapshot.
+    private(set) var starredNames: Set<String> = []
 
     /// Pushed from `KestrelApp`'s tab + scene-phase observers. When false,
     /// new-species events fire a local notification instead of relying on
@@ -222,11 +227,18 @@ final class RecordingManager {
         do {
             let results = try await classifier.classify(window, allowedIndices: allowedIndices)
             if !results.isEmpty {
-                // If any detected species isn't yet in the user's life list,
-                // tint the spectrogram band purple (a "you should add this!"
-                // signal) instead of the default goldenrod for known birds.
-                let needsAdd = results.contains { !lifeListSnapshot.contains($0.scientificName) }
-                spectrogram.markDetection(needsAdd: needsAdd)
+                // Tint priority within a single window: starred > needs-add
+                // > known lifer. Picks the most attention-grabbing color
+                // when multiple species overlap on the same band.
+                let kind: SpectrogramRenderer.TintKind
+                if results.contains(where: { starredNames.contains($0.scientificName) }) {
+                    kind = .starred
+                } else if results.contains(where: { !lifeListSnapshot.contains($0.scientificName) }) {
+                    kind = .needsAdd
+                } else {
+                    kind = .lifer
+                }
+                spectrogram.markDetection(kind: kind)
             }
             await MainActor.run { self.merge(results) }
         } catch {
@@ -239,6 +251,14 @@ final class RecordingManager {
     /// transition of `isRecording`.
     func snapshotLifeList(_ scientificNames: Set<String>) {
         lifeListSnapshot = scientificNames
+    }
+
+    /// Live mirror of the user's starred species. Unlike `lifeListSnapshot`
+    /// this is *not* frozen at session start — toggling a star mid-session
+    /// should immediately change which detections fire notifications and
+    /// which spectrogram bands get the blue tint.
+    func updateStarred(_ scientificNames: Set<String>) {
+        starredNames = scientificNames
     }
 
     private func merge(_ results: [Detection]) {
@@ -272,9 +292,11 @@ final class RecordingManager {
         }
 
         // If the user isn't currently looking at the Identify spectrogram,
-        // surface each new species via a local notification with its thumbnail.
+        // surface each new starred species via a local notification with its
+        // thumbnail. Non-starred detections stay silent — the UI is the only
+        // signal you get for those.
         if !spectrogramVisible {
-            for species in newlyDetected {
+            for species in newlyDetected where starredNames.contains(species.scientific) {
                 Task {
                     await SpeciesNotifications.shared.notifyNewSpecies(
                         commonName: species.common,
