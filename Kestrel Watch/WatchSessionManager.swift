@@ -18,6 +18,17 @@ final class WatchSessionManager: NSObject {
     private let extendedDelegate = ExtendedSessionDelegate()
     private var activated = false
 
+    /// When `WCSession.isReachable` flips to false (watch backgrounded,
+    /// phone backgrounded, etc.) `sendMessageData` silently drops chunks.
+    /// We accumulate ~1 s of audio here and ship it via `transferUserInfo`,
+    /// which queues + delivers in background. The phone ingests it via a
+    /// separate delegate callback. Access is serialized by `bgLock`.
+    nonisolated(unsafe) private let bgLock = NSLock()
+    nonisolated(unsafe) private var bgBuffer = Data()
+    /// 32 KB ≈ 1 s of 16 kHz Int16 mono. Comfortably under the ~64 KB
+    /// per-message limit transferUserInfo enforces.
+    nonisolated private let bgFlushBytes = 32_000
+
     /// Keeps the watch app running when the wrist drops or the screen
     /// sleeps. Capped at ~1 hour by the system; we let it expire and the
     /// user can re-tap the button to start a fresh session.
@@ -44,14 +55,15 @@ final class WatchSessionManager: NSObject {
 
         let session = WCSession.default
         // Tell the phone we're starting before audio chunks begin to arrive.
-        session.sendMessage(["cmd": "start"], replyHandler: nil) { err in
-            print("Kestrel Watch: start handshake error \(err)")
-        }
+        // sendMessage is the fast path when both apps are foreground;
+        // transferUserInfo is the background-tolerant fallback that can
+        // wake the iOS app from suspension. Both fire — duplicates are
+        // no-ops on the iOS side.
+        session.sendMessage(["cmd": "start"], replyHandler: nil, errorHandler: nil)
+        session.transferUserInfo(["cmd": "start"])
         do {
-            try streamer.start { data in
-                let s = WCSession.default
-                guard s.isReachable else { return }
-                s.sendMessageData(data, replyHandler: nil, errorHandler: nil)
+            try streamer.start { [weak self] data in
+                self?.deliver(data)
             }
             isRecording = true
         } catch {
@@ -64,8 +76,46 @@ final class WatchSessionManager: NSObject {
         guard isRecording else { return }
         streamer.stop()
         isRecording = false
-        WCSession.default.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
+        // Flush any background-queued audio before sending stop so the phone
+        // processes the final samples before tearing down its keepalive.
+        flushBackgroundBuffer()
+        let session = WCSession.default
+        session.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
+        session.transferUserInfo(["cmd": "stop"])
         stopExtendedSession()
+    }
+
+    /// Audio-thread callback from the streamer. Picks live messaging when
+    /// the phone is reachable, otherwise accumulates into a buffer and
+    /// flushes via `transferUserInfo` once we have ~1 s queued up.
+    nonisolated private func deliver(_ data: Data) {
+        let s = WCSession.default
+        if s.isReachable {
+            s.sendMessageData(data, replyHandler: nil, errorHandler: nil)
+            return
+        }
+        bgLock.lock()
+        bgBuffer.append(data)
+        let payload: Data?
+        if bgBuffer.count >= bgFlushBytes {
+            payload = bgBuffer
+            bgBuffer.removeAll(keepingCapacity: true)
+        } else {
+            payload = nil
+        }
+        bgLock.unlock()
+        if let payload {
+            s.transferUserInfo(["audio": payload])
+        }
+    }
+
+    private func flushBackgroundBuffer() {
+        bgLock.lock()
+        let payload = bgBuffer
+        bgBuffer.removeAll(keepingCapacity: true)
+        bgLock.unlock()
+        guard !payload.isEmpty else { return }
+        WCSession.default.transferUserInfo(["audio": payload])
     }
 
     private func startExtendedSession() {

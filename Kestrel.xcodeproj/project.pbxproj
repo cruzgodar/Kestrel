@@ -58,13 +58,6 @@
 			);
 			target = FC5ECB752FC0B82F00667FD7 /* Kestrel Watch */;
 		};
-		FC5E2BED2FC0D68000667FD7 /* Exceptions for "Kestrel Watch" folder in "Kestrel Watch" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				"Kestrel-Watch-Info.plist",
-			);
-			target = FC5ECB752FC0B82F00667FD7 /* Kestrel Watch */;
-		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -79,9 +72,6 @@
 		};
 		FC5ECB772FC0B82F00667FD7 /* Kestrel Watch */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				FC5E2BED2FC0D68000667FD7 /* Exceptions for "Kestrel Watch" folder in "Kestrel Watch" target */,
-			);
 			path = "Kestrel Watch";
 			sourceTree = "<group>";
 		};

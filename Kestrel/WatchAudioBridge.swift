@@ -46,9 +46,33 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveMessageData messageData: Data) {
+        ingest(messageData)
+    }
+
+    /// Background-tolerant delivery path. When either side is suspended /
+    /// out of reachability, the watch falls back to `transferUserInfo`,
+    /// which queues + delivers when possible (and can wake the iOS app
+    /// from suspension). Carries either a `cmd:` control message or an
+    /// `audio:` Data payload of accumulated Int16 PCM.
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        if let cmd = userInfo["cmd"] as? String {
+            Task { @MainActor in
+                switch cmd {
+                case "start": await manager.startFromWatch()
+                case "stop": manager.stopFromWatch()
+                default: break
+                }
+            }
+        }
+        if let audio = userInfo["audio"] as? Data {
+            ingest(audio)
+        }
+    }
+
+    private func ingest(_ data: Data) {
         // Decode Int16 little-endian → Float32 in [-1, 1].
-        let count = messageData.count / MemoryLayout<Int16>.size
-        let floats: [Float] = messageData.withUnsafeBytes { raw in
+        let count = data.count / MemoryLayout<Int16>.size
+        let floats: [Float] = data.withUnsafeBytes { raw in
             let int16s = raw.bindMemory(to: Int16.self)
             var out = [Float](repeating: 0, count: count)
             for i in 0..<count {
