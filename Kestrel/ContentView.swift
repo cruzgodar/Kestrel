@@ -100,6 +100,8 @@ struct ContentView: View {
     }
 
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
+    /// Highlight purple — soft tint blended into the row background.
+    private static let recordHighlight = Color(hue: 252.0 / 360.0, saturation: 0.5, brightness: 1.0)
 
     @ViewBuilder
     private var resultsView: some View {
@@ -121,10 +123,7 @@ struct ContentView: View {
     }
 
     // Faint blue persistent tint for starred species (alert-me list).
-    // Hue nudged toward violet (220°) so the blue carries more perceived
-    // brightness — pure 215° blue reads dim next to the purple add tint at
-    // the same numeric saturation/brightness.
-    private static let starredTint = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
+    private static let starredTint = Color(hue: 215.0 / 360.0, saturation: 0.5, brightness: 1.0)
 
     private func detectionRow(for detection: Detection) -> some View {
         let flashing = manager.flashIDs.contains(detection.id)
@@ -140,10 +139,10 @@ struct ContentView: View {
         // Flash color picks the same hue family as the persistent tint:
         // purple for needs-add, blue for starred, yellow otherwise.
         let flashColor: Color = needsLifeListAdd
-            ? Color(hue: 252.0/360.0, saturation: 0.72, brightness: 0.85)
+            ? Color(hue: 252.0/360.0, saturation: 0.5, brightness: 1.0)
             : (isStarred
-               ? Color(hue: 220.0/360.0, saturation: 0.8, brightness: 1.0)
-                : Color(hue: 50.0/360.0, saturation: 0.45, brightness: 1.0))
+               ? Color(hue: 215.0/360.0, saturation: 0.5, brightness: 1.0)
+                : Color(hue: 50.0/360.0, saturation: 0.6, brightness: 1.0))
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
@@ -171,8 +170,7 @@ struct ContentView: View {
                             .frame(width: 32, height: 32)
                             .background(Self.recordTint, in: Circle())
                     }
-                    .buttonStyle(.plain)
-                    .disabled(alreadyAdded)
+                    .buttonStyle(NoDimButtonStyle())
                     .accessibilityLabel(
                         alreadyAdded
                             ? "\(detection.commonName) added to Life List"
@@ -200,12 +198,12 @@ struct ContentView: View {
         // the system background when swiping diagonally.
         .background(
             ZStack {
-                Self.recordTint
-                    .opacity(needsLifeListAdd ? 0.4 : 0)
+                Self.recordHighlight
+                    .opacity(needsLifeListAdd ? 0.25 : 0)
                 Self.starredTint
-                    .opacity(!needsLifeListAdd && isStarred ? 0.4 : 0)
+                    .opacity(!needsLifeListAdd && isStarred ? 0.25 : 0)
                 flashColor
-                    .opacity(flashing ? 0.4 : 0)
+                    .opacity(flashing ? 0.25 : 0)
                     .animation(
                         flashing ? nil : .easeOut(duration: 0.5),
                         value: flashing
