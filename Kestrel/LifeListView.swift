@@ -7,6 +7,9 @@ struct LifeListView: View {
     @State private var isImporting = false
     @State private var importMessage: String?
     @State private var showImportResult = false
+    /// The species the user just swiped to delete — drives the confirmation
+    /// dialog. Cleared on Cancel; the actual remove happens on confirm.
+    @State private var pendingDeletion: LifeListEntry?
 
     var body: some View {
         Group {
@@ -36,7 +39,7 @@ struct LifeListView: View {
                     .listRowSeparator(.hidden)
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button(role: .destructive) {
-                            store.remove(scientificName: entry.scientificName)
+                            pendingDeletion = entry
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
@@ -71,6 +74,23 @@ struct LifeListView: View {
             Button("OK", role: .cancel) { }
         } message: { message in
             Text(message)
+        }
+        .confirmationDialog(
+            pendingDeletion.map { "Remove \($0.commonName) from your life list?" } ?? "",
+            isPresented: Binding(
+                get: { pendingDeletion != nil },
+                set: { if !$0 { pendingDeletion = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: pendingDeletion
+        ) { entry in
+            Button("Delete", role: .destructive) {
+                store.remove(scientificName: entry.scientificName)
+                pendingDeletion = nil
+            }
+            Button("Cancel", role: .cancel) {
+                pendingDeletion = nil
+            }
         }
     }
 

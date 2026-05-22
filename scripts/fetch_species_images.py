@@ -36,7 +36,7 @@ from PIL import Image
 
 ROOT       = Path(__file__).resolve().parents[1]
 LABELS     = ROOT / "Kestrel" / "Models" / "BirdNET_GLOBAL_6K_V2.4_Labels.txt"
-OUT_DIR    = ROOT / "Kestrel" / "Models" / "SpeciesImages"
+OUT_DIR    = ROOT / "Kestrel" / "Models" / "SpeciesImagesLarge"
 MISSING    = ROOT / "scripts" / "species_images_missing.txt"
 TAXONOMY   = ROOT / "scripts" / ".ebird_taxonomy.csv"
 COOKIE_JAR = ROOT / "scripts" / ".ebird_cookies.txt"
@@ -52,7 +52,7 @@ USER_AGENT = (
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 )
 
-MAX_SIDE   = 128
+MAX_SIDE   = 768
 JPEG_Q     = 80
 TIMEOUT    = 20
 

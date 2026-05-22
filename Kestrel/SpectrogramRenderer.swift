@@ -20,8 +20,8 @@ final class SpectrogramRenderer: @unchecked Sendable {
     static let columnCount: Int = 720                 // ~3.85 s of history
     static let columnsPerSecond: Double = Double(sampleRate) / Double(hop)
     static let sampleRate: Float = 48_000
-    static let freqMin: Float = 100                   // full audible range now that HPF is gone
-    static let freqMax: Float = 16_000
+    static let freqMin: Float = 0
+    static let freqMax: Float = 14_000
 
     /// How many columns the most-recent BirdNET window covers (3 s / hop), clipped.
     static let highlightSpan: Int = min((48_000 * 3) / hop, columnCount)
@@ -96,15 +96,14 @@ final class SpectrogramRenderer: @unchecked Sendable {
         self.imagOut = [Float](repeating: 0, count: Self.fftSize / 2)
         self.magnitude = [Float](repeating: 0, count: Self.fftSize / 2)
 
+        // Linear frequency mapping: y=0 (top) is freqMax, y=displayBins-1
+        // (bottom) is freqMin, evenly spaced in Hz.
         let binWidth = Self.sampleRate / Float(Self.fftSize)
         let maxBin = Self.fftSize / 2 - 1
-        let logMax = logf(Self.freqMax)
-        let logMin = logf(Self.freqMin)
         var binMap = [Int](repeating: 0, count: Self.displayBins)
         for y in 0..<Self.displayBins {
             let t = Float(y) / Float(max(Self.displayBins - 1, 1))
-            let logFreq = logMax + (logMin - logMax) * t
-            let freq = expf(logFreq)
+            let freq = Self.freqMax + (Self.freqMin - Self.freqMax) * t
             let bin = Int(freq / binWidth + 0.5)
             binMap[y] = max(0, min(maxBin, bin))
         }

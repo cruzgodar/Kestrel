@@ -1,50 +1,52 @@
 slug	scientific	common	reason
-accipiter_bicolor	Accipiter bicolor	Bicolored Hawk	not in eBird taxonomy
+acanthis_cabaret	Acanthis cabaret	Lesser Redpoll	not in eBird taxonomy
+acanthis_hornemanni	Acanthis hornemanni	Hoary Redpoll	not in eBird taxonomy
 accipiter_badius	Accipiter badius	Shikra	not in eBird taxonomy
+accipiter_bicolor	Accipiter bicolor	Bicolored Hawk	not in eBird taxonomy
 accipiter_cirrocephalus	Accipiter cirrocephalus	Collared Sparrowhawk	not in eBird taxonomy
 accipiter_cooperii	Accipiter cooperii	Cooper's Hawk	not in eBird taxonomy
 accipiter_fasciatus	Accipiter fasciatus	Brown Goshawk	not in eBird taxonomy
-accipiter_gularis	Accipiter gularis	Japanese Sparrowhawk	not in eBird taxonomy
 accipiter_gentilis	Accipiter gentilis	Northern Goshawk	not in eBird taxonomy
+accipiter_gularis	Accipiter gularis	Japanese Sparrowhawk	not in eBird taxonomy
+accipiter_hiogaster	Accipiter hiogaster	Variable Goshawk	not in eBird taxonomy
 accipiter_melanoleucus	Accipiter melanoleucus	Black Goshawk	not in eBird taxonomy
 accipiter_minullus	Accipiter minullus	Little Sparrowhawk	not in eBird taxonomy
-accipiter_novaehollandiae	Accipiter novaehollandiae	Gray Goshawk	not in eBird taxonomy
-accipiter_hiogaster	Accipiter hiogaster	Variable Goshawk	not in eBird taxonomy
 accipiter_soloensis	Accipiter soloensis	Chinese Sparrowhawk	not in eBird taxonomy
 accipiter_superciliosus	Accipiter superciliosus	Tiny Hawk	not in eBird taxonomy
-accipiter_trinotatus	Accipiter trinotatus	Spot-tailed Goshawk	not in eBird taxonomy
 accipiter_tachiro	Accipiter tachiro	African Goshawk	not in eBird taxonomy
-accipiter_virgatus	Accipiter virgatus	Besra	not in eBird taxonomy
+accipiter_trinotatus	Accipiter trinotatus	Spot-tailed Goshawk	not in eBird taxonomy
 accipiter_trivirgatus	Accipiter trivirgatus	Crested Goshawk	not in eBird taxonomy
+accipiter_virgatus	Accipiter virgatus	Besra	not in eBird taxonomy
+accipiter_novaehollandiae	Accipiter novaehollandiae	Gray Goshawk	not in eBird taxonomy
 acris_crepitans	Acris crepitans	Northern Cricket Frog	not in eBird taxonomy
 acris_gryllus	Acris gryllus	Southern Cricket Frog	not in eBird taxonomy
 acrocephalus_baeticatus	Acrocephalus baeticatus	African Reed Warbler	not in eBird taxonomy
 allonemobius_allardi	Allonemobius allardi	Allard's Ground Cricket	not in eBird taxonomy
-allonemobius_walkeri	Allonemobius walkeri	Walker's Ground Cricket	not in eBird taxonomy
 allonemobius_tinnulus	Allonemobius tinnulus	Tinkling Ground Cricket	not in eBird taxonomy
+allonemobius_walkeri	Allonemobius walkeri	Walker's Ground Cricket	not in eBird taxonomy
 alophoixus_finschii	Alophoixus finschii	Finsch's Bulbul	not in eBird taxonomy
 alouatta_pigra	Alouatta pigra	Mexican Black Howler Monkey	not in eBird taxonomy
-amblycorypha_longinicta	Amblycorypha longinicta	Common Virtuoso Katydid	not in eBird taxonomy
 amblycorypha_alexanderi	Amblycorypha alexanderi	Clicker Round-winged Katydid	not in eBird taxonomy
-amblycorypha_rotundifolia	Amblycorypha rotundifolia	Rattler Round-winged Katydid	not in eBird taxonomy
+amblycorypha_longinicta	Amblycorypha longinicta	Common Virtuoso Katydid	not in eBird taxonomy
 amblycorypha_oblongifolia	Amblycorypha oblongifolia	Oblong-winged Katydid	not in eBird taxonomy
+amblycorypha_rotundifolia	Amblycorypha rotundifolia	Rattler Round-winged Katydid	not in eBird taxonomy
 amblyornis_newtoniana	Amblyornis newtoniana	Golden Bowerbird	not in eBird taxonomy
 anaxipha_exigua	Anaxipha exigua	Say's Trig	not in eBird taxonomy
 anaxyrus_americanus	Anaxyrus americanus	American Toad	not in eBird taxonomy
 anaxyrus_canorus	Anaxyrus canorus	Yosemite Toad	not in eBird taxonomy
+anaxyrus_cognatus	Anaxyrus cognatus	Great Plains Toad	not in eBird taxonomy
 anaxyrus_fowleri	Anaxyrus fowleri	Fowler's Toad	not in eBird taxonomy
 anaxyrus_houstonensis	Anaxyrus houstonensis	Houston Toad	not in eBird taxonomy
-anaxyrus_cognatus	Anaxyrus cognatus	Great Plains Toad	not in eBird taxonomy
+anaxyrus_microscaphus	Anaxyrus microscaphus	Arizona Toad	not in eBird taxonomy
 anaxyrus_quercicus	Anaxyrus quercicus	Oak Toad	not in eBird taxonomy
 anaxyrus_speciosus	Anaxyrus speciosus	Texas Toad	not in eBird taxonomy
-anaxyrus_microscaphus	Anaxyrus microscaphus	Arizona Toad	not in eBird taxonomy
 anaxyrus_terrestris	Anaxyrus terrestris	Southern Toad	not in eBird taxonomy
 anaxyrus_woodhousii	Anaxyrus woodhousii	Woodhouse's Toad	not in eBird taxonomy
 anthropoides_paradiseus	Anthropoides paradiseus	Blue Crane	not in eBird taxonomy
 anthropoides_virgo	Anthropoides virgo	Demoiselle Crane	not in eBird taxonomy
 anthus_lutescens	Anthus lutescens	Yellowish Pipit	not in eBird taxonomy
-antilophia_galeata	Antilophia galeata	Helmeted Manakin	not in eBird taxonomy
 antilophia_bokermanni	Antilophia bokermanni	Araripe Manakin	not in eBird taxonomy
+antilophia_galeata	Antilophia galeata	Helmeted Manakin	not in eBird taxonomy
 anurolimnas_fasciatus	Anurolimnas fasciatus	Black-banded Crake	not in eBird taxonomy
 anurolimnas_viridis	Anurolimnas viridis	Russet-crowned Crake	not in eBird taxonomy
 apis_mellifera	Apis mellifera	Honey Bee	not in eBird taxonomy
@@ -57,15 +59,15 @@ brachypodius_melanocephalos	Brachypodius melanocephalos	Black-headed Bulbul	not 
 brachypodius_melanoleucos	Brachypodius melanoleucos	Black-and-white Bulbul	not in eBird taxonomy
 brachypodius_priocephalus	Brachypodius priocephalus	Gray-headed Bulbul	not in eBird taxonomy
 brachypodius_urostictus	Brachypodius urostictus	Yellow-wattled Bulbul	not in eBird taxonomy
+bubo_coromandus	Bubo coromandus	Dusky Eagle-Owl	not in eBird taxonomy
 bubo_lacteus	Bubo lacteus	Verreaux's Eagle-Owl	not in eBird taxonomy
 bubo_nipalensis	Bubo nipalensis	Spot-bellied Eagle-Owl	not in eBird taxonomy
 bubo_sumatranus	Bubo sumatranus	Barred Eagle-Owl	not in eBird taxonomy
-bubo_coromandus	Bubo coromandus	Dusky Eagle-Owl	not in eBird taxonomy
 bubulcus_ibis	Bubulcus ibis	Cattle Egret	not in eBird taxonomy
 buceros_vigil	Buceros vigil	Helmeted Hornbill	not in eBird taxonomy
 buphagus_erythrorynchus	Buphagus erythrorynchus	Red-billed Oxpecker	not in eBird taxonomy
-burhinus_superciliaris	Burhinus superciliaris	Peruvian Thick-knee	not in eBird taxonomy
 burhinus_bistriatus	Burhinus bistriatus	Double-striped Thick-knee	not in eBird taxonomy
+burhinus_superciliaris	Burhinus superciliaris	Peruvian Thick-knee	not in eBird taxonomy
 cacomantis_leucolophus	Cacomantis leucolophus	White-crowned Koel	not in eBird taxonomy
 cacomantis_pallidus	Cacomantis pallidus	Pallid Cuckoo	not in eBird taxonomy
 calendulauda_alopex	Calendulauda alopex	Foxy Lark	not in eBird taxonomy
@@ -74,20 +76,20 @@ calocitta_formosa	Calocitta formosa	White-throated Magpie-Jay	not in eBird taxon
 calyptorhynchus_funereus	Calyptorhynchus funereus	Yellow-tailed Black-Cockatoo	not in eBird taxonomy
 calyptorhynchus_latirostris	Calyptorhynchus latirostris	Carnaby's Black-Cockatoo	not in eBird taxonomy
 campethera_cailliautii	Campethera cailliautii	Green-backed Woodpecker	not in eBird taxonomy
-canis_lupus	Canis lupus	Gray Wolf	not in eBird taxonomy
 canis_latrans	Canis latrans	Coyote	not in eBird taxonomy
+canis_lupus	Canis lupus	Gray Wolf	not in eBird taxonomy
 caprimulgus_nigriscapularis	Caprimulgus nigriscapularis	Black-shouldered Nightjar	not in eBird taxonomy
 cecropis_striolata	Cecropis striolata	Striated Swallow	not in eBird taxonomy
 celeus_grammicus	Celeus grammicus	Scale-breasted Woodpecker	not in eBird taxonomy
-cercotrichas_coryphoeus	Cercotrichas coryphoeus	Karoo Scrub-Robin	not in eBird taxonomy
 cercotrichas_barbata	Cercotrichas barbata	Miombo Scrub-Robin	not in eBird taxonomy
+cercotrichas_coryphoeus	Cercotrichas coryphoeus	Karoo Scrub-Robin	not in eBird taxonomy
 cercotrichas_quadrivirgata	Cercotrichas quadrivirgata	Bearded Scrub-Robin	not in eBird taxonomy
 cercotrichas_signata	Cercotrichas signata	Brown Scrub-Robin	not in eBird taxonomy
+charadrius_alexandrinus	Charadrius alexandrinus	Kentish Plover	not in eBird taxonomy
 charadrius_bicinctus	Charadrius bicinctus	Double-banded Plover	not in eBird taxonomy
 charadrius_collaris	Charadrius collaris	Collared Plover	not in eBird taxonomy
 charadrius_dubius	Charadrius dubius	Little Ringed Plover	not in eBird taxonomy
 charadrius_falklandicus	Charadrius falklandicus	Two-banded Plover	not in eBird taxonomy
-charadrius_alexandrinus	Charadrius alexandrinus	Kentish Plover	not in eBird taxonomy
 charadrius_javanicus	Charadrius javanicus	Javan Plover	not in eBird taxonomy
 charadrius_leschenaultii	Charadrius leschenaultii	Greater Sand-Plover	not in eBird taxonomy
 charadrius_modestus	Charadrius modestus	Rufous-chested Dotterel	not in eBird taxonomy
@@ -101,19 +103,19 @@ charadrius_tricollaris	Charadrius tricollaris	Three-banded Plover	not in eBird t
 charadrius_veredus	Charadrius veredus	Oriental Plover	not in eBird taxonomy
 charadrius_wilsonia	Charadrius wilsonia	Wilson's Plover	not in eBird taxonomy
 chloropicus_fuscescens	Chloropicus fuscescens	Cardinal Woodpecker	not in eBird taxonomy
+chloropicus_goertae	Chloropicus goertae	African Gray Woodpecker	not in eBird taxonomy
 chloropicus_griseocephalus	Chloropicus griseocephalus	Olive Woodpecker	not in eBird taxonomy
 chloropicus_spodocephalus	Chloropicus spodocephalus	Mountain Gray Woodpecker	not in eBird taxonomy
-chloropicus_goertae	Chloropicus goertae	African Gray Woodpecker	not in eBird taxonomy
 cholornis_unicolor	Cholornis unicolor	Brown Parrotbill	not in eBird taxonomy
 chrysococcyx_basalis	Chrysococcyx basalis	Horsfield's Bronze-Cuckoo	not in eBird taxonomy
 chrysococcyx_lucidus	Chrysococcyx lucidus	Shining Bronze-Cuckoo	not in eBird taxonomy
 chrysococcyx_minutillus	Chrysococcyx minutillus	Little Bronze-Cuckoo	not in eBird taxonomy
 chrysococcyx_osculans	Chrysococcyx osculans	Black-eared Cuckoo	not in eBird taxonomy
+ciccaba_albitarsis	Ciccaba albitarsis	Rufous-banded Owl	not in eBird taxonomy
 ciccaba_huhula	Ciccaba huhula	Black-banded Owl	not in eBird taxonomy
 ciccaba_nigrolineata	Ciccaba nigrolineata	Black-and-white Owl	not in eBird taxonomy
 ciccaba_virgata	Ciccaba virgata	Mottled Owl	not in eBird taxonomy
 cicinnurus_magnificus	Cicinnurus magnificus	Magnificent Bird-of-Paradise	not in eBird taxonomy
-ciccaba_albitarsis	Ciccaba albitarsis	Rufous-banded Owl	not in eBird taxonomy
 cicinnurus_respublica	Cicinnurus respublica	Wilson's Bird-of-Paradise	not in eBird taxonomy
 clytolaema_rubricauda	Clytolaema rubricauda	Brazilian Ruby	not in eBird taxonomy
 coccothraustes_abeillei	Coccothraustes abeillei	Hooded Grosbeak	not in eBird taxonomy
@@ -124,16 +126,16 @@ conocephalus_brevipennis	Conocephalus brevipennis	Short-winged Meadow Katydid	no
 conocephalus_fasciatus	Conocephalus fasciatus	Slender Meadow Katydid	not in eBird taxonomy
 conostoma_aemodium	Conostoma aemodium	Great Parrotbill	not in eBird taxonomy
 coracina_caesia	Coracina caesia	Gray Cuckooshrike	not in eBird taxonomy
-coracina_pectoralis	Coracina pectoralis	White-breasted Cuckooshrike	not in eBird taxonomy
 coracina_cinerea	Coracina cinerea	Madagascar Cuckooshrike	not in eBird taxonomy
+coracina_pectoralis	Coracina pectoralis	White-breasted Cuckooshrike	not in eBird taxonomy
 corvus_dauuricus	Corvus dauuricus	Daurian Jackdaw	not in eBird taxonomy
 corvus_monedula	Corvus monedula	Eurasian Jackdaw	not in eBird taxonomy
 corythaixoides_concolor	Corythaixoides concolor	Gray Go-away-bird	not in eBird taxonomy
+corythaixoides_leucogaster	Corythaixoides leucogaster	White-bellied Go-away-bird	not in eBird taxonomy
 cossypha_anomala	Cossypha anomala	Olive-flanked Robin-Chat	not in eBird taxonomy
 cossypha_archeri	Cossypha archeri	Archer's Robin-Chat	not in eBird taxonomy
 cossypha_caffra	Cossypha caffra	Cape Robin-Chat	not in eBird taxonomy
 cossypha_humeralis	Cossypha humeralis	White-throated Robin-Chat	not in eBird taxonomy
-corythaixoides_leucogaster	Corythaixoides leucogaster	White-bellied Go-away-bird	not in eBird taxonomy
 cossypha_polioptera	Cossypha polioptera	Gray-winged Robin-Chat	not in eBird taxonomy
 cracticus_quoyi	Cracticus quoyi	Black Butcherbird	not in eBird taxonomy
 cranioleuca_gutturata	Cranioleuca gutturata	Speckled Spinetail	not in eBird taxonomy
@@ -148,32 +150,32 @@ dicaeum_chrysorrheum	Dicaeum chrysorrheum	Yellow-vented Flowerpecker	not in eBir
 dicrurus_divaricatus	Dicrurus divaricatus	Glossy-backed Drongo	not in eBird taxonomy
 dinopium_rafflesii	Dinopium rafflesii	Olive-backed Woodpecker	not in eBird taxonomy
 dog	Dog	Dog	not in eBird taxonomy
+dryobates_affinis	Dryobates affinis	Red-stained Woodpecker	not in eBird taxonomy
 dryobates_albolarvatus	Dryobates albolarvatus	White-headed Woodpecker	not in eBird taxonomy
 dryobates_arizonae	Dryobates arizonae	Arizona Woodpecker	not in eBird taxonomy
 dryobates_borealis	Dryobates borealis	Red-cockaded Woodpecker	not in eBird taxonomy
 dryobates_callonotus	Dryobates callonotus	Scarlet-backed Woodpecker	not in eBird taxonomy
 dryobates_cassini	Dryobates cassini	Golden-collared Woodpecker	not in eBird taxonomy
-dryobates_affinis	Dryobates affinis	Red-stained Woodpecker	not in eBird taxonomy
-dryobates_frontalis	Dryobates frontalis	Dot-fronted Woodpecker	not in eBird taxonomy
 dryobates_dignus	Dryobates dignus	Yellow-vented Woodpecker	not in eBird taxonomy
+dryobates_frontalis	Dryobates frontalis	Dot-fronted Woodpecker	not in eBird taxonomy
+dryobates_fumigatus	Dryobates fumigatus	Smoky-brown Woodpecker	not in eBird taxonomy
 dryobates_kirkii	Dryobates kirkii	Red-rumped Woodpecker	not in eBird taxonomy
 dryobates_lignarius	Dryobates lignarius	Striped Woodpecker	not in eBird taxonomy
 dryobates_maculifrons	Dryobates maculifrons	Yellow-eared Woodpecker	not in eBird taxonomy
 dryobates_mixtus	Dryobates mixtus	Checkered Woodpecker	not in eBird taxonomy
 dryobates_nigriceps	Dryobates nigriceps	Bar-bellied Woodpecker	not in eBird taxonomy
-dryobates_fumigatus	Dryobates fumigatus	Smoky-brown Woodpecker	not in eBird taxonomy
 dryobates_passerinus	Dryobates passerinus	Little Woodpecker	not in eBird taxonomy
 dryobates_spilogaster	Dryobates spilogaster	White-spotted Woodpecker	not in eBird taxonomy
 dryobates_stricklandi	Dryobates stricklandi	Strickland's Woodpecker	not in eBird taxonomy
+dryobates_villosus	Dryobates villosus	Hairy Woodpecker	not in eBird taxonomy
 dryophytes_andersonii	Dryophytes andersonii	Pine Barrens Treefrog	not in eBird taxonomy
 dryophytes_arenicolor	Dryophytes arenicolor	Canyon Treefrog	not in eBird taxonomy
-dryobates_villosus	Dryobates villosus	Hairy Woodpecker	not in eBird taxonomy
+dryophytes_avivoca	Dryophytes avivoca	Bird-voiced Treefrog	not in eBird taxonomy
 dryophytes_chrysoscelis	Dryophytes chrysoscelis	Cope's Gray Treefrog	not in eBird taxonomy
 dryophytes_cinereus	Dryophytes cinereus	Green Treefrog	not in eBird taxonomy
 dryophytes_femoralis	Dryophytes femoralis	Pine Woods Treefrog	not in eBird taxonomy
-dryophytes_avivoca	Dryophytes avivoca	Bird-voiced Treefrog	not in eBird taxonomy
-dryophytes_squirellus	Dryophytes squirellus	Squirrel Treefrog	not in eBird taxonomy
 dryophytes_gratiosus	Dryophytes gratiosus	Barking Treefrog	not in eBird taxonomy
+dryophytes_squirellus	Dryophytes squirellus	Squirrel Treefrog	not in eBird taxonomy
 dryophytes_versicolor	Dryophytes versicolor	Gray Treefrog	not in eBird taxonomy
 dryotriorchis_spectabilis	Dryotriorchis spectabilis	Congo Serpent-Eagle	not in eBird taxonomy
 eleutherodactylus_planirostris	Eleutherodactylus planirostris	Greenhouse Frog	not in eBird taxonomy
@@ -183,14 +185,18 @@ engine	Engine	Engine	not in eBird taxonomy
 environmental	Environmental	Environmental	not in eBird taxonomy
 eunemobius_carolinus	Eunemobius carolinus	Carolina Ground Cricket	not in eBird taxonomy
 eunemobius_confusus	Eunemobius confusus	Confused Ground Cricket	not in eBird taxonomy
+eupodotis_afra	Eupodotis afra	Black Bustard	not in eBird taxonomy
 eupodotis_afraoides	Eupodotis afraoides	White-quilled Bustard	not in eBird taxonomy
 eupodotis_ruficrista	Eupodotis ruficrista	Red-crested Bustard	not in eBird taxonomy
 eupodotis_vigorsii	Eupodotis vigorsii	Karoo Bustard	not in eBird taxonomy
-eupodotis_afra	Eupodotis afra	Black Bustard	not in eBird taxonomy
 fireworks	Fireworks	Fireworks	not in eBird taxonomy
 gastrophryne_carolinensis	Gastrophryne carolinensis	Eastern Narrow-mouthed Toad	not in eBird taxonomy
 gastrophryne_olivacea	Gastrophryne olivacea	Great Plains Narrow-mouthed Toad	not in eBird taxonomy
+geokichla_peronii	Geokichla peronii	Orange-banded Thrush	ERROR: ebird:orbthr1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
+geokichla_piaggiae	Geokichla piaggiae	Abyssinian Ground-Thrush	ERROR: ebird:abgthr1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
 glossopsitta_concinna	Glossopsitta concinna	Musk Lorikeet	not in eBird taxonomy
+grus_japonensis	Grus japonensis	Red-crowned Crane	ERROR: ebird:reccra1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
+grus_monacha	Grus monacha	Hooded Crane	ERROR: ebird:hoocra1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
 gryllus_assimilis	Gryllus assimilis	Gryllus assimilis	not in eBird taxonomy
 gryllus_fultoni	Gryllus fultoni	Southern Wood Cricket	not in eBird taxonomy
 gryllus_pennsylvanicus	Gryllus pennsylvanicus	Fall Field Cricket	not in eBird taxonomy
@@ -212,13 +218,16 @@ human_vocal	Human vocal	Human vocal	non-bird event class
 human_whistle	Human whistle	Human whistle	non-bird event class
 hydropsalis_maculicaudus	Hydropsalis maculicaudus	Spot-tailed Nightjar	not in eBird taxonomy
 hyliola_regilla	Hyliola regilla	Pacific Chorus Frog	not in eBird taxonomy
+hylophilus_thoracicus	Hylophilus thoracicus	Lemon-chested Greenlet	ERROR: ebird:lecgre2 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
+hylorchilus_sumichrasti	Hylorchilus sumichrasti	Sumichrast's Wren	ERROR: ebird:sumwre1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
+hymenops_perspicillatus	Hymenops perspicillatus	Spectacled Tyrant	ERROR: ebird:spetyr1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
 incilius_valliceps	Incilius valliceps	Gulf Coast Toad	not in eBird taxonomy
 iole_indica	Iole indica	Yellow-browed Bulbul	not in eBird taxonomy
 ixobrychus_cinnamomeus	Ixobrychus cinnamomeus	Cinnamon Bittern	not in eBird taxonomy
 ixobrychus_dubius	Ixobrychus dubius	Black-backed Bittern	not in eBird taxonomy
 ixobrychus_eurhythmus	Ixobrychus eurhythmus	Schrenck's Bittern	not in eBird taxonomy
-ixobrychus_flavicollis	Ixobrychus flavicollis	Black Bittern	not in eBird taxonomy
 ixobrychus_exilis	Ixobrychus exilis	Least Bittern	not in eBird taxonomy
+ixobrychus_flavicollis	Ixobrychus flavicollis	Black Bittern	not in eBird taxonomy
 ixobrychus_involucris	Ixobrychus involucris	Stripe-backed Bittern	not in eBird taxonomy
 ixobrychus_minutus	Ixobrychus minutus	Little Bittern	not in eBird taxonomy
 ixobrychus_sinensis	Ixobrychus sinensis	Yellow Bittern	not in eBird taxonomy
@@ -240,23 +249,23 @@ milvago_chimachima	Milvago chimachima	Yellow-headed Caracara	not in eBird taxono
 milvago_chimango	Milvago chimango	Chimango Caracara	not in eBird taxonomy
 miogryllus_saussurei	Miogryllus saussurei	Miogryllus saussurei	not in eBird taxonomy
 mirafra_affinis	Mirafra affinis	Jerdon's Bushlark	not in eBird taxonomy
+mirafra_africana	Mirafra africana	Rufous-naped Lark	not in eBird taxonomy
 mirafra_apiata	Mirafra apiata	Cape Clapper Lark	not in eBird taxonomy
 mirafra_assamica	Mirafra assamica	Bengal Bushlark	not in eBird taxonomy
 mirafra_cantillans	Mirafra cantillans	Singing Bushlark	not in eBird taxonomy
 mirafra_erythrocephala	Mirafra erythrocephala	Indochinese Bushlark	not in eBird taxonomy
 mirafra_erythroptera	Mirafra erythroptera	Indian Bushlark	not in eBird taxonomy
 mirafra_fasciolata	Mirafra fasciolata	Eastern Clapper Lark	not in eBird taxonomy
-mirafra_africana	Mirafra africana	Rufous-naped Lark	not in eBird taxonomy
 mirafra_rufocinnamomea	Mirafra rufocinnamomea	Flappet Lark	not in eBird taxonomy
 montifringilla_blanfordi	Montifringilla blanfordi	Blanford's Snowfinch	not in eBird taxonomy
 montifringilla_taczanowskii	Montifringilla taczanowskii	White-rumped Snowfinch	not in eBird taxonomy
 musophaga_rossae	Musophaga rossae	Ross's Turaco	not in eBird taxonomy
 neoconocephalus_bivocatus	Neoconocephalus bivocatus	False Robust Conehead	not in eBird taxonomy
+neoconocephalus_ensiger	Neoconocephalus ensiger	Sword-bearing Conehead	not in eBird taxonomy
 neoconocephalus_retusus	Neoconocephalus retusus	Round-tipped Conehead	not in eBird taxonomy
 neoconocephalus_robustus	Neoconocephalus robustus	Robust Conehead	not in eBird taxonomy
 neocossyphus_finschi	Neocossyphus finschi	Finsch's Flycatcher-Thrush	not in eBird taxonomy
 neocossyphus_fraseri	Neocossyphus fraseri	Rufous Flycatcher-Thrush	not in eBird taxonomy
-neoconocephalus_ensiger	Neoconocephalus ensiger	Sword-bearing Conehead	not in eBird taxonomy
 neonemobius_cubensis	Neonemobius cubensis	Cuban Ground Cricket	not in eBird taxonomy
 neopelma_chrysolophum	Neopelma chrysolophum	Serra do Mar Tyrant-Manakin	not in eBird taxonomy
 noise	Noise	Noise	not in eBird taxonomy
@@ -286,9 +295,19 @@ parvipsitta_porphyrocephala	Parvipsitta porphyrocephala	Purple-crowned Lorikeet	
 parvipsitta_pusilla	Parvipsitta pusilla	Little Lorikeet	not in eBird taxonomy
 peneothello_cyanus	Peneothello cyanus	Blue-gray Robin	not in eBird taxonomy
 peneothello_sigillata	Peneothello sigillata	White-winged Robin	not in eBird taxonomy
+pericrocotus_flammeus	Pericrocotus flammeus	Orange Minivet	ERROR: ebird:scamin3 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
+pericrocotus_tegimae	Pericrocotus tegimae	Ryukyu Minivet	ERROR: ebird:ryumin1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
+periparus_elegans	Periparus elegans	Elegant Tit	ERROR: ebird:eletit2 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
+periparus_rubidiventris	Periparus rubidiventris	Rufous-vented Tit	ERROR: ebird:ruvtit2 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
+petronia_petronia	Petronia petronia	Rock Sparrow	ERROR: ebird:rocpet1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
+peucaea_botterii	Peucaea botterii	Botteri's Sparrow	ERROR: ebird:botspa → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
 phaeomyias_murina	Phaeomyias murina	Mouse-colored Tyrannulet	not in eBird taxonomy
+pheucticus_tibialis	Pheucticus tibialis	Black-thighed Grosbeak	ERROR: ebird:bltgro1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
+pheugopedius_coraya	Pheugopedius coraya	Coraya Wren	ERROR: ebird:corwre1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
 philydor_erythrocercum	Philydor erythrocercum	Rufous-rumped Foliage-gleaner	not in eBird taxonomy
 philydor_fuscipenne	Philydor fuscipenne	Slaty-winged Foliage-gleaner	not in eBird taxonomy
+philydor_pyrrhodes	Philydor pyrrhodes	Cinnamon-rumped Foliage-gleaner	ERROR: ebird:crfgle1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
+phlegopsis_erythroptera	Phlegopsis erythroptera	Reddish-winged Bare-eye	ERROR: ebird:rwbeye1 → HTTPSConnectionPool(host='ebird.org', port=443): Read timed out. (read timeout=20)
 phyllomyias_burmeisteri	Phyllomyias burmeisteri	Rough-legged Tyrannulet	not in eBird taxonomy
 phyllomyias_cinereiceps	Phyllomyias cinereiceps	Ashy-headed Tyrannulet	not in eBird taxonomy
 phyllomyias_nigrocapillus	Phyllomyias nigrocapillus	Black-capped Tyrannulet	not in eBird taxonomy
@@ -309,13 +328,13 @@ psephotus_varius	Psephotus varius	Mulga Parrot	not in eBird taxonomy
 pseudacris_brimleyi	Pseudacris brimleyi	Brimley's Chorus Frog	not in eBird taxonomy
 pseudacris_clarkii	Pseudacris clarkii	Spotted Chorus Frog	not in eBird taxonomy
 pseudacris_crucifer	Pseudacris crucifer	Spring Peeper	not in eBird taxonomy
+pseudacris_feriarum	Pseudacris feriarum	Upland Chorus Frog	not in eBird taxonomy
 pseudacris_nigrita	Pseudacris nigrita	Southern Chorus Frog	not in eBird taxonomy
 pseudacris_ocularis	Pseudacris ocularis	Little Grass Frog	not in eBird taxonomy
 pseudacris_ornata	Pseudacris ornata	Ornate Chorus Frog	not in eBird taxonomy
 pseudacris_streckeri	Pseudacris streckeri	Strecker's Chorus Frog	not in eBird taxonomy
 pseudacris_triseriata	Pseudacris triseriata	Striped Chorus Frog	not in eBird taxonomy
 pseudeos_cardinalis	Pseudeos cardinalis	Cardinal Lory	not in eBird taxonomy
-pseudacris_feriarum	Pseudacris feriarum	Upland Chorus Frog	not in eBird taxonomy
 psilorhinus_morio	Psilorhinus morio	Brown Jay	not in eBird taxonomy
 psittiparus_gularis	Psittiparus gularis	Gray-headed Parrotbill	not in eBird taxonomy
 psophocichla_litsitsirupa	Psophocichla litsitsirupa	Groundscraper Thrush	not in eBird taxonomy
@@ -347,14 +366,14 @@ systellura_decussata	Systellura decussata	Tschudi's Nightjar	not in eBird taxono
 tamias_striatus	Tamias striatus	Eastern Chipmunk	not in eBird taxonomy
 tamiasciurus_hudsonicus	Tamiasciurus hudsonicus	Red Squirrel	not in eBird taxonomy
 tauraco_leucotis	Tauraco leucotis	White-cheeked Turaco	not in eBird taxonomy
+tauraco_porphyreolophus	Tauraco porphyreolophus	Purple-crested Turaco	not in eBird taxonomy
 telophorus_bocagei	Telophorus bocagei	Gray-green Bushshrike	not in eBird taxonomy
 telophorus_nigrifrons	Telophorus nigrifrons	Black-fronted Bushshrike	not in eBird taxonomy
-tauraco_porphyreolophus	Tauraco porphyreolophus	Purple-crested Turaco	not in eBird taxonomy
-telophorus_sulfureopectus	Telophorus sulfureopectus	Sulphur-breasted Bushshrike	not in eBird taxonomy
 telophorus_olivaceus	Telophorus olivaceus	Olive Bushshrike	not in eBird taxonomy
+telophorus_sulfureopectus	Telophorus sulfureopectus	Sulphur-breasted Bushshrike	not in eBird taxonomy
 trachyphonus_purpuratus	Trachyphonus purpuratus	Yellow-billed Barbet	not in eBird taxonomy
 tregellasia_capito	Tregellasia capito	Pale-yellow Robin	not in eBird taxonomy
 tumbezia_salvini	Tumbezia salvini	Tumbes Tyrant	not in eBird taxonomy
+turdus_poliocephalus	Turdus poliocephalus	Island Thrush	ERROR: https://cdn.download.ams.birds.cornell.edu/api/v2/asset//900 → 404 Client Error: Not Found for url: https://cdn.download.ams.birds.cornell.edu/api/v2/asset//900
 urosphena_pallidipes	Urosphena pallidipes	Pale-footed Bush Warbler	not in eBird taxonomy
 vanellus_cayanus	Vanellus cayanus	Pied Lapwing	not in eBird taxonomy
-turdus_poliocephalus	Turdus poliocephalus	Island Thrush	ERROR: https://cdn.download.ams.birds.cornell.edu/api/v2/asset//900 → 404 Client Error: Not Found for url: https://cdn.download.ams.birds.cornell.edu/api/v2/asset//900

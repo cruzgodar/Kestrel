@@ -4,6 +4,10 @@ import SwiftUI
 struct KestrelApp: App {
     @State private var recordingManager: RecordingManager
     @State private var lifeListStore = LifeListStore()
+    @State private var selectedTab: AppTab = .identify
+    @Environment(\.scenePhase) private var scenePhase
+
+    enum AppTab: Hashable { case identify, lifeList }
 
     init() {
         let manager = RecordingManager()
@@ -15,21 +19,34 @@ struct KestrelApp: App {
 
     var body: some Scene {
         WindowGroup {
-            TabView {
-                Tab("Identify", systemImage: "magnifyingglass") {
+            TabView(selection: $selectedTab) {
+                Tab("Identify", systemImage: "magnifyingglass", value: AppTab.identify) {
                     ContentView()
                 }
-                Tab("Life List", systemImage: "bird") {
+                Tab("Life List", systemImage: "bird", value: AppTab.lifeList) {
                     NavigationStack {
                         LifeListView()
                     }
                 }
             }
-            // Both tabs need both stores: Identify reads the life list to
-            // decide which detections to tint purple and to add to it via
-            // swipe; Life List owns the list.
+            // Both tabs need both stores.
             .environment(recordingManager)
             .environment(lifeListStore)
+            // Push "is the spectrogram visible?" into the recording manager
+            // — true only when the Identify tab is selected AND the scene
+            // is active. RecordingManager uses this to decide whether new
+            // species should fire a local notification.
+            .onChange(of: selectedTab, initial: true) { _, _ in
+                updateSpectrogramVisibility()
+            }
+            .onChange(of: scenePhase, initial: true) { _, _ in
+                updateSpectrogramVisibility()
+            }
         }
+    }
+
+    private func updateSpectrogramVisibility() {
+        recordingManager.spectrogramVisible =
+            (selectedTab == .identify) && (scenePhase == .active)
     }
 }

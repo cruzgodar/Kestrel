@@ -21,6 +21,11 @@ final class RecordingManager {
     /// `snapshotLifeList(_:)` on the false → true transition of `isRecording`.
     private(set) var lifeListSnapshot: Set<String> = []
 
+    /// Pushed from `KestrelApp`'s tab + scene-phase observers. When false,
+    /// new-species events fire a local notification instead of relying on
+    /// the in-app UI.
+    var spectrogramVisible: Bool = true
+
     let spectrogram = SpectrogramRenderer()
 
     private let pipeline = AudioPipeline()
@@ -102,6 +107,9 @@ final class RecordingManager {
             errorMessage = "Microphone permission denied."
             return
         }
+
+        // First-use moment for notifications — only ask now, not at launch.
+        SpeciesNotifications.shared.requestAuthorizationIfNeeded()
 
         detections = []
         detectionMap = [:]
@@ -235,6 +243,9 @@ final class RecordingManager {
         let now = Date()
         let cooldown: TimeInterval = 5
         var repeatedIDs: [String] = []
+        // Species heard for the first time this session — used to fire local
+        // notifications when the spectrogram isn't visible.
+        var newlyDetected: [(scientific: String, common: String)] = []
         for d in results {
             if let existing = detectionMap[d.id] {
                 if d.confidence > existing.confidence {
@@ -251,6 +262,20 @@ final class RecordingManager {
                 }
             } else {
                 detectionMap[d.id] = d
+                newlyDetected.append((d.scientificName, d.commonName))
+            }
+        }
+
+        // If the user isn't currently looking at the Identify spectrogram,
+        // surface each new species via a local notification with its thumbnail.
+        if !spectrogramVisible {
+            for species in newlyDetected {
+                Task {
+                    await SpeciesNotifications.shared.notifyNewSpecies(
+                        commonName: species.common,
+                        scientificName: species.scientific
+                    )
+                }
             }
         }
 

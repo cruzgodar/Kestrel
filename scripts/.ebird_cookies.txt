@@ -10,3 +10,5 @@ NetworkProbeLimit=0.001
 WMF-Last-Access-Global=21-May-2026
 GeoIP=US:CT:New_Haven:41.32:-72.93:v4
 WMF-Uniq=lNuc7Z7qK76Cp21jJ67LywNnAAEBAFvd8FbK2uCJq6aKKijQ_kNfu4XsLvsjDMvV
+EBIRD_SESSIONID=448F40DF48487867BCE1A8844CBA0322
+org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=en-US
