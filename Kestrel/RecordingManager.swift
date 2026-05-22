@@ -66,6 +66,18 @@ final class RecordingManager {
     /// Silent-audio playback used to keep the iOS app alive in the
     /// background while the watch is the audio source.
     private let watchKeepalive = BackgroundAudioKeepalive()
+    /// Fires after ~59 min of a watch session — just before the system's
+    /// 1-hour `WKExtendedRuntimeSession` budget expires — to nudge the
+    /// user that they need to re-tap the watch button.
+    private var watchExpirationTask: Task<Void, Never>?
+    /// Periodically checks whether audio is still flowing from the watch.
+    /// If a generous gap elapses with no chunks, we assume the link
+    /// dropped (out of range, watch crashed) and notify the user.
+    private var watchHeartbeatTask: Task<Void, Never>?
+    /// Timestamp of the most recent audio chunk delivered by the watch.
+    private var lastWatchAudioAt: Date?
+    private let watchExpirationWarning: Duration = .seconds(59 * 60)
+    private let watchDisconnectThreshold: TimeInterval = 60
 
     init() {
         registerInterruptionObserver()
@@ -154,24 +166,27 @@ final class RecordingManager {
         return s
     }
 
-    /// Send a haptic kind to the watch — best-effort. `sendMessage`
-    /// requires reachability; if the watch isn't reachable right now the
-    /// haptic just doesn't play. We don't queue via `transferUserInfo`
-    /// because a delayed wrist-tap for a bird heard 15 s ago is worse
-    /// than no tap at all.
+    /// Send a haptic kind to the watch. Live `sendMessage` is the fast
+    /// path when the watch app is foreground; `transferUserInfo` is the
+    /// background fallback — it queues and can wake a suspended watch app
+    /// to deliver the haptic. There's modest latency (1–5 s) over that
+    /// path, but a slightly-late wrist tap is better than none.
     private func sendHapticToWatch(reason: SpeciesNotifications.Reason) {
         guard WCSession.isSupported() else { return }
         let s = WCSession.default
         guard s.activationState == .activated,
               s.isPaired,
-              s.isWatchAppInstalled,
-              s.isReachable else { return }
+              s.isWatchAppInstalled else { return }
         let kind: String
         switch reason {
         case .starred:    kind = "starred"
         case .newSpecies: kind = "newSpecies"
         }
-        s.sendMessage(["haptic": kind], replyHandler: nil, errorHandler: nil)
+        if s.isReachable {
+            s.sendMessage(["haptic": kind], replyHandler: nil, errorHandler: nil)
+        } else {
+            s.transferUserInfo(["haptic": kind])
+        }
     }
 
     private func stopWatchSession() {
@@ -313,6 +328,9 @@ final class RecordingManager {
         // if the user puts the phone away mid-session.
         watchKeepalive.start()
 
+        lastWatchAudioAt = Date()
+        startWatchLifecycleWatchdogs()
+
         preload()
         Task { await self.refreshSpeciesFilter() }
     }
@@ -324,6 +342,65 @@ final class RecordingManager {
         isRecording = false
         watchWindowBuffer.removeAll(keepingCapacity: true)
         watchKeepalive.stop()
+        cancelWatchLifecycleWatchdogs()
+    }
+
+    private func startWatchLifecycleWatchdogs() {
+        watchExpirationTask?.cancel()
+        watchHeartbeatTask?.cancel()
+
+        watchExpirationTask = Task { [weak self] in
+            try? await Task.sleep(for: self?.watchExpirationWarning ?? .seconds(59 * 60))
+            guard !Task.isCancelled, let self else { return }
+            await self.handleWatchExpiration()
+        }
+
+        watchHeartbeatTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled, let self else { return }
+                let stillAlive = await self.checkWatchHeartbeat()
+                if !stillAlive { return }
+            }
+        }
+    }
+
+    private func cancelWatchLifecycleWatchdogs() {
+        watchExpirationTask?.cancel()
+        watchHeartbeatTask?.cancel()
+        watchExpirationTask = nil
+        watchHeartbeatTask = nil
+        lastWatchAudioAt = nil
+    }
+
+    /// Returns false once it tears the session down so the caller can exit
+    /// its polling loop. Returns true while everything looks healthy.
+    private func checkWatchHeartbeat() -> Bool {
+        guard watchRecording, let last = lastWatchAudioAt else { return false }
+        let gap = Date().timeIntervalSince(last)
+        guard gap >= watchDisconnectThreshold else { return true }
+        Task {
+            await SpeciesNotifications.shared.notifySessionLifecycle(
+                title: "Kestrel",
+                body: "Watch disconnected. Re-tap the watch button to keep listening."
+            )
+        }
+        stopFromWatch()
+        return false
+    }
+
+    private func handleWatchExpiration() {
+        guard watchRecording else { return }
+        Task {
+            await SpeciesNotifications.shared.notifySessionLifecycle(
+                title: "Kestrel",
+                body: "Watch session ending. Re-tap the watch button to keep listening."
+            )
+        }
+        // Don't tear down here — the watch's own ERS will invalidate
+        // moments later and the heartbeat watchdog will catch the silence
+        // and clean up. Letting the watch send its own "stop" handshake
+        // keeps the two sides synchronized.
     }
 
     /// Ingest a chunk of 16 kHz mono Float samples from the watch.
@@ -331,6 +408,7 @@ final class RecordingManager {
     /// then slice into BirdNET windows and dispatch inference.
     func ingestWatchSamples16k(_ samples16k: [Float]) {
         guard watchRecording, !samples16k.isEmpty else { return }
+        lastWatchAudioAt = Date()
 
         // 3× linear upsample: between each input sample we emit two
         // interpolated samples. Carries `watchLastSample` across chunks so

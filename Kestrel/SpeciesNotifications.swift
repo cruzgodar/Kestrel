@@ -68,6 +68,32 @@ final class SpeciesNotifications {
         }
     }
 
+    /// Fires a plain text notification (no species thumbnail) used to tell
+    /// the user that a watch streaming session ended — either because the
+    /// system's 1-hour extended-runtime budget expired, or because audio
+    /// stopped flowing from the watch (out of range, app crashed, battery).
+    func notifySessionLifecycle(title: String, body: String) async {
+        let settings = await center.notificationSettings()
+        guard settings.authorizationStatus == .authorized
+                || settings.authorizationStatus == .provisional else { return }
+
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body  = body
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: "kestrel-watch-session-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        do {
+            try await center.add(request)
+        } catch {
+            print("Kestrel: lifecycle notification error — \(error)")
+        }
+    }
+
     /// Bundled species thumbnails live inside the read-only app bundle.
     /// `UNNotificationAttachment` moves the file it's given into a private
     /// notification store, so we copy the bundle image into the temp

@@ -47,9 +47,15 @@ struct KestrelApp: App {
         Self.preheatKeyboard()
     }
 
-    /// Instantiates a throwaway off-screen text field, briefly makes it the
-    /// first responder, then tears it down. Triggers UIKit's keyboard
-    /// initialization so the first real focus tap is instant.
+    /// Instantiates a throwaway text field, briefly makes it the first
+    /// responder, then resigns in the same runloop turn before the system
+    /// has a chance to animate the keyboard onto the screen. Triggers the
+    /// keyboard subsystem initialization (UIInputWindow + remote view
+    /// service + dictionary load) synchronously inside `becomeFirstResponder`,
+    /// so the first real focus tap is instant.
+    ///
+    /// The same-runloop resign + `performWithoutAnimation` together suppress
+    /// the visible slide-up flash that the previous async resign produced.
     private static func preheatKeyboard() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
             guard let window = UIApplication.shared
@@ -59,11 +65,11 @@ struct KestrelApp: App {
             let tf = UITextField(frame: .zero)
             tf.isHidden = true
             window.addSubview(tf)
-            tf.becomeFirstResponder()
-            DispatchQueue.main.async {
+            UIView.performWithoutAnimation {
+                tf.becomeFirstResponder()
                 tf.resignFirstResponder()
-                tf.removeFromSuperview()
             }
+            tf.removeFromSuperview()
         }
     }
 
