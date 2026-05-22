@@ -97,19 +97,27 @@ struct LifeListView: View {
         .navigationTitle("Life List")
         .navigationSubtitle(speciesCountText)
         .toolbarTitleDisplayMode(.inlineLarge)
-        .searchable(text: $searchText, placement: .toolbar, prompt: "Search species")
-        .searchToolbarBehavior(.minimize)
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            BottomSearchField(text: $searchText, prompt: "Search species")
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showStarredOnly.toggle()
                 } label: {
-                    Image(systemName: showStarredOnly
-                        ? "line.3.horizontal.decrease.circle.fill"
-                        : "line.3.horizontal.decrease")
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .padding(6)
+                        .background {
+                            Circle()
+                                .fill(Color.accentColor.opacity(0.22))
+                                .scaleEffect(showStarredOnly ? 1 : 0.6)
+                                .opacity(showStarredOnly ? 1 : 0)
+                        }
+                        .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
                 }
                 .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
             }
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     isImporting = true
@@ -152,7 +160,7 @@ struct LifeListView: View {
     // Blue used by the "alert me" star toggle when on. Matches the blue
     // tint used for starred-species spectrogram bands + row highlights in
     // the Identify tab.
-    private static let starButtonTint = Color(hue: 215.0 / 360.0, saturation: 0.9, brightness: 1.0)
+    private static let starButtonTint = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
 
     private var speciesCountText: String {
         let n = store.entries.count
@@ -176,6 +184,43 @@ struct LifeListView: View {
             importMessage = "File picker error: \(error.localizedDescription)"
             showImportResult = true
         }
+    }
+}
+
+/// Liquid-glass search field that sits in the bottom safe-area inset, just
+/// above the tab bar. Always expanded; tapping focuses the text field.
+private struct BottomSearchField: View {
+    @Binding var text: String
+    let prompt: String
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(.secondary)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .focused($focused)
+                .submitLabel(.search)
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .transition(.opacity)
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
+        .animation(.easeInOut(duration: 0.15), value: text.isEmpty)
     }
 }
 

@@ -121,7 +121,10 @@ struct ContentView: View {
     }
 
     // Faint blue persistent tint for starred species (alert-me list).
-    private static let starredTint = Color(hue: 215.0 / 360.0, saturation: 1.0, brightness: 1.0)
+    // Hue nudged toward violet (220°) so the blue carries more perceived
+    // brightness — pure 215° blue reads dim next to the purple add tint at
+    // the same numeric saturation/brightness.
+    private static let starredTint = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
 
     private func detectionRow(for detection: Detection) -> some View {
         let flashing = manager.flashIDs.contains(detection.id)
@@ -139,7 +142,7 @@ struct ContentView: View {
         let flashColor: Color = needsLifeListAdd
             ? Color(hue: 252.0/360.0, saturation: 0.72, brightness: 0.85)
             : (isStarred
-               ? Color(hue: 215.0/360.0, saturation: 1.0, brightness: 0.95)
+               ? Color(hue: 220.0/360.0, saturation: 0.8, brightness: 1.0)
                 : Color(hue: 50.0/360.0, saturation: 0.45, brightness: 1.0))
 
         return VStack(alignment: .leading, spacing: 8) {
@@ -200,7 +203,7 @@ struct ContentView: View {
                 Self.recordTint
                     .opacity(needsLifeListAdd ? 0.4 : 0)
                 Self.starredTint
-                    .opacity(!needsLifeListAdd && isStarred ? 0.22 : 0)
+                    .opacity(!needsLifeListAdd && isStarred ? 0.4 : 0)
                 flashColor
                     .opacity(flashing ? 0.4 : 0)
                     .animation(
