@@ -3,6 +3,7 @@ import CoreLocation
 import Foundation
 import Observation
 import SwiftUI
+import WatchConnectivity
 
 @Observable
 @MainActor
@@ -46,6 +47,12 @@ final class RecordingManager {
     /// 5-second cooldown so a species doesn't strobe on every overlapping
     /// 1.5 s window of inference.
     private var lastFlashAt: [String: Date] = [:]
+    /// Last time each species was heard. A species becomes eligible for a
+    /// fresh notification + haptic once it's been silent for the cooldown
+    /// window (30 s), letting a bird that comes back later re-fire instead
+    /// of staying muted for the rest of the session.
+    private var lastHeardAt: [String: Date] = [:]
+    private let notifyCooldown: TimeInterval = 30
     /// Tracks the deferred audio engine start/stop task so rapid taps can
     /// cancel a pending transition before its sleep elapses.
     private var pendingTransitionTask: Task<Void, Never>?
@@ -101,14 +108,82 @@ final class RecordingManager {
     }
 
     func toggle() async {
-        if isRecording {
+        if watchRecording {
+            // Active session was started on / for the watch — ask the watch
+            // to stop. It'll tear down its streamer + ERS and send back a
+            // "stop" handshake that flips our state.
+            stopWatchSession()
+        } else if isRecording {
             stop()
         } else {
             await start()
         }
     }
 
+    /// Try to start the recording on the paired Apple Watch. If the watch
+    /// isn't paired / installed / currently reachable, fall back to the
+    /// local mic so the user always gets *something* on tap.
     func start() async {
+        if let watch = preferredWatchSession {
+            // Optimistic — we don't wait for the watch's handshake before
+            // returning. The watch will echo "start" back via its normal
+            // path, which flips `watchRecording = true` and updates the UI.
+            watch.sendMessage(["cmd": "remoteStart"], replyHandler: nil) { [weak self] _ in
+                // sendMessage failed mid-flight (watch slipped out of
+                // reachability). Recover by starting locally.
+                Task { @MainActor [weak self] in
+                    await self?.startLocally()
+                }
+            }
+            return
+        }
+        await startLocally()
+    }
+
+    /// `WCSession.default` only if a watch companion is currently available
+    /// for live messaging. We don't bother trying to wake the watch from
+    /// suspension via transferUserInfo here — the local mic is a fine
+    /// fallback and tapping the watch button later still works.
+    private var preferredWatchSession: WCSession? {
+        guard WCSession.isSupported() else { return nil }
+        let s = WCSession.default
+        guard s.activationState == .activated,
+              s.isPaired,
+              s.isWatchAppInstalled,
+              s.isReachable else { return nil }
+        return s
+    }
+
+    /// Send a haptic kind to the watch — best-effort. `sendMessage`
+    /// requires reachability; if the watch isn't reachable right now the
+    /// haptic just doesn't play. We don't queue via `transferUserInfo`
+    /// because a delayed wrist-tap for a bird heard 15 s ago is worse
+    /// than no tap at all.
+    private func sendHapticToWatch(reason: SpeciesNotifications.Reason) {
+        guard WCSession.isSupported() else { return }
+        let s = WCSession.default
+        guard s.activationState == .activated,
+              s.isPaired,
+              s.isWatchAppInstalled,
+              s.isReachable else { return }
+        let kind: String
+        switch reason {
+        case .starred:    kind = "starred"
+        case .newSpecies: kind = "newSpecies"
+        }
+        s.sendMessage(["haptic": kind], replyHandler: nil, errorHandler: nil)
+    }
+
+    private func stopWatchSession() {
+        let s = WCSession.default
+        s.sendMessage(["cmd": "remoteStop"], replyHandler: nil, errorHandler: nil)
+        s.transferUserInfo(["cmd": "remoteStop"])
+        // Don't flip `watchRecording` here — the watch sends "stop" back
+        // through its normal channel and we let that update our state, so
+        // the UI matches reality even if the remote tear-down is slow.
+    }
+
+    func startLocally() async {
         // If a pending stop task is in its post-animation sleep, drop it before
         // we kick off a fresh start. Same applies the other direction.
         pendingTransitionTask?.cancel()
@@ -352,9 +427,9 @@ final class RecordingManager {
         let now = Date()
         let cooldown: TimeInterval = 5
         var repeatedIDs: [String] = []
-        // Species heard for the first time this session — used to fire local
-        // notifications when the spectrogram isn't visible.
-        var newlyDetected: [(scientific: String, common: String)] = []
+        // Detections that should fire a notification + haptic this batch:
+        // species heard with no detection in the last `notifyCooldown` s.
+        var notifications: [(common: String, scientific: String, reason: SpeciesNotifications.Reason)] = []
         for d in results {
             if let existing = detectionMap[d.id] {
                 if d.confidence > existing.confidence {
@@ -371,28 +446,42 @@ final class RecordingManager {
                 }
             } else {
                 detectionMap[d.id] = d
-                newlyDetected.append((d.scientificName, d.commonName))
             }
+
+            // Notify when (a) the species is interesting (starred or
+            // not-yet-in-life-list), and (b) it hasn't been heard for at
+            // least `notifyCooldown` seconds. The clock resets on every
+            // detection, so a continuously-singing bird only triggers
+            // once; a bird that goes silent and returns re-fires.
+            let isStarred = starredNames.contains(d.scientificName)
+            let isNew = !lifeListSnapshot.contains(d.scientificName)
+            if isStarred || isNew {
+                let last = lastHeardAt[d.scientificName]
+                if last == nil || now.timeIntervalSince(last!) >= notifyCooldown {
+                    let reason: SpeciesNotifications.Reason = isStarred ? .starred : .newSpecies
+                    notifications.append((d.commonName, d.scientificName, reason))
+                }
+            }
+            lastHeardAt[d.scientificName] = now
         }
 
-        // If the user isn't currently looking at the Identify spectrogram,
-        // surface notifications for two cases: starred species (always
-        // interesting) and species not yet on the life list (a potential
-        // lifer). Starred wins when both apply.
+        // Only surface to the user when the Identify spectrogram isn't on
+        // screen — otherwise the visible rows already convey it.
         if !spectrogramVisible {
-            for species in newlyDetected {
-                let isStarred = starredNames.contains(species.scientific)
-                let isNew = !lifeListSnapshot.contains(species.scientific)
-                guard isStarred || isNew else { continue }
-                let reason: SpeciesNotifications.Reason = isStarred ? .starred : .newSpecies
+            for item in notifications {
                 Task {
                     await SpeciesNotifications.shared.notifyNewSpecies(
-                        commonName: species.common,
-                        scientificName: species.scientific,
-                        reason: reason
+                        commonName: item.common,
+                        scientificName: item.scientific,
+                        reason: item.reason
                     )
                 }
             }
+        }
+        // Haptics fire regardless of which device the user is currently
+        // looking at — the wrist tap is the whole point of the watch app.
+        for item in notifications {
+            sendHapticToWatch(reason: item.reason)
         }
 
         for id in repeatedIDs {

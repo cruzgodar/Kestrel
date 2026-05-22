@@ -38,6 +38,18 @@ struct ContentView: View {
                 }
             }
 
+            // Watch-session caption. Always rendered (with a space as the
+            // placeholder string) so the layout below doesn't jump when it
+            // appears / disappears.
+            Text(manager.watchRecording ? "Listening on Apple Watch" : " ")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.horizontal)
+                .padding(.bottom, 2)
+                .opacity(manager.watchRecording ? 1 : 0)
+                .animation(.easeInOut(duration: 0.25), value: manager.watchRecording)
+
             // Always render a single-line caption here so the record
             // button's vertical position is fixed from launch. While the
             // range filter is still loading, the text is an invisible
@@ -97,12 +109,6 @@ struct ContentView: View {
         }
         .buttonStyle(RecordButtonStyle(tint: Self.recordTint))
         .animation(.easeOut(duration: 0.16), value: manager.isRecording)
-        // While the watch is streaming audio, the phone is the receiver,
-        // not the source — block tapping the local record button so the
-        // two paths can't both try to drive the pipeline.
-        .disabled(manager.watchRecording)
-        .opacity(manager.watchRecording ? 0.5 : 1.0)
-        .animation(.easeOut(duration: 0.16), value: manager.watchRecording)
     }
 
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)

@@ -46,6 +46,31 @@ final class WatchSessionManager: NSObject {
         if isRecording { stop() } else { start() }
     }
 
+    /// Called when the phone asks the watch to begin streaming. Idempotent.
+    func handleRemoteStart() {
+        guard !isRecording else { return }
+        start()
+    }
+
+    /// Called when the phone asks the watch to stop streaming. Idempotent.
+    func handleRemoteStop() {
+        guard isRecording else { return }
+        stop()
+    }
+
+    /// Phone fires this on a fresh detection that crossed the notify
+    /// threshold. The kind picks a distinct WKHapticType so a starred bird
+    /// feels different on the wrist from a brand-new species.
+    func playHaptic(kind: String) {
+        let type: WKHapticType
+        switch kind {
+        case "starred": type = .notification  // sharper double-tap
+        case "newSpecies": type = .success    // softer rising chime
+        default: type = .click
+        }
+        WKInterfaceDevice.current().play(type)
+    }
+
     private func start() {
         guard !isRecording else { return }
 
@@ -145,12 +170,37 @@ private final class ExtendedSessionDelegate: NSObject, WKExtendedRuntimeSessionD
     }
 }
 
-/// Plain NSObject delegate — the activation callbacks fire on a background
-/// queue, so keeping the delegate off the main actor avoids extra hops.
+/// Routes incoming WCSession callbacks (which fire on a background queue)
+/// back to the main-actor `WatchSessionManager`.
 private final class SessionDelegate: NSObject, WCSessionDelegate {
     func session(_ session: WCSession,
                  activationDidCompleteWith activationState: WCSessionActivationState,
                  error: Error?) {
         if let error { print("Kestrel Watch: WCSession activation error \(error)") }
+    }
+
+    func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
+        route(message)
+    }
+
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        route(userInfo)
+    }
+
+    private func route(_ payload: [String: Any]) {
+        if let cmd = payload["cmd"] as? String {
+            Task { @MainActor in
+                switch cmd {
+                case "remoteStart": WatchSessionManager.shared.handleRemoteStart()
+                case "remoteStop":  WatchSessionManager.shared.handleRemoteStop()
+                default: break
+                }
+            }
+        }
+        if let haptic = payload["haptic"] as? String {
+            Task { @MainActor in
+                WatchSessionManager.shared.playHaptic(kind: haptic)
+            }
+        }
     }
 }
