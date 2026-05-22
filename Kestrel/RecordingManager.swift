@@ -368,15 +368,20 @@ final class RecordingManager {
         }
 
         // If the user isn't currently looking at the Identify spectrogram,
-        // surface each new starred species via a local notification with its
-        // thumbnail. Non-starred detections stay silent — the UI is the only
-        // signal you get for those.
+        // surface notifications for two cases: starred species (always
+        // interesting) and species not yet on the life list (a potential
+        // lifer). Starred wins when both apply.
         if !spectrogramVisible {
-            for species in newlyDetected where starredNames.contains(species.scientific) {
+            for species in newlyDetected {
+                let isStarred = starredNames.contains(species.scientific)
+                let isNew = !lifeListSnapshot.contains(species.scientific)
+                guard isStarred || isNew else { continue }
+                let reason: SpeciesNotifications.Reason = isStarred ? .starred : .newSpecies
                 Task {
                     await SpeciesNotifications.shared.notifyNewSpecies(
                         commonName: species.common,
-                        scientificName: species.scientific
+                        scientificName: species.scientific,
+                        reason: reason
                     )
                 }
             }

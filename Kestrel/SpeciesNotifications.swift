@@ -31,14 +31,26 @@ final class SpeciesNotifications {
 
     /// Schedules an immediate local notification for a new species. No-op if
     /// the user hasn't granted notification permission.
-    func notifyNewSpecies(commonName: String, scientificName: String) async {
+    enum Reason {
+        case starred
+        case newSpecies
+
+        var body: String {
+            switch self {
+            case .starred:    return "Starred species heard"
+            case .newSpecies: return "New species heard"
+            }
+        }
+    }
+
+    func notifyNewSpecies(commonName: String, scientificName: String, reason: Reason) async {
         let settings = await center.notificationSettings()
         guard settings.authorizationStatus == .authorized
                 || settings.authorizationStatus == .provisional else { return }
 
         let content = UNMutableNotificationContent()
         content.title = commonName
-        content.body  = "Starred species heard"
+        content.body  = reason.body
         content.sound = .default
         if let attachment = makeAttachment(scientificName: scientificName) {
             content.attachments = [attachment]
