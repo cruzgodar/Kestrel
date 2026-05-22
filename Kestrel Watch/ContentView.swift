@@ -1,22 +1,30 @@
-//
-//  ContentView.swift
-//  Kestrel Watch Watch App
-//
-//  Created by Cruz Godar on 5/22/26.
-//
-
 import SwiftUI
 
 struct ContentView: View {
+    @State private var session = WatchSessionManager.shared
+
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            Button {
+                session.toggle()
+            } label: {
+                Image(systemName: session.isRecording ? "stop.fill" : "mic.fill")
+                    .font(.system(size: 44, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 110, height: 110)
+                    .background(Circle().fill(Self.recordTint))
+                    .scaleEffect(session.isRecording ? 1.05 : 1.0)
+                    .animation(.easeOut(duration: 0.18), value: session.isRecording)
+            }
+            .buttonStyle(.plain)
         }
-        .padding()
+        .task { WatchSessionManager.shared.activate() }
     }
+
+    private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
 }
 
 #Preview {

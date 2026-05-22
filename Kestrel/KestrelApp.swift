@@ -8,6 +8,10 @@ struct KestrelApp: App {
     @State private var selectedTab: AppTab = .identify
     @Environment(\.scenePhase) private var scenePhase
 
+    /// Held for lifetime; activates a WCSession and routes watch audio +
+    /// start/stop handshakes into `recordingManager`.
+    private let watchBridge: WatchAudioBridge
+
     enum AppTab: Hashable { case identify, lifeList }
 
     init() {
@@ -16,6 +20,8 @@ struct KestrelApp: App {
         // the app launches, so the first Start Recording tap is instant.
         manager.preload()
         _recordingManager = State(wrappedValue: manager)
+
+        watchBridge = WatchAudioBridge(manager: manager)
 
         let store = LifeListStore()
         _lifeListStore = State(wrappedValue: store)

@@ -8,6 +8,9 @@ import SwiftUI
 @MainActor
 final class RecordingManager {
     private(set) var isRecording = false
+    /// True while audio is being streamed in from the Apple Watch companion.
+    /// The Identify view disables its own record button while this is true.
+    private(set) var watchRecording = false
     private(set) var detections: [Detection] = []
     private(set) var errorMessage: String?
     private(set) var locationStatus: String?
@@ -47,6 +50,12 @@ final class RecordingManager {
     /// cancel a pending transition before its sleep elapses.
     private var pendingTransitionTask: Task<Void, Never>?
     private nonisolated(unsafe) var interruptionObserver: NSObjectProtocol?
+
+    // Watch-audio ingestion state. Samples arrive 16 kHz Float mono from the
+    // watch; we upsample to 48 kHz via linear interpolation, hand them to the
+    // spectrogram, and accumulate into BirdNET-sized windows.
+    private var watchWindowBuffer: [Float] = []
+    private var watchLastSample: Float = 0
 
     init() {
         registerInterruptionObserver()
@@ -194,6 +203,73 @@ final class RecordingManager {
             }
             guard !Task.isCancelled else { return }
             pipeline.stop()
+        }
+    }
+
+    // MARK: - Watch audio ingestion
+
+    /// Called when the watch sends a "start" handshake. Resets per-session
+    /// state the same way `start()` does but skips the local AVAudioEngine —
+    /// the watch is the audio source now.
+    func startFromWatch() async {
+        pendingTransitionTask?.cancel()
+        pendingTransitionTask = nil
+
+        // If a phone-driven recording is already running, don't clobber it.
+        if isRecording && !watchRecording { return }
+        guard !watchRecording else { return }
+
+        errorMessage = nil
+        detections = []
+        detectionMap = [:]
+        flashIDs = []
+        lastFlashAt = [:]
+        watchWindowBuffer.removeAll(keepingCapacity: true)
+        watchLastSample = 0
+        spectrogram.reset()
+
+        isRecording = true
+        watchRecording = true
+
+        preload()
+        Task { await self.refreshSpeciesFilter() }
+    }
+
+    /// Called when the watch sends a "stop" handshake.
+    func stopFromWatch() {
+        guard watchRecording else { return }
+        watchRecording = false
+        isRecording = false
+        watchWindowBuffer.removeAll(keepingCapacity: true)
+    }
+
+    /// Ingest a chunk of 16 kHz mono Float samples from the watch.
+    /// Linear-interpolation 3× upsample to 48 kHz, feed the spectrogram,
+    /// then slice into BirdNET windows and dispatch inference.
+    func ingestWatchSamples16k(_ samples16k: [Float]) {
+        guard watchRecording, !samples16k.isEmpty else { return }
+
+        // 3× linear upsample: between each input sample we emit two
+        // interpolated samples. Carries `watchLastSample` across chunks so
+        // we don't introduce a discontinuity at chunk boundaries.
+        var upsampled = [Float]()
+        upsampled.reserveCapacity(samples16k.count * 3)
+        var prev = watchLastSample
+        for s in samples16k {
+            upsampled.append(prev)
+            upsampled.append(prev + (s - prev) * (1.0 / 3.0))
+            upsampled.append(prev + (s - prev) * (2.0 / 3.0))
+            prev = s
+        }
+        watchLastSample = prev
+
+        spectrogram.ingest(upsampled)
+
+        watchWindowBuffer.append(contentsOf: upsampled)
+        while watchWindowBuffer.count >= AudioPipeline.windowSamples {
+            let window = Array(watchWindowBuffer.prefix(AudioPipeline.windowSamples))
+            watchWindowBuffer.removeFirst(AudioPipeline.hopSamples)
+            Task { await self.process(window: window) }
         }
     }
 

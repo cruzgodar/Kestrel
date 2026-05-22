@@ -97,6 +97,12 @@ struct ContentView: View {
         }
         .buttonStyle(RecordButtonStyle(tint: Self.recordTint))
         .animation(.easeOut(duration: 0.16), value: manager.isRecording)
+        // While the watch is streaming audio, the phone is the receiver,
+        // not the source — block tapping the local record button so the
+        // two paths can't both try to drive the pipeline.
+        .disabled(manager.watchRecording)
+        .opacity(manager.watchRecording ? 0.5 : 1.0)
+        .animation(.easeOut(duration: 0.16), value: manager.watchRecording)
     }
 
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
