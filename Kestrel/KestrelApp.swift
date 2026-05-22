@@ -25,7 +25,7 @@ struct KestrelApp: App {
     var body: some Scene {
         WindowGroup {
             TabView(selection: $selectedTab) {
-                Tab("Identify", systemImage: "magnifyingglass", value: AppTab.identify) {
+                Tab("Identify", systemImage: "mic.fill", value: AppTab.identify) {
                     ContentView()
                 }
                 Tab("Life List", systemImage: "bird", value: AppTab.lifeList) {

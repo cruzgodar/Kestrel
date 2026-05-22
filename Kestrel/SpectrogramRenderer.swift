@@ -282,7 +282,7 @@ final class SpectrogramRenderer: @unchecked Sendable {
         // loud frequencies are highlighted. Three distinct endpoint colors:
         //   1 = lifer (already in life list) → goldenrod (218, 165,  32)
         //   2 = needs-add (not yet in list)  → purple    (122,  89, 255)
-        //   3 = starred (alert-me)           → blue      ( 40, 130, 255)
+        //   3 = starred (alert-me)           → blue      (  0,  95, 255)
         // The endpoint maps the same way regardless of mode; light-mode
         // inversion has already been applied to the underlying gray, so we
         // un-invert here to recover the original loudness before painting.
@@ -296,7 +296,7 @@ final class SpectrogramRenderer: @unchecked Sendable {
             switch kind {
             case 1: loudR = 218; loudG = 165; loudB =  32
             case 2: loudR = 122; loudG =  89; loudB = 255
-            default: loudR = 40; loudG = 130; loudB = 255
+            default: loudR = 0; loudG = 95; loudB = 255
             }
             let xOffset = x * 4
             for y in 0..<Self.displayBins {

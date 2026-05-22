@@ -10,6 +10,18 @@ struct LifeListView: View {
     /// The species the user just swiped to delete — drives the confirmation
     /// dialog. Cleared on Cancel; the actual remove happens on confirm.
     @State private var pendingDeletion: LifeListEntry?
+    @State private var showStarredOnly = false
+    @State private var searchText = ""
+
+    private var visibleEntries: [LifeListEntry] {
+        let base = showStarredOnly ? store.entries.filter(\.isStarred) : store.entries
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return base }
+        return base.filter {
+            $0.commonName.localizedCaseInsensitiveContains(q)
+                || $0.scientificName.localizedCaseInsensitiveContains(q)
+        }
+    }
 
     var body: some View {
         Group {
@@ -20,38 +32,8 @@ struct LifeListView: View {
                     Text("Tap the import button to load an eBird CSV export.")
                 }
             } else {
-                List(store.entries) { entry in
+                List(visibleEntries) { entry in
                     HStack(spacing: 12) {
-                        Button {
-                            store.setStarred(
-                                scientificName: entry.scientificName,
-                                isStarred: !entry.isStarred
-                            )
-                        } label: {
-                            // Same circular footprint as the Identify tab's
-                            // plus button — hollow gray when off, solid blue
-                            // when on. .symbolEffect(.replace) morphs between
-                            // the two without a layout jump.
-                            Image(systemName: entry.isStarred ? "star.fill" : "star")
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(entry.isStarred ? .white : .secondary)
-                                .contentTransition(.symbolEffect(.replace))
-                                .frame(width: 32, height: 32)
-                                .background(
-                                    Circle().fill(
-                                        entry.isStarred
-                                            ? Self.starButtonTint
-                                            : Color.gray.opacity(0.18)
-                                    )
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel(
-                            entry.isStarred
-                                ? "Turn off alerts for \(entry.commonName)"
-                                : "Alert me when \(entry.commonName) is heard"
-                        )
-
                         VStack(alignment: .leading, spacing: 2) {
                             Text(entry.commonName)
                                 .font(.headline)
@@ -60,6 +42,33 @@ struct LifeListView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
+                        Button {
+                            store.setStarred(
+                                scientificName: entry.scientificName,
+                                isStarred: !entry.isStarred
+                            )
+                        } label: {
+                            // Fade between the hollow and filled star — no
+                            // background, no symbol-replace morph.
+                            ZStack {
+                                Image(systemName: "star")
+                                    .font(.system(size: 24, weight: .regular))
+                                    .foregroundStyle(.secondary)
+                                    .opacity(entry.isStarred ? 0 : 1)
+                                Image(systemName: "star.fill")
+                                    .font(.system(size: 24, weight: .semibold))
+                                    .foregroundStyle(Self.starButtonTint)
+                                    .opacity(entry.isStarred ? 1 : 0)
+                            }
+                            .frame(width: 32, height: 32)
+                            .animation(.easeInOut(duration: 0.1), value: entry.isStarred)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(
+                            entry.isStarred
+                                ? "Turn off alerts for \(entry.commonName)"
+                                : "Alert me when \(entry.commonName) is heard"
+                        )
                         SpeciesThumbnail(scientificName: entry.scientificName)
                     }
                     .padding(.horizontal, 16)
@@ -88,7 +97,19 @@ struct LifeListView: View {
         .navigationTitle("Life List")
         .navigationSubtitle(speciesCountText)
         .toolbarTitleDisplayMode(.inlineLarge)
+        .searchable(text: $searchText, placement: .toolbar, prompt: "Search species")
+        .searchToolbarBehavior(.minimize)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showStarredOnly.toggle()
+                } label: {
+                    Image(systemName: showStarredOnly
+                        ? "line.3.horizontal.decrease.circle.fill"
+                        : "line.3.horizontal.decrease")
+                }
+                .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     isImporting = true
@@ -131,7 +152,7 @@ struct LifeListView: View {
     // Blue used by the "alert me" star toggle when on. Matches the blue
     // tint used for starred-species spectrogram bands + row highlights in
     // the Identify tab.
-    private static let starButtonTint = Color(hue: 215.0 / 360.0, saturation: 0.65, brightness: 1.0)
+    private static let starButtonTint = Color(hue: 215.0 / 360.0, saturation: 0.9, brightness: 1.0)
 
     private var speciesCountText: String {
         let n = store.entries.count

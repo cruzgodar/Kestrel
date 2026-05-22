@@ -38,7 +38,7 @@ final class SpeciesNotifications {
 
         let content = UNMutableNotificationContent()
         content.title = commonName
-        content.body  = "New species heard"
+        content.body  = "Starred species heard"
         content.sound = .default
         if let attachment = makeAttachment(scientificName: scientificName) {
             content.attachments = [attachment]
