@@ -14,7 +14,7 @@ final class SpeciesImageCache {
     func image(for scientificName: String) -> UIImage? {
         let key = scientificName as NSString
         if let cached = cache.object(forKey: key) { return cached }
-        guard let url = SpeciesImage.url(for: scientificName),
+        guard let url = SpeciesImage.largeURL(for: scientificName),
               let image = UIImage(contentsOfFile: url.path) else {
             return nil
         }

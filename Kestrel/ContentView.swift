@@ -7,27 +7,49 @@ struct ContentView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            if manager.isRecording {
-                SpectrogramView(renderer: manager.spectrogram)
-                    .frame(height: 80)
-                    .frame(maxWidth: .infinity)
-                    .clipped()
-                    .transition(.opacity.animation(.smooth(duration: 0.16)))
+            ZStack(alignment: .top) {
+                resultsView
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    // Reserve 80pt at the top for the spectrogram only when
+                    // there are real rows to scroll; the empty filler renders
+                    // through the overlay and shouldn't get shoved down.
+                    .padding(.top, (manager.isRecording && !manager.detections.isEmpty) ? 80 : 0)
+                    .animation(.easeOut(duration: 0.15), value: manager.isRecording)
+                    .animation(.easeOut(duration: 0.15), value: manager.detections.isEmpty)
 
+                if manager.isRecording {
+                    SpectrogramView(renderer: manager.spectrogram)
+                        .frame(height: 80)
+                        .frame(maxWidth: .infinity)
+                        .clipped()
+                        .transition(.opacity.animation(.smooth(duration: 0.16)))
+                }
+            }
+            .overlay {
+                if manager.detections.isEmpty {
+                    ContentUnavailableView {
+                        Label("No detections yet", systemImage: "bird")
+                    } description: {
+                        Text("Tap Start Recording to begin identifying birds.")
+                    }
+                    .opacity(manager.isRecording ? 0 : 1)
+                    .animation(.easeInOut(duration: 0.25), value: manager.isRecording)
+                    .allowsHitTesting(false)
+                }
             }
 
-            resultsView
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .animation(.easeOut(duration: 0.15), value: manager.isRecording)
-                .animation(.easeOut(duration: 0.15), value: manager.detections.isEmpty)
-
-            if let status = manager.locationStatus {
-                Text(status)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal)
-                    .padding(.bottom, 6)
-            }
+            // Always render a single-line caption here so the record
+            // button's vertical position is fixed from launch. While the
+            // range filter is still loading, the text is an invisible
+            // placeholder; it fades in once `locationStatus` resolves.
+            Text(manager.locationStatus ?? " ")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .padding(.horizontal)
+                .padding(.bottom, 6)
+                .opacity(manager.locationStatus == nil ? 0 : 1)
+                .animation(.easeIn(duration: 0.25), value: manager.locationStatus)
 
             if let message = manager.errorMessage {
                 Text(message)
@@ -83,6 +105,10 @@ struct ContentView: View {
                 // duration of the recording, so the tint doesn't vanish the
                 // instant the user swipes to add.
                 let needsLifeListAdd = !manager.lifeListSnapshot.contains(detection.scientificName)
+                // Once the user taps the plus, the species is in the live
+                // store even though the session snapshot still says it wasn't.
+                // That flip is how we know to swap plus → checkmark.
+                let alreadyAdded = lifeListStore.entries.contains { $0.scientificName == detection.scientificName }
                 // Rows in the life list flash pastel yellow; rows that need
                 // to be added flash a mildly-deeper shade of the persistent
                 // purple — subtler than a saturated dark purple.
@@ -99,24 +125,31 @@ struct ContentView: View {
                             .italic()
                     }
                     Spacer()
-                    Text(String(format: "%.0f%%", detection.confidence * 100))
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
                     if needsLifeListAdd {
                         Button {
+                            guard !alreadyAdded else { return }
                             lifeListStore.add(
                                 scientificName: detection.scientificName,
                                 commonName: detection.commonName
                             )
                         } label: {
-                            Image(systemName: "plus")
+                            // Single Image whose symbol name swaps; the
+                            // .symbolEffect(.replace) content transition
+                            // morphs plus → checkmark in place.
+                            Image(systemName: alreadyAdded ? "checkmark" : "plus")
                                 .font(.body.weight(.semibold))
                                 .foregroundStyle(.white)
+                                .contentTransition(.symbolEffect(.replace))
                                 .frame(width: 32, height: 32)
                                 .background(Self.recordTint, in: Circle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("Add \(detection.commonName) to Life List")
+                        .disabled(alreadyAdded)
+                        .accessibilityLabel(
+                            alreadyAdded
+                                ? "\(detection.commonName) added to Life List"
+                                : "Add \(detection.commonName) to Life List"
+                        )
                     }
                     SpeciesThumbnail(scientificName: detection.scientificName)
                 }
@@ -146,14 +179,9 @@ struct ContentView: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .scrollBounceBehavior(.basedOnSize)
-        } else if !manager.isRecording {
-            ContentUnavailableView {
-                Label("No detections yet", systemImage: "bird")
-            } description: {
-                Text("Tap Start Recording to begin identifying birds.")
-            }
-            .transition(.opacity)
         } else {
+            // Filler is rendered via the body's .overlay so its position
+            // isn't affected when the spectrogram appears above it.
             Color.clear
         }
     }
@@ -180,6 +208,10 @@ private struct RecordButtonStyle: ButtonStyle {
             .background {
                 Capsule(style: .continuous).fill(tint)
             }
+            // Clip to the capsule so the "Start Recording" label can't spill
+            // out the right edge while the button is mid-shrink toward its
+            // mic-only width.
+            .clipShape(Capsule(style: .continuous))
             .scaleEffect(configuration.isPressed ? 1.1 : 1.0)
             .opacity(configuration.isPressed ? 0.85 : 1.0)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)

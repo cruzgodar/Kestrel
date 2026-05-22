@@ -73,6 +73,14 @@ final class RecordingManager {
         // executor; pipeline.start() awaits this task before activating the
         // session itself, so the two can't race on the shared AVAudioSession.
         pipeline.startPrewarm()
+
+        // Kick off the location/range-filter lookup at launch so the
+        // "Filtered to N species" caption is ready to fade in before the
+        // user taps Start Recording, instead of appearing mid-session and
+        // shoving the record button down.
+        if locationStatus == nil {
+            Task { await self.refreshSpeciesFilter() }
+        }
     }
 
     func toggle() async {
@@ -107,9 +115,6 @@ final class RecordingManager {
             errorMessage = "Microphone permission denied."
             return
         }
-
-        // First-use moment for notifications — only ask now, not at launch.
-        SpeciesNotifications.shared.requestAuthorizationIfNeeded()
 
         detections = []
         detectionMap = [:]

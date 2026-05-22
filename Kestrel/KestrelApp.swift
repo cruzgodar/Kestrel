@@ -15,6 +15,11 @@ struct KestrelApp: App {
         // the app launches, so the first Start Recording tap is instant.
         manager.preload()
         _recordingManager = State(wrappedValue: manager)
+        // Ask for notification permission at first launch rather than
+        // deferring to the first Start Recording tap.
+        Task { @MainActor in
+            SpeciesNotifications.shared.requestAuthorizationIfNeeded()
+        }
     }
 
     var body: some Scene {

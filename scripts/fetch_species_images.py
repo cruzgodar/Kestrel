@@ -282,7 +282,7 @@ def main() -> int:
             slug = slug_for(sci)
             if not slug:
                 continue
-            dest = OUT_DIR / f"{slug}.jpg"
+            dest = OUT_DIR / f"{slug}_large.jpg"
             futures[pool.submit(process_species, sci, common, dest, taxonomy)] = \
                 (sci, common, dest)
 

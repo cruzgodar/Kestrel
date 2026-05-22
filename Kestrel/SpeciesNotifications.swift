@@ -14,9 +14,9 @@ final class SpeciesNotifications {
 
     private init() {}
 
-    /// Asks the system once for alert+sound permission. Called when the user
-    /// first starts a recording session, so we don't pop the system prompt
-    /// before there's any reason for notifications.
+    /// Asks the system once for alert+sound permission. Called on first
+    /// launch so the prompt is out of the way before the user starts a
+    /// recording session.
     func requestAuthorizationIfNeeded() {
         guard !didRequestAuth else { return }
         didRequestAuth = true
@@ -61,7 +61,7 @@ final class SpeciesNotifications {
     /// notification store, so we copy the bundle image into the temp
     /// directory first.
     private func makeAttachment(scientificName: String) -> UNNotificationAttachment? {
-        guard let bundleURL = SpeciesImage.url(for: scientificName) else { return nil }
+        guard let bundleURL = SpeciesImage.largeURL(for: scientificName) else { return nil }
         let tmpURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("kestrel-\(UUID().uuidString).jpg")
         do {

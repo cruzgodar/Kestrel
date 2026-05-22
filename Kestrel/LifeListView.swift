@@ -37,12 +37,17 @@ struct LifeListView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .listRowInsets(EdgeInsets())
                     .listRowSeparator(.hidden)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                        Button(role: .destructive) {
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        // No `role: .destructive` — that role makes SwiftUI
+                        // pre-animate the row removal as soon as the button
+                        // is tapped, which is what causes the rows below to
+                        // slide up before the user has even confirmed.
+                        Button {
                             pendingDeletion = entry
                         } label: {
                             Label("Delete", systemImage: "trash")
                         }
+                        .tint(.red)
                     }
                 }
                 .listStyle(.plain)
@@ -75,13 +80,12 @@ struct LifeListView: View {
         } message: { message in
             Text(message)
         }
-        .confirmationDialog(
+        .alert(
             pendingDeletion.map { "Remove \($0.commonName) from your life list?" } ?? "",
             isPresented: Binding(
                 get: { pendingDeletion != nil },
                 set: { if !$0 { pendingDeletion = nil } }
             ),
-            titleVisibility: .visible,
             presenting: pendingDeletion
         ) { entry in
             Button("Delete", role: .destructive) {
