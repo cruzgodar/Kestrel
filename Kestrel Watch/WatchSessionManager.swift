@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import WatchConnectivity
+import WatchKit
 
 /// Owns the watch-side `WCSession` and the audio streamer. The UI just calls
 /// `toggle()`. The session sends a "start"/"stop" control message before/after
@@ -14,7 +15,13 @@ final class WatchSessionManager: NSObject {
 
     private let streamer = WatchAudioStreamer()
     private let delegate = SessionDelegate()
+    private let extendedDelegate = ExtendedSessionDelegate()
     private var activated = false
+
+    /// Keeps the watch app running when the wrist drops or the screen
+    /// sleeps. Capped at ~1 hour by the system; we let it expire and the
+    /// user can re-tap the button to start a fresh session.
+    private var extendedSession: WKExtendedRuntimeSession?
 
     func activate() {
         guard !activated, WCSession.isSupported() else { return }
@@ -30,6 +37,11 @@ final class WatchSessionManager: NSObject {
 
     private func start() {
         guard !isRecording else { return }
+
+        // Kick off the extended runtime session first so the audio capture
+        // survives the user lowering their wrist a second later.
+        startExtendedSession()
+
         let session = WCSession.default
         // Tell the phone we're starting before audio chunks begin to arrive.
         session.sendMessage(["cmd": "start"], replyHandler: nil) { err in
@@ -44,6 +56,7 @@ final class WatchSessionManager: NSObject {
             isRecording = true
         } catch {
             print("Kestrel Watch: streamer start error \(error)")
+            stopExtendedSession()
         }
     }
 
@@ -52,6 +65,33 @@ final class WatchSessionManager: NSObject {
         streamer.stop()
         isRecording = false
         WCSession.default.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
+        stopExtendedSession()
+    }
+
+    private func startExtendedSession() {
+        guard extendedSession == nil else { return }
+        let s = WKExtendedRuntimeSession()
+        s.delegate = extendedDelegate
+        s.start()
+        extendedSession = s
+    }
+
+    private func stopExtendedSession() {
+        extendedSession?.invalidate()
+        extendedSession = nil
+    }
+}
+
+/// Logs lifecycle for the extended runtime session. Nothing reactive — the
+/// streamer + WCSession are the source of truth for whether we're still
+/// recording. If the system expires our hour, audio simply stops.
+private final class ExtendedSessionDelegate: NSObject, WKExtendedRuntimeSessionDelegate {
+    func extendedRuntimeSessionDidStart(_ extendedRuntimeSession: WKExtendedRuntimeSession) {}
+    func extendedRuntimeSessionWillExpire(_ extendedRuntimeSession: WKExtendedRuntimeSession) {}
+    func extendedRuntimeSession(_ extendedRuntimeSession: WKExtendedRuntimeSession,
+                                didInvalidateWith reason: WKExtendedRuntimeSessionInvalidationReason,
+                                error: Error?) {
+        if let error { print("Kestrel Watch: extended session invalidated — \(reason.rawValue) \(error)") }
     }
 }
 

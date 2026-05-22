@@ -58,6 +58,13 @@
 			);
 			target = FC5ECB752FC0B82F00667FD7 /* Kestrel Watch */;
 		};
+		FC5E2BED2FC0D68000667FD7 /* Exceptions for "Kestrel Watch" folder in "Kestrel Watch" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				"Kestrel-Watch-Info.plist",
+			);
+			target = FC5ECB752FC0B82F00667FD7 /* Kestrel Watch */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -72,6 +79,9 @@
 		};
 		FC5ECB772FC0B82F00667FD7 /* Kestrel Watch */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				FC5E2BED2FC0D68000667FD7 /* Exceptions for "Kestrel Watch" folder in "Kestrel Watch" target */,
+			);
 			path = "Kestrel Watch";
 			sourceTree = "<group>";
 		};
@@ -491,6 +501,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Kestrel-Watch-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Kestrel Watch";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Kestrel listens for nearby birds from your Apple Watch.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
@@ -526,6 +537,7 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = "Kestrel-Watch-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Kestrel Watch";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Kestrel listens for nearby birds from your Apple Watch.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";

@@ -56,6 +56,9 @@ final class RecordingManager {
     // spectrogram, and accumulate into BirdNET-sized windows.
     private var watchWindowBuffer: [Float] = []
     private var watchLastSample: Float = 0
+    /// Silent-audio playback used to keep the iOS app alive in the
+    /// background while the watch is the audio source.
+    private let watchKeepalive = BackgroundAudioKeepalive()
 
     init() {
         registerInterruptionObserver()
@@ -231,6 +234,10 @@ final class RecordingManager {
         isRecording = true
         watchRecording = true
 
+        // Activate the silent-audio keepalive so iOS doesn't suspend us
+        // if the user puts the phone away mid-session.
+        watchKeepalive.start()
+
         preload()
         Task { await self.refreshSpeciesFilter() }
     }
@@ -241,6 +248,7 @@ final class RecordingManager {
         watchRecording = false
         isRecording = false
         watchWindowBuffer.removeAll(keepingCapacity: true)
+        watchKeepalive.stop()
     }
 
     /// Ingest a chunk of 16 kHz mono Float samples from the watch.
