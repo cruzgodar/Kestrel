@@ -271,7 +271,7 @@ private struct BottomSearchField: View {
                     focused = false
                 } label: {
                     Image(systemName: "xmark")
-                        .font(.system(size: 22, weight: .medium))
+                        .font(.system(size: 22, weight: .regular))
                         .foregroundStyle(.primary)
                         // Keep the outer circle the same height as the
                         // capsule (≈48pt). The icon grows inside the fixed

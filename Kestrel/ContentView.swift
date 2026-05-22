@@ -332,7 +332,10 @@ final class SpectrogramHostView: UIView {
     func start() {
         stop()
         let link = CADisplayLink(target: self, selector: #selector(tick))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
+        // Capped at 60 Hz on purpose: at 120 Hz the FFT + 700KB pixel
+        // snapshot per frame burns enough main-thread time to stutter
+        // List scrolling. Visually the spectrogram is already smooth at 60.
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 60, preferred: 60)
         link.add(to: .main, forMode: .common)
         displayLink = link
         updatePauseState()
@@ -368,17 +371,41 @@ final class SpectrogramHostView: UIView {
     }
 
     private var lastSetImage: CGImage?
+    /// Background queue that runs `pumpColumns` + `snapshot` off the main
+    /// thread. Critical for scroll smoothness — these two calls together do
+    /// the FFT, ~700 KB pixel memcpy, and CGImage construction on every
+    /// frame, which used to compete with `UICollectionView` scroll work.
+    /// Renderer state is protected by its own lock, so concurrent access
+    /// from the audio thread + this queue is safe.
+    private static let renderQueue = DispatchQueue(
+        label: "kestrel.spectrogram.render",
+        qos: .userInteractive
+    )
+    /// Skip-frame guard: if the previous frame's background render is still
+    /// running when the next display tick fires, we drop the new tick instead
+    /// of piling up. Accessed only from main.
+    private var renderInFlight: Bool = false
 
     @objc private func tick(_ link: CADisplayLink) {
-        renderer?.pumpColumns(at: link.targetTimestamp)
-        guard let image = renderer?.snapshot(inverted: invert) else { return }
-        // Skip the layer.contents write when the renderer returns the same
-        // cached image — saves a CoreAnimation transaction per idle frame.
-        if image === lastSetImage { return }
-        lastSetImage = image
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
-        layer.contents = image
-        CATransaction.commit()
+        guard let renderer else { return }
+        if renderInFlight { return }
+        renderInFlight = true
+        let target = link.targetTimestamp
+        let invertNow = invert
+        Self.renderQueue.async { [weak self] in
+            renderer.pumpColumns(at: target)
+            let image = renderer.snapshot(inverted: invertNow)
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.renderInFlight = false
+                guard let image else { return }
+                if image === self.lastSetImage { return }
+                self.lastSetImage = image
+                CATransaction.begin()
+                CATransaction.setDisableActions(true)
+                self.layer.contents = image
+                CATransaction.commit()
+            }
+        }
     }
 }

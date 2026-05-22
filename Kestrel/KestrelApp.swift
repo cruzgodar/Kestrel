@@ -1,9 +1,10 @@
 import SwiftUI
+import UIKit
 
 @main
 struct KestrelApp: App {
     @State private var recordingManager: RecordingManager
-    @State private var lifeListStore = LifeListStore()
+    @State private var lifeListStore: LifeListStore
     @State private var selectedTab: AppTab = .identify
     @Environment(\.scenePhase) private var scenePhase
 
@@ -15,10 +16,48 @@ struct KestrelApp: App {
         // the app launches, so the first Start Recording tap is instant.
         manager.preload()
         _recordingManager = State(wrappedValue: manager)
+
+        let store = LifeListStore()
+        _lifeListStore = State(wrappedValue: store)
+
+        // Background-decode every life-list thumbnail at launch. Without this
+        // the first switch to the Life List tab spends ~hundreds of ms
+        // synchronously decoding JPEGs on the main thread.
+        SpeciesImageCache.shared.preheat(
+            scientificNames: store.entries.map(\.scientificName)
+        )
+
         // Ask for notification permission at first launch rather than
         // deferring to the first Start Recording tap.
         Task { @MainActor in
             SpeciesNotifications.shared.requestAuthorizationIfNeeded()
+        }
+
+        // Warm up UIKit's keyboard subsystem off-screen. The first time a
+        // text field becomes first responder anywhere in the app, the
+        // keyboard's UIInputWindow + remote view service take 100–300 ms to
+        // initialize. Doing it now on a fresh launch — while everything else
+        // is also initializing — hides that latency behind launch.
+        Self.preheatKeyboard()
+    }
+
+    /// Instantiates a throwaway off-screen text field, briefly makes it the
+    /// first responder, then tears it down. Triggers UIKit's keyboard
+    /// initialization so the first real focus tap is instant.
+    private static func preheatKeyboard() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+            guard let window = UIApplication.shared
+                .connectedScenes
+                .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
+                .first else { return }
+            let tf = UITextField(frame: .zero)
+            tf.isHidden = true
+            window.addSubview(tf)
+            tf.becomeFirstResponder()
+            DispatchQueue.main.async {
+                tf.resignFirstResponder()
+                tf.removeFromSuperview()
+            }
         }
     }
 
