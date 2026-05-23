@@ -153,23 +153,55 @@ def get(url: str, **kwargs) -> requests.Response:
 # ---------------------------------------------------------------------------
 # eBird taxonomy: scientific name → species code.
 
-def load_taxonomy() -> dict[str, str]:
-    """Returns {scientific_name_lower: species_code}. Caches the CSV on disk."""
+class Taxonomy:
+    """Lookups from BirdNET label fields to an eBird species code.
+
+    `by_sci` is the primary key. `by_common` is the fallback for taxonomic
+    revisions where BirdNET's binomial is ahead of (or behind) eBird's —
+    e.g. BirdNET ships "Dryobates villosus" but eBird's taxonomy CSV still
+    lists Hairy Woodpecker under "Leuconotopicus villosus". Common name is
+    far more stable across these splits/merges, so it catches those cases.
+    """
+    def __init__(self, by_sci: dict[str, str], by_common: dict[str, str]):
+        self.by_sci = by_sci
+        self.by_common = by_common
+
+    def lookup(self, scientific: str, common: str) -> tuple[str | None, str | None]:
+        """Returns (code, source) where source ∈ {"sci", "common", None}."""
+        code = self.by_sci.get(scientific.lower())
+        if code:
+            return code, "sci"
+        code = self.by_common.get(common.lower())
+        if code:
+            return code, "common"
+        return None, None
+
+def load_taxonomy() -> Taxonomy:
     if not TAXONOMY.exists() or TAXONOMY.stat().st_size < 1000:
         print(f"Downloading eBird taxonomy CSV → {TAXONOMY}", flush=True)
         r = get(EBIRD_TAXONOMY_URL)
         r.raise_for_status()
         TAXONOMY.write_bytes(r.content)
-    mapping: dict[str, str] = {}
+    by_sci: dict[str, str] = {}
+    by_common: dict[str, str] = {}
     with TAXONOMY.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
         for row in reader:
-            sci  = (row.get("SCIENTIFIC_NAME") or "").strip()
-            code = (row.get("SPECIES_CODE") or "").strip()
-            if sci and code:
-                mapping[sci.lower()] = code
-    print(f"Loaded {len(mapping)} species from eBird taxonomy", flush=True)
-    return mapping
+            sci    = (row.get("SCIENTIFIC_NAME") or "").strip()
+            common = (row.get("PRIMARY_COM_NAME") or row.get("COMMON_NAME") or "").strip()
+            code   = (row.get("SPECIES_CODE") or "").strip()
+            if not code:
+                continue
+            if sci:
+                by_sci[sci.lower()] = code
+            if common:
+                # First entry wins. eBird's CSV is roughly taxonomic-ordered and
+                # subspecies-group rows ("Hairy Woodpecker (Eastern)") follow the
+                # species row, so the bare common name binds to the species code.
+                by_common.setdefault(common.lower(), code)
+    print(f"Loaded {len(by_sci)} species ({len(by_common)} common names) "
+          f"from eBird taxonomy", flush=True)
+    return Taxonomy(by_sci, by_common)
 
 # ---------------------------------------------------------------------------
 # Image source: eBird species page → og:image (Macaulay Library CDN).
@@ -219,13 +251,13 @@ def download_and_save(image_url: str, dest: Path) -> None:
 # Per-species pipeline.
 
 def process_species(scientific: str, common: str, dest: Path,
-                    taxonomy: dict[str, str]) -> tuple[str, str]:
+                    taxonomy: Taxonomy) -> tuple[str, str]:
     if dest.exists() and dest.stat().st_size > 0:
         return "skip", "already exists"
     if any(scientific.startswith(p) or common.startswith(p) for p in NON_BIRD_PREFIXES):
         return "miss", "non-bird event class"
 
-    code = taxonomy.get(scientific.lower())
+    code, _ = taxonomy.lookup(scientific, common)
     if not code:
         return "miss", "not in eBird taxonomy"
 
@@ -271,10 +303,18 @@ def main() -> int:
     if args.limit > 0:
         rows = rows[: args.limit]
 
+    # Pre-existing audit log keyed by slug. We carry forward any entry whose
+    # species we don't attempt this run (e.g. --limit), so a partial run can't
+    # silently drop misses recorded by a previous full run.
+    prior_misses = load_missing_log()
+
     print(f"Processing {len(rows)} species → {OUT_DIR}", flush=True)
     started = time.time()
     ok = skip = miss = err = 0
-    misses: list[str] = []
+    # Slugs we actually attempted this run — used to decide which prior_misses
+    # entries to overwrite vs. carry forward.
+    attempted: set[str] = set()
+    current_misses: dict[str, str] = {}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures: dict[concurrent.futures.Future, tuple[str, str, Path]] = {}
@@ -283,6 +323,7 @@ def main() -> int:
             if not slug:
                 continue
             dest = OUT_DIR / f"{slug}_large.jpg"
+            attempted.add(dest.stem)
             futures[pool.submit(process_species, sci, common, dest, taxonomy)] = \
                 (sci, common, dest)
 
@@ -298,10 +339,10 @@ def main() -> int:
                 skip += 1
             elif status == "miss":
                 miss += 1
-                misses.append(f"{dest.stem}\t{sci}\t{common}\t{reason}")
+                current_misses[dest.stem] = f"{dest.stem}\t{sci}\t{common}\t{reason}"
             else:
                 err += 1
-                misses.append(f"{dest.stem}\t{sci}\t{common}\tERROR: {reason}")
+                current_misses[dest.stem] = f"{dest.stem}\t{sci}\t{common}\tERROR: {reason}"
             if i % 25 == 0:
                 elapsed = time.time() - started
                 rate = i / max(elapsed, 1)
@@ -320,12 +361,53 @@ def main() -> int:
         flush=True,
     )
 
+    # Merge: drop prior entries for slugs we attempted this run (they're either
+    # newly successful or replaced by a fresher miss reason), keep the rest.
+    merged: dict[str, str] = {
+        slug: line for slug, line in prior_misses.items() if slug not in attempted
+    }
+    merged.update(current_misses)
+    # Also drop any slug whose image file now exists on disk — covers the case
+    # where a prior run was interrupted before the audit log got rewritten.
+    merged = {
+        slug: line for slug, line in merged.items()
+        if not (OUT_DIR / f"{slug}_large.jpg").exists()
+    }
+    write_missing_log(merged)
+    print(
+        f"Audit log: {MISSING} ({len(merged)} entries; "
+        f"{len(current_misses)} from this run, "
+        f"{len(merged) - len(current_misses)} carried forward)",
+        flush=True,
+    )
+    return 0
+
+def load_missing_log() -> dict[str, str]:
+    """Returns {slug: original_line} from the existing audit log, or empty."""
+    if not MISSING.exists():
+        return {}
+    out: dict[str, str] = {}
+    with MISSING.open() as f:
+        first = True
+        for line in f:
+            line = line.rstrip("\n")
+            if first:
+                first = False
+                if line.startswith("slug\t"):
+                    continue
+            if not line:
+                continue
+            slug = line.split("\t", 1)[0]
+            if slug:
+                out[slug] = line
+    return out
+
+def write_missing_log(entries: dict[str, str]) -> None:
     MISSING.parent.mkdir(parents=True, exist_ok=True)
     with MISSING.open("w") as f:
         f.write("slug\tscientific\tcommon\treason\n")
-        f.writelines(line + "\n" for line in misses)
-    print(f"Audit log: {MISSING} ({len(misses)} entries)", flush=True)
-    return 0
+        for slug in sorted(entries):
+            f.write(entries[slug] + "\n")
 
 if __name__ == "__main__":
     sys.exit(main())

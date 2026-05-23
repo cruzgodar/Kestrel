@@ -71,15 +71,21 @@ struct LifeListView: View {
 
     /// Background scan that produces the catalog suggestion rows. Called
     /// from a detached task after the debounce window, never on main.
+    /// `lifeCommonNames` is matched case-insensitively so taxonomic revisions
+    /// (a life-list entry under an older genus like "Leuconotopicus villosus"
+    /// vs. the catalog's "Dryobates villosus") don't surface as a duplicate
+    /// suggestion sharing the same common name.
     nonisolated static func computeSuggestions(
         needle: String,
-        excluding lifeNames: Set<String>
+        excluding lifeNames: Set<String>,
+        lifeCommonNames: Set<String>
     ) -> [SearchRow] {
         let allowFuzzy = needle.count >= 3
         var scored: [(score: Int, scientific: String, common: String)] = []
         scored.reserveCapacity(64)
         for sp in SpeciesCatalog.shared.all {
             if lifeNames.contains(sp.scientificName) { continue }
+            if lifeCommonNames.contains(sp.commonName.lowercased()) { continue }
             guard let s = scoreMatch(sp.searchHay, needle: needle, allowFuzzy: allowFuzzy) else { continue }
             scored.append((s, sp.scientificName, sp.commonName))
         }
@@ -186,8 +192,13 @@ struct LifeListView: View {
             }
             let needle = q.lowercased()
             let lifeNames = Set(store.entries.map(\.scientificName))
+            let lifeCommonNames = Set(store.entries.map { $0.commonName.lowercased() })
             let result = await Task.detached(priority: .userInitiated) {
-                Self.computeSuggestions(needle: needle, excluding: lifeNames)
+                Self.computeSuggestions(
+                    needle: needle,
+                    excluding: lifeNames,
+                    lifeCommonNames: lifeCommonNames
+                )
             }.value
             guard !Task.isCancelled else { return }
             asyncSuggestions = result
@@ -237,9 +248,15 @@ struct LifeListView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.commonName)
                     .font(.headline)
-                Text(entry.firstSeen, format: .dateTime.year().month(.abbreviated).day())
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 4) {
+                    Text(entry.scientificName)
+                        .italic()
+                    Text("•")
+                    Text(entry.firstSeen, format: .dateTime.year().month(.abbreviated).day())
+                        .monospacedDigit()
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
             Spacer()
             Button {

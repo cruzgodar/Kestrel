@@ -71,7 +71,10 @@ enum EBirdCSVParser {
         for row in rows.dropFirst() {
             guard row.count > max(sciIdx, comIdx, dateIdx) else { continue }
             // Strip parenthesized clarifiers ("Rock Pigeon (Feral Pigeon)" → "Rock Pigeon").
-            let sci = stripParens(row[sciIdx])
+            // Then collapse trinomials to the binomial so eBird's subspecies-group splits
+            // ("Hairy Woodpecker (Eastern)" + "(Pacific)") merge into one species entry
+            // — both BirdNET and the rest of the app key off the species-level binomial.
+            let sci = speciesBinomial(stripParens(row[sciIdx]))
             let com = stripParens(row[comIdx])
             let dateStr = row[dateIdx].trimmingCharacters(in: .whitespacesAndNewlines)
             if sci.isEmpty { continue }
@@ -104,6 +107,16 @@ enum EBirdCSVParser {
         if lower.contains(" x ") { return true }
         if name.contains("/") { return true }
         return false
+    }
+
+    /// Collapses a scientific name to its species-level binomial — `"Genus species"`.
+    /// eBird exports subspecies groups as trinomials (`"Dryobates villosus harrisi"`),
+    /// which would otherwise show up as duplicate species rows once the parenthetical
+    /// common-name suffix is stripped. Names with fewer than two tokens pass through.
+    private static func speciesBinomial(_ s: String) -> String {
+        let parts = s.split(whereSeparator: { $0.isWhitespace })
+        guard parts.count >= 2 else { return s }
+        return "\(parts[0]) \(parts[1])"
     }
 
     /// Removes `(...)` segments and surrounding whitespace.
