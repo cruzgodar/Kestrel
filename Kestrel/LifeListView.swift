@@ -12,32 +12,85 @@ struct LifeListView: View {
     @State private var pendingDeletion: LifeListEntry?
     @State private var showStarredOnly = false
     @State private var searchText = ""
+    /// Catalog suggestions for the current `searchText`. Computed off the
+    /// main actor by a debounced `.task(id: searchText)`; reads here go
+    /// straight into the rendered list. Empty while the user is still
+    /// typing or when the query is too short to bother scanning 6,500
+    /// species.
+    @State private var asyncSuggestions: [SearchRow] = []
 
-    private var visibleEntries: [LifeListEntry] {
-        let base = showStarredOnly ? store.entries.filter(\.isStarred) : store.entries
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return base }
-        let needle = q.lowercased()
-        return base.filter { entry in
-            let hay = "\(entry.commonName) \(entry.scientificName)".lowercased()
-            // Cheap exact substring path first — handles the common case
-            // without paying the Levenshtein cost per row.
-            if hay.contains(needle) { return true }
-            // Fuzzy fallback: any whitespace-separated word whose first
-            // `needle.count` characters are within edit distance 1 of the
-            // query counts as a match. Keeps the comparison tight so
-            // "Sparow" still finds "Sparrow" but unrelated species don't
-            // light up on every keystroke.
-            for word in hay.split(whereSeparator: { !$0.isLetter }) {
-                let prefix = String(word.prefix(needle.count))
-                if levenshtein(prefix, needle) <= 1 { return true }
+    /// Row item rendered by the list. Life-list entries are sorted ahead
+    /// of catalog suggestions so adding a missing species feels like a
+    /// continuation of the list, not a different mode.
+    enum SearchRow: Identifiable, Hashable {
+        case existing(LifeListEntry)
+        case suggestion(scientificName: String, commonName: String)
+
+        var id: String {
+            switch self {
+            case .existing(let e):       return "e-" + e.scientificName
+            case .suggestion(let s, _):  return "s-" + s
             }
-            return false
         }
     }
 
+    /// Drives the List. Life-list matches are filtered synchronously (the
+    /// list is small), and catalog suggestions come from the async pipeline
+    /// in `asyncSuggestions` — already sorted, capped at 20, and ordered
+    /// after the life-list section.
+    private var visibleRows: [SearchRow] {
+        let base = showStarredOnly ? store.entries.filter(\.isStarred) : store.entries
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return base.map { .existing($0) } }
+        let needle = q.lowercased()
+
+        let lifeMatches = base.filter { entry in
+            let hay = "\(entry.commonName) \(entry.scientificName)".lowercased()
+            return Self.scoreMatch(hay, needle: needle, allowFuzzy: needle.count >= 3) != nil
+        }
+
+        return lifeMatches.map { .existing($0) } + asyncSuggestions
+    }
+
+    /// Returns `nil` if `hay` doesn't match `needle`, otherwise a score
+    /// where lower = closer match. Substring matches score 0; the fuzzy
+    /// prefix-Levenshtein fallback is skipped for very short queries
+    /// (`allowFuzzy == false`) since substring already catches everything
+    /// useful and the per-keystroke cost adds up at 6,500 species.
+    nonisolated static func scoreMatch(_ hay: String, needle: String, allowFuzzy: Bool) -> Int? {
+        if hay.contains(needle) { return 0 }
+        guard allowFuzzy else { return nil }
+        var best = Int.max
+        for word in hay.split(whereSeparator: { !$0.isLetter }) {
+            let prefix = String(word.prefix(needle.count))
+            let d = Self.levenshtein(prefix, needle)
+            if d <= 1 && d < best { best = d }
+        }
+        return best == Int.max ? nil : best
+    }
+
+    /// Background scan that produces the catalog suggestion rows. Called
+    /// from a detached task after the debounce window, never on main.
+    nonisolated static func computeSuggestions(
+        needle: String,
+        excluding lifeNames: Set<String>
+    ) -> [SearchRow] {
+        let allowFuzzy = needle.count >= 3
+        var scored: [(score: Int, scientific: String, common: String)] = []
+        scored.reserveCapacity(64)
+        for sp in SpeciesCatalog.shared.all {
+            if lifeNames.contains(sp.scientificName) { continue }
+            guard let s = scoreMatch(sp.searchHay, needle: needle, allowFuzzy: allowFuzzy) else { continue }
+            scored.append((s, sp.scientificName, sp.commonName))
+        }
+        return scored
+            .sorted { $0.score < $1.score }
+            .prefix(20)
+            .map { .suggestion(scientificName: $0.scientific, commonName: $0.common) }
+    }
+
     /// Iterative DP Levenshtein. Two rows, O(min(a,b)) memory.
-    private func levenshtein(_ a: String, _ b: String) -> Int {
+    nonisolated static func levenshtein(_ a: String, _ b: String) -> Int {
         let aChars = Array(a), bChars = Array(b)
         if aChars.isEmpty { return bChars.count }
         if bChars.isEmpty { return aChars.count }
@@ -63,60 +116,14 @@ struct LifeListView: View {
                     Text("Tap the import button to load an eBird CSV export.")
                 }
             } else {
-                List(visibleEntries) { entry in
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(entry.commonName)
-                                .font(.headline)
-                            Text(entry.firstSeen, format: .dateTime.year().month(.abbreviated).day())
-                                .font(.caption.monospacedDigit())
-                                .foregroundStyle(.secondary)
+                List {
+                    ForEach(visibleRows) { row in
+                        switch row {
+                        case .existing(let entry):
+                            existingRow(entry: entry)
+                        case .suggestion(let sci, let com):
+                            suggestionRow(scientificName: sci, commonName: com)
                         }
-                        Spacer()
-                        Button {
-                            store.setStarred(
-                                scientificName: entry.scientificName,
-                                isStarred: !entry.isStarred
-                            )
-                        } label: {
-                            // Instant swap — no crossfade.
-                            Group {
-                                if entry.isStarred {
-                                    Image(systemName: "star.fill")
-                                        .font(.system(size: 24, weight: .semibold))
-                                        .foregroundStyle(Self.starButtonTint)
-                                } else {
-                                    Image(systemName: "star")
-                                        .font(.system(size: 24, weight: .regular))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .frame(width: 32, height: 32)
-                        }
-                        .buttonStyle(NoDimButtonStyle())
-                        .accessibilityLabel(
-                            entry.isStarred
-                                ? "Turn off alerts for \(entry.commonName)"
-                                : "Alert me when \(entry.commonName) is heard"
-                        )
-                        SpeciesThumbnail(scientificName: entry.scientificName)
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                        // No `role: .destructive` — that role makes SwiftUI
-                        // pre-animate the row removal as soon as the button
-                        // is tapped, which is what causes the rows below to
-                        // slide up before the user has even confirmed.
-                        Button {
-                            pendingDeletion = entry
-                        } label: {
-                            Label("Delete", systemImage: "trash")
-                        }
-                        .tint(.red)
                     }
                 }
                 .listStyle(.plain)
@@ -161,6 +168,30 @@ struct LifeListView: View {
                 .accessibilityLabel("Import eBird CSV")
             }
         }
+        // Recompute catalog suggestions whenever the query changes, but
+        // wait out a short debounce so mid-typing keystrokes don't each
+        // kick off a 6,500-species scan. SwiftUI cancels the previous
+        // task automatically when the id changes, so only the latest
+        // query's scan ever publishes results.
+        .task(id: searchText) {
+            let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !q.isEmpty else {
+                if !asyncSuggestions.isEmpty { asyncSuggestions = [] }
+                return
+            }
+            do {
+                try await Task.sleep(for: .milliseconds(160))
+            } catch {
+                return
+            }
+            let needle = q.lowercased()
+            let lifeNames = Set(store.entries.map(\.scientificName))
+            let result = await Task.detached(priority: .userInitiated) {
+                Self.computeSuggestions(needle: needle, excluding: lifeNames)
+            }.value
+            guard !Task.isCancelled else { return }
+            asyncSuggestions = result
+        }
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: [.commaSeparatedText, .plainText, .text],
@@ -195,6 +226,103 @@ struct LifeListView: View {
     // tint used for starred-species spectrogram bands + row highlights in
     // the Identify tab.
     private static let starButtonTint = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
+    /// Purple used for the Identify-tab record button and the add-to-life
+    /// -list circle on detection rows. Matched here so catalog suggestions
+    /// feel like a continuation of that "you can add me" affordance.
+    private static let addButtonTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
+
+    @ViewBuilder
+    private func existingRow(entry: LifeListEntry) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(entry.commonName)
+                    .font(.headline)
+                Text(entry.firstSeen, format: .dateTime.year().month(.abbreviated).day())
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button {
+                store.setStarred(
+                    scientificName: entry.scientificName,
+                    isStarred: !entry.isStarred
+                )
+            } label: {
+                Group {
+                    if entry.isStarred {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(Self.starButtonTint)
+                    } else {
+                        Image(systemName: "star")
+                            .font(.system(size: 24, weight: .regular))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 32, height: 32)
+            }
+            .buttonStyle(NoDimButtonStyle())
+            .accessibilityLabel(
+                entry.isStarred
+                    ? "Turn off alerts for \(entry.commonName)"
+                    : "Alert me when \(entry.commonName) is heard"
+            )
+            SpeciesThumbnail(scientificName: entry.scientificName)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .listRowInsets(EdgeInsets())
+        .listRowSeparator(.hidden)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            // No `role: .destructive` — that role makes SwiftUI
+            // pre-animate the row removal as soon as the button
+            // is tapped, which is what causes the rows below to
+            // slide up before the user has even confirmed.
+            Button {
+                pendingDeletion = entry
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
+            .tint(.red)
+        }
+    }
+
+    /// Catalog suggestion — species not yet on the life list. Trailing
+    /// edge gets the purple add-to-life-list button instead of a star,
+    /// so the tap is "I've seen this" rather than "alert me on this."
+    @ViewBuilder
+    private func suggestionRow(scientificName: String, commonName: String) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(commonName)
+                    .font(.headline)
+                Text(scientificName)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .italic()
+            }
+            Spacer()
+            Button {
+                store.add(scientificName: scientificName, commonName: commonName)
+            } label: {
+                Image(systemName: "plus")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 32, height: 32)
+                    .background(Self.addButtonTint, in: Circle())
+            }
+            .buttonStyle(NoDimButtonStyle())
+            .accessibilityLabel("Add \(commonName) to Life List")
+            SpeciesThumbnail(scientificName: scientificName)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .listRowInsets(EdgeInsets())
+        .listRowSeparator(.hidden)
+    }
 
     private var speciesCountText: String {
         let n = store.entries.count
