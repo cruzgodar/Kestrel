@@ -403,6 +403,35 @@ private struct BottomSearchField: View {
                         .focused($focused)
                         .submitLabel(.search)
                 }
+                // Standard inline clear button — appears only while there's
+                // text. Clears the field without dropping focus, matching the
+                // system search-field behavior.
+                if !text.isEmpty {
+                    Button {
+                        text = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 17))
+                            .foregroundStyle(.secondary)
+                            // Hit target is a 44pt square (HIG minimum). The
+                            // negative vertical padding below pulls the
+                            // button's *reported* height back down to icon
+                            // size so the capsule doesn't grow when the clear
+                            // button appears.
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(NoDimButtonStyle())
+                    // Negative padding pulls the 44pt hit-area's reported
+                    // size back down so the capsule doesn't grow vertically
+                    // and the icon sits flush with the capsule's right edge
+                    // (otherwise the extra 12pt of frame to the right of the
+                    // glyph creates visible asymmetric padding).
+                    .padding(.vertical, -12)
+                    .padding(.trailing, -12)
+                    .accessibilityLabel("Clear search")
+                    .transition(.scale.combined(with: .opacity))
+                }
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 13)

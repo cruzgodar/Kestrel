@@ -74,7 +74,13 @@ enum EBirdCSVParser {
             // Then collapse trinomials to the binomial so eBird's subspecies-group splits
             // ("Hairy Woodpecker (Eastern)" + "(Pacific)") merge into one species entry
             // — both BirdNET and the rest of the app key off the species-level binomial.
-            let sci = speciesBinomial(stripParens(row[sciIdx]))
+            // Alias before binomial collapse: aliases are written as binomials
+            // already, and applying first means a remap target (e.g.
+            // "Setophaga petechia") flows through the rest of the pipeline as
+            // the canonical name.
+            let sci = TaxonomyAliases.canonical(
+                speciesBinomial(stripParens(row[sciIdx]))
+            )
             let com = stripParens(row[comIdx])
             let dateStr = row[dateIdx].trimmingCharacters(in: .whitespacesAndNewlines)
             if sci.isEmpty { continue }

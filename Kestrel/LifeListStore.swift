@@ -128,11 +128,17 @@ final class LifeListStore {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let decoded = try decoder.decode([LifeListEntry].self, from: data)
-            let collapsed = Self.collapseByCommonName(Self.collapseToSpecies(decoded))
+            let aliased = Self.applyAliases(decoded)
+            let collapsed = Self.collapseByCommonName(Self.collapseToSpecies(aliased))
             entries = collapsed.sorted { $0.firstSeen > $1.firstSeen }
-            // If collapsing actually merged rows, persist the cleaned-up list
-            // so we don't redo the work on every launch.
-            if collapsed.count != decoded.count {
+            // Persist if anything actually changed — either rows merged or a
+            // scientific name was rewritten to its catalog-canonical form.
+            let mutated = collapsed.count != decoded.count
+                || zip(
+                    decoded.sorted { $0.scientificName < $1.scientificName },
+                    collapsed.sorted { $0.scientificName < $1.scientificName }
+                ).contains { $0.scientificName != $1.scientificName }
+            if mutated {
                 save()
             }
         } catch {
@@ -194,6 +200,14 @@ final class LifeListStore {
     /// catalog so detection-driven lookups resolve to the canonical entry.
     private static func collapseByCommonName(_ entries: [LifeListEntry]) -> [LifeListEntry] {
         let catalogNames: Set<String> = Set(SpeciesCatalog.shared.all.map(\.scientificName))
+        // Lowercased common name → catalog scientific name. Used to rewrite
+        // singleton entries whose stored scientific name is a stale synonym
+        // (e.g. "Leuconotopicus villosus" → "Dryobates villosus"), so the
+        // image-slug lookup matches the bundled file.
+        let catalogByCommon: [String: String] = Dictionary(
+            SpeciesCatalog.shared.all.map { ($0.commonName.lowercased(), $0.scientificName) },
+            uniquingKeysWith: { first, _ in first }
+        )
         var byCommon: [String: LifeListEntry] = [:]
         for entry in entries {
             let key = entry.commonName.lowercased()
@@ -221,7 +235,44 @@ final class LifeListStore {
                 isStarred: existing.isStarred || entry.isStarred
             )
         }
-        return Array(byCommon.values)
+        // Final pass: rewrite singletons whose scientific name doesn't exist
+        // in the catalog but whose common name does. This is the path that
+        // fixes a lone Hairy Woodpecker entry stored under the old genus
+        // (Leuconotopicus villosus) — the multi-entry merge above only fires
+        // when there are two rows to collide.
+        return byCommon.values.map { entry in
+            if catalogNames.contains(entry.scientificName) { return entry }
+            guard let canonical = catalogByCommon[entry.commonName.lowercased()] else {
+                return entry
+            }
+            return LifeListEntry(
+                scientificName: canonical,
+                commonName: entry.commonName,
+                firstSeen: entry.firstSeen,
+                firstLocation: entry.firstLocation,
+                isStarred: entry.isStarred
+            )
+        }
+    }
+
+    /// First-pass migration: rewrite scientific names through the alias
+    /// table so downstream collapses and image lookups see the BirdNET
+    /// canonical form. Handles cases like "Setophaga aestiva" (eBird's
+    /// post-split Northern Yellow Warbler) → "Setophaga petechia" (BirdNET's
+    /// Yellow Warbler) where neither the sci nor common name matches the
+    /// catalog directly.
+    private static func applyAliases(_ entries: [LifeListEntry]) -> [LifeListEntry] {
+        entries.map { entry in
+            let canonical = TaxonomyAliases.canonical(entry.scientificName)
+            guard canonical != entry.scientificName else { return entry }
+            return LifeListEntry(
+                scientificName: canonical,
+                commonName: entry.commonName,
+                firstSeen: entry.firstSeen,
+                firstLocation: entry.firstLocation,
+                isStarred: entry.isStarred
+            )
+        }
     }
 
     private static func speciesBinomial(_ s: String) -> String {
