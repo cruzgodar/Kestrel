@@ -170,10 +170,33 @@ struct ContentView: View {
                 if needsLifeListAdd {
                     Button {
                         guard !alreadyAdded else { return }
-                        lifeListStore.add(
-                            scientificName: detection.scientificName,
-                            commonName: detection.commonName
-                        )
+                        let sci = detection.scientificName
+                        let com = detection.commonName
+                        // Tag the new entry with our current coordinate so
+                        // it shows up on the Map tab. Cache lookup is sync
+                        // when we already have a fix (the recording session
+                        // has been running, so `refreshSpeciesFilter`
+                        // populated it); falls back to an async fetch otherwise.
+                        let cached = (LocationCache.shared.lastLatitude,
+                                      LocationCache.shared.lastLongitude)
+                        if let lat = cached.0, let lon = cached.1 {
+                            lifeListStore.add(
+                                scientificName: sci,
+                                commonName: com,
+                                latitude: lat,
+                                longitude: lon
+                            )
+                        } else {
+                            lifeListStore.add(scientificName: sci, commonName: com)
+                            Task {
+                                guard let coord = await LocationCache.shared.current() else { return }
+                                lifeListStore.updateFirstLocation(
+                                    scientificName: sci,
+                                    latitude: coord.latitude,
+                                    longitude: coord.longitude
+                                )
+                            }
+                        }
                     } label: {
                         Image(systemName: alreadyAdded ? "checkmark" : "plus")
                             .font(.body.weight(.semibold))

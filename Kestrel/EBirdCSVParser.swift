@@ -19,6 +19,8 @@ struct EBirdRawRow {
     let commonName: String
     let date: Date
     let location: String?
+    let latitude: Double?
+    let longitude: Double?
 }
 
 enum EBirdCSVParser {
@@ -48,6 +50,8 @@ enum EBirdCSVParser {
             throw EBirdCSVError.missingColumns(missing)
         }
         let locIdx = column("Location")
+        let latIdx = column("Latitude")
+        let lonIdx = column("Longitude")
 
         // eBird's "My eBird Data" export uses ISO `yyyy-MM-dd`. Older / region-specific
         // exports sometimes use `MM/dd/yyyy`. Try ISO first, fall back to US.
@@ -93,11 +97,18 @@ enum EBirdCSVParser {
                 let v = row[idx].trimmingCharacters(in: .whitespacesAndNewlines)
                 return v.isEmpty ? nil : v
             }
+            func parseCoord(_ idx: Int?) -> Double? {
+                guard let idx, idx < row.count else { return nil }
+                let v = row[idx].trimmingCharacters(in: .whitespacesAndNewlines)
+                return v.isEmpty ? nil : Double(v)
+            }
             result.append(EBirdRawRow(
                 scientificName: sci,
                 commonName: com.isEmpty ? sci : com,
                 date: date,
-                location: loc
+                location: loc,
+                latitude: parseCoord(latIdx),
+                longitude: parseCoord(lonIdx)
             ))
         }
         return result

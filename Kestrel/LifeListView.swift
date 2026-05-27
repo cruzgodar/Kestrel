@@ -321,7 +321,27 @@ struct LifeListView: View {
             }
             Spacer()
             Button {
-                store.add(scientificName: scientificName, commonName: commonName)
+                let cached = (LocationCache.shared.lastLatitude,
+                              LocationCache.shared.lastLongitude)
+                if let lat = cached.0, let lon = cached.1 {
+                    store.add(
+                        scientificName: scientificName,
+                        commonName: commonName,
+                        latitude: lat,
+                        longitude: lon
+                    )
+                } else {
+                    store.add(scientificName: scientificName, commonName: commonName)
+                    let sci = scientificName
+                    Task {
+                        guard let coord = await LocationCache.shared.current() else { return }
+                        store.updateFirstLocation(
+                            scientificName: sci,
+                            latitude: coord.latitude,
+                            longitude: coord.longitude
+                        )
+                    }
+                }
             } label: {
                 Image(systemName: "plus")
                     .font(.body.weight(.semibold))

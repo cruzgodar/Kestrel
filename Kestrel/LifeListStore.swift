@@ -28,7 +28,13 @@ final class LifeListStore {
     /// date. No-op if the species is already in the list. Used by the
     /// Identify tab's "swipe to add" gesture on detected birds.
     @discardableResult
-    func add(scientificName: String, commonName: String, location: String? = nil) -> Bool {
+    func add(
+        scientificName: String,
+        commonName: String,
+        location: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil
+    ) -> Bool {
         guard !entries.contains(where: { $0.scientificName == scientificName }) else {
             return false
         }
@@ -36,7 +42,9 @@ final class LifeListStore {
             scientificName: scientificName,
             commonName: commonName,
             firstSeen: Date(),
-            firstLocation: location
+            firstLocation: location,
+            firstLatitude: latitude,
+            firstLongitude: longitude
         )
         entries.append(entry)
         entries.sort { $0.firstSeen > $1.firstSeen }
@@ -47,6 +55,19 @@ final class LifeListStore {
     /// Quick membership check by scientific name.
     func contains(scientificName: String) -> Bool {
         entries.contains(where: { $0.scientificName == scientificName })
+    }
+
+    /// Back-fills the first-seen coordinate on an existing entry. Used by
+    /// the manual-add flows when the device hadn't yet resolved a location
+    /// at the moment of the tap; the resolved fix arrives shortly after via
+    /// `LocationCache.current()` and is written here.
+    func updateFirstLocation(scientificName: String, latitude: Double, longitude: Double) {
+        guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {
+            return
+        }
+        entries[idx].firstLatitude = latitude
+        entries[idx].firstLongitude = longitude
+        save()
     }
 
     /// Sets or clears the "alert me" star on an existing entry.
@@ -82,11 +103,36 @@ final class LifeListStore {
 
         for row in rows {
             if let existing = map[row.scientificName] {
+                var copy = existing
+                var changed = false
                 if row.date < existing.firstSeen {
-                    var copy = existing
                     copy.firstSeen = row.date
                     copy.firstLocation = row.location
+                    copy.firstLatitude = row.latitude
+                    copy.firstLongitude = row.longitude
                     copy.commonName = row.commonName
+                    changed = true
+                } else if row.date == existing.firstSeen {
+                    // Same earliest-seen date: fill in any field the
+                    // existing entry is missing. Coords stay tied to the
+                    // earliest sighting; this just heals entries that
+                    // pre-date coord tracking (the previous import didn't
+                    // read Latitude/Longitude) so the matching row in the
+                    // CSV would otherwise be skipped outright.
+                    if copy.firstLocation == nil, let loc = row.location {
+                        copy.firstLocation = loc
+                        changed = true
+                    }
+                    if copy.firstLatitude == nil, let lat = row.latitude {
+                        copy.firstLatitude = lat
+                        changed = true
+                    }
+                    if copy.firstLongitude == nil, let lon = row.longitude {
+                        copy.firstLongitude = lon
+                        changed = true
+                    }
+                }
+                if changed {
                     map[row.scientificName] = copy
                     updated += 1
                 } else {
@@ -97,7 +143,9 @@ final class LifeListStore {
                     scientificName: row.scientificName,
                     commonName: row.commonName,
                     firstSeen: row.date,
-                    firstLocation: row.location
+                    firstLocation: row.location,
+                    firstLatitude: row.latitude,
+                    firstLongitude: row.longitude
                 )
                 added += 1
             }
@@ -163,16 +211,20 @@ final class LifeListStore {
                         commonName: copy.commonName,
                         firstSeen: copy.firstSeen,
                         firstLocation: copy.firstLocation,
+                        firstLatitude: copy.firstLatitude,
+                        firstLongitude: copy.firstLongitude,
                         isStarred: copy.isStarred
                     )
                 }
                 byBinomial[key] = copy
                 continue
             }
-            // Earlier sighting wins firstSeen + firstLocation.
+            // Earlier sighting wins firstSeen + firstLocation + coords.
             let useNew = entry.firstSeen < existing.firstSeen
             let firstSeen = useNew ? entry.firstSeen : existing.firstSeen
             let firstLocation = useNew ? entry.firstLocation : existing.firstLocation
+            let firstLatitude = useNew ? entry.firstLatitude : existing.firstLatitude
+            let firstLongitude = useNew ? entry.firstLongitude : existing.firstLongitude
             // Prefer a common name without a parenthetical clarifier.
             let existingHasParen = existing.commonName.contains("(")
             let candidateHasParen = entry.commonName.contains("(")
@@ -187,6 +239,8 @@ final class LifeListStore {
                 commonName: commonName,
                 firstSeen: firstSeen,
                 firstLocation: firstLocation,
+                firstLatitude: firstLatitude,
+                firstLongitude: firstLongitude,
                 isStarred: existing.isStarred || entry.isStarred
             )
         }
@@ -218,6 +272,8 @@ final class LifeListStore {
             let useNew = entry.firstSeen < existing.firstSeen
             let firstSeen = useNew ? entry.firstSeen : existing.firstSeen
             let firstLocation = useNew ? entry.firstLocation : existing.firstLocation
+            let firstLatitude = useNew ? entry.firstLatitude : existing.firstLatitude
+            let firstLongitude = useNew ? entry.firstLongitude : existing.firstLongitude
             // Prefer the scientific name BirdNET emits so detections map to this row.
             let existingInCatalog = catalogNames.contains(existing.scientificName)
             let candidateInCatalog = catalogNames.contains(entry.scientificName)
@@ -232,6 +288,8 @@ final class LifeListStore {
                 commonName: existing.commonName,
                 firstSeen: firstSeen,
                 firstLocation: firstLocation,
+                firstLatitude: firstLatitude,
+                firstLongitude: firstLongitude,
                 isStarred: existing.isStarred || entry.isStarred
             )
         }
@@ -250,6 +308,8 @@ final class LifeListStore {
                 commonName: entry.commonName,
                 firstSeen: entry.firstSeen,
                 firstLocation: entry.firstLocation,
+                firstLatitude: entry.firstLatitude,
+                firstLongitude: entry.firstLongitude,
                 isStarred: entry.isStarred
             )
         }
@@ -270,6 +330,8 @@ final class LifeListStore {
                 commonName: entry.commonName,
                 firstSeen: entry.firstSeen,
                 firstLocation: entry.firstLocation,
+                firstLatitude: entry.firstLatitude,
+                firstLongitude: entry.firstLongitude,
                 isStarred: entry.isStarred
             )
         }

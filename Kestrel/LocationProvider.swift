@@ -68,3 +68,47 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
         Task { @MainActor in self.finish(with: nil) }
     }
 }
+
+/// Process-wide latest known coordinate. Updated whenever any code path
+/// resolves a fresh fix (currently `RecordingManager.refreshSpeciesFilter`
+/// and the Map tab's first-appear), and read by the life-list add callsites
+/// so manually-added species pick up "where am I right now" without waiting
+/// for a new GPS lock.
+@MainActor
+final class LocationCache {
+    static let shared = LocationCache()
+
+    private(set) var lastLatitude: Double?
+    private(set) var lastLongitude: Double?
+    private let provider = LocationProvider()
+    private var inflight: Task<(Double, Double)?, Never>?
+
+    private init() {}
+
+    func update(latitude: Double, longitude: Double) {
+        lastLatitude = latitude
+        lastLongitude = longitude
+    }
+
+    /// Returns a coordinate, requesting a fresh fix if we don't already
+    /// have one cached. `nil` if permission was denied or the request
+    /// timed out.
+    func current() async -> (latitude: Double, longitude: Double)? {
+        if let lat = lastLatitude, let lon = lastLongitude {
+            return (lat, lon)
+        }
+        if let inflight { return await inflight.value }
+        let task = Task<(Double, Double)?, Never> { [provider] in
+            guard let loc = await provider.currentLocation() else { return nil }
+            return (loc.coordinate.latitude, loc.coordinate.longitude)
+        }
+        inflight = task
+        let result = await task.value
+        inflight = nil
+        if let result {
+            lastLatitude = result.0
+            lastLongitude = result.1
+        }
+        return result
+    }
+}

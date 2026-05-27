@@ -626,6 +626,10 @@ final class RecordingManager {
         let location = await locationProvider.currentLocation()
         let week = SpeciesRangeFilter.birdnetWeek()
         if let location {
+            LocationCache.shared.update(
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude
+            )
             do {
                 let allowed = try await rangeFilter.computeAndCache(
                     lat: location.coordinate.latitude,
