@@ -30,9 +30,18 @@ final class WatchSessionManager: NSObject {
     nonisolated private let bgFlushBytes = 32_000
 
     /// Keeps the watch app running when the wrist drops or the screen
-    /// sleeps. Capped at ~1 hour by the system; we let it expire and the
-    /// user can re-tap the button to start a fresh session.
+    /// sleeps. The system caps a single session at ~1 hour, so we cycle
+    /// it (along with the audio engine) every 30 minutes — see
+    /// `scheduleAutoRestart()`. The phone never sees a stop; chunks just
+    /// pause for the sub-second tear-down + relaunch.
     private var extendedSession: WKExtendedRuntimeSession?
+
+    /// Fires every 30 minutes while we're recording. Tears down + restarts
+    /// the audio capture + extended runtime session so we never bump into
+    /// the 1-hour ERS cap. State on the phone is preserved (no "stop"
+    /// handshake is sent), so the detection list and life-list stay intact.
+    private var autoRestartTask: Task<Void, Never>?
+    private let autoRestartInterval: Duration = .seconds(30 * 60)
 
     func activate() {
         guard !activated, WCSession.isSupported() else { return }
@@ -91,6 +100,7 @@ final class WatchSessionManager: NSObject {
                 self?.deliver(data)
             }
             isRecording = true
+            scheduleAutoRestart()
         } catch {
             print("Kestrel Watch: streamer start error \(error)")
             stopExtendedSession()
@@ -99,6 +109,8 @@ final class WatchSessionManager: NSObject {
 
     private func stop() {
         guard isRecording else { return }
+        autoRestartTask?.cancel()
+        autoRestartTask = nil
         streamer.stop()
         isRecording = false
         // Flush any background-queued audio before sending stop so the phone
@@ -108,6 +120,47 @@ final class WatchSessionManager: NSObject {
         session.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
         session.transferUserInfo(["cmd": "stop"])
         stopExtendedSession()
+    }
+
+    /// Schedules the next 30-minute audio + ERS cycle. Idempotent — calling
+    /// it again cancels any prior timer.
+    private func scheduleAutoRestart() {
+        autoRestartTask?.cancel()
+        autoRestartTask = Task { [weak self, interval = autoRestartInterval] in
+            try? await Task.sleep(for: interval)
+            guard !Task.isCancelled else { return }
+            await self?.performAutoRestart()
+        }
+    }
+
+    /// Transparently cycles the audio engine + extended runtime session.
+    /// Phone-side state (detections, life list, location filter) is
+    /// preserved because we don't send "stop"/"start" handshakes — chunks
+    /// simply pause for the sub-second restart window, well under the
+    /// phone's 60-second disconnect threshold.
+    private func performAutoRestart() {
+        guard isRecording else { return }
+
+        // Tear down audio first so the audio session is released before
+        // we ask for a new ERS to take its place.
+        streamer.stop()
+        flushBackgroundBuffer()
+        stopExtendedSession()
+
+        // Bring the new ERS + streamer up. If anything fails, do a hard
+        // stop so the user (and phone) aren't left in a confused state.
+        startExtendedSession()
+        do {
+            try streamer.start { [weak self] data in
+                self?.deliver(data)
+            }
+            scheduleAutoRestart()
+        } catch {
+            print("Kestrel Watch: auto-restart failed \(error)")
+            // Force a clean stop, which will send "stop" to the phone.
+            isRecording = true  // ensure stop() runs its full path
+            stop()
+        }
     }
 
     /// Audio-thread callback from the streamer. Picks live messaging when

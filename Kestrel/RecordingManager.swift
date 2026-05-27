@@ -66,18 +66,21 @@ final class RecordingManager {
     /// Silent-audio playback used to keep the iOS app alive in the
     /// background while the watch is the audio source.
     private let watchKeepalive = BackgroundAudioKeepalive()
-    /// Fires after ~59 min of a watch session — just before the system's
-    /// 1-hour `WKExtendedRuntimeSession` budget expires — to nudge the
-    /// user that they need to re-tap the watch button.
-    private var watchExpirationTask: Task<Void, Never>?
     /// Periodically checks whether audio is still flowing from the watch.
     /// If a generous gap elapses with no chunks, we assume the link
     /// dropped (out of range, watch crashed) and notify the user.
     private var watchHeartbeatTask: Task<Void, Never>?
     /// Timestamp of the most recent audio chunk delivered by the watch.
     private var lastWatchAudioAt: Date?
-    private let watchExpirationWarning: Duration = .seconds(59 * 60)
     private let watchDisconnectThreshold: TimeInterval = 60
+
+    /// Watchdog that auto-stops the recording once the session goes 30 min
+    /// without any detection. Reset each time `merge(_:)` sees at least one
+    /// result; armed in `startLocally`/`startFromWatch`; cancelled in `stop`/
+    /// `stopFromWatch`.
+    private var idleTerminationTask: Task<Void, Never>?
+    private var lastDetectionAt: Date?
+    private let idleTerminationThreshold: TimeInterval = 30 * 60
 
     init() {
         registerInterruptionObserver()
@@ -271,11 +274,13 @@ final class RecordingManager {
 
         preload()
         Task { await self.refreshSpeciesFilter() }
+        startIdleWatchdog()
     }
 
     func stop() {
         pendingTransitionTask?.cancel()
         pendingTransitionTask = nil
+        cancelIdleWatchdog()
 
         guard isRecording else { return }
         isRecording = false
@@ -333,6 +338,7 @@ final class RecordingManager {
 
         preload()
         Task { await self.refreshSpeciesFilter() }
+        startIdleWatchdog()
     }
 
     /// Called when the watch sends a "stop" handshake.
@@ -343,18 +349,53 @@ final class RecordingManager {
         watchWindowBuffer.removeAll(keepingCapacity: true)
         watchKeepalive.stop()
         cancelWatchLifecycleWatchdogs()
+        cancelIdleWatchdog()
+    }
+
+    // MARK: - Idle auto-termination
+
+    private func startIdleWatchdog() {
+        idleTerminationTask?.cancel()
+        lastDetectionAt = Date()
+        idleTerminationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(60))
+                guard !Task.isCancelled, let self else { return }
+                let shouldStop = await self.checkIdleAndMaybeStop()
+                if shouldStop { return }
+            }
+        }
+    }
+
+    private func cancelIdleWatchdog() {
+        idleTerminationTask?.cancel()
+        idleTerminationTask = nil
+        lastDetectionAt = nil
+    }
+
+    /// Returns true if the watchdog tore the session down and the polling
+    /// loop should exit.
+    private func checkIdleAndMaybeStop() -> Bool {
+        guard isRecording, let last = lastDetectionAt else { return true }
+        let gap = Date().timeIntervalSince(last)
+        guard gap >= idleTerminationThreshold else { return false }
+
+        Task {
+            await SpeciesNotifications.shared.notifySessionLifecycle(
+                title: "Kestrel",
+                body: "No birds heard for 30 minutes — recording stopped."
+            )
+        }
+        if watchRecording {
+            stopWatchSession()
+        } else {
+            stop()
+        }
+        return true
     }
 
     private func startWatchLifecycleWatchdogs() {
-        watchExpirationTask?.cancel()
         watchHeartbeatTask?.cancel()
-
-        watchExpirationTask = Task { [weak self] in
-            try? await Task.sleep(for: self?.watchExpirationWarning ?? .seconds(59 * 60))
-            guard !Task.isCancelled, let self else { return }
-            await self.handleWatchExpiration()
-        }
-
         watchHeartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(15))
@@ -366,9 +407,7 @@ final class RecordingManager {
     }
 
     private func cancelWatchLifecycleWatchdogs() {
-        watchExpirationTask?.cancel()
         watchHeartbeatTask?.cancel()
-        watchExpirationTask = nil
         watchHeartbeatTask = nil
         lastWatchAudioAt = nil
     }
@@ -379,6 +418,15 @@ final class RecordingManager {
         guard watchRecording, let last = lastWatchAudioAt else { return false }
         let gap = Date().timeIntervalSince(last)
         guard gap >= watchDisconnectThreshold else { return true }
+        // Sync watch state so it stops claiming "recording" while we've
+        // already given up on it. sendMessage covers the live path;
+        // transferUserInfo queues for delivery if the watch is currently
+        // unreachable, which is exactly the case that tripped this branch.
+        let s = WCSession.default
+        if s.activationState == .activated {
+            s.sendMessage(["cmd": "remoteStop"], replyHandler: nil, errorHandler: nil)
+            s.transferUserInfo(["cmd": "remoteStop"])
+        }
         Task {
             await SpeciesNotifications.shared.notifySessionLifecycle(
                 title: "Kestrel",
@@ -387,20 +435,6 @@ final class RecordingManager {
         }
         stopFromWatch()
         return false
-    }
-
-    private func handleWatchExpiration() {
-        guard watchRecording else { return }
-        Task {
-            await SpeciesNotifications.shared.notifySessionLifecycle(
-                title: "Kestrel",
-                body: "Watch session ending. Re-tap the watch button to keep listening."
-            )
-        }
-        // Don't tear down here — the watch's own ERS will invalidate
-        // moments later and the heartbeat watchdog will catch the silence
-        // and clean up. Letting the watch send its own "stop" handshake
-        // keeps the two sides synchronized.
     }
 
     /// Ingest a chunk of 16 kHz mono Float samples from the watch.
@@ -503,6 +537,7 @@ final class RecordingManager {
         // enforce a per-species cooldown so the same row doesn't strobe on
         // every overlapping inference window.
         let now = Date()
+        if !results.isEmpty { lastDetectionAt = now }
         let cooldown: TimeInterval = 5
         var repeatedIDs: [String] = []
         // Detections that should fire a notification + haptic this batch:
