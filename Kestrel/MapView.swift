@@ -18,11 +18,31 @@ struct MapView: View {
     @State private var lastZoomStep: Int?
     @State private var viewSize: CGSize = .zero
 
-    /// Materialized cluster list. Rebuilt only on quantized zoom changes
-    /// (or when the life list itself changes).
-    @State private var clusters: [BirdCluster] = []
+    /// Currently-visible cluster reps, keyed by scientific name. Every
+    /// life-list entry with a coordinate gets its own persistent
+    /// Annotation; this dict says which of those annotations should be
+    /// opaque (and tappable) right now. State-driven opacity changes
+    /// animate cleanly inside MapKit's hosted SwiftUI view, even though
+    /// insert/remove transitions do not — that's the workaround for the
+    /// "annotations never fade" problem.
+    @State private var visibleReps: [String: RepInfo] = [:]
 
     @State private var expandedCluster: BirdCluster?
+
+    /// Snapshot of a cluster's representative; what each annotation
+    /// needs to know to render its label and respond to taps.
+    struct RepInfo: Equatable {
+        let count: Int
+        let coordinate: CLLocationCoordinate2D
+        let representative: LifeListEntry
+        let others: [LifeListEntry]
+
+        static func == (lhs: RepInfo, rhs: RepInfo) -> Bool {
+            lhs.representative.scientificName == rhs.representative.scientificName
+                && lhs.count == rhs.count
+                && lhs.others.map(\.scientificName) == rhs.others.map(\.scientificName)
+        }
+    }
 
     /// Pinned thumbnail dimensions on the map. The total annotation
     /// occupies more space than this — see `Self.annotationFootprint`.
@@ -50,26 +70,47 @@ struct MapView: View {
         store.entries.filter { $0.firstLatitude != nil && $0.firstLongitude != nil }
     }
 
+
     var body: some View {
         ZStack {
             GeometryReader { geo in
                 Map(position: $position) {
                     UserAnnotation()
-                    ForEach(clusters) { cluster in
+                    ForEach(entriesWithCoordinates) { entry in
+                        let info = visibleReps[entry.scientificName]
+                        let isVisible = info != nil
+                        let labelCount = info?.count ?? 1
                         Annotation(
-                            cluster.representative.commonName,
-                            coordinate: cluster.coordinate,
+                            entry.commonName,
+                            coordinate: CLLocationCoordinate2D(
+                                latitude: entry.firstLatitude ?? 0,
+                                longitude: entry.firstLongitude ?? 0
+                            ),
                             anchor: .center
                         ) {
                             MapAnnotationContent(
-                                entry: cluster.representative,
-                                clusterCount: cluster.all.count,
+                                entry: entry,
+                                clusterCount: labelCount,
                                 thumbSize: Self.thumbSize
                             )
-                            .transition(.opacity.animation(.easeInOut(duration: 0.28)))
+                            // Opacity is the animatable property here.
+                            // Because every entry has a persistent
+                            // annotation (the ForEach data doesn't
+                            // change), MapKit isn't inserting/removing
+                            // anything — it's just re-rendering the
+                            // hosted SwiftUI content, and `.opacity`
+                            // changes inside `withAnimation` animate as
+                            // a normal SwiftUI property tween.
+                            .opacity(isVisible ? 1 : 0)
+                            .allowsHitTesting(isVisible)
+                            .animation(.easeInOut(duration: 0.3), value: isVisible)
                             .onTapGesture {
-                                guard cluster.others.count > 0 else { return }
-                                expandedCluster = cluster
+                                guard let info, info.count > 1 else { return }
+                                expandedCluster = BirdCluster(
+                                    representative: info.representative,
+                                    coordinate: info.coordinate,
+                                    others: info.others
+                                )
                             }
                         }
                         .annotationTitles(.hidden)
@@ -129,7 +170,7 @@ struct MapView: View {
         guard let span = lastSpan, viewSize.width > 0, viewSize.height > 0 else {
             return
         }
-        let next = Self.computeClusters(
+        let computed = Self.computeClusters(
             entries: entriesWithCoordinates,
             span: span,
             centerLatitude: lastCenterLatitude,
@@ -137,13 +178,23 @@ struct MapView: View {
             footprint: Self.annotationFootprint,
             gutter: Self.clusterGutter
         )
-        guard next != clusters else { return }
+        var next: [String: RepInfo] = [:]
+        next.reserveCapacity(computed.count)
+        for cluster in computed {
+            next[cluster.representative.scientificName] = RepInfo(
+                count: cluster.all.count,
+                coordinate: cluster.coordinate,
+                representative: cluster.representative,
+                others: cluster.others
+            )
+        }
+        guard next != visibleReps else { return }
         if animated {
-            withAnimation(.easeInOut(duration: 0.28)) {
-                clusters = next
+            withAnimation(.easeInOut(duration: 0.3)) {
+                visibleReps = next
             }
         } else {
-            clusters = next
+            visibleReps = next
         }
     }
 
@@ -260,14 +311,15 @@ private struct ClusterSheet: View {
     let cluster: BirdCluster
     @State private var detent: PresentationDetent = .medium
 
-    private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 8)]
-    /// Concentric with the system sheet's corner radius:
-    ///   sheetCornerRadius (28) = thumbCornerRadius (16) + horizontalPadding (12)
-    private static let thumbCornerRadius: CGFloat = 16
+    private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 12)]
+    /// Slightly larger than 16 — moves the thumbs closer to concentric
+    /// with the system sheet's top-corner radius (≈22pt in iOS 26 at
+    /// medium detent) given a 12pt horizontal grid inset.
+    private static let thumbCornerRadius: CGFloat = 20
 
     var body: some View {
         ScrollView {
-            LazyVGrid(columns: columns, alignment: .center, spacing: 10) {
+            LazyVGrid(columns: columns, alignment: .center, spacing: 12) {
                 ForEach(cluster.all) { entry in
                     ClusterGridItem(
                         entry: entry,
@@ -275,13 +327,24 @@ private struct ClusterSheet: View {
                     )
                 }
             }
+            // Symmetric 12pt inset on all four sides. Bottom gets a bit
+            // extra so the last row clears the home indicator at large
+            // detent; visually that area is below the safe-area line
+            // and the user reads it as "system" space, not "padding".
             .padding(.horizontal, 12)
-            .padding(.top, 8)
+            .padding(.top, 12)
             .padding(.bottom, 24)
         }
         .presentationDetents([.medium, .large], selection: $detent)
-        .presentationDragIndicator(.visible)
-        .presentationCornerRadius(28)
+        // Hide the system grab handle — the sheet is still dismissable
+        // by swiping anywhere downward.
+        .presentationDragIndicator(.hidden)
+        // Intentionally not setting `.presentationCornerRadius` — the
+        // system default tracks the device's display corner radius, so
+        // the sheet's bottom corners line up with the iPhone's screen
+        // bottom corners instead of clipping outside them. Hard-coding a
+        // radius (e.g. 28) was the source of the "clips past the
+        // screen's curve" regression.
         .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         .presentationBackground(.thinMaterial)
     }
@@ -310,7 +373,6 @@ private struct ClusterGridItem: View {
             Spacer(minLength: 0)
         }
         .frame(maxHeight: .infinity, alignment: .top)
-        .padding(.vertical, 4)
     }
 }
 
