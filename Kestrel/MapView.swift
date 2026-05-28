@@ -104,7 +104,6 @@ struct MapView: View {
                                 info: visibleReps[entry.scientificName],
                                 thumbSize: Self.thumbSize,
                                 onTap: { tappedInfo in
-                                    print("[Tap] entry=\(entry.scientificName) count=\(tappedInfo.count) others=\(tappedInfo.others.count) → opening cluster card")
                                     expandedCluster = BirdCluster(
                                         representative: tappedInfo.representative,
                                         coordinate: tappedInfo.coordinate,
@@ -203,12 +202,9 @@ struct MapView: View {
             return abs(lat - centerLat) <= latRange
                 && abs(lon - centerLon) <= lonRange
         }
-        let oldCount = visibleEntries.count
         visibleEntries = filtered
         lastFilterCenter = lastCenter
         lastFilterSpan = span
-        // TEMP debug logging — remove once the tap bug is diagnosed.
-        print("[Viewport] visibleEntries refilter — \(oldCount) → \(filtered.count) (entries in store=\(entriesWithCoordinates.count))")
     }
 
     private func rebuildClusters(animated: Bool) {
@@ -234,10 +230,6 @@ struct MapView: View {
             )
         }
         guard next != visibleReps else { return }
-        // TEMP debug logging — remove once the tap bug is diagnosed.
-        let beforeIDs = Set(visibleReps.keys)
-        let afterIDs = Set(next.keys)
-        print("[Reps] visibleReps update — \(visibleReps.count) → \(next.count); added=\(afterIDs.subtracting(beforeIDs).count) removed=\(beforeIDs.subtracting(afterIDs).count); animated=\(animated)")
         if animated {
             withAnimation(.easeInOut(duration: 0.3)) {
                 visibleReps = next
@@ -405,6 +397,14 @@ private struct MapAnnotationContent: View {
                 .padding(.vertical, 3)
                 .background(.thinMaterial, in: Capsule())
         }
+        // MapKit hosts each annotation in a UIHostingController whose
+        // frame it derives once from the content's intrinsic size. The
+        // label sits below the thumbnail, so when the host under-measures
+        // the vertical extent it clips the label off entirely — which is
+        // why "some" singletons showed no name. `.fixedSize()` forces the
+        // VStack to report (and keep) its full intrinsic size so the
+        // label area is always reserved.
+        .fixedSize()
     }
 }
 
