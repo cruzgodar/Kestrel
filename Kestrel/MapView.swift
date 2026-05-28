@@ -91,9 +91,6 @@ struct MapView: View {
                 Map(position: $position) {
                     UserAnnotation()
                     ForEach(visibleEntries) { entry in
-                        let info = visibleReps[entry.scientificName]
-                        let isVisible = info != nil
-                        let labelCount = info?.count ?? 1
                         Annotation(
                             entry.commonName,
                             coordinate: CLLocationCoordinate2D(
@@ -102,36 +99,19 @@ struct MapView: View {
                             ),
                             anchor: .center
                         ) {
-                            MapAnnotationContent(
+                            FadingAnnotationContent(
                                 entry: entry,
-                                clusterCount: labelCount,
-                                thumbSize: Self.thumbSize
+                                info: visibleReps[entry.scientificName],
+                                thumbSize: Self.thumbSize,
+                                onTap: { tappedInfo in
+                                    print("[Tap] entry=\(entry.scientificName) count=\(tappedInfo.count) others=\(tappedInfo.others.count) → opening cluster card")
+                                    expandedCluster = BirdCluster(
+                                        representative: tappedInfo.representative,
+                                        coordinate: tappedInfo.coordinate,
+                                        others: tappedInfo.others
+                                    )
+                                }
                             )
-                            // Unify the tap region across thumbnail +
-                            // gap + label capsule. Without this the
-                            // VStack's two children each have their own
-                            // hit rect with dead space in between, so
-                            // most taps land in the gap and do nothing.
-                            .contentShape(Rectangle())
-                            // Opacity is the animatable property here.
-                            // Because every entry has a persistent
-                            // annotation (the ForEach data doesn't
-                            // change while panning within the buffer),
-                            // MapKit isn't inserting/removing anything —
-                            // it's just re-rendering the hosted SwiftUI
-                            // content, and `.opacity` changes animate
-                            // as a normal property tween.
-                            .opacity(isVisible ? 1 : 0)
-                            .allowsHitTesting(isVisible)
-                            .animation(.easeInOut(duration: 0.3), value: isVisible)
-                            .onTapGesture {
-                                guard let info, info.count > 1 else { return }
-                                expandedCluster = BirdCluster(
-                                    representative: info.representative,
-                                    coordinate: info.coordinate,
-                                    others: info.others
-                                )
-                            }
                         }
                         .annotationTitles(.hidden)
                     }
@@ -223,9 +203,12 @@ struct MapView: View {
             return abs(lat - centerLat) <= latRange
                 && abs(lon - centerLon) <= lonRange
         }
+        let oldCount = visibleEntries.count
         visibleEntries = filtered
         lastFilterCenter = lastCenter
         lastFilterSpan = span
+        // TEMP debug logging — remove once the tap bug is diagnosed.
+        print("[Viewport] visibleEntries refilter — \(oldCount) → \(filtered.count) (entries in store=\(entriesWithCoordinates.count))")
     }
 
     private func rebuildClusters(animated: Bool) {
@@ -251,6 +234,10 @@ struct MapView: View {
             )
         }
         guard next != visibleReps else { return }
+        // TEMP debug logging — remove once the tap bug is diagnosed.
+        let beforeIDs = Set(visibleReps.keys)
+        let afterIDs = Set(next.keys)
+        print("[Reps] visibleReps update — \(visibleReps.count) → \(next.count); added=\(afterIDs.subtracting(beforeIDs).count) removed=\(beforeIDs.subtracting(afterIDs).count); animated=\(animated)")
         if animated {
             withAnimation(.easeInOut(duration: 0.3)) {
                 visibleReps = next
@@ -315,6 +302,81 @@ struct MapView: View {
     }
 }
 
+// MARK: - Per-annotation fading wrapper
+//
+// MapKit's annotation host (a UIKit `MKAnnotationView` wrapping a
+// `UIHostingController`) does *not* honor SwiftUI's `.allowsHitTesting`
+// on its inner content. Any rendered subview — even one with opacity 0
+// — still absorbs taps at the UIKit hit-test layer. That's why the
+// previous "persistent annotation, fade via opacity" approach broke
+// taps: invisible-but-rendered annotations were eating hits before the
+// visible neighbor underneath could see them.
+//
+// The fix: when an entry isn't a current cluster rep, render *no
+// content* inside the Annotation (an empty `if let`), so MapKit's
+// hosting view collapses to zero size and can't absorb taps. When the
+// entry *is* a rep, the content renders and a local opacity state
+// drives a fade-in. When the entry leaves the rep set, we animate the
+// opacity to zero first, then clear the rendered content. The
+// animation pathway is preserved (we're tweening a state property on a
+// mounted view, not a transition), and the dead annotations have no
+// footprint.
+private struct FadingAnnotationContent: View {
+    let entry: LifeListEntry
+    let info: MapView.RepInfo?
+    let thumbSize: CGSize
+    let onTap: (MapView.RepInfo) -> Void
+
+    /// Mirror of `info` lagged behind by the fade-out animation. While
+    /// the fade is running, `info` is already nil but `rendered` still
+    /// holds the previous value so the content stays mounted long enough
+    /// to be visible during the tween. Cleared in the animation's
+    /// completion callback.
+    @State private var rendered: MapView.RepInfo?
+    @State private var opacity: Double = 0
+
+    var body: some View {
+        Group {
+            if let rendered {
+                MapAnnotationContent(
+                    entry: entry,
+                    clusterCount: rendered.count,
+                    thumbSize: thumbSize
+                )
+                .contentShape(Rectangle())
+                .opacity(opacity)
+                .onTapGesture {
+                    onTap(rendered)
+                }
+            }
+        }
+        .onChange(of: info, initial: true) { _, newInfo in
+            handle(newInfo)
+        }
+    }
+
+    private func handle(_ newInfo: MapView.RepInfo?) {
+        if let newInfo {
+            let wasOff = (rendered == nil)
+            rendered = newInfo
+            if wasOff {
+                opacity = 0
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    opacity = 1
+                }
+            }
+            // If we were already visible we just refresh the count;
+            // no fade needed since the user already sees this thumbnail.
+        } else if rendered != nil {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                opacity = 0
+            } completion: {
+                rendered = nil
+            }
+        }
+    }
+}
+
 // MARK: - On-map annotation content (thumbnail + label)
 
 private struct MapAnnotationContent: View {
@@ -374,11 +436,9 @@ private struct ClusterSheet: View {
     @State private var detent: PresentationDetent = .medium
 
     private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 12)]
-    /// Concentric with the system sheet's top-corner radius. iOS 26's
-    /// default card-style sheet at medium detent uses a 34pt top-corner
-    /// radius; subtract the 12pt grid horizontal inset → 22pt thumb
-    /// radius for true concentric corners on the outermost row.
-    private static let thumbCornerRadius: CGFloat = 22
+    /// Tuned against the system sheet's top-corner radius at medium
+    /// detent.
+    private static let thumbCornerRadius: CGFloat = 26
 
     var body: some View {
         ScrollView {
