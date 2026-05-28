@@ -26,6 +26,9 @@ struct MapView: View {
     @State private var visibleEntries: [LifeListEntry] = []
     @State private var lastFilterCenter: CLLocationCoordinate2D?
     @State private var lastFilterSpan: MKCoordinateSpan?
+    /// One-shot guard for the post-load annotation refresh. See
+    /// `warmUpAnnotations()`.
+    @State private var didWarmUpAnnotations = false
     /// Buffer expressed in spans — render entries within 1.5× the visible
     /// region in each direction. Big enough that gentle panning never
     /// touches the ForEach set; small enough that we're not mounting the
@@ -230,12 +233,41 @@ struct MapView: View {
             )
         }
         guard next != visibleReps else { return }
+        let wasEmpty = visibleReps.isEmpty
         if animated {
             withAnimation(.easeInOut(duration: 0.3)) {
                 visibleReps = next
             }
         } else {
             visibleReps = next
+        }
+
+        // First time we get real cluster data, schedule a one-shot
+        // annotation refresh once MapKit has settled (see
+        // `warmUpAnnotations`). This is what makes the stacks tappable on
+        // first load without the user having to zoom first.
+        if wasEmpty, !next.isEmpty, !didWarmUpAnnotations {
+            didWarmUpAnnotations = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                warmUpAnnotations()
+            }
+        }
+    }
+
+    /// MapKit hosts each annotation view before its SwiftUI content
+    /// exists on first load (cluster data arrives a beat after the map's
+    /// initial layout), and it doesn't re-establish hit-testing for those
+    /// hosts afterward — so the stacks render but don't respond to taps
+    /// until a camera move triggers a fresh annotation layout. Briefly
+    /// clearing and restoring the ForEach data forces MapKit to recreate
+    /// the annotation views *with* content present, which wires up their
+    /// tap handling. Runs exactly once.
+    private func warmUpAnnotations() {
+        guard !visibleEntries.isEmpty else { return }
+        let saved = visibleEntries
+        visibleEntries = []
+        DispatchQueue.main.async {
+            visibleEntries = saved
         }
     }
 
