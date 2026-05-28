@@ -9,7 +9,7 @@ struct MapView: View {
         fallback: .automatic
     )
     @State private var lastSpan: MKCoordinateSpan?
-    @State private var lastCenterLatitude: Double = 0
+    @State private var lastCenter: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 0, longitude: 0)
     /// Discrete zoom level — `floor(log2(camera.distance) * 4)`. Each unit
     /// is roughly a quarter-octave. We only rebuild clusters when this
     /// crosses a step, which keeps the cluster set stable between fine
@@ -17,6 +17,20 @@ struct MapView: View {
     /// flickering at boundary cases).
     @State private var lastZoomStep: Int?
     @State private var viewSize: CGSize = .zero
+
+    /// Cached subset of `entriesWithCoordinates` whose coords fall inside
+    /// the current viewport plus a generous buffer. Drives ForEach so we
+    /// mount ~the visible neighborhood worth of annotations instead of
+    /// every life-list bird. Updated only when the camera moves beyond
+    /// the buffer, so panning doesn't churn the annotation list.
+    @State private var visibleEntries: [LifeListEntry] = []
+    @State private var lastFilterCenter: CLLocationCoordinate2D?
+    @State private var lastFilterSpan: MKCoordinateSpan?
+    /// Buffer expressed in spans — render entries within 1.5× the visible
+    /// region in each direction. Big enough that gentle panning never
+    /// touches the ForEach set; small enough that we're not mounting the
+    /// whole life list.
+    private static let visibleBufferFactor: Double = 1.5
 
     /// Currently-visible cluster reps, keyed by scientific name. Every
     /// life-list entry with a coordinate gets its own persistent
@@ -76,7 +90,7 @@ struct MapView: View {
             GeometryReader { geo in
                 Map(position: $position) {
                     UserAnnotation()
-                    ForEach(entriesWithCoordinates) { entry in
+                    ForEach(visibleEntries) { entry in
                         let info = visibleReps[entry.scientificName]
                         let isVisible = info != nil
                         let labelCount = info?.count ?? 1
@@ -93,14 +107,20 @@ struct MapView: View {
                                 clusterCount: labelCount,
                                 thumbSize: Self.thumbSize
                             )
+                            // Unify the tap region across thumbnail +
+                            // gap + label capsule. Without this the
+                            // VStack's two children each have their own
+                            // hit rect with dead space in between, so
+                            // most taps land in the gap and do nothing.
+                            .contentShape(Rectangle())
                             // Opacity is the animatable property here.
                             // Because every entry has a persistent
                             // annotation (the ForEach data doesn't
-                            // change), MapKit isn't inserting/removing
-                            // anything — it's just re-rendering the
-                            // hosted SwiftUI content, and `.opacity`
-                            // changes inside `withAnimation` animate as
-                            // a normal SwiftUI property tween.
+                            // change while panning within the buffer),
+                            // MapKit isn't inserting/removing anything —
+                            // it's just re-rendering the hosted SwiftUI
+                            // content, and `.opacity` changes animate
+                            // as a normal property tween.
                             .opacity(isVisible ? 1 : 0)
                             .allowsHitTesting(isVisible)
                             .animation(.easeInOut(duration: 0.3), value: isVisible)
@@ -126,9 +146,11 @@ struct MapView: View {
                 .onAppear { viewSize = geo.size }
                 .onChange(of: geo.size) { _, new in
                     viewSize = new
+                    updateVisibleEntries(force: true)
                     rebuildClusters(animated: false)
                 }
                 .onChange(of: store.entries) { _, _ in
+                    updateVisibleEntries(force: true)
                     rebuildClusters(animated: true)
                 }
             }
@@ -150,7 +172,7 @@ struct MapView: View {
 
     private func handleCameraChange(_ context: MapCameraUpdateContext) {
         let span = context.region.span
-        let centerLat = context.region.center.latitude
+        let center = context.region.center
         let distance = context.camera.distance
 
         // Quantize zoom into discrete steps so a continuous pinch doesn't
@@ -159,11 +181,51 @@ struct MapView: View {
         let step = Int((log2(max(distance, 1)) * 4).rounded(.down))
 
         lastSpan = span
-        lastCenterLatitude = centerLat
+        lastCenter = center
+
+        // Refresh the viewport-culled set whenever pan or zoom crosses a
+        // meaningful threshold. Cheap relative to the cluster compute.
+        updateVisibleEntries(force: false)
 
         if step == lastZoomStep { return }
         lastZoomStep = step
         rebuildClusters(animated: true)
+    }
+
+    /// Update the cached `visibleEntries` set. When `force` is false,
+    /// skip the work if the camera hasn't moved beyond ~30% of the
+    /// current span (so a gentle pan doesn't churn ForEach diffs).
+    private func updateVisibleEntries(force: Bool) {
+        guard let span = lastSpan else { return }
+
+        if !force,
+           let prevCenter = lastFilterCenter,
+           let prevSpan = lastFilterSpan {
+            let dLat = abs(lastCenter.latitude - prevCenter.latitude)
+            let dLon = abs(lastCenter.longitude - prevCenter.longitude)
+            let zoomDelta = abs(span.latitudeDelta - prevSpan.latitudeDelta) / prevSpan.latitudeDelta
+            // Move threshold: 30% of the *previous* span; once the user
+            // has panned that far the buffer would start running out.
+            if dLat < prevSpan.latitudeDelta * 0.3
+                && dLon < prevSpan.longitudeDelta * 0.3
+                && zoomDelta < 0.3 {
+                return
+            }
+        }
+
+        let latRange = span.latitudeDelta * (0.5 + Self.visibleBufferFactor)
+        let lonRange = span.longitudeDelta * (0.5 + Self.visibleBufferFactor)
+        let centerLat = lastCenter.latitude
+        let centerLon = lastCenter.longitude
+        let filtered = entriesWithCoordinates.filter { entry in
+            guard let lat = entry.firstLatitude,
+                  let lon = entry.firstLongitude else { return false }
+            return abs(lat - centerLat) <= latRange
+                && abs(lon - centerLon) <= lonRange
+        }
+        visibleEntries = filtered
+        lastFilterCenter = lastCenter
+        lastFilterSpan = span
     }
 
     private func rebuildClusters(animated: Bool) {
@@ -173,7 +235,7 @@ struct MapView: View {
         let computed = Self.computeClusters(
             entries: entriesWithCoordinates,
             span: span,
-            centerLatitude: lastCenterLatitude,
+            centerLatitude: lastCenter.latitude,
             viewSize: viewSize,
             footprint: Self.annotationFootprint,
             gutter: Self.clusterGutter
@@ -312,10 +374,11 @@ private struct ClusterSheet: View {
     @State private var detent: PresentationDetent = .medium
 
     private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 12)]
-    /// Slightly larger than 16 — moves the thumbs closer to concentric
-    /// with the system sheet's top-corner radius (≈22pt in iOS 26 at
-    /// medium detent) given a 12pt horizontal grid inset.
-    private static let thumbCornerRadius: CGFloat = 20
+    /// Concentric with the system sheet's top-corner radius. iOS 26's
+    /// default card-style sheet at medium detent uses a 34pt top-corner
+    /// radius; subtract the 12pt grid horizontal inset → 22pt thumb
+    /// radius for true concentric corners on the outermost row.
+    private static let thumbCornerRadius: CGFloat = 22
 
     var body: some View {
         ScrollView {
