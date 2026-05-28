@@ -8,166 +8,227 @@ struct MapView: View {
     @State private var position: MapCameraPosition = .userLocation(
         fallback: .automatic
     )
-    /// Latest map region from `onMapCameraChange`. Drives clustering — we
-    /// need the visible span (in degrees) plus the view size (in points)
-    /// to know which annotations would visually overlap.
-    @State private var region: MKCoordinateRegion?
+    @State private var lastSpan: MKCoordinateSpan?
+    @State private var lastCenterLatitude: Double = 0
+    /// Discrete zoom level — `floor(log2(camera.distance) * 4)`. Each unit
+    /// is roughly a quarter-octave. We only rebuild clusters when this
+    /// crosses a step, which keeps the cluster set stable between fine
+    /// camera ticks during a pinch (vs. recomputing on every frame and
+    /// flickering at boundary cases).
+    @State private var lastZoomStep: Int?
     @State private var viewSize: CGSize = .zero
 
-    /// Pushed when the user taps a cluster with only one bird, or picks a
-    /// row from the expand sheet. Drives the fullscreen detail cover.
-    @State private var selectedEntry: LifeListEntry?
-    /// Pushed when the user taps a cluster representative that's hiding
-    /// other birds. Drives the expand sheet.
+    /// Materialized cluster list. Rebuilt only on quantized zoom changes
+    /// (or when the life list itself changes).
+    @State private var clusters: [BirdCluster] = []
+
     @State private var expandedCluster: BirdCluster?
 
-    /// Pinned thumbnail dimensions on the map. Chosen so a few birds fit
-    /// per row at typical city-zoom, with a thin white border that reads
-    /// against satellite + standard map styles.
-    private static let thumbSize = CGSize(width: 52, height: 40)
+    /// Pinned thumbnail dimensions on the map. The total annotation
+    /// occupies more space than this — see `Self.annotationFootprint`.
+    private static let thumbSize = CGSize(width: 78, height: 60)
+    /// Vertical space the label below the thumbnail typically eats up
+    /// (capsule height + spacing). Counted as part of the annotation's
+    /// footprint so the clustering threshold prevents the label of one
+    /// annotation from sliding under a neighbor's image.
+    private static let labelHeight: CGFloat = 26
+    /// Typical horizontal extent of the on-map label capsule for a
+    /// common bird name. Wider than the thumbnail; we cluster on the
+    /// larger axis so two annotations' labels don't visually collide.
+    private static let labelWidth: CGFloat = 110
+    /// Slack added on top of the footprint when comparing centers.
+    private static let clusterGutter: CGFloat = 4
+
+    private static var annotationFootprint: CGSize {
+        CGSize(
+            width: max(thumbSize.width, labelWidth),
+            height: thumbSize.height + 4 + labelHeight
+        )
+    }
 
     private var entriesWithCoordinates: [LifeListEntry] {
         store.entries.filter { $0.firstLatitude != nil && $0.firstLongitude != nil }
     }
 
-    private var clusters: [BirdCluster] {
-        guard let region else { return [] }
-        return Self.computeClusters(
-            entries: entriesWithCoordinates,
-            region: region,
-            viewSize: viewSize,
-            thumbSize: Self.thumbSize
-        )
-    }
-
     var body: some View {
-        GeometryReader { geo in
-            Map(position: $position) {
-                UserAnnotation()
-                ForEach(clusters) { cluster in
-                    Annotation(
-                        cluster.representative.commonName,
-                        coordinate: cluster.coordinate,
-                        anchor: .center
-                    ) {
-                        Button {
-                            if cluster.others.isEmpty {
-                                selectedEntry = cluster.representative
-                            } else {
+        ZStack {
+            GeometryReader { geo in
+                Map(position: $position) {
+                    UserAnnotation()
+                    ForEach(clusters) { cluster in
+                        Annotation(
+                            cluster.representative.commonName,
+                            coordinate: cluster.coordinate,
+                            anchor: .center
+                        ) {
+                            MapAnnotationContent(
+                                entry: cluster.representative,
+                                clusterCount: cluster.all.count,
+                                thumbSize: Self.thumbSize
+                            )
+                            .transition(.opacity.animation(.easeInOut(duration: 0.28)))
+                            .onTapGesture {
+                                guard cluster.others.count > 0 else { return }
                                 expandedCluster = cluster
                             }
-                        } label: {
-                            BirdMapThumbnail(
-                                scientificName: cluster.representative.scientificName,
-                                size: Self.thumbSize
-                            )
                         }
-                        .buttonStyle(.plain)
+                        .annotationTitles(.hidden)
                     }
-                    .annotationTitles(.hidden)
+                }
+                .mapControls {
+                    MapUserLocationButton()
+                    MapCompass()
+                }
+                .onMapCameraChange(frequency: .continuous) { context in
+                    handleCameraChange(context)
+                }
+                .onAppear { viewSize = geo.size }
+                .onChange(of: geo.size) { _, new in
+                    viewSize = new
+                    rebuildClusters(animated: false)
+                }
+                .onChange(of: store.entries) { _, _ in
+                    rebuildClusters(animated: true)
                 }
             }
-            .mapControls {
-                MapUserLocationButton()
-                MapCompass()
-            }
-            .onMapCameraChange(frequency: .onEnd) { context in
-                region = context.region
-            }
-            .onAppear {
-                viewSize = geo.size
-                if region == nil {
-                    region = MKCoordinateRegion(
-                        center: CLLocationCoordinate2D(latitude: 0, longitude: 0),
-                        span: MKCoordinateSpan(latitudeDelta: 180, longitudeDelta: 360)
-                    )
-                }
-            }
-            .onChange(of: geo.size) { _, new in
-                viewSize = new
-            }
+            .ignoresSafeArea(edges: .bottom)
         }
-        .ignoresSafeArea(edges: .bottom)
         .task {
-            // Trigger the permission prompt if the user opens Map before
-            // ever tapping Start Recording, and seed LocationCache so the
-            // life-list add buttons have a coordinate to attach right away.
             let manager = CLLocationManager()
             if manager.authorizationStatus == .notDetermined {
                 manager.requestWhenInUseAuthorization()
             }
             _ = await LocationCache.shared.current()
         }
-        .fullScreenCover(item: $selectedEntry) { entry in
-            BirdDetailView(entry: entry)
-        }
         .sheet(item: $expandedCluster) { cluster in
-            ClusterExpandView(cluster: cluster) { entry in
-                expandedCluster = nil
-                // Defer the fullscreen cover by one runloop turn so the
-                // sheet's own dismiss transition can complete before the
-                // cover slides in — otherwise the two animations fight
-                // and the cover comes in from nowhere.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                    selectedEntry = entry
-                }
-            }
-            .presentationDetents([.medium, .large])
+            ClusterSheet(cluster: cluster)
         }
     }
 
-    // MARK: - Clustering
+    // MARK: - Camera + clustering
 
-    /// Greedy "Photos-style" clustering: walk entries newest-first, and
-    /// fold each one into an existing cluster if its coordinate lands
-    /// within one thumbnail (plus a 4pt gutter) of that cluster's
-    /// representative. The first entry to land in any neighborhood
-    /// becomes the representative — i.e. the most recent sighting wins.
+    private func handleCameraChange(_ context: MapCameraUpdateContext) {
+        let span = context.region.span
+        let centerLat = context.region.center.latitude
+        let distance = context.camera.distance
+
+        // Quantize zoom into discrete steps so a continuous pinch doesn't
+        // trigger a rebuild on every frame. The step boundary picks up
+        // legitimate zoom-level transitions without flickering mid-pinch.
+        let step = Int((log2(max(distance, 1)) * 4).rounded(.down))
+
+        lastSpan = span
+        lastCenterLatitude = centerLat
+
+        if step == lastZoomStep { return }
+        lastZoomStep = step
+        rebuildClusters(animated: true)
+    }
+
+    private func rebuildClusters(animated: Bool) {
+        guard let span = lastSpan, viewSize.width > 0, viewSize.height > 0 else {
+            return
+        }
+        let next = Self.computeClusters(
+            entries: entriesWithCoordinates,
+            span: span,
+            centerLatitude: lastCenterLatitude,
+            viewSize: viewSize,
+            footprint: Self.annotationFootprint,
+            gutter: Self.clusterGutter
+        )
+        guard next != clusters else { return }
+        if animated {
+            withAnimation(.easeInOut(duration: 0.28)) {
+                clusters = next
+            }
+        } else {
+            clusters = next
+        }
+    }
+
     static func computeClusters(
         entries: [LifeListEntry],
-        region: MKCoordinateRegion,
+        span: MKCoordinateSpan,
+        centerLatitude: Double,
         viewSize: CGSize,
-        thumbSize: CGSize
+        footprint: CGSize,
+        gutter: CGFloat
     ) -> [BirdCluster] {
         guard !entries.isEmpty,
               viewSize.width > 0, viewSize.height > 0,
-              region.span.latitudeDelta > 0,
-              region.span.longitudeDelta > 0 else { return [] }
+              span.latitudeDelta > 0 else { return [] }
+
+        let degPerPoint = span.latitudeDelta / Double(viewSize.height)
+        let thresholdLat = degPerPoint * Double(footprint.height + gutter)
+        let cosLat = max(cos(centerLatitude * .pi / 180), 0.05)
+        let thresholdLon = (degPerPoint * Double(footprint.width + gutter)) / cosLat
 
         let sorted = entries.sorted { $0.firstSeen > $1.firstSeen }
-        let lonPerPt = region.span.longitudeDelta / Double(viewSize.width)
-        let latPerPt = region.span.latitudeDelta / Double(viewSize.height)
-        let minDLon = lonPerPt * Double(thumbSize.width + 4)
-        let minDLat = latPerPt * Double(thumbSize.height + 4)
 
-        var reps: [(entry: LifeListEntry, coord: CLLocationCoordinate2D, others: [LifeListEntry])] = []
+        struct WIP {
+            let entry: LifeListEntry
+            let lat: Double
+            let lon: Double
+            var others: [LifeListEntry] = []
+        }
+        var reps: [WIP] = []
         reps.reserveCapacity(sorted.count)
 
         for entry in sorted {
             guard let lat = entry.firstLatitude,
                   let lon = entry.firstLongitude else { continue }
-            let coord = CLLocationCoordinate2D(latitude: lat, longitude: lon)
             var folded = false
             for i in reps.indices {
-                let dLat = abs(reps[i].coord.latitude - lat)
-                let dLon = abs(reps[i].coord.longitude - lon)
-                if dLat < minDLat && dLon < minDLon {
+                if abs(reps[i].lat - lat) < thresholdLat
+                    && abs(reps[i].lon - lon) < thresholdLon {
                     reps[i].others.append(entry)
                     folded = true
                     break
                 }
             }
             if !folded {
-                reps.append((entry, coord, []))
+                reps.append(WIP(entry: entry, lat: lat, lon: lon))
             }
         }
 
         return reps.map {
             BirdCluster(
                 representative: $0.entry,
-                coordinate: $0.coord,
+                coordinate: CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon),
                 others: $0.others
             )
+        }
+    }
+}
+
+// MARK: - On-map annotation content (thumbnail + label)
+
+private struct MapAnnotationContent: View {
+    let entry: LifeListEntry
+    let clusterCount: Int
+    let thumbSize: CGSize
+
+    private var labelText: String {
+        clusterCount > 1 ? "\(clusterCount) Birds" : entry.commonName
+    }
+
+    var body: some View {
+        VStack(spacing: 4) {
+            BirdMapThumbnail(
+                scientificName: entry.scientificName,
+                size: thumbSize,
+                cornerRadius: 8,
+                showBorder: true
+            )
+            Text(labelText)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 3)
+                .background(.thinMaterial, in: Capsule())
         }
     }
 }
@@ -193,11 +254,75 @@ struct BirdCluster: Identifiable, Hashable {
     }
 }
 
-// MARK: - Thumbnail rendered on the map
+// MARK: - Native iOS 26 cluster sheet
+
+private struct ClusterSheet: View {
+    let cluster: BirdCluster
+    @State private var detent: PresentationDetent = .medium
+
+    private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 8)]
+    /// Concentric with the system sheet's corner radius:
+    ///   sheetCornerRadius (28) = thumbCornerRadius (16) + horizontalPadding (12)
+    private static let thumbCornerRadius: CGFloat = 16
+
+    var body: some View {
+        ScrollView {
+            LazyVGrid(columns: columns, alignment: .center, spacing: 10) {
+                ForEach(cluster.all) { entry in
+                    ClusterGridItem(
+                        entry: entry,
+                        cornerRadius: Self.thumbCornerRadius
+                    )
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+            .padding(.bottom, 24)
+        }
+        .presentationDetents([.medium, .large], selection: $detent)
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(28)
+        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+        .presentationBackground(.thinMaterial)
+    }
+}
+
+/// Top-aligned cell so a 2-line caption doesn't shove its neighbor's
+/// image down a row.
+private struct ClusterGridItem: View {
+    let entry: LifeListEntry
+    let cornerRadius: CGFloat
+
+    private static let thumbSize = CGSize(width: 116, height: 87)
+
+    var body: some View {
+        VStack(alignment: .center, spacing: 6) {
+            BirdMapThumbnail(
+                scientificName: entry.scientificName,
+                size: Self.thumbSize,
+                cornerRadius: cornerRadius,
+                showBorder: false
+            )
+            Text(entry.commonName)
+                .font(.caption)
+                .multilineTextAlignment(.center)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .frame(maxHeight: .infinity, alignment: .top)
+        .padding(.vertical, 4)
+    }
+}
+
+// MARK: - Thumbnail rendered on the map / inside the grid
 
 private struct BirdMapThumbnail: View {
     let scientificName: String
     let size: CGSize
+    var cornerRadius: CGFloat = 8
+    /// White hairline border + shadow look right on the map but fight
+    /// the frosted card. Caller picks.
+    var showBorder: Bool = true
 
     var body: some View {
         Group {
@@ -215,124 +340,20 @@ private struct BirdMapThumbnail: View {
             }
         }
         .frame(width: size.width, height: size.height)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .strokeBorder(Color.white, lineWidth: 1.5)
-        }
-        .shadow(color: .black.opacity(0.25), radius: 2, x: 0, y: 1)
-    }
-}
-
-// MARK: - Fullscreen detail (single bird)
-
-private struct BirdDetailView: View {
-    let entry: LifeListEntry
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-
-            VStack(spacing: 16) {
-                Spacer(minLength: 0)
-
-                Group {
-                    if let url = SpeciesImage.largeURL(for: entry.scientificName),
-                       let img = UIImage(contentsOfFile: url.path) {
-                        Image(uiImage: img)
-                            .resizable()
-                            .interpolation(.medium)
-                            .scaledToFit()
-                    } else if let img = SpeciesImageCache.shared.image(for: entry.scientificName) {
-                        Image(uiImage: img)
-                            .resizable()
-                            .interpolation(.medium)
-                            .scaledToFit()
-                    } else {
-                        Image(systemName: "bird")
-                            .font(.system(size: 80))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                .padding(.horizontal, 16)
-
-                VStack(spacing: 6) {
-                    Text(entry.commonName)
-                        .font(.title.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .multilineTextAlignment(.center)
-                    Text(entry.scientificName)
-                        .font(.subheadline)
-                        .italic()
-                        .foregroundStyle(.white.opacity(0.75))
-                    Text(entry.firstSeen, format: .dateTime.month(.wide).day().year())
-                        .font(.subheadline)
-                        .monospacedDigit()
-                        .foregroundStyle(.white.opacity(0.75))
-                        .padding(.top, 2)
-                }
-
-                Spacer(minLength: 0)
-            }
-
-            VStack {
-                HStack {
-                    Spacer()
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 32))
-                            .symbolRenderingMode(.palette)
-                            .foregroundStyle(.white, .white.opacity(0.25))
-                    }
-                    .padding(.top, 20)
-                    .padding(.trailing, 16)
-                }
-                Spacer()
+            if showBorder {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .strokeBorder(Color.white, lineWidth: 1.5)
             }
         }
-    }
-}
-
-// MARK: - Cluster expand sheet
-
-private struct ClusterExpandView: View {
-    let cluster: BirdCluster
-    let onSelect: (LifeListEntry) -> Void
-
-    private let columns = [GridItem(.adaptive(minimum: 88, maximum: 120), spacing: 12)]
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                LazyVGrid(columns: columns, spacing: 12) {
-                    ForEach(cluster.all) { entry in
-                        Button {
-                            onSelect(entry)
-                        } label: {
-                            VStack(spacing: 6) {
-                                BirdMapThumbnail(
-                                    scientificName: entry.scientificName,
-                                    size: CGSize(width: 88, height: 66)
-                                )
-                                Text(entry.commonName)
-                                    .font(.caption)
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(2)
-                                    .multilineTextAlignment(.center)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(16)
-            }
-            .navigationTitle("\(cluster.all.count) birds")
-            .navigationBarTitleDisplayMode(.inline)
-        }
+        .shadow(
+            color: .black.opacity(showBorder ? 0.3 : 0),
+            radius: showBorder ? 3 : 0,
+            x: 0,
+            y: showBorder ? 1.5 : 0
+        )
+        .contentShape(Rectangle())
     }
 }
 
