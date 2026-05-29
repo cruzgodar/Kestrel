@@ -107,6 +107,9 @@ struct MapView: View {
                                 info: visibleReps[entry.scientificName],
                                 thumbSize: Self.thumbSize,
                                 onTap: { tappedInfo in
+                                    // Singletons have nothing to expand —
+                                    // only multi-bird stacks open a card.
+                                    guard tappedInfo.count > 1 else { return }
                                     expandedCluster = BirdCluster(
                                         representative: tappedInfo.representative,
                                         coordinate: tappedInfo.coordinate,
@@ -121,6 +124,23 @@ struct MapView: View {
                 .mapControls {
                     MapUserLocationButton()
                     MapCompass()
+                }
+                // Tapping the map background while a card is open closes
+                // it. We catch the tap on a transparent overlay that only
+                // exists while a card is open, rather than via
+                // `.onTapGesture` on the Map itself: a tap gesture on the
+                // Map is forced to wait for the map's double-tap-to-zoom
+                // recognizer to fail before firing, which adds a visible
+                // delay before the card dismisses. A plain overlay has no
+                // such recognizer, so it fires the instant the tap ends.
+                .overlay {
+                    if expandedCluster != nil {
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                expandedCluster = nil
+                            }
+                    }
                 }
                 .onMapCameraChange(frequency: .continuous) { context in
                     handleCameraChange(context)
