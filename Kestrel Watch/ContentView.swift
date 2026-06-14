@@ -17,7 +17,7 @@ struct ContentView: View {
                     .frame(width: 110, height: 110)
                     .background(Circle().fill(Self.recordTint))
                     .scaleEffect(session.isRecording ? 1.05 : 1.0)
-                    .animation(.easeOut(duration: 0.18), value: session.isRecording)
+                    .animation(.easeOut(duration: 0.12), value: session.isRecording)
             }
             .buttonStyle(.plain)
         }

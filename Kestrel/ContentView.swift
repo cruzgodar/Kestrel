@@ -206,8 +206,7 @@ struct ContentView: View {
                         Image(systemName: alreadyAdded ? "checkmark" : "plus")
                             .font(.body.weight(.semibold))
                             .foregroundStyle(.white)
-                            .contentTransition(.symbolEffect(.replace))
-                            .animation(.snappy(duration: 0.18), value: alreadyAdded)
+                            .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
                             .frame(width: 32, height: 32)
                             .background(Self.recordTint, in: Circle())
                     }
