@@ -37,7 +37,6 @@ from PIL import Image
 ROOT       = Path(__file__).resolve().parents[1]
 LABELS     = ROOT / "Kestrel" / "Models" / "BirdNET_GLOBAL_6K_V2.4_Labels.txt"
 OUT_DIR    = ROOT / "Kestrel" / "Models" / "SpeciesImagesLarge"
-SMALL_DIR  = ROOT / "Kestrel" / "Models" / "SpeciesImages"
 MANUAL_DIR = ROOT / "scripts" / "manual"
 MISSING    = ROOT / "scripts" / "species_images_missing.txt"
 TAXONOMY   = ROOT / "scripts" / ".ebird_taxonomy.csv"
@@ -54,8 +53,7 @@ USER_AGENT = (
     "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"
 )
 
-MAX_SIDE       = 768   # large bundled variant
-SMALL_MAX_SIDE = 128   # small bundled variant (row thumbnails)
+MAX_SIDE       = 768   # bundled variant (used for both row thumbnails and notifications)
 JPEG_Q         = 80
 TIMEOUT        = 20
 
@@ -428,7 +426,7 @@ def _ebird_common_to_sci(taxonomy: Taxonomy | None) -> dict[str, str]:
     return out
 
 def process_manual_images(taxonomy: Taxonomy | None) -> tuple[int, int, list[str]]:
-    """Converts every image in MANUAL_DIR to bundled small + large JPEGs.
+    """Converts every image in MANUAL_DIR to a bundled JPEG in OUT_DIR.
 
     Returns `(written, skipped_existing, unresolved)`. Each file is matched
     by common name to a scientific name (BirdNET first, eBird fallback). We
@@ -458,8 +456,7 @@ def process_manual_images(taxonomy: Taxonomy | None) -> tuple[int, int, list[str
             unresolved.append(common)
             continue
         large_path = OUT_DIR / f"{slug}_large.jpg"
-        small_path = SMALL_DIR / f"{slug}.jpg"
-        if large_path.exists() and small_path.exists():
+        if large_path.exists():
             skipped += 1
             continue
         try:
@@ -470,10 +467,7 @@ def process_manual_images(taxonomy: Taxonomy | None) -> tuple[int, int, list[str
             print(f"  manual: could not open {f.name}: {e}", file=sys.stderr)
             unresolved.append(common)
             continue
-        if not large_path.exists():
-            _save_jpeg(_resize_to(img, MAX_SIDE), large_path)
-        if not small_path.exists():
-            _save_jpeg(_resize_to(img, SMALL_MAX_SIDE), small_path)
+        _save_jpeg(_resize_to(img, MAX_SIDE), large_path)
         print(f"  manual: {common} → {slug}")
         written += 1
     return written, skipped, unresolved
@@ -532,7 +526,6 @@ def main() -> int:
     args = ap.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    SMALL_DIR.mkdir(parents=True, exist_ok=True)
     _load_cookies()
 
     taxonomy = load_taxonomy()
