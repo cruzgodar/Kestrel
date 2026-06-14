@@ -93,6 +93,12 @@ final class LifeListStore {
         save()
     }
 
+    func removeAll() {
+        guard !entries.isEmpty else { return }
+        entries.removeAll()
+        save()
+    }
+
     private func merge(rows: [EBirdRawRow]) -> ImportSummary {
         var map: [String: LifeListEntry] = Dictionary(
             uniqueKeysWithValues: entries.map { ($0.scientificName, $0) }

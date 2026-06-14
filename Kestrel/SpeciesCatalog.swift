@@ -20,6 +20,12 @@ final class SpeciesCatalog: @unchecked Sendable {
 
     let all: [Species]
 
+    /// Maps a scientific name to its index in `all` — which is the same index
+    /// the geo range filter uses (both derive from the BirdNET labels file in
+    /// the same order). Lets the life list ask "is this species in range?"
+    /// against `SpeciesRangeFilter`'s cached allowed-index set.
+    let indexByScientificName: [String: Int]
+
     private init() {
         guard
             let url = Bundle.main.url(
@@ -29,6 +35,7 @@ final class SpeciesCatalog: @unchecked Sendable {
             let raw = try? String(contentsOf: url, encoding: .utf8)
         else {
             self.all = []
+            self.indexByScientificName = [:]
             return
         }
         self.all = raw.split(whereSeparator: { $0.isNewline }).map { line in
@@ -41,5 +48,9 @@ final class SpeciesCatalog: @unchecked Sendable {
                 searchHay: "\(com) \(sci)".lowercased()
             )
         }
+        var index: [String: Int] = [:]
+        index.reserveCapacity(all.count)
+        for (i, sp) in all.enumerated() { index[sp.scientificName] = i }
+        self.indexByScientificName = index
     }
 }

@@ -10,8 +10,19 @@ struct LifeListView: View {
     /// The species the user just swiped to delete — drives the confirmation
     /// dialog. Cleared on Cancel; the actual remove happens on confirm.
     @State private var pendingDeletion: LifeListEntry?
+    /// Drives the "clear all entries" confirmation dialog.
+    @State private var showClearAllConfirmation = false
     @State private var showStarredOnly = false
+    /// Frozen set of scientific names captured when the starred-only filter
+    /// is switched on. While filtering, membership is driven by this snapshot
+    /// rather than live star state, so unstarring a bird leaves it on screen
+    /// until the filter is toggled off and back on. See `displayedEntries`.
+    @State private var starredSnapshot: Set<String> = []
     @State private var searchText = ""
+    /// Cached geo range-filter allowed-index set, loaded once on appear. Used
+    /// to split search results into in-range / out-of-range groups. `nil`
+    /// when no location filter has been computed yet (no grouping then).
+    @State private var allowedIndices: Set<Int>?
     /// Catalog suggestions for the current `searchText`. Computed off the
     /// main actor by a debounced `.task(id: searchText)`; reads here go
     /// straight into the rendered list. Empty while the user is still
@@ -25,22 +36,36 @@ struct LifeListView: View {
     enum SearchRow: Identifiable, Hashable {
         case existing(LifeListEntry)
         case suggestion(scientificName: String, commonName: String)
+        /// Section divider inserted between in-range and out-of-range
+        /// matches while searching.
+        case header(String)
 
         var id: String {
             switch self {
             case .existing(let e):       return "e-" + e.scientificName
             case .suggestion(let s, _):  return "s-" + s
+            case .header(let title):     return "h-" + title
             }
         }
     }
 
-    /// Drives the List. Life-list matches are filtered synchronously (the
-    /// list is small), and catalog suggestions come from the async pipeline
-    /// in `asyncSuggestions` — already sorted, capped at 20, and ordered
-    /// after the life-list section.
+    /// The search query with surrounding whitespace stripped. Used both to
+    /// decide whether the empty-state placeholder shows and to drive row
+    /// filtering.
+    private var trimmedSearch: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Life-list entries to display, honoring the starred filter via the
+    /// frozen `starredSnapshot` so unstarring doesn't immediately drop a row.
+    private var displayedEntries: [LifeListEntry] {
+        guard showStarredOnly else { return store.entries }
+        return store.entries.filter { starredSnapshot.contains($0.scientificName) }
+    }
+
     private var visibleRows: [SearchRow] {
-        let base = showStarredOnly ? store.entries.filter(\.isStarred) : store.entries
-        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = displayedEntries
+        let q = trimmedSearch
         guard !q.isEmpty else { return base.map { .existing($0) } }
         let needle = q.lowercased()
 
@@ -49,7 +74,32 @@ struct LifeListView: View {
             return Self.scoreMatch(hay, needle: needle, allowFuzzy: needle.count >= 3) != nil
         }
 
-        return lifeMatches.map { .existing($0) } + asyncSuggestions
+        let rows = lifeMatches.map { SearchRow.existing($0) } + asyncSuggestions
+        return Self.partitionByRange(rows, allowed: allowedIndices)
+    }
+
+    /// Splits search-result rows into in-range and out-of-range groups,
+    /// putting the out-of-range matches below a "Birds not found in this
+    /// area" header. When no location filter is cached (`allowed == nil`)
+    /// the rows are returned unchanged. The relative order within each group
+    /// is preserved.
+    private static func partitionByRange(_ rows: [SearchRow], allowed: Set<Int>?) -> [SearchRow] {
+        guard let allowed else { return rows }
+        let index = SpeciesCatalog.shared.indexByScientificName
+        func inRange(_ row: SearchRow) -> Bool {
+            let sci: String
+            switch row {
+            case .existing(let e):       sci = e.scientificName
+            case .suggestion(let s, _):  sci = s
+            case .header:                return true
+            }
+            guard let i = index[sci] else { return false }
+            return allowed.contains(i)
+        }
+        let here = rows.filter(inRange)
+        let notHere = rows.filter { !inRange($0) }
+        guard !notHere.isEmpty else { return here }
+        return here + [.header("Birds not found in this area")] + notHere
     }
 
     /// Returns `nil` if `hay` doesn't match `needle`, otherwise a score
@@ -114,27 +164,65 @@ struct LifeListView: View {
     }
 
     var body: some View {
-        Group {
-            if store.entries.isEmpty {
+        // The List is always rendered (with the empty placeholder shown as an
+        // overlay) rather than swapped out via if/else. Swapping the subtree
+        // tears down and rebuilds the view tree the moment the first character
+        // is typed into an empty-list search, which dropped the bottom search
+        // field's focus as soon as results loaded. Keeping the List mounted
+        // keeps that focus stable.
+        List {
+            ForEach(visibleRows) { row in
+                switch row {
+                case .existing(let entry):
+                    existingRow(entry: entry)
+                case .suggestion(let sci, let com):
+                    suggestionRow(scientificName: sci, commonName: com)
+                case .header(let title):
+                    headerRow(title)
+                }
+            }
+
+            // Sits at the very bottom of the list. Hidden while searching or
+            // filtering so it doesn't interrupt the rows; only shown when
+            // viewing the full, unfiltered list.
+            if trimmedSearch.isEmpty && !store.entries.isEmpty && !showStarredOnly {
+                HStack {
+                    Spacer()
+                    Button {
+                        showClearAllConfirmation = true
+                    } label: {
+                        Text("Clear All Entries")
+                            .font(.title3.weight(.semibold))
+                            .frame(height: 26)
+                    }
+                    .buttonStyle(RecordButtonStyle(tint: .red))
+                    Spacer()
+                }
+                .padding(.vertical, 16)
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .scrollBounceBehavior(.basedOnSize)
+        .overlay {
+            // Empty-state placeholder — only when there's nothing to search
+            // through *and* no active query. With a query present the List
+            // still shows catalog suggestions so the user can build a life
+            // list from scratch via search.
+            if store.entries.isEmpty && trimmedSearch.isEmpty {
                 ContentUnavailableView {
                     Label("Your life list is empty", systemImage: "bird")
                 } description: {
-                    Text("Tap the import button to load an eBird CSV export.")
-                }
-            } else {
-                List {
-                    ForEach(visibleRows) { row in
-                        switch row {
-                        case .existing(let entry):
-                            existingRow(entry: entry)
-                        case .suggestion(let sci, let com):
-                            suggestionRow(scientificName: sci, commonName: com)
-                        }
+                    VStack(spacing: 12) {
+                        Text("Tap the import button above to load a CSV export of your eBird life list.")
+                        Link(
+                            "Download your eBird data",
+                            destination: URL(string: "https://ebird.org/downloadMyData")!
+                        )
                     }
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .scrollBounceBehavior(.basedOnSize)
             }
         }
         .navigationTitle("Life List")
@@ -146,6 +234,15 @@ struct LifeListView: View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
+                    // Re-snapshot the currently-starred species each time the
+                    // filter is switched on. This frozen set drives which rows
+                    // show while filtering, so unstarring leaves a bird visible
+                    // until the filter is toggled off and on again.
+                    if !showStarredOnly {
+                        starredSnapshot = Set(
+                            store.entries.lazy.filter(\.isStarred).map(\.scientificName)
+                        )
+                    }
                     showStarredOnly.toggle()
                 } label: {
                     Image(systemName: "line.3.horizontal.decrease")
@@ -203,6 +300,15 @@ struct LifeListView: View {
             guard !Task.isCancelled else { return }
             asyncSuggestions = result
         }
+        // Load the cached geo range filter once so search results can be
+        // grouped into in-range / out-of-range birds. Reads straight off
+        // disk — no ORT session is constructed.
+        .task {
+            let allowed = await Task.detached(priority: .utility) {
+                SpeciesRangeFilter.cachedAllowedIndices()
+            }.value
+            allowedIndices = allowed
+        }
         .fileImporter(
             isPresented: $isImporting,
             allowedContentTypes: [.commaSeparatedText, .plainText, .text],
@@ -230,6 +336,17 @@ struct LifeListView: View {
             Button("Cancel", role: .cancel) {
                 pendingDeletion = nil
             }
+        }
+        .alert(
+            "Clear your entire life list?",
+            isPresented: $showClearAllConfirmation
+        ) {
+            Button("Clear All", role: .destructive) {
+                store.removeAll()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("Are you sure you want to permanently remove all \(store.entries.count) species from your life list? This cannot be undone.")
         }
     }
 
@@ -361,9 +478,29 @@ struct LifeListView: View {
         .listRowSeparator(.hidden)
     }
 
+    /// Section divider between in-range and out-of-range search matches.
+    @ViewBuilder
+    private func headerRow(_ title: String) -> some View {
+        Text(title)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+            .padding(.bottom, 4)
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+    }
+
     private var speciesCountText: String {
+        if showStarredOnly {
+            // Count from the frozen snapshot so the subtitle matches the rows
+            // on screen (unstarred-but-still-showing birds included).
+            let n = displayedEntries.count
+            return "Filtered to \(n) starred species"
+        }
         let n = store.entries.count
-        return "\(n) \(n == 1 ? "species" : "species")"
+        return "\(n) species"
     }
 
     private func handleImport(_ result: Result<[URL], Error>) async {

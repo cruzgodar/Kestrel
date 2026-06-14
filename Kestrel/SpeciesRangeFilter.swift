@@ -98,6 +98,19 @@ actor SpeciesRangeFilter {
         }
     }
 
+    /// Reads the cached allowed-index set straight off disk without
+    /// constructing an `ORTSession` — cheap enough to call from the main
+    /// actor (e.g. the life list's "in this area" grouping). Returns `nil`
+    /// when no location filter has been computed yet.
+    nonisolated static func cachedAllowedIndices() -> Set<Int>? {
+        guard let url = try? cacheURL(),
+              let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        guard let cached = try? decoder.decode(CachedFilter.self, from: data) else { return nil }
+        return Set(cached.allowedIndices)
+    }
+
     // MARK: Persistence
 
     private static func cacheURL() throws -> URL {

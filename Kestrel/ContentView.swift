@@ -28,9 +28,9 @@ struct ContentView: View {
             .overlay {
                 if manager.detections.isEmpty {
                     ContentUnavailableView {
-                        Label("No detections yet", systemImage: "bird")
+                        Label("No detections yet", systemImage: "magnifyingglass")
                     } description: {
-                        Text("Tap Start Recording to begin identifying birds.")
+                        Text("Tap Start Recording here or on your Apple Watch to begin identifying birds. You will be notified about starred birds and those not on your life list.")
                     }
                     .opacity(manager.isRecording ? 0 : 1)
                     .animation(.easeInOut(duration: 0.25), value: manager.isRecording)
@@ -285,7 +285,7 @@ private struct SpeciesHeroImage: View {
 /// full control over the press animation. No spring overshoots, no Liquid
 /// Glass settling — just a tinted capsule. On press the button briefly
 /// grows + dims, both with the same fast easeOut so they feel like one motion.
-private struct RecordButtonStyle: ButtonStyle {
+struct RecordButtonStyle: ButtonStyle {
     let tint: Color
 
     func makeBody(configuration: Configuration) -> some View {
