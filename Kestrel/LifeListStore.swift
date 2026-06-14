@@ -176,7 +176,12 @@ final class LifeListStore {
         let updated = updatedKeys.count
         let skipped = knownKeys.subtracting(updatedKeys).count
 
-        entries = map.values.sorted { $0.firstSeen > $1.firstSeen }
+        // Canonicalize the same way `load()` does so freshly imported entries
+        // pick up BirdNET-canonical scientific names immediately — otherwise an
+        // eBird name like "Astur cooperii" (Cooper's Hawk) or "Spilopelia
+        // chinensis" (Spotted Dove) would slug to a missing image and show the
+        // placeholder until the next launch.
+        entries = Self.canonicalize(Array(map.values)).sorted { $0.firstSeen > $1.firstSeen }
         save()
         return ImportSummary(added: added, updated: updated, skipped: skipped)
     }
@@ -201,8 +206,7 @@ final class LifeListStore {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let decoded = try decoder.decode([LifeListEntry].self, from: data)
-            let aliased = Self.applyAliases(decoded)
-            let collapsed = Self.collapseByCommonName(Self.collapseToSpecies(aliased))
+            let collapsed = Self.canonicalize(decoded)
             entries = collapsed.sorted { $0.firstSeen > $1.firstSeen }
             // Persist if anything actually changed — either rows merged or a
             // scientific name was rewritten to its catalog-canonical form.
@@ -217,6 +221,15 @@ final class LifeListStore {
         } catch {
             print("LifeListStore: load failed — \(error)")
         }
+    }
+
+    /// Full canonicalization pipeline shared by `load()` and the import
+    /// `merge()`: rewrite stale eBird scientific names through the alias table,
+    /// collapse trinomial subspecies into their binomial, then collapse
+    /// same-common-name synonyms onto the BirdNET-canonical scientific name so
+    /// image-slug and detection lookups resolve to the bundled assets.
+    private static func canonicalize(_ entries: [LifeListEntry]) -> [LifeListEntry] {
+        collapseByCommonName(collapseToSpecies(applyAliases(entries)))
     }
 
     /// Merge entries whose scientific names differ only in a trinomial subspecies

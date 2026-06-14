@@ -29,6 +29,16 @@ enum TaxonomyAliases {
         // Cattle Egret split: eBird's "Western Cattle-Egret" (Ardea ibis)
         // maps to BirdNET's "Cattle Egret" under the older genus Bubulcus.
         "Ardea ibis": "Bubulcus ibis",
+        // Cooper's Hawk moved to genus Astur (2024 AOS/Clements); BirdNET
+        // trained on the older Accipiter cooperii.
+        "Astur cooperii": "Accipiter cooperii",
+        // Spotted Dove: eBird's Spilopelia chinensis vs BirdNET's older
+        // Streptopelia chinensis.
+        "Spilopelia chinensis": "Streptopelia chinensis",
+        // Hairy Woodpecker under eBird's former genera (Picoides /
+        // Leuconotopicus) → BirdNET's Dryobates villosus.
+        "Picoides villosus": "Dryobates villosus",
+        "Leuconotopicus villosus": "Dryobates villosus",
     ]
 
     /// Returns the BirdNET-canonical scientific name for `scientificName`,

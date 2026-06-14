@@ -530,6 +530,7 @@ struct LifeListView: View {
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.white)
                     .contentTransition(.symbolEffect(.replace))
+                    .animation(.snappy(duration: 0.18), value: alreadyAdded)
                     .frame(width: 32, height: 32)
                     .background(Self.addButtonTint, in: Circle())
             }
