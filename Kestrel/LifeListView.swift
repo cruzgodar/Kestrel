@@ -29,6 +29,13 @@ struct LifeListView: View {
     /// typing or when the query is too short to bother scanning 6,500
     /// species.
     @State private var asyncSuggestions: [SearchRow] = []
+    /// Scientific names added via a suggestion row's plus button during the
+    /// current search session. Like `starredSnapshot`, this freezes the row's
+    /// position: a freshly-added bird keeps rendering in place as a suggestion
+    /// (now showing a checkmark) instead of immediately resorting to the top of
+    /// the life list. Cleared whenever the search query changes or closes, at
+    /// which point the bird settles into its sorted spot.
+    @State private var addedDuringSearch: Set<String> = []
 
     /// Row item rendered by the list. Life-list entries are sorted ahead
     /// of catalog suggestions so adding a missing species feels like a
@@ -70,6 +77,11 @@ struct LifeListView: View {
         let needle = q.lowercased()
 
         let lifeMatches = base.filter { entry in
+            // A bird added via a suggestion row this session stays rendered as
+            // its original suggestion row (with a checkmark) rather than
+            // resorting to the top as a fresh life-list entry. Skip it here so
+            // it doesn't appear twice.
+            guard !addedDuringSearch.contains(entry.scientificName) else { return false }
             let hay = "\(entry.commonName) \(entry.scientificName)".lowercased()
             return Self.scoreMatch(hay, needle: needle, allowFuzzy: needle.count >= 3) != nil
         }
@@ -125,22 +137,33 @@ struct LifeListView: View {
     /// (a life-list entry under an older genus like "Leuconotopicus villosus"
     /// vs. the catalog's "Dryobates villosus") don't surface as a duplicate
     /// suggestion sharing the same common name.
+    /// `allowed` is the geo range filter's allowed-index set (catalog indices).
+    /// In-range species are ranked ahead of out-of-range ones *before* the
+    /// 20-row cap, so a nearby bird always beats a closer name match that
+    /// isn't found in the area — otherwise the truncation could drop every
+    /// in-range suggestion before the view ever groups them.
     nonisolated static func computeSuggestions(
         needle: String,
         excluding lifeNames: Set<String>,
-        lifeCommonNames: Set<String>
+        lifeCommonNames: Set<String>,
+        allowed: Set<Int>?
     ) -> [SearchRow] {
         let allowFuzzy = needle.count >= 3
-        var scored: [(score: Int, scientific: String, common: String)] = []
+        var scored: [(inRange: Bool, score: Int, scientific: String, common: String)] = []
         scored.reserveCapacity(64)
-        for sp in SpeciesCatalog.shared.all {
+        for (idx, sp) in SpeciesCatalog.shared.all.enumerated() {
             if lifeNames.contains(sp.scientificName) { continue }
             if lifeCommonNames.contains(sp.commonName.lowercased()) { continue }
             guard let s = scoreMatch(sp.searchHay, needle: needle, allowFuzzy: allowFuzzy) else { continue }
-            scored.append((s, sp.scientificName, sp.commonName))
+            let inRange = allowed?.contains(idx) ?? false
+            scored.append((inRange, s, sp.scientificName, sp.commonName))
         }
         return scored
-            .sorted { $0.score < $1.score }
+            .sorted { a, b in
+                // No location cached → rank by name score alone.
+                if allowed != nil && a.inRange != b.inRange { return a.inRange }
+                return a.score < b.score
+            }
             .prefix(20)
             .map { .suggestion(scientificName: $0.scientific, commonName: $0.common) }
     }
@@ -170,6 +193,7 @@ struct LifeListView: View {
         // is typed into an empty-list search, which dropped the bottom search
         // field's focus as soon as results loaded. Keeping the List mounted
         // keeps that focus stable.
+        ScrollViewReader { proxy in
         List {
             ForEach(visibleRows) { row in
                 switch row {
@@ -191,14 +215,27 @@ struct LifeListView: View {
                     Button {
                         showClearAllConfirmation = true
                     } label: {
-                        Text("Clear All Entries")
+                        // Styled to match the record button but without the
+                        // press scale/opacity feedback — this is a deliberate,
+                        // confirmed-destructive action, not a tactile control.
+                        Text("Delete All Entries")
                             .font(.title3.weight(.semibold))
+                            .foregroundStyle(.white)
                             .frame(height: 26)
+                            .padding(.horizontal, 28)
+                            .padding(.vertical, 16)
+                            .frame(minHeight: 50)
+                            .background { Capsule(style: .continuous).fill(Color.red) }
+                            .clipShape(Capsule(style: .continuous))
                     }
-                    .buttonStyle(RecordButtonStyle(tint: .red))
+                    .buttonStyle(NoDimButtonStyle())
                     Spacer()
                 }
-                .padding(.vertical, 16)
+                // Top gap kept in line with the inter-row spacing (rows use 4pt
+                // vertical padding) so the button doesn't float; extra room is
+                // left below it above the search field.
+                .padding(.top, 4)
+                .padding(.bottom, 16)
                 .listRowInsets(EdgeInsets())
                 .listRowSeparator(.hidden)
             }
@@ -206,6 +243,17 @@ struct LifeListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .scrollBounceBehavior(.basedOnSize)
+        // Editing the search field resets the scroll to the top of the list and
+        // releases any birds added in the previous query so they settle into
+        // their sorted positions.
+        .onChange(of: searchText) { _, _ in
+            addedDuringSearch = []
+            if let topID = visibleRows.first?.id {
+                withAnimation(.easeOut(duration: 0.2)) {
+                    proxy.scrollTo(topID, anchor: .top)
+                }
+            }
+        }
         .overlay {
             // Empty-state placeholder — only when there's nothing to search
             // through *and* no active query. With a query present the List
@@ -216,7 +264,7 @@ struct LifeListView: View {
                     Label("Your life list is empty", systemImage: "bird")
                 } description: {
                     VStack(spacing: 12) {
-                        Text("Tap the import button above to load a CSV export of your eBird life list.")
+                        Text("Search to add species manually, or tap the import button above to load a CSV export of your eBird life list.")
                         Link(
                             "Download your eBird data",
                             destination: URL(string: "https://ebird.org/downloadMyData")!
@@ -229,7 +277,7 @@ struct LifeListView: View {
         .navigationSubtitle(speciesCountText)
         .toolbarTitleDisplayMode(.inlineLarge)
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            BottomSearchField(text: $searchText, prompt: "Search species")
+            BottomSearchField(text: $searchText, prompt: "Search or add species")
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -275,8 +323,10 @@ struct LifeListView: View {
         // wait out a short debounce so mid-typing keystrokes don't each
         // kick off a 6,500-species scan. SwiftUI cancels the previous
         // task automatically when the id changes, so only the latest
-        // query's scan ever publishes results.
-        .task(id: searchText) {
+        // query's scan ever publishes results. The id also tracks whether
+        // the range filter has loaded, so suggestions re-rank for proximity
+        // once the cached set arrives mid-search.
+        .task(id: "\(searchText)|\(allowedIndices != nil)") {
             let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !q.isEmpty else {
                 if !asyncSuggestions.isEmpty { asyncSuggestions = [] }
@@ -290,11 +340,13 @@ struct LifeListView: View {
             let needle = q.lowercased()
             let lifeNames = Set(store.entries.map(\.scientificName))
             let lifeCommonNames = Set(store.entries.map { $0.commonName.lowercased() })
+            let allowed = allowedIndices
             let result = await Task.detached(priority: .userInitiated) {
                 Self.computeSuggestions(
                     needle: needle,
                     excluding: lifeNames,
-                    lifeCommonNames: lifeCommonNames
+                    lifeCommonNames: lifeCommonNames,
+                    allowed: allowed
                 )
             }.value
             guard !Task.isCancelled else { return }
@@ -338,15 +390,16 @@ struct LifeListView: View {
             }
         }
         .alert(
-            "Clear your entire life list?",
+            "Delete your entire life list?",
             isPresented: $showClearAllConfirmation
         ) {
-            Button("Clear All", role: .destructive) {
+            Button("Delete All", role: .destructive) {
                 store.removeAll()
             }
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("Are you sure you want to permanently remove all \(store.entries.count) species from your life list? This cannot be undone.")
+        }
         }
     }
 
@@ -427,6 +480,9 @@ struct LifeListView: View {
     /// so the tap is "I've seen this" rather than "alert me on this."
     @ViewBuilder
     private func suggestionRow(scientificName: String, commonName: String) -> some View {
+        // Once added this session the row keeps its place but swaps the plus for
+        // a checkmark, mirroring the Identify tab's add affordance.
+        let alreadyAdded = store.contains(scientificName: scientificName)
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(commonName)
@@ -438,6 +494,16 @@ struct LifeListView: View {
             }
             Spacer()
             Button {
+                // Tapping the checkmark undoes the add; the symbol-replace
+                // transition reverse-animates back to a plus.
+                if alreadyAdded {
+                    addedDuringSearch.remove(scientificName)
+                    store.remove(scientificName: scientificName)
+                    return
+                }
+                // Remember the add so `visibleRows` keeps this row in place
+                // rather than resorting it to the top of the life list.
+                addedDuringSearch.insert(scientificName)
                 let cached = (LocationCache.shared.lastLatitude,
                               LocationCache.shared.lastLongitude)
                 if let lat = cached.0, let lon = cached.1 {
@@ -460,7 +526,7 @@ struct LifeListView: View {
                     }
                 }
             } label: {
-                Image(systemName: "plus")
+                Image(systemName: alreadyAdded ? "checkmark" : "plus")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.white)
                     .contentTransition(.symbolEffect(.replace))
@@ -468,7 +534,11 @@ struct LifeListView: View {
                     .background(Self.addButtonTint, in: Circle())
             }
             .buttonStyle(NoDimButtonStyle())
-            .accessibilityLabel("Add \(commonName) to Life List")
+            .accessibilityLabel(
+                alreadyAdded
+                    ? "Remove \(commonName) from Life List"
+                    : "Add \(commonName) to Life List"
+            )
             SpeciesThumbnail(scientificName: scientificName)
         }
         .padding(.horizontal, 16)
@@ -511,7 +581,15 @@ struct LifeListView: View {
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
             do {
                 let summary = try await store.importEBird(from: url)
-                importMessage = "Added \(summary.added) species. \(summary.updated) updated, \(summary.skipped) already known."
+                // Only surface non-zero clauses so the result never reads
+                // "0 already known" or similar.
+                var parts: [String] = []
+                if summary.added > 0 { parts.append("Added \(summary.added) species.") }
+                if summary.updated > 0 { parts.append("\(summary.updated) updated.") }
+                if summary.skipped > 0 { parts.append("\(summary.skipped) already known.") }
+                importMessage = parts.isEmpty
+                    ? "No new species to add."
+                    : parts.joined(separator: " ")
             } catch {
                 importMessage = "Import failed: \(error.localizedDescription)"
             }

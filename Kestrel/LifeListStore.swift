@@ -103,11 +103,24 @@ final class LifeListStore {
         var map: [String: LifeListEntry] = Dictionary(
             uniqueKeysWithValues: entries.map { ($0.scientificName, $0) }
         )
-        var added = 0
-        var updated = 0
-        var skipped = 0
+        // Species already on the life list before this import began. The
+        // counts below are tracked as distinct-species sets keyed off this,
+        // so multiple CSV rows for the same species (every sighting is its
+        // own row) don't inflate the "already known" tally — and a fresh
+        // import into an empty list reports zero already-known.
+        let originalKeys = Set(entries.map(\.scientificName))
+        var addedKeys: Set<String> = []
+        var updatedKeys: Set<String> = []
+        var knownKeys: Set<String> = []
 
         for row in rows {
+            if originalKeys.contains(row.scientificName) {
+                knownKeys.insert(row.scientificName)
+            } else if map[row.scientificName] != nil {
+                // Already added earlier in this same import — a duplicate CSV
+                // row for a brand-new species. Counted once via addedKeys.
+                addedKeys.insert(row.scientificName)
+            }
             if let existing = map[row.scientificName] {
                 var copy = existing
                 var changed = false
@@ -140,9 +153,9 @@ final class LifeListStore {
                 }
                 if changed {
                     map[row.scientificName] = copy
-                    updated += 1
-                } else {
-                    skipped += 1
+                    if originalKeys.contains(row.scientificName) {
+                        updatedKeys.insert(row.scientificName)
+                    }
                 }
             } else {
                 map[row.scientificName] = LifeListEntry(
@@ -153,9 +166,15 @@ final class LifeListStore {
                     firstLatitude: row.latitude,
                     firstLongitude: row.longitude
                 )
-                added += 1
+                addedKeys.insert(row.scientificName)
             }
         }
+
+        // "Already known" = pre-existing species the import touched but didn't
+        // change. Updated ones are reported separately, so subtract them out.
+        let added = addedKeys.count
+        let updated = updatedKeys.count
+        let skipped = knownKeys.subtracting(updatedKeys).count
 
         entries = map.values.sorted { $0.firstSeen > $1.firstSeen }
         save()

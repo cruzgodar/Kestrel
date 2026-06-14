@@ -169,7 +169,12 @@ struct ContentView: View {
                 Spacer()
                 if needsLifeListAdd {
                     Button {
-                        guard !alreadyAdded else { return }
+                        // Tapping the checkmark undoes the add; the symbol-
+                        // replace transition reverse-animates back to a plus.
+                        if alreadyAdded {
+                            lifeListStore.remove(scientificName: detection.scientificName)
+                            return
+                        }
                         let sci = detection.scientificName
                         let com = detection.commonName
                         // Tag the new entry with our current coordinate so
@@ -208,7 +213,7 @@ struct ContentView: View {
                     .buttonStyle(NoDimButtonStyle())
                     .accessibilityLabel(
                         alreadyAdded
-                            ? "\(detection.commonName) added to Life List"
+                            ? "Remove \(detection.commonName) from Life List"
                             : "Add \(detection.commonName) to Life List"
                     )
                 } else {
