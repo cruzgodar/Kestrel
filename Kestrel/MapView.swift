@@ -4,6 +4,7 @@ import SwiftUI
 
 struct MapView: View {
     @Environment(LifeListStore.self) private var store
+    @Environment(SpeciesPhotoPresenter.self) private var photoPresenter: SpeciesPhotoPresenter?
 
     @State private var position: MapCameraPosition = .userLocation(
         fallback: .automatic
@@ -107,14 +108,17 @@ struct MapView: View {
                                 info: visibleReps[entry.scientificName],
                                 thumbSize: Self.thumbSize,
                                 onTap: { tappedInfo in
-                                    // Singletons have nothing to expand —
-                                    // only multi-bird stacks open a card.
-                                    guard tappedInfo.count > 1 else { return }
-                                    expandedCluster = BirdCluster(
-                                        representative: tappedInfo.representative,
-                                        coordinate: tappedInfo.coordinate,
-                                        others: tappedInfo.others
-                                    )
+                                    // Multi-bird stacks open a card; a lone bird
+                                    // opens its photo full-screen.
+                                    if tappedInfo.count > 1 {
+                                        expandedCluster = BirdCluster(
+                                            representative: tappedInfo.representative,
+                                            coordinate: tappedInfo.coordinate,
+                                            others: tappedInfo.others
+                                        )
+                                    } else {
+                                        photoPresenter?.present(tappedInfo.representative.scientificName)
+                                    }
                                 }
                             )
                         }
@@ -486,6 +490,10 @@ struct BirdCluster: Identifiable, Hashable {
 private struct ClusterSheet: View {
     let cluster: BirdCluster
     @State private var detent: PresentationDetent = .medium
+    /// Local full-screen presentation. Presenting from the sheet's own context
+    /// (rather than the root presenter) avoids a nested-presentation conflict
+    /// with this sheet.
+    @State private var presentedSpecies: PresentedSpecies?
 
     private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 12)]
     /// Tuned against the system sheet's top-corner radius at medium
@@ -500,6 +508,9 @@ private struct ClusterSheet: View {
                         entry: entry,
                         cornerRadius: Self.thumbCornerRadius
                     )
+                    .onTapGesture {
+                        presentedSpecies = PresentedSpecies(scientificName: entry.scientificName)
+                    }
                 }
             }
             // Symmetric 12pt inset on all four sides. Bottom gets a bit
@@ -522,6 +533,9 @@ private struct ClusterSheet: View {
         // screen's curve" regression.
         .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         .presentationBackground(.thinMaterial)
+        .fullScreenCover(item: $presentedSpecies) { species in
+            SpeciesPhotoFullScreen(scientificName: species.scientificName)
+        }
     }
 }
 
@@ -548,6 +562,7 @@ private struct ClusterGridItem: View {
             Spacer(minLength: 0)
         }
         .frame(maxHeight: .infinity, alignment: .top)
+        .contentShape(Rectangle())
     }
 }
 
@@ -563,8 +578,10 @@ private struct BirdMapThumbnail: View {
 
     var body: some View {
         // Show the attribution caption on the larger frosted-card thumbnail
-        // (showBorder == false), not the small bordered map pins.
-        SpeciesPhoto(scientificName: scientificName, showsCredit: !showBorder) {
+        // (showBorder == false), not the small bordered map pins. Taps are
+        // handled by the map (annotation / cluster grid), not SpeciesPhoto, so
+        // they don't fight MapKit's annotation hit-testing.
+        SpeciesPhoto(scientificName: scientificName, showsCredit: !showBorder, tappable: false) {
             Color.gray
                 .overlay {
                     Image(systemName: "bird")

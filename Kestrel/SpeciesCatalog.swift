@@ -53,4 +53,11 @@ final class SpeciesCatalog: @unchecked Sendable {
         for (i, sp) in all.enumerated() { index[sp.scientificName] = i }
         self.indexByScientificName = index
     }
+
+    /// Common name for a scientific name, or nil if it isn't in the catalog
+    /// (e.g. a life-list entry recorded under an older taxonomic name).
+    func commonName(for scientificName: String) -> String? {
+        guard let i = indexByScientificName[scientificName] else { return nil }
+        return all[i].commonName
+    }
 }

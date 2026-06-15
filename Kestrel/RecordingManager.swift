@@ -637,6 +637,7 @@ final class RecordingManager {
                     week: week
                 )
                 allowedIndices = allowed
+                prefetchRegionImages(allowed)
                 locationStatus = "Filtered to \(allowed.count) nearby species"
                 return
             } catch {
@@ -645,11 +646,21 @@ final class RecordingManager {
         }
         if let cached = await rangeFilter.loadCached() {
             allowedIndices = cached
+            prefetchRegionImages(cached)
             locationStatus = "Using last-known list (\(cached.count) species)"
         } else {
             allowedIndices = nil
             locationStatus = "Showing all species (no location yet)"
         }
+    }
+
+    /// Kicks off a background download of the embed photos for the just-computed
+    /// region species so they're cached and available offline. No-ops unless the
+    /// embed image source is active (the store gates on it).
+    private func prefetchRegionImages(_ allowed: Set<Int>) {
+        let all = SpeciesCatalog.shared.all
+        let names = allowed.compactMap { all.indices.contains($0) ? all[$0].scientificName : nil }
+        RemoteSpeciesImageStore.shared.prefetch(scientificNames: names)
     }
 
     // MARK: - System plumbing

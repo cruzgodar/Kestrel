@@ -6,6 +6,7 @@ struct KestrelApp: App {
     @State private var recordingManager: RecordingManager
     @State private var lifeListStore: LifeListStore
     @State private var selectedTab: AppTab = .identify
+    @State private var photoPresenter = SpeciesPhotoPresenter()
     @Environment(\.scenePhase) private var scenePhase
 
     /// Held for lifetime; activates a WCSession and routes watch audio +
@@ -26,13 +27,17 @@ struct KestrelApp: App {
         let store = LifeListStore()
         _lifeListStore = State(wrappedValue: store)
 
-        // Background-decode every life-list thumbnail at launch. Without this
-        // the first switch to the Life List tab spends ~hundreds of ms
-        // synchronously decoding JPEGs on the main thread. Only worthwhile
-        // for the bundled source — `.embed` loads photos remotely on demand.
+        // Warm species photos at launch. For the bundled source, background-
+        // decode every life-list thumbnail so the first switch to the Life List
+        // tab doesn't spend ~hundreds of ms decoding JPEGs on the main thread.
+        // For the embed source, download + persist the life-list and cached
+        // region species so they're available offline and kept forever.
+        let lifeListNames = store.entries.map(\.scientificName)
         if AppSettings.persistedImageSource() == .bundled {
-            SpeciesImageCache.shared.preheat(
-                scientificNames: store.entries.map(\.scientificName)
+            SpeciesImageCache.shared.preheat(scientificNames: lifeListNames)
+        } else {
+            RemoteSpeciesImageStore.shared.prefetch(
+                scientificNames: RemoteSpeciesImageStore.launchTargets(lifeList: lifeListNames)
             )
         }
 
@@ -99,6 +104,16 @@ struct KestrelApp: App {
             // Both tabs need both stores.
             .environment(recordingManager)
             .environment(lifeListStore)
+            // Drives the full-screen photo viewer; read by every SpeciesPhoto
+            // and the map's annotation tap handlers.
+            .environment(photoPresenter)
+            // Full-screen species photo, opened by tapping any bird image.
+            .fullScreenCover(item: Binding(
+                get: { photoPresenter.presented },
+                set: { photoPresenter.presented = $0 }
+            )) { species in
+                SpeciesPhotoFullScreen(scientificName: species.scientificName)
+            }
             // Push "is the spectrogram visible?" into the recording manager
             // — true only when the Identify tab is selected AND the scene
             // is active. RecordingManager uses this to decide whether new

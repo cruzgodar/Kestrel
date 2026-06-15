@@ -1,10 +1,10 @@
 import Foundation
 import Observation
 
-/// UserDefaults keys for `AppSettings`. File-scope (not nested in the
-/// MainActor-isolated class) so the nonisolated persisted-value readers can
+/// UserDefaults keys for `AppSettings`. `nonisolated` (the project defaults to
+/// MainActor isolation) so the nonisolated persisted-value readers can
 /// reference them without an actor hop.
-private enum SettingsKeys {
+private nonisolated enum SettingsKeys {
     static let watchEntitlement = "settings.watchUsesBackgroundAudioEntitlement"
     static let imageSource = "settings.imageSource"
 }
