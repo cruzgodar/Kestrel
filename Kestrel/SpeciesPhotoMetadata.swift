@@ -10,6 +10,8 @@ struct SpeciesPhotoInfo: Decodable {
     let url: String
     /// Photographer / contributor name, when the eBird page exposed one.
     let credit: String?
+    /// eBird species code (e.g. "rufwar1"), used to link to the species page.
+    let code: String?
 
     /// Macaulay attribution line. Follows the Macaulay Library crediting
     /// format ("… © Contributor; Cornell Lab of Ornithology | Macaulay
@@ -19,6 +21,12 @@ struct SpeciesPhotoInfo: Decodable {
             return "© \(credit); Cornell Lab of Ornithology | Macaulay Library"
         }
         return "Cornell Lab of Ornithology | Macaulay Library"
+    }
+
+    /// Link to the species' eBird page, when we have its species code.
+    var ebirdURL: URL? {
+        guard let code, !code.isEmpty else { return nil }
+        return URL(string: "https://ebird.org/species/\(code)")
     }
 }
 

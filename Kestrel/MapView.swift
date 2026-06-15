@@ -577,11 +577,11 @@ private struct BirdMapThumbnail: View {
     var showBorder: Bool = true
 
     var body: some View {
-        // Show the attribution caption on the larger frosted-card thumbnail
-        // (showBorder == false), not the small bordered map pins. Taps are
-        // handled by the map (annotation / cluster grid), not SpeciesPhoto, so
-        // they don't fight MapKit's annotation hit-testing.
-        SpeciesPhoto(scientificName: scientificName, showsCredit: !showBorder, tappable: false) {
+        // No attribution caption on map thumbnails (pins or card) — it's shown
+        // in the full-screen viewer instead. Taps are handled by the map
+        // (annotation / cluster grid), not SpeciesPhoto, so they don't fight
+        // MapKit's annotation hit-testing.
+        SpeciesPhoto(scientificName: scientificName, showsCredit: false, tappable: false) {
             Color.gray
                 .overlay {
                     Image(systemName: "bird")

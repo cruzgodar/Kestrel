@@ -375,17 +375,17 @@ def ebird_image(species_code: str) -> tuple[str | None, str | None]:
         credit = _credit_from_alt(alt.group(1))
     return img, credit
 
-# slug → {"url", "credit"}, populated by worker threads during a run and
-# serialized to PHOTOS_JSON in main(). Guarded because workers race on it.
+# slug → {"url", "credit", "code"}, populated by worker threads during a run
+# and serialized to PHOTOS_JSON in main(). Guarded because workers race on it.
 PHOTOS_LOCK = threading.Lock()
 PHOTOS: dict[str, dict[str, str | None]] = {}
 
-def _record_photo(scientific: str, url: str, credit: str | None) -> None:
+def _record_photo(scientific: str, url: str, credit: str | None, code: str | None) -> None:
     slug = slug_for(scientific)
     if not slug:
         return
     with PHOTOS_LOCK:
-        PHOTOS[slug] = {"url": url, "credit": credit}
+        PHOTOS[slug] = {"url": url, "credit": credit, "code": code}
 
 # ---------------------------------------------------------------------------
 # Download + resize.
@@ -540,7 +540,7 @@ def process_species(scientific: str, common: str, dest: Path,
         return "miss", f"no og:image on eBird page (code={code})"
 
     # Record metadata for the embed source regardless of whether we (re)download.
-    _record_photo(scientific, img_url, credit)
+    _record_photo(scientific, img_url, credit, code)
 
     if metadata_only:
         return "ok", img_url

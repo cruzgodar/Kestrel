@@ -31,11 +31,15 @@ struct SpeciesPhoto<Placeholder: View>: View {
     }
 
     /// Whether an image exists (or is expected, for embed) — gates tappability
-    /// so a bare placeholder doesn't open an empty viewer.
+    /// so a bare placeholder doesn't open an empty viewer. In embed mode a
+    /// remote photo OR a bundled fallback (manual/exception species) counts.
     private var hasImage: Bool {
         switch AppSettings.shared.imageSource {
-        case .bundled: return SpeciesImageCache.shared.image(for: scientificName) != nil
-        case .embed:   return SpeciesPhotoMetadata.shared.info(for: scientificName) != nil
+        case .bundled:
+            return SpeciesImageCache.shared.image(for: scientificName) != nil
+        case .embed:
+            return SpeciesPhotoMetadata.shared.info(for: scientificName) != nil
+                || SpeciesImageCache.shared.image(for: scientificName) != nil
         }
     }
 
@@ -88,9 +92,20 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
                 loaded = true
                 return
             }
-            let img = await RemoteSpeciesImageStore.shared.image(for: scientificName)
+            // Remote when we have metadata; otherwise (manual/exception species,
+            // or a remote failure) fall back to the bundled image.
+            var result: UIImage?
+            if SpeciesPhotoMetadata.shared.info(for: scientificName) != nil {
+                result = await RemoteSpeciesImageStore.shared.image(for: scientificName)
+            }
+            if result == nil {
+                let name = scientificName
+                result = await Task.detached(priority: .utility) {
+                    SpeciesImageCache.shared.image(for: name)
+                }.value
+            }
             guard !Task.isCancelled else { return }
-            image = img
+            image = result
             loaded = true
         }
     }

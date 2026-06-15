@@ -22,7 +22,8 @@ final class SpeciesPhotoPresenter {
 
 /// Full-screen, zoomable view of a single species photo with its Macaulay
 /// attribution. Loads the image from whichever source is active (bundled cache
-/// or the remote store).
+/// or the remote store), falling back to the bundled image for manual/exception
+/// species that have no remote photo.
 struct SpeciesPhotoFullScreen: View {
     let scientificName: String
     @Environment(\.dismiss) private var dismiss
@@ -34,24 +35,28 @@ struct SpeciesPhotoFullScreen: View {
         SpeciesCatalog.shared.commonName(for: scientificName) ?? scientificName
     }
 
-    private var attribution: String? {
-        SpeciesPhotoMetadata.shared.info(for: scientificName)?.attribution
+    private var info: SpeciesPhotoInfo? {
+        SpeciesPhotoMetadata.shared.info(for: scientificName)
     }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            if let image {
-                ZoomableImage(image: image)
-            } else if loadFailed {
-                Image(systemName: "bird")
-                    .font(.system(size: 56))
-                    .foregroundStyle(.white.opacity(0.4))
-            } else {
-                ProgressView()
-                    .tint(.white)
+            // Ignore the safe area so the image centers on the physical screen,
+            // not the (asymmetric) safe-area rectangle.
+            Group {
+                if let image {
+                    ZoomableImage(image: image, onDismiss: { dismiss() })
+                } else if loadFailed {
+                    Image(systemName: "bird")
+                        .font(.system(size: 56))
+                        .foregroundStyle(.white.opacity(0.4))
+                } else {
+                    ProgressView().tint(.white)
+                }
             }
+            .ignoresSafeArea()
 
             VStack {
                 HStack {
@@ -73,16 +78,24 @@ struct SpeciesPhotoFullScreen: View {
         .task(id: scientificName) { await load() }
     }
 
+    @ViewBuilder
     private var caption: some View {
-        VStack(spacing: 2) {
+        // Only the institutional/photographer credit applies to Macaulay
+        // photos; manual fallback species (no remote info) show just the name.
+        VStack(spacing: 3) {
             Text(commonName)
                 .font(.headline)
                 .foregroundStyle(.white)
-            if let attribution {
-                Text(attribution)
+            if let info {
+                Text(info.attribution)
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.75))
                     .multilineTextAlignment(.center)
+                if let ebirdURL = info.ebirdURL {
+                    Link("View on eBird", destination: ebirdURL)
+                        .font(.caption2.weight(.semibold))
+                        .tint(.white)
+                }
             }
         }
         .frame(maxWidth: .infinity)
@@ -97,34 +110,50 @@ struct SpeciesPhotoFullScreen: View {
         let name = scientificName
         switch AppSettings.shared.imageSource {
         case .bundled:
-            // Decode off the main actor to avoid a hitch on large JPEGs.
-            let img = await Task.detached(priority: .userInitiated) {
-                SpeciesImageCache.shared.image(for: name)
-            }.value
-            image = img
-            loadFailed = img == nil
+            image = await bundledImage(name)
+            loadFailed = image == nil
         case .embed:
             if let mem = RemoteSpeciesImageStore.shared.memoryImage(for: name) {
                 image = mem
                 return
             }
-            let img = await RemoteSpeciesImageStore.shared.image(for: name)
+            // Remote when we have metadata, else fall back to the bundled image
+            // (manual/exception species). Bundled also covers a remote failure.
+            var loaded: UIImage?
+            if info != nil {
+                loaded = await RemoteSpeciesImageStore.shared.image(for: name)
+            }
+            if loaded == nil {
+                loaded = await bundledImage(name)
+            }
             guard !Task.isCancelled else { return }
-            image = img
-            loadFailed = img == nil
+            image = loaded
+            loadFailed = loaded == nil
         }
+    }
+
+    /// Decodes the bundled image off the main actor to avoid a hitch.
+    private func bundledImage(_ name: String) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
+            SpeciesImageCache.shared.image(for: name)
+        }.value
     }
 }
 
-/// Pinch-to-zoom + pan image, double-tap to toggle fit/2×. Clamped to 1–4×;
-/// snaps back to fit when zoomed out past 1×.
+/// Pinch-to-zoom + pan image; double-tap toggles fit/2×. At fit scale a
+/// downward drag dismisses (swipe-to-close); past fit, drag pans. Zoom is
+/// clamped to 1–4×.
 private struct ZoomableImage: View {
     let image: UIImage
+    let onDismiss: () -> Void
 
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
     @State private var offset: CGSize = .zero
     @State private var lastOffset: CGSize = .zero
+
+    /// Past this much downward travel at fit scale, release dismisses.
+    private let dismissThreshold: CGFloat = 120
 
     var body: some View {
         Image(uiImage: image)
@@ -132,14 +161,10 @@ private struct ZoomableImage: View {
             .scaledToFit()
             .scaleEffect(scale)
             .offset(offset)
-            .gesture(magnify.simultaneously(with: pan))
+            .gesture(magnify.simultaneously(with: drag))
             .onTapGesture(count: 2) {
                 withAnimation(.easeOut(duration: 0.2)) {
-                    if scale > 1 {
-                        scale = 1; offset = .zero
-                    } else {
-                        scale = 2
-                    }
+                    if scale > 1 { scale = 1; offset = .zero } else { scale = 2 }
                     lastScale = scale
                     lastOffset = offset
                 }
@@ -160,17 +185,33 @@ private struct ZoomableImage: View {
             }
     }
 
-    private var pan: some Gesture {
+    private var drag: some Gesture {
         DragGesture()
             .onChanged { value in
-                // Panning only applies while zoomed in; at fit scale the image
-                // stays centered.
-                guard scale > 1 else { return }
-                offset = CGSize(
-                    width: lastOffset.width + value.translation.width,
-                    height: lastOffset.height + value.translation.height
-                )
+                if scale > 1 {
+                    // Pan the zoomed image.
+                    offset = CGSize(
+                        width: lastOffset.width + value.translation.width,
+                        height: lastOffset.height + value.translation.height
+                    )
+                } else {
+                    // Swipe-to-dismiss: follow the finger, mostly vertical.
+                    offset = CGSize(
+                        width: value.translation.width * 0.4,
+                        height: value.translation.height
+                    )
+                }
             }
-            .onEnded { _ in lastOffset = offset }
+            .onEnded { value in
+                if scale > 1 {
+                    lastOffset = offset
+                } else if value.translation.height > dismissThreshold {
+                    onDismiss()
+                } else {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                        offset = .zero
+                    }
+                }
+            }
     }
 }
