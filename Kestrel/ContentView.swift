@@ -260,20 +260,13 @@ private struct SpeciesHeroImage: View {
     let scientificName: String
 
     var body: some View {
-        Group {
-            if let img = SpeciesImageCache.shared.image(for: scientificName) {
-                Image(uiImage: img)
-                    .resizable()
-                    .interpolation(.medium)
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                Image(systemName: "bird")
-                    .font(.system(size: 36))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 32)
-                    .background(.fill.tertiary)
-            }
+        SpeciesPhoto(scientificName: scientificName, showsCredit: true) {
+            Image(systemName: "bird")
+                .font(.system(size: 36))
+                .foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 32)
+                .background(.fill.tertiary)
         }
         .frame(maxWidth: .infinity)
         .aspectRatio(16.0 / 9.0, contentMode: .fit)

@@ -562,19 +562,14 @@ private struct BirdMapThumbnail: View {
     var showBorder: Bool = true
 
     var body: some View {
-        Group {
-            if let img = SpeciesImageCache.shared.image(for: scientificName) {
-                Image(uiImage: img)
-                    .resizable()
-                    .interpolation(.medium)
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                Color.gray
-                    .overlay {
-                        Image(systemName: "bird")
-                            .foregroundStyle(.white)
-                    }
-            }
+        // Show the attribution caption on the larger frosted-card thumbnail
+        // (showBorder == false), not the small bordered map pins.
+        SpeciesPhoto(scientificName: scientificName, showsCredit: !showBorder) {
+            Color.gray
+                .overlay {
+                    Image(systemName: "bird")
+                        .foregroundStyle(.white)
+                }
         }
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))

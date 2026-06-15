@@ -18,6 +18,18 @@ final class WatchSessionManager: NSObject {
     private let extendedDelegate = ExtendedSessionDelegate()
     private var activated = false
 
+    /// Mirrored from the phone's Settings tab via the WCSession application
+    /// context. When true the streamer requests a background-capable audio
+    /// session (see `WatchAudioStreamer.start(useBackgroundEntitlement:)`).
+    /// Takes effect on the next `start()`; an in-flight recording isn't
+    /// reconfigured mid-session.
+    private(set) var useBackgroundAudioEntitlement = false
+
+    /// Applies a preference pushed from the phone. Stored for the next capture.
+    func setBackgroundAudioEntitlement(_ enabled: Bool) {
+        useBackgroundAudioEntitlement = enabled
+    }
+
     /// When `WCSession.isReachable` flips to false (watch backgrounded,
     /// phone backgrounded, etc.) `sendMessageData` silently drops chunks.
     /// We accumulate ~1 s of audio here and ship it via `transferUserInfo`,
@@ -96,7 +108,7 @@ final class WatchSessionManager: NSObject {
         session.sendMessage(["cmd": "start"], replyHandler: nil, errorHandler: nil)
         session.transferUserInfo(["cmd": "start"])
         do {
-            try streamer.start { [weak self] data in
+            try streamer.start(useBackgroundEntitlement: useBackgroundAudioEntitlement) { [weak self] data in
                 self?.deliver(data)
             }
             isRecording = true
@@ -151,7 +163,7 @@ final class WatchSessionManager: NSObject {
         // stop so the user (and phone) aren't left in a confused state.
         startExtendedSession()
         do {
-            try streamer.start { [weak self] data in
+            try streamer.start(useBackgroundEntitlement: useBackgroundAudioEntitlement) { [weak self] data in
                 self?.deliver(data)
             }
             scheduleAutoRestart()
@@ -230,6 +242,8 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                  activationDidCompleteWith activationState: WCSessionActivationState,
                  error: Error?) {
         if let error { print("Kestrel Watch: WCSession activation error \(error)") }
+        // Pick up the last preference the phone pushed before we activated.
+        applyContext(session.receivedApplicationContext)
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
@@ -238,6 +252,17 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         route(userInfo)
+    }
+
+    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        applyContext(applicationContext)
+    }
+
+    private func applyContext(_ context: [String: Any]) {
+        guard let enabled = context["watchBgAudioEntitlement"] as? Bool else { return }
+        Task { @MainActor in
+            WatchSessionManager.shared.setBackgroundAudioEntitlement(enabled)
+        }
     }
 
     private func route(_ payload: [String: Any]) {

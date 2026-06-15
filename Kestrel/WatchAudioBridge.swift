@@ -17,6 +17,22 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
         let session = WCSession.default
         session.delegate = self
         session.activate()
+        // Mirror the background-audio setting to the watch whenever it changes.
+        Task { @MainActor in
+            AppSettings.shared.watchSyncHook = { [weak self] enabled in
+                self?.pushWatchBackgroundAudioSetting(enabled)
+            }
+        }
+    }
+
+    /// Pushes the latest background-audio entitlement preference to the watch
+    /// as the WCSession application context — the watch reads it before it
+    /// configures its capture session. `updateApplicationContext` always
+    /// delivers the most recent value, even if the watch app is asleep.
+    func pushWatchBackgroundAudioSetting(_ enabled: Bool) {
+        let session = WCSession.default
+        guard session.activationState == .activated else { return }
+        try? session.updateApplicationContext(["watchBgAudioEntitlement": enabled])
     }
 
     // MARK: - WCSessionDelegate
@@ -25,6 +41,12 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
                  activationDidCompleteWith activationState: WCSessionActivationState,
                  error: Error?) {
         if let error { print("Kestrel: WCSession activation error \(error)") }
+        // Send the current preference as soon as the session is up so a freshly
+        // launched watch app starts from the right configuration.
+        guard activationState == .activated else { return }
+        Task { @MainActor in
+            pushWatchBackgroundAudioSetting(AppSettings.shared.watchUsesBackgroundAudioEntitlement)
+        }
     }
 
     func sessionDidBecomeInactive(_ session: WCSession) {}

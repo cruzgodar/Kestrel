@@ -20,6 +20,7 @@ import argparse
 import concurrent.futures
 import csv
 import io
+import json
 import re
 import sys
 import threading
@@ -37,6 +38,10 @@ from PIL import Image
 ROOT       = Path(__file__).resolve().parents[1]
 LABELS     = ROOT / "Kestrel" / "Models" / "BirdNET_GLOBAL_6K_V2.4_Labels.txt"
 OUT_DIR    = ROOT / "Kestrel" / "Models" / "SpeciesImagesLarge"
+# slug → {"url", "credit"} of each species' Macaulay featured photo. Bundled
+# with the app and consumed by the in-app "Official embed" image source, which
+# loads photos remotely instead of from the bundled JPEGs.
+PHOTOS_JSON = ROOT / "Kestrel" / "Models" / "species_photos.json"
 MANUAL_DIR = ROOT / "scripts" / "manual"
 MISSING    = ROOT / "scripts" / "species_images_missing.txt"
 TAXONOMY   = ROOT / "scripts" / ".ebird_taxonomy.csv"
@@ -335,20 +340,52 @@ def load_taxonomy() -> Taxonomy:
 OG_IMAGE_RE = re.compile(
     r'<meta\s+property="og:image"\s+content="([^"]+)"', re.IGNORECASE
 )
+# Best-effort photographer credit. eBird species pages render the featured
+# photo's author into the og:image:alt meta as "<Common Name> - <Photographer>"
+# (e.g. "Rufous-faced Warbler - Ed Thomas"). We split on the last " - " — the
+# separator always has surrounding spaces, while hyphenated common names
+# ("Rufous-faced") don't, so this isolates the photographer cleanly. Missing
+# credit just degrades to the institutional line in-app.
+OG_IMAGE_ALT_RE = re.compile(
+    r'<meta\s+property="og:image:alt"\s+content="([^"]+)"', re.IGNORECASE
+)
 
-def ebird_image_url(species_code: str) -> str | None:
+def _credit_from_alt(alt_text: str) -> str | None:
+    if " - " not in alt_text:
+        return None
+    name = alt_text.rsplit(" - ", 1)[1].strip()
+    return name or None
+
+def ebird_image(species_code: str) -> tuple[str | None, str | None]:
+    """Returns `(image_url, credit)` for a species' featured photo. `credit`
+    is the photographer name when the page exposed one, else None."""
     url = f"{EBIRD_SPECIES_BASE}/{species_code}"
     r = get(url)
     if r.status_code != 200:
-        return None
+        return None, None
     m = OG_IMAGE_RE.search(r.text)
     if not m:
-        return None
+        return None, None
     img = m.group(1)
     # Skip the generic "no photo" placeholder.
     if "placeholder" in img or img.endswith("/0"):
-        return None
-    return img
+        return None, None
+    credit = None
+    if alt := OG_IMAGE_ALT_RE.search(r.text):
+        credit = _credit_from_alt(alt.group(1))
+    return img, credit
+
+# slug → {"url", "credit"}, populated by worker threads during a run and
+# serialized to PHOTOS_JSON in main(). Guarded because workers race on it.
+PHOTOS_LOCK = threading.Lock()
+PHOTOS: dict[str, dict[str, str | None]] = {}
+
+def _record_photo(scientific: str, url: str, credit: str | None) -> None:
+    slug = slug_for(scientific)
+    if not slug:
+        return
+    with PHOTOS_LOCK:
+        PHOTOS[slug] = {"url": url, "credit": credit}
 
 # ---------------------------------------------------------------------------
 # Download + resize.
@@ -476,8 +513,12 @@ def process_manual_images(taxonomy: Taxonomy | None) -> tuple[int, int, list[str
 # Per-species pipeline.
 
 def process_species(scientific: str, common: str, dest: Path,
-                    taxonomy: Taxonomy) -> tuple[str, str]:
-    if dest.exists() and dest.stat().st_size > 0:
+                    taxonomy: Taxonomy,
+                    metadata_only: bool = False) -> tuple[str, str]:
+    # In metadata-only mode we still resolve + record the photo URL/credit for
+    # species whose JPEG already exists, so the bundled species_photos.json can
+    # be (re)built without re-downloading every image.
+    if not metadata_only and dest.exists() and dest.stat().st_size > 0:
         return "skip", "already exists"
     if scientific in NON_BIRD_EVENT_CLASSES or common in NON_BIRD_EVENT_CLASSES:
         return "nonbird", "non-bird event class"
@@ -492,11 +533,17 @@ def process_species(scientific: str, common: str, dest: Path,
         return "miss", "not in eBird taxonomy"
 
     try:
-        img_url = ebird_image_url(code)
+        img_url, credit = ebird_image(code)
     except Exception as e:
         return "err", f"ebird:{code} → {e}"
     if not img_url:
         return "miss", f"no og:image on eBird page (code={code})"
+
+    # Record metadata for the embed source regardless of whether we (re)download.
+    _record_photo(scientific, img_url, credit)
+
+    if metadata_only:
+        return "ok", img_url
 
     try:
         download_and_save(img_url, dest)
@@ -523,6 +570,9 @@ def main() -> int:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--workers", type=int, default=2,
                     help="parallel workers (default 2; keep small to avoid 429)")
+    ap.add_argument("--metadata-only", action="store_true",
+                    help="don't download images; only (re)build species_photos.json "
+                         "(the slug→URL/credit map used by the in-app embed source)")
     args = ap.parse_args()
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -567,8 +617,9 @@ def main() -> int:
                 continue
             dest = OUT_DIR / f"{slug}_large.jpg"
             attempted.add(slug_for(sci))
-            futures[pool.submit(process_species, sci, common, dest, taxonomy)] = \
-                (sci, common, dest)
+            futures[pool.submit(
+                process_species, sci, common, dest, taxonomy, args.metadata_only
+            )] = (sci, common, dest)
 
         for i, fut in enumerate(concurrent.futures.as_completed(futures), start=1):
             sci, common, dest = futures[fut]
@@ -628,7 +679,33 @@ def main() -> int:
         f"{len(merged) - len(current_misses)} carried forward)",
         flush=True,
     )
+
+    # Merge this run's resolved photo metadata into the bundled embed map,
+    # carrying forward entries for species we didn't touch this run.
+    photos_added = write_photos_json()
+    print(
+        f"Embed map: {PHOTOS_JSON} (+{photos_added} from this run)",
+        flush=True,
+    )
     return 0
+
+def write_photos_json() -> int:
+    """Merges this run's PHOTOS into the existing species_photos.json and writes
+    it back. Returns the number of entries contributed by this run."""
+    existing: dict[str, dict[str, str | None]] = {}
+    if PHOTOS_JSON.exists():
+        try:
+            existing = json.loads(PHOTOS_JSON.read_text())
+        except Exception as e:
+            print(f"warning: could not read {PHOTOS_JSON}: {e}", file=sys.stderr)
+    with PHOTOS_LOCK:
+        run_photos = dict(PHOTOS)
+    existing.update(run_photos)
+    PHOTOS_JSON.parent.mkdir(parents=True, exist_ok=True)
+    PHOTOS_JSON.write_text(
+        json.dumps(existing, ensure_ascii=False, indent=0, sort_keys=True)
+    )
+    return len(run_photos)
 
 def load_missing_log() -> dict[str, str]:
     """Returns {slug: original_line} from the existing audit log, or empty."""

@@ -1,8 +1,8 @@
 # eBird session cookies (regenerated each run)
-_9bf17=0be00745714c2e40
-EBIRD_SESSIONID=9D92707F8F5D776869352B416AF5C6D3
+_9bf17=27ef7fbe4a9eed54
+EBIRD_SESSIONID=160EF2F2B011D0E3375FCD8D472D6D96
 EBIRD_REGION_CONTEXT=%7B%22regionCode%22%3A%22US-CT%22%2C%22regionName%22%3A%22Connecticut%22%7D
-_3a55c=adeaff36d4a16e16
+_3a55c=ddd9e0981f77560e
 org.springframework.web.servlet.i18n.CookieLocaleResolver.LOCALE=en-US
 XSRF-TOKEN=68f842c3-ac91-423b-8a7f-bee144465946
 WMF-Last-Access=21-May-2026
@@ -10,3 +10,4 @@ NetworkProbeLimit=0.001
 WMF-Last-Access-Global=21-May-2026
 GeoIP=US:CT:New_Haven:41.32:-72.93:v4
 WMF-Uniq=lNuc7Z7qK76Cp21jJ67LywNnAAEBAFvd8FbK2uCJq6aKKijQ_kNfu4XsLvsjDMvV
+_9bf17=148f8431d92b5cc5

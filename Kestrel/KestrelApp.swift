@@ -12,7 +12,7 @@ struct KestrelApp: App {
     /// start/stop handshakes into `recordingManager`.
     private let watchBridge: WatchAudioBridge
 
-    enum AppTab: Hashable { case identify, lifeList, map }
+    enum AppTab: Hashable { case identify, lifeList, map, settings }
 
     init() {
         let manager = RecordingManager()
@@ -28,10 +28,13 @@ struct KestrelApp: App {
 
         // Background-decode every life-list thumbnail at launch. Without this
         // the first switch to the Life List tab spends ~hundreds of ms
-        // synchronously decoding JPEGs on the main thread.
-        SpeciesImageCache.shared.preheat(
-            scientificNames: store.entries.map(\.scientificName)
-        )
+        // synchronously decoding JPEGs on the main thread. Only worthwhile
+        // for the bundled source — `.embed` loads photos remotely on demand.
+        if AppSettings.persistedImageSource() == .bundled {
+            SpeciesImageCache.shared.preheat(
+                scientificNames: store.entries.map(\.scientificName)
+            )
+        }
 
         // Ask for notification permission at first launch rather than
         // deferring to the first Start Recording tap.
@@ -86,6 +89,11 @@ struct KestrelApp: App {
                 }
                 Tab("Map", systemImage: "map", value: AppTab.map) {
                     MapView()
+                }
+                Tab("Settings", systemImage: "gearshape", value: AppTab.settings) {
+                    NavigationStack {
+                        SettingsView()
+                    }
                 }
             }
             // Both tabs need both stores.

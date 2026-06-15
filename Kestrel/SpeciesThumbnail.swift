@@ -15,19 +15,13 @@ struct SpeciesThumbnail: View {
     private var width: CGFloat { height * 4.0 / 3.0 }
 
     var body: some View {
-        Group {
-            if let img = SpeciesImageCache.shared.image(for: scientificName) {
-                Image(uiImage: img)
-                    .resizable()
-                    .interpolation(.medium)
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: width, height: height)
-            } else {
-                Image(systemName: "bird")
-                    .foregroundStyle(.secondary)
-                    .frame(width: width, height: height)
-                    .background(.fill.tertiary)
-            }
+        // Credit caption omitted at this size — it's unreadable behind a 60pt
+        // box. The hero image and map card carry the attribution instead.
+        SpeciesPhoto(scientificName: scientificName) {
+            Image(systemName: "bird")
+                .foregroundStyle(.secondary)
+                .frame(width: width, height: height)
+                .background(.fill.tertiary)
         }
         .frame(width: width, height: height)
         .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
