@@ -31,15 +31,15 @@ struct SpeciesPhoto<Placeholder: View>: View {
     }
 
     /// Whether an image exists (or is expected, for embed) — gates tappability
-    /// so a bare placeholder doesn't open an empty viewer. In embed mode a
-    /// remote photo OR a bundled fallback (manual/exception species) counts.
+    /// so a bare placeholder doesn't open an empty viewer. Embed mode depends
+    /// only on remote metadata — it never falls back to a bundled image, so the
+    /// app stays correct when shipped with no bundled images at all.
     private var hasImage: Bool {
         switch AppSettings.shared.imageSource {
         case .bundled:
             return SpeciesImageCache.shared.image(for: scientificName) != nil
         case .embed:
             return SpeciesPhotoMetadata.shared.info(for: scientificName) != nil
-                || SpeciesImageCache.shared.image(for: scientificName) != nil
         }
     }
 
@@ -92,20 +92,11 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
                 loaded = true
                 return
             }
-            // Remote when we have metadata; otherwise (manual/exception species,
-            // or a remote failure) fall back to the bundled image.
-            var result: UIImage?
-            if SpeciesPhotoMetadata.shared.info(for: scientificName) != nil {
-                result = await RemoteSpeciesImageStore.shared.image(for: scientificName)
-            }
-            if result == nil {
-                let name = scientificName
-                result = await Task.detached(priority: .utility) {
-                    SpeciesImageCache.shared.image(for: name)
-                }.value
-            }
+            // Remote only — no bundled fallback. Species without remote metadata
+            // (e.g. Indonesian Honeyeater) show the placeholder.
+            let img = await RemoteSpeciesImageStore.shared.image(for: scientificName)
             guard !Task.isCancelled else { return }
-            image = result
+            image = img
             loaded = true
         }
     }

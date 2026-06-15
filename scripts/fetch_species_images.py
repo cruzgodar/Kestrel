@@ -124,6 +124,40 @@ EBIRD_SCI_OVERRIDES: dict[str, str] = {
     "Dryotriorchis spectabilis": "Circaetus spectabilis",      # Congo Snake-Eagle
 }
 
+# Manual eBird overrides for the embed image source, keyed by the common name
+# used for the `scripts/manual/<Common Name>.jpg` drop. These species don't
+# resolve from BirdNET's scientific name to an eBird code automatically (recent
+# splits, lumps, or names BirdNET doesn't ship), so the code is supplied by
+# hand. `record_manual_embed_metadata` fetches each page for its Macaulay
+# `og:image`, photographer credit, and code, and writes them into
+# species_photos.json so embed mode shows a real remote photo (with attribution
+# + an eBird link) instead of the bundled fallback. Species with no eBird page
+# (e.g. Indonesian Honeyeater) are intentionally omitted and keep the bundled
+# fallback / placeholder.
+MANUAL_EBIRD: dict[str, str] = {
+    "African Reed Warbler":      "afrwar1",
+    "Alpine Leaf Warbler":       "alplew1",
+    "Black-shouldered Nightjar": "bksnig1",
+    "Buff-chested Babbler":      "bucbab1",
+    "Caqueta Seedeater":         "caqsee1",
+    "Foxy Lark":                 "foxlar1",
+    "Glossy-backed Drongo":      "fotdro4",
+    "Himalayan Shrike-Babbler":  "himshb1",
+    "Island Thrush":             "papist1",
+    "Northern Yellow Warbler":   "yelwar1",
+    "Pelagic Cormorant":         "pelcor",
+    "Puna Canastero":            "puncan1",
+    "Rufous Shrikethrush":       "litshr2",
+    "Rusty-breasted Whistler":   "rubwhi3",
+    "Scale-breasted Woodpecker": "scbwoo5",
+    "Striated Swallow":          "strswa2",
+    "Sunda Bush Warbler":        "subwar4",
+    "Torotoroka Scops-Owl":      "torsco1",
+    "Tumbes Tyrant":             "tumtyr2",
+    "Western Whistler":          "weswhi2",
+    "White-bellied Tyrannulet":  "y01036",
+}
+
 # BirdNET also labels non-avian animals whose genus is a dead giveaway (no
 # eBird page exists). Filter at genus level so misses where BirdNET stores
 # sci-as-common (e.g. "Gryllus assimilis_Gryllus assimilis") still get caught.
@@ -509,6 +543,42 @@ def process_manual_images(taxonomy: Taxonomy | None) -> tuple[int, int, list[str
         written += 1
     return written, skipped, unresolved
 
+def record_manual_embed_metadata(taxonomy: Taxonomy | None) -> tuple[int, list[str]]:
+    """Records embed metadata for the `MANUAL_EBIRD` species into PHOTOS.
+
+    Resolves each manual common name to the same scientific name (and therefore
+    slug) the bundled image uses — BirdNET label first, eBird taxonomy fallback
+    — so the recorded entry matches what the app looks up. Fetches the supplied
+    eBird page for its Macaulay `og:image` + photographer credit. Returns
+    `(written, failures)`.
+    """
+    if not MANUAL_EBIRD:
+        return 0, []
+    birdnet_by_common = _birdnet_common_to_sci()
+    ebird_by_common = _ebird_common_to_sci(taxonomy)
+    written = 0
+    failures: list[str] = []
+    for common, code in MANUAL_EBIRD.items():
+        sci = (
+            birdnet_by_common.get(common.lower())
+            or ebird_by_common.get(common.lower())
+        )
+        if not sci or not slug_for(sci):
+            failures.append(f"{common} (couldn't resolve scientific name)")
+            continue
+        try:
+            img_url, credit = ebird_image(code)
+        except Exception as e:
+            failures.append(f"{common} ({code}): {e}")
+            continue
+        if not img_url:
+            failures.append(f"{common} ({code}): no og:image")
+            continue
+        _record_photo(sci, img_url, credit, code)
+        written += 1
+        print(f"  manual embed: {common} → {slug_for(sci)} ({code})")
+    return written, failures
+
 # ---------------------------------------------------------------------------
 # Per-species pipeline.
 
@@ -591,6 +661,14 @@ def main() -> int:
         )
         for name in m_unresolved:
             print(f"  unresolved manual: {name}", file=sys.stderr)
+
+    # Record embed metadata for the hand-mapped manual species so they show a
+    # real remote photo (with attribution + eBird link) in the app's embed mode.
+    me_written, me_failures = record_manual_embed_metadata(taxonomy)
+    if me_written or me_failures:
+        print(f"Manual embed metadata: recorded {me_written}, {len(me_failures)} failed", flush=True)
+        for f in me_failures:
+            print(f"  manual embed failed: {f}", file=sys.stderr)
 
     rows = parse_labels()
     if args.limit > 0:

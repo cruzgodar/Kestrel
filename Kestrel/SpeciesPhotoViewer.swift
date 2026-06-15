@@ -24,6 +24,11 @@ final class SpeciesPhotoPresenter {
 /// attribution. Loads the image from whichever source is active (bundled cache
 /// or the remote store), falling back to the bundled image for manual/exception
 /// species that have no remote photo.
+///
+/// Gestures (zoom, pan, swipe-to-dismiss) live here at the top level: the
+/// dismiss drag moves the *entire* view — image, caption, and close button —
+/// and fades the background to reveal the app behind, while pinch zoom anchors
+/// on the midpoint between the fingers.
 struct SpeciesPhotoFullScreen: View {
     let scientificName: String
     @Environment(\.dismiss) private var dismiss
@@ -31,32 +36,50 @@ struct SpeciesPhotoFullScreen: View {
     @State private var image: UIImage?
     @State private var loadFailed = false
 
+    // Zoom + pan (applied to the image only).
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var zoomAnchor: UnitPoint = .center
+    @State private var panOffset: CGSize = .zero
+    @State private var lastPan: CGSize = .zero
+
+    // Swipe-to-dismiss (applied to the whole content).
+    @State private var dragOffset: CGSize = .zero
+
+    /// Past this much downward travel, release dismisses.
+    private let dismissThreshold: CGFloat = 120
+
+    private var dismissProgress: CGFloat {
+        min(max(dragOffset.height, 0) / 250, 1)
+    }
+    private var backgroundOpacity: Double {
+        Double(1 - dismissProgress * 0.85)
+    }
+
     private var commonName: String {
         SpeciesCatalog.shared.commonName(for: scientificName) ?? scientificName
     }
-
     private var info: SpeciesPhotoInfo? {
         SpeciesPhotoMetadata.shared.info(for: scientificName)
     }
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
+            Color.black.opacity(backgroundOpacity).ignoresSafeArea()
 
-            // Ignore the safe area so the image centers on the physical screen,
-            // not the (asymmetric) safe-area rectangle.
-            Group {
-                if let image {
-                    ZoomableImage(image: image, onDismiss: { dismiss() })
-                } else if loadFailed {
-                    Image(systemName: "bird")
-                        .font(.system(size: 56))
-                        .foregroundStyle(.white.opacity(0.4))
-                } else {
-                    ProgressView().tint(.white)
-                }
-            }
-            .ignoresSafeArea()
+            content
+                .scaleEffect(1 - dismissProgress * 0.08)
+                .offset(dragOffset)
+        }
+        // Clear presentation background so the fade reveals the app behind.
+        .presentationBackground(.clear)
+        .gesture(magnify.simultaneously(with: drag))
+        .task(id: scientificName) { await load() }
+    }
+
+    private var content: some View {
+        ZStack {
+            imageLayer.ignoresSafeArea()
 
             VStack {
                 HStack {
@@ -75,7 +98,24 @@ struct SpeciesPhotoFullScreen: View {
                 caption
             }
         }
-        .task(id: scientificName) { await load() }
+    }
+
+    @ViewBuilder
+    private var imageLayer: some View {
+        if let image {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .scaleEffect(scale, anchor: zoomAnchor)
+                .offset(panOffset)
+                .onTapGesture(count: 2) { toggleZoom() }
+        } else if loadFailed {
+            Image(systemName: "bird")
+                .font(.system(size: 56))
+                .foregroundStyle(.white.opacity(0.4))
+        } else {
+            ProgressView().tint(.white)
+        }
     }
 
     @ViewBuilder
@@ -104,6 +144,68 @@ struct SpeciesPhotoFullScreen: View {
         .background(.black.opacity(0.35))
     }
 
+    // MARK: - Gestures
+
+    private var magnify: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                // Anchor the zoom on the midpoint between the fingers rather
+                // than always the view center.
+                zoomAnchor = value.startAnchor
+                scale = min(max(lastScale * value.magnification, 1), 4)
+            }
+            .onEnded { _ in
+                lastScale = scale
+                if scale <= 1 {
+                    withAnimation(.easeOut(duration: 0.2)) { panOffset = .zero }
+                    lastPan = .zero
+                }
+            }
+    }
+
+    private var drag: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                if scale > 1 {
+                    // Pan the zoomed image.
+                    panOffset = CGSize(
+                        width: lastPan.width + value.translation.width,
+                        height: lastPan.height + value.translation.height
+                    )
+                } else {
+                    // Move the whole view with the finger.
+                    dragOffset = value.translation
+                }
+            }
+            .onEnded { value in
+                if scale > 1 {
+                    lastPan = panOffset
+                } else if value.translation.height > dismissThreshold {
+                    dismiss()
+                } else {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        dragOffset = .zero
+                    }
+                }
+            }
+    }
+
+    private func toggleZoom() {
+        withAnimation(.easeOut(duration: 0.2)) {
+            if scale > 1 {
+                scale = 1
+                panOffset = .zero
+            } else {
+                zoomAnchor = .center
+                scale = 2
+            }
+            lastScale = scale
+            lastPan = panOffset
+        }
+    }
+
+    // MARK: - Loading
+
     private func load() async {
         image = nil
         loadFailed = false
@@ -117,15 +219,9 @@ struct SpeciesPhotoFullScreen: View {
                 image = mem
                 return
             }
-            // Remote when we have metadata, else fall back to the bundled image
-            // (manual/exception species). Bundled also covers a remote failure.
-            var loaded: UIImage?
-            if info != nil {
-                loaded = await RemoteSpeciesImageStore.shared.image(for: name)
-            }
-            if loaded == nil {
-                loaded = await bundledImage(name)
-            }
+            // Remote only — no bundled fallback, so embed mode matches a
+            // build that ships with no bundled images.
+            let loaded = await RemoteSpeciesImageStore.shared.image(for: name)
             guard !Task.isCancelled else { return }
             image = loaded
             loadFailed = loaded == nil
@@ -137,81 +233,5 @@ struct SpeciesPhotoFullScreen: View {
         await Task.detached(priority: .userInitiated) {
             SpeciesImageCache.shared.image(for: name)
         }.value
-    }
-}
-
-/// Pinch-to-zoom + pan image; double-tap toggles fit/2×. At fit scale a
-/// downward drag dismisses (swipe-to-close); past fit, drag pans. Zoom is
-/// clamped to 1–4×.
-private struct ZoomableImage: View {
-    let image: UIImage
-    let onDismiss: () -> Void
-
-    @State private var scale: CGFloat = 1
-    @State private var lastScale: CGFloat = 1
-    @State private var offset: CGSize = .zero
-    @State private var lastOffset: CGSize = .zero
-
-    /// Past this much downward travel at fit scale, release dismisses.
-    private let dismissThreshold: CGFloat = 120
-
-    var body: some View {
-        Image(uiImage: image)
-            .resizable()
-            .scaledToFit()
-            .scaleEffect(scale)
-            .offset(offset)
-            .gesture(magnify.simultaneously(with: drag))
-            .onTapGesture(count: 2) {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    if scale > 1 { scale = 1; offset = .zero } else { scale = 2 }
-                    lastScale = scale
-                    lastOffset = offset
-                }
-            }
-    }
-
-    private var magnify: some Gesture {
-        MagnifyGesture()
-            .onChanged { value in
-                scale = min(max(lastScale * value.magnification, 1), 4)
-            }
-            .onEnded { _ in
-                lastScale = scale
-                if scale <= 1 {
-                    withAnimation(.easeOut(duration: 0.2)) { offset = .zero }
-                    lastOffset = .zero
-                }
-            }
-    }
-
-    private var drag: some Gesture {
-        DragGesture()
-            .onChanged { value in
-                if scale > 1 {
-                    // Pan the zoomed image.
-                    offset = CGSize(
-                        width: lastOffset.width + value.translation.width,
-                        height: lastOffset.height + value.translation.height
-                    )
-                } else {
-                    // Swipe-to-dismiss: follow the finger, mostly vertical.
-                    offset = CGSize(
-                        width: value.translation.width * 0.4,
-                        height: value.translation.height
-                    )
-                }
-            }
-            .onEnded { value in
-                if scale > 1 {
-                    lastOffset = offset
-                } else if value.translation.height > dismissThreshold {
-                    onDismiss()
-                } else {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        offset = .zero
-                    }
-                }
-            }
     }
 }

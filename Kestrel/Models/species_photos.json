@@ -269,6 +269,11 @@
 "credit": "Terence Alexander",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/125925811/900"
 },
+"acrocephalus_baeticatus": {
+"code": "afrwar1",
+"credit": "Andrew Spencer",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/80392941/900"
+},
 "acrocephalus_bistrigiceps": {
 "code": "bbrwar1",
 "credit": "Natthaphat Chotjuckdikul",
@@ -2679,6 +2684,11 @@
 "credit": "Javier Gross",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/113915741/900"
 },
+"asthenes_sclateri": {
+"code": "puncan1",
+"credit": "Evangelina Indelicato",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/211456991/900"
+},
 "asthenes_urubambensis": {
 "code": "lifcan1",
 "credit": "Daniel Lane",
@@ -4074,6 +4084,11 @@
 "credit": "Jan Hansen",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/218238301/900"
 },
+"calendulauda_alopex": {
+"code": "foxlar1",
+"credit": "Luke Seitz",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/246472151/900"
+},
 "calendulauda_poecilosterna": {
 "code": "piblar3",
 "credit": "Raphaël Nussbaumer",
@@ -4714,6 +4729,11 @@
 "credit": "Daniel Danckwerts (Rockjumper Birding Tours)",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/640184442/900"
 },
+"caprimulgus_nigriscapularis": {
+"code": "bksnig1",
+"credit": "Lars Petersson | My World of Bird Photography",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/240811141/900"
+},
 "caprimulgus_pectoralis": {
 "code": "finnig1",
 "credit": "Marco Valentini",
@@ -5039,6 +5059,11 @@
 "credit": "Volker Hesse",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/219398461/900"
 },
+"cecropis_striolata": {
+"code": "strswa2",
+"credit": "Forest Botial-Jarvis",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/157502851/900"
+},
 "celeus_castaneus": {
 "code": "chcwoo1",
 "credit": "Jeff Tingle",
@@ -5063,6 +5088,11 @@
 "code": "helwoo1",
 "credit": "Silvia F🪶 Linhares",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/88523561/900"
+},
+"celeus_grammicus": {
+"code": "scbwoo5",
+"credit": "Ian Thompson",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/147884511/900"
 },
 "celeus_loricatus": {
 "code": "cinwoo1",
@@ -7169,6 +7199,11 @@
 "credit": "Andy Gee",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/349782371/900"
 },
+"colluricincla_rufogaster": {
+"code": "litshr2",
+"credit": "Andy Gee",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/349782371/900"
+},
 "colonia_colonus": {
 "code": "lottyr1",
 "credit": "Bradley Hacker 🦜",
@@ -8584,6 +8619,11 @@
 "credit": "Francis Canto Jr",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/242636071/900"
 },
+"cyanoderma_ambiguum": {
+"code": "bucbab1",
+"credit": "Natthaphat Chotjuckdikul",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/170554831/900"
+},
 "cyanoderma_chrysaeum": {
 "code": "golbab1",
 "credit": "Vinoba Anand",
@@ -9333,6 +9373,11 @@
 "code": "whbdro1",
 "credit": "David Irving",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/610110449/900"
+},
+"dicrurus_divaricatus": {
+"code": "fotdro4",
+"credit": "Éric Francois Roualet",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/246016651/900"
 },
 "dicrurus_forficatus": {
 "code": "credro1",
@@ -13708,6 +13753,11 @@
 "code": "phbwar1",
 "credit": "Shailesh Pinto",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/388767071/900"
+},
+"horornis_vulcanius": {
+"code": "subwar4",
+"credit": "Rusman Budi  Prasetyo",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/238083071/900"
 },
 "hydrobates_castro": {
 "code": "barpet",
@@ -20164,6 +20214,11 @@
 "credit": "Sam Woods/Tropical Birding Tours",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/158662761/900"
 },
+"otus_madagascariensis": {
+"code": "torsco1",
+"credit": "Charles Davies",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/192444301/900"
+},
 "otus_magicus": {
 "code": "mosowl1",
 "credit": "Scott Baker",
@@ -20263,6 +20318,16 @@
 "code": "samwhi1",
 "credit": "Lars Petersson | My World of Bird Photography",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/377118371/900"
+},
+"pachycephala_fuliginosa": {
+"code": "weswhi2",
+"credit": "Julie Clark",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/349783761/900"
+},
+"pachycephala_fulvotincta": {
+"code": "rubwhi3",
+"credit": "Lars Petersson | My World of Bird Photography",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/205960441/900"
 },
 "pachycephala_griseonota": {
 "code": "drawhi1",
@@ -22233,6 +22298,11 @@
 "code": "weclew1",
 "credit": "Andrew Spencer",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/207769741/900"
+},
+"phylloscopus_occisinensis": {
+"code": "alplew1",
+"credit": "David Irving",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/179663131/900"
 },
 "phylloscopus_ogilviegranti": {
 "code": "klolew1",
@@ -24764,6 +24834,11 @@
 "credit": "Ayuwat Jearwattanakanok",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/161563611/900"
 },
+"pteruthius_ripleyi": {
+"code": "himshb1",
+"credit": "Balaji P B",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/161563431/900"
+},
 "pteruthius_rufiventer": {
 "code": "bhsbab1",
 "credit": "Vinoba Anand",
@@ -26849,6 +26924,11 @@
 "credit": "Alexandre Gualhanone",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/173485761/900"
 },
+"serpophaga_munda": {
+"code": "y01036",
+"credit": "Alexandre Gualhanone",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/187753381/900"
+},
 "serpophaga_nigricans": {
 "code": "sootyr1",
 "credit": "Luiz Matos",
@@ -26868,6 +26948,11 @@
 "code": "adewar1",
 "credit": "Christoph Moning",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/98024411/900"
+},
+"setophaga_aestiva": {
+"code": "yelwar1",
+"credit": "Jeff Dyck",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/639564193/900"
 },
 "setophaga_americana": {
 "code": "norpar",
@@ -27653,6 +27738,11 @@
 "code": "whcsee1",
 "credit": "Mary Goodart",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/297340481/900"
+},
+"sporophila_murallae": {
+"code": "caqsee1",
+"credit": "Jeff 'JP' Peters",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/178811141/900"
 },
 "sporophila_nigricollis": {
 "code": "yebsee1",
@@ -30314,6 +30404,11 @@
 "credit": "Ian Davies",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/219458441/900"
 },
+"tumbezia_salvini": {
+"code": "tumtyr2",
+"credit": "Luke Seitz",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/207266681/900"
+},
 "tunchiornis_ochraceiceps": {
 "code": "tacgre2",
 "credit": "Jorge Dangel",
@@ -30615,9 +30710,9 @@
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/106990631/900"
 },
 "turdus_poliocephalus": {
-"code": "norist1",
-"credit": null,
-"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset//900"
+"code": "papist1",
+"credit": "Eric Barnes",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/622201886/900"
 },
 "turdus_reevei": {
 "code": "plbthr2",
@@ -30908,6 +31003,11 @@
 "code": "thbmur",
 "credit": "Lucas Bobay",
 "url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/311360151/900"
+},
+"urile_pelagicus": {
+"code": "pelcor",
+"credit": "Jesse Amesbury",
+"url": "https://cdn.download.ams.birds.cornell.edu/api/v2/asset/66026051/900"
 },
 "urocissa_caerulea": {
 "code": "formag1",
