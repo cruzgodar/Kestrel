@@ -62,6 +62,7 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
             switch cmd {
             case "start": await manager.startFromWatch()
             case "stop": manager.stopFromWatch()
+            case "stopUnexpected": manager.stopFromWatchUnexpectedly()
             default: break
             }
         }
@@ -82,6 +83,7 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
                 switch cmd {
                 case "start": await manager.startFromWatch()
                 case "stop": manager.stopFromWatch()
+                case "stopUnexpected": manager.stopFromWatchUnexpectedly()
                 default: break
                 }
             }

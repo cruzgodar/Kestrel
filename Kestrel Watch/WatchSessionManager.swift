@@ -13,11 +13,35 @@ final class WatchSessionManager: NSObject {
     static let shared = WatchSessionManager()
 
     private(set) var isRecording = false
+    /// True from the moment the button is tapped until audio capture is
+    /// actually running (microphone-permission prompt + extended-runtime
+    /// session + audio engine spin-up — 2–3 s on a cold first launch). The UI
+    /// shows a non-interactive loading state during this window so the tap
+    /// gets immediate feedback instead of appearing dead.
+    private(set) var isStarting = false
 
     private let streamer = WatchAudioStreamer()
     private let delegate = SessionDelegate()
     private let extendedDelegate = ExtendedSessionDelegate()
     private var activated = false
+    /// Set just before we invalidate the extended runtime session ourselves
+    /// (normal stop or the 30-minute auto-restart cycle) so the delegate's
+    /// invalidation callback can tell a deliberate teardown apart from the
+    /// system killing the session out from under us.
+    private var expectedERSInvalidation = false
+
+    private override init() {
+        super.init()
+        // The system can invalidate our extended runtime session at any time
+        // — most commonly `.resignedFrontmost` when the wrist drops without
+        // the background-audio entitlement. Route that back here so we can
+        // tear down and tell the phone to notify the user.
+        extendedDelegate.onInvalidate = { reason in
+            Task { @MainActor [weak self] in
+                self?.handleExtendedSessionInvalidation(reason)
+            }
+        }
+    }
 
     /// Mirrored from the phone's Settings tab via the WCSession application
     /// context. When true the streamer requests a background-capable audio
@@ -65,6 +89,9 @@ final class WatchSessionManager: NSObject {
     }
 
     func toggle() {
+        // Ignore taps while a start is in flight — the UI also disables the
+        // button, this just guards the programmatic/remote paths.
+        guard !isStarting else { return }
         if isRecording { stop() } else { start() }
     }
 
@@ -107,47 +134,79 @@ final class WatchSessionManager: NSObject {
     }
 
     private func start() {
-        guard !isRecording else { return }
-        // Audio capture needs microphone permission. On watchOS the system
-        // only surfaces the prompt on first audio-session use, so without an
-        // explicit request the first tap (or any tap while permission is
-        // undetermined/denied) throws inside `streamer.start()`, gets caught
-        // below, and leaves `isRecording` false — the button highlights but
-        // nothing happens. Request up front, mirroring the phone.
+        guard !isRecording, !isStarting else { return }
+        // Flip into the loading state synchronously so the tap registers
+        // instantly, then do the slow bring-up off the tap. Audio capture
+        // needs microphone permission; on watchOS the system only surfaces the
+        // prompt on first audio-session use, so without an explicit request
+        // the first tap (or any tap while permission is undetermined/denied)
+        // throws inside `streamer.start()` and leaves us with nothing running.
+        isStarting = true
         Task { await self.startWithPermission() }
     }
 
     private func startWithPermission() async {
-        guard !isRecording else { return }
+        // Whatever happens below, we're no longer in the transient loading
+        // state by the time we return (either recording, or back to idle).
+        defer { isStarting = false }
+
+        // Park on a real timer (not `Task.yield()`, which just re-enqueues on
+        // the main actor and runs straight through the blocking setup below
+        // before the run loop ever renders). A brief sleep hands the thread
+        // back to the run loop so the `isStarting = true` loading spinner is
+        // actually painted before we touch the audio/session subsystems —
+        // their first-use setup blocks the main actor for a second or two.
+        try? await Task.sleep(for: .milliseconds(50))
+
         guard await Self.ensureMicrophonePermission() else {
             print("Kestrel Watch: microphone permission denied")
             return
         }
-        // The user may have tapped again during the await; bail if we already
-        // started (or were torn down) in the meantime.
-        guard !isRecording else { return }
 
-        // Kick off the extended runtime session first so the audio capture
-        // survives the user lowering their wrist a second later.
+        // Bring the audio engine up first (off the main actor) — it's the
+        // heaviest step, so doing it while the spinner is already on screen
+        // keeps the UI animating.
+        do {
+            try await startStreamerOffMain()
+        } catch {
+            print("Kestrel Watch: streamer start error \(error)")
+            return
+        }
+
+        // Extended runtime session keeps capture alive once the wrist drops;
+        // start it now that audio is flowing.
         startExtendedSession()
 
         let session = WCSession.default
-        // Tell the phone we're starting before audio chunks begin to arrive.
-        // sendMessage is the fast path when both apps are foreground;
-        // transferUserInfo is the background-tolerant fallback that can
-        // wake the iOS app from suspension. Both fire — duplicates are
-        // no-ops on the iOS side.
+        // Tell the phone we're recording. sendMessage is the fast path when
+        // both apps are foreground; transferUserInfo is the background-tolerant
+        // fallback that can wake the iOS app from suspension. Both fire —
+        // duplicates are no-ops on the iOS side.
         session.sendMessage(["cmd": "start"], replyHandler: nil, errorHandler: nil)
         session.transferUserInfo(["cmd": "start"])
-        do {
-            try streamer.start(useBackgroundEntitlement: useBackgroundAudioEntitlement) { [weak self] data in
-                self?.deliver(data)
+
+        isRecording = true
+        scheduleAutoRestart()
+    }
+
+    /// Starts the audio engine on a background queue. `AVAudioSession.setActive`
+    /// + `AVAudioEngine.start()` block their caller for seconds on a cold first
+    /// launch; running them on the main actor froze the UI so the loading state
+    /// never rendered and the start → recording transition never animated.
+    private func startStreamerOffMain() async throws {
+        let streamer = self.streamer
+        let useBackgroundEntitlement = self.useBackgroundAudioEntitlement
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                do {
+                    try streamer.start(useBackgroundEntitlement: useBackgroundEntitlement) { [weak self] data in
+                        self?.deliver(data)
+                    }
+                    continuation.resume()
+                } catch {
+                    continuation.resume(throwing: error)
+                }
             }
-            isRecording = true
-            scheduleAutoRestart()
-        } catch {
-            print("Kestrel Watch: streamer start error \(error)")
-            stopExtendedSession()
         }
     }
 
@@ -182,7 +241,7 @@ final class WatchSessionManager: NSObject {
     /// preserved because we don't send "stop"/"start" handshakes — chunks
     /// simply pause for the sub-second restart window, well under the
     /// phone's 60-second disconnect threshold.
-    private func performAutoRestart() {
+    private func performAutoRestart() async {
         guard isRecording else { return }
 
         // Tear down audio first so the audio session is released before
@@ -195,9 +254,7 @@ final class WatchSessionManager: NSObject {
         // stop so the user (and phone) aren't left in a confused state.
         startExtendedSession()
         do {
-            try streamer.start(useBackgroundEntitlement: useBackgroundAudioEntitlement) { [weak self] data in
-                self?.deliver(data)
-            }
+            try await startStreamerOffMain()
             scheduleAutoRestart()
         } catch {
             print("Kestrel Watch: auto-restart failed \(error)")
@@ -249,21 +306,64 @@ final class WatchSessionManager: NSObject {
     }
 
     private func stopExtendedSession() {
-        extendedSession?.invalidate()
+        guard let session = extendedSession else { return }
+        // Mark this as our own teardown so the invalidation callback doesn't
+        // mistake it for a system kill and fire a spurious "stopped" alert.
+        expectedERSInvalidation = true
+        session.invalidate()
         extendedSession = nil
+    }
+
+    /// Invoked when the extended runtime session is invalidated. Distinguishes
+    /// our own teardown (normal stop / auto-restart cycle) from a system kill
+    /// — the latter means audio capture is dead and the user should be told.
+    private func handleExtendedSessionInvalidation(_ reason: WKExtendedRuntimeSessionInvalidationReason) {
+        if expectedERSInvalidation {
+            expectedERSInvalidation = false
+            return
+        }
+        // The system tore the session down on us (wrist lowered without the
+        // background-audio entitlement, the 1-hour cap, an error...). Nothing
+        // is capturing audio anymore. Drop our reference — it's already
+        // invalid — tear the rest down, and tell the phone to notify.
+        extendedSession = nil
+        guard isRecording || isStarting else { return }
+        print("Kestrel Watch: extended session killed by system — \(reason.rawValue)")
+        endRecordingUnexpectedly()
+    }
+
+    /// Hard-stops a recording that the system killed and signals the phone with
+    /// a distinct command so it surfaces a notification, rather than tearing
+    /// down silently the way a user-initiated stop does. The phone's 60-second
+    /// audio-gap watchdog is only a backstop — it frequently never fires
+    /// because iOS has also suspended the phone app by then.
+    private func endRecordingUnexpectedly() {
+        autoRestartTask?.cancel()
+        autoRestartTask = nil
+        streamer.stop()
+        isRecording = false
+        isStarting = false
+        flushBackgroundBuffer()
+        let session = WCSession.default
+        session.sendMessage(["cmd": "stopUnexpected"], replyHandler: nil, errorHandler: nil)
+        session.transferUserInfo(["cmd": "stopUnexpected"])
     }
 }
 
-/// Logs lifecycle for the extended runtime session. Nothing reactive — the
-/// streamer + WCSession are the source of truth for whether we're still
-/// recording. If the system expires our hour, audio simply stops.
+/// Bridges the extended runtime session's lifecycle callbacks back to the
+/// manager. `onInvalidate` lets the manager react when the session ends —
+/// crucially, when the *system* ends it (which otherwise left the recording
+/// silently dead with no notification).
 private final class ExtendedSessionDelegate: NSObject, WKExtendedRuntimeSessionDelegate {
+    var onInvalidate: ((WKExtendedRuntimeSessionInvalidationReason) -> Void)?
+
     func extendedRuntimeSessionDidStart(_ extendedRuntimeSession: WKExtendedRuntimeSession) {}
     func extendedRuntimeSessionWillExpire(_ extendedRuntimeSession: WKExtendedRuntimeSession) {}
     func extendedRuntimeSession(_ extendedRuntimeSession: WKExtendedRuntimeSession,
                                 didInvalidateWith reason: WKExtendedRuntimeSessionInvalidationReason,
                                 error: Error?) {
         if let error { print("Kestrel Watch: extended session invalidated — \(reason.rawValue) \(error)") }
+        onInvalidate?(reason)
     }
 }
 

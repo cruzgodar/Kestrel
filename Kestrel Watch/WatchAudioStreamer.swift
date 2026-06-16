@@ -7,7 +7,13 @@ import Foundation
 /// Bandwidth: 16 kHz × 2 B = 32 KB/s — comfortable for WCSession's live
 /// `sendMessageData` channel. The phone upsamples to 48 kHz before feeding
 /// the existing BirdNET windowing pipeline.
-final class WatchAudioStreamer {
+///
+/// `@unchecked Sendable`: `start()`/`stop()` are the only externally-mutating
+/// entry points and the manager never runs them concurrently (a session is
+/// fully started before it can be stopped, and the auto-restart cycle stops
+/// then starts sequentially). This lets the manager dispatch the blocking
+/// `start()` off the main actor so the UI can animate while audio spins up.
+final class WatchAudioStreamer: @unchecked Sendable {
     static let targetSampleRate: Double = 16_000
     /// 3200 samples @ 16 kHz = 200 ms per chunk → 5 messages/sec.
     static let chunkSamples: Int = 3_200

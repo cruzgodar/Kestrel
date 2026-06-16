@@ -363,6 +363,24 @@ final class RecordingManager {
         cancelIdleWatchdog()
     }
 
+    /// Called when the watch reports that the *system* killed its recording
+    /// session (e.g. the wrist dropped without the background-audio
+    /// entitlement, or the runtime budget expired). Unlike a user-initiated
+    /// stop, the user didn't ask for this, so we surface a notification before
+    /// tearing down. Guarded by `stopFromWatch`'s own `watchRecording` check so
+    /// it's a no-op (and fires no duplicate alert) if the heartbeat watchdog
+    /// already tore the session down.
+    func stopFromWatchUnexpectedly() {
+        guard watchRecording else { return }
+        Task {
+            await SpeciesNotifications.shared.notifySessionLifecycle(
+                title: "Kestrel",
+                body: "Watch recording stopped. Re-tap the watch button to keep listening."
+            )
+        }
+        stopFromWatch()
+    }
+
     // MARK: - Idle auto-termination
 
     private func startIdleWatchdog() {
