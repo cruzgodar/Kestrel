@@ -13,7 +13,7 @@ struct ContentView: View {
                 Image(systemName: session.isRecording ? "stop.fill" : "mic.fill")
                     .font(.system(size: 44, weight: .semibold))
                     .foregroundStyle(.white)
-                    .contentTransition(.symbolEffect(.replace))
+                    .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
                     .frame(width: 110, height: 110)
                     .background(Circle().fill(Self.recordTint))
                     .scaleEffect(session.isRecording ? 1.05 : 1.0)

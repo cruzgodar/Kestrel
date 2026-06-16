@@ -35,6 +35,15 @@ final class RecordingManager {
     /// the in-app UI.
     var spectrogramVisible: Bool = true
 
+    /// The life list, wired up in `KestrelApp.init`. Held weakly since the
+    /// app owns it for its whole lifetime. The manager reads it directly at
+    /// session start so `lifeListSnapshot`/`starredNames` are correct even
+    /// when a session is kicked off from the watch while the iOS app is
+    /// suspended in the background and no SwiftUI view is observing — the
+    /// case that otherwise left the snapshot empty and made every detection
+    /// look like a brand-new species.
+    weak var lifeListStore: LifeListStore?
+
     let spectrogram = SpectrogramRenderer()
 
     private let pipeline = AudioPipeline()
@@ -231,6 +240,7 @@ final class RecordingManager {
         flashIDs = []
         lastFlashAt = [:]
         spectrogram.reset()
+        refreshLifeListFromStore()
         // Don't clear locationStatus — leave the previous filter visible until
         // refreshSpeciesFilter overwrites it, otherwise the text flickers.
         isRecording = true
@@ -325,6 +335,7 @@ final class RecordingManager {
         watchWindowBuffer.removeAll(keepingCapacity: true)
         watchLastSample = 0
         spectrogram.reset()
+        refreshLifeListFromStore()
 
         isRecording = true
         watchRecording = true
@@ -522,6 +533,18 @@ final class RecordingManager {
     /// transition of `isRecording`.
     func snapshotLifeList(_ scientificNames: Set<String>) {
         lifeListSnapshot = scientificNames
+    }
+
+    /// Populates `lifeListSnapshot` + `starredNames` straight from the store.
+    /// Called at the top of every start path (local and watch-driven) so the
+    /// "is this species already a lifer?" check is correct regardless of
+    /// whether a SwiftUI view happens to be mounted and observing — without
+    /// this, a watch-initiated background session started a stale (often
+    /// empty) snapshot and notified for every bird heard.
+    private func refreshLifeListFromStore() {
+        guard let store = lifeListStore else { return }
+        lifeListSnapshot = Set(store.entries.map(\.scientificName))
+        starredNames = store.starredNames
     }
 
     /// Live mirror of the user's starred species. Unlike `lifeListSnapshot`

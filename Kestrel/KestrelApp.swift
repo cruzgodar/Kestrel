@@ -27,6 +27,12 @@ struct KestrelApp: App {
         let store = LifeListStore()
         _lifeListStore = State(wrappedValue: store)
 
+        // Let the manager read the life list directly at session start. This
+        // is what keeps the "already a lifer?" check correct when the watch
+        // wakes the app in the background and no SwiftUI view is mounted to
+        // push the snapshot in.
+        manager.lifeListStore = store
+
         // Warm species photos at launch. For the bundled source, background-
         // decode every life-list thumbnail so the first switch to the Life List
         // tab doesn't spend ~hundreds of ms decoding JPEGs on the main thread.
