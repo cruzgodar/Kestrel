@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Observation
 import WatchConnectivity
@@ -67,6 +68,19 @@ final class WatchSessionManager: NSObject {
         if isRecording { stop() } else { start() }
     }
 
+    /// Resolves the watch's microphone permission, prompting once if it's
+    /// still undetermined. Returns whether capture is allowed to proceed.
+    private static func ensureMicrophonePermission() async -> Bool {
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted: return true
+        case .denied: return false
+        case .undetermined:
+            return await AVAudioApplication.requestRecordPermission()
+        @unknown default:
+            return false
+        }
+    }
+
     /// Called when the phone asks the watch to begin streaming. Idempotent.
     func handleRemoteStart() {
         guard !isRecording else { return }
@@ -93,6 +107,24 @@ final class WatchSessionManager: NSObject {
     }
 
     private func start() {
+        guard !isRecording else { return }
+        // Audio capture needs microphone permission. On watchOS the system
+        // only surfaces the prompt on first audio-session use, so without an
+        // explicit request the first tap (or any tap while permission is
+        // undetermined/denied) throws inside `streamer.start()`, gets caught
+        // below, and leaves `isRecording` false — the button highlights but
+        // nothing happens. Request up front, mirroring the phone.
+        Task { await self.startWithPermission() }
+    }
+
+    private func startWithPermission() async {
+        guard !isRecording else { return }
+        guard await Self.ensureMicrophonePermission() else {
+            print("Kestrel Watch: microphone permission denied")
+            return
+        }
+        // The user may have tapped again during the await; bail if we already
+        // started (or were torn down) in the meantime.
         guard !isRecording else { return }
 
         // Kick off the extended runtime session first so the audio capture
