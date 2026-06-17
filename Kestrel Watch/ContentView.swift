@@ -19,12 +19,14 @@ struct ContentView: View {
         ZStack {
             backgroundColor.ignoresSafeArea()
 
-            // Bird + name respect the safe area so the photo sits just under the
-            // clock, as high as the OS allows.
+            // Bird + name use the full screen (ignoring the safe area) so the
+            // photo can sit at the very top rather than below the large top
+            // (clock) inset.
             if recording {
                 GeometryReader { geo in
                     nowHearing(in: geo.size)
                 }
+                .ignoresSafeArea()
                 .transition(.opacity)
             }
 
@@ -48,6 +50,9 @@ struct ContentView: View {
         // animation's completion. Only the bird cross-fade is animated here.
         .animation(.easeInOut(duration: 0.3), value: session.lastBird)
         .task { WatchSessionManager.shared.activate() }
+        // TEMP DIAGNOSTIC
+        .onAppear { Self.ts("view onAppear") }
+        .onChange(of: session.isRecording) { _, v in Self.ts("view sees isRecording=\(v)") }
     }
 
     // MARK: - Background
@@ -84,6 +89,7 @@ struct ContentView: View {
     private func recordButton(scale: CGFloat) -> some View {
         let recording = session.isRecording
         return Button {
+            Self.ts("button TAP")  // TEMP DIAGNOSTIC
             session.toggle()
         } label: {
             // Both glyphs are always present and cross-faded by opacity, so the
@@ -115,9 +121,15 @@ struct ContentView: View {
     /// a scrim for legibility) rather than given its own band beneath it.
     private func nowHearing(in size: CGSize) -> some View {
         let margin: CGFloat = 4
-        return birdImage(maxWidth: size.width - margin * 2, maxHeight: size.height - margin * 2)
-            .frame(width: size.width, height: size.height, alignment: .top)
-            .padding(.top, margin)
+        return VStack(spacing: 0) {
+            // Fixed top margin (matching the sides), then the photo, then a
+            // flexible spacer — so the photo is pinned to the top rather than
+            // centered in the available height.
+            Color.clear.frame(height: margin)
+            birdImage(maxWidth: size.width - margin * 2, maxHeight: size.height - margin * 2)
+            Spacer(minLength: 0)
+        }
+        .frame(width: size.width, height: size.height, alignment: .top)
     }
 
     /// The whole photo (never cropped) sized to fill the full available width,
@@ -195,6 +207,14 @@ struct ContentView: View {
         }
     }
 
+}
+
+// TEMP DIAGNOSTIC: monotonic-clock timestamp logging to localize the start-tap
+// delay. Remove once the slowdown is found.
+extension ContentView {
+    static func ts(_ msg: String) {
+        print(String(format: "Kestrel⏱ %.3f  %@", ProcessInfo.processInfo.systemUptime, msg))
+    }
 }
 
 #Preview {
