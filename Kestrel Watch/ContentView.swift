@@ -9,7 +9,7 @@ struct ContentView: View {
     /// Fixed base size of the button; the morph is a uniform `scaleEffect` of
     /// this so the circle and glyph shrink together as one unit.
     private static let buttonBaseSize: CGFloat = 110
-    private static let stopSize: CGFloat = 36
+    private static let stopSize: CGFloat = 46
 
     var body: some View {
         let recording = session.isRecording
@@ -43,7 +43,9 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
         }
-        .animation(.easeInOut(duration: 0.3), value: session.isRecording)
+        // The record/stop morph is animated explicitly via `withAnimation` in
+        // the session manager so audio bring-up/teardown can hang off the
+        // animation's completion. Only the bird cross-fade is animated here.
         .animation(.easeInOut(duration: 0.3), value: session.lastBird)
         .task { WatchSessionManager.shared.activate() }
     }
@@ -107,57 +109,65 @@ struct ContentView: View {
 
     // MARK: - Recording ("now hearing")
 
-    /// The species photo in a fixed, nearly-full-width box anchored at the very
-    /// top (top margin matching the side margins). The name sits directly
-    /// beneath; a trailing spacer pushes both up so the bottom-left stop button
-    /// keeps clear room.
+    /// The species photo filling the full width, anchored at the very top (top
+    /// margin matching the side margins). A full-width 4:3 photo is nearly as
+    /// tall as the whole screen, so the name is overlaid across its bottom (with
+    /// a scrim for legibility) rather than given its own band beneath it.
     private func nowHearing(in size: CGSize) -> some View {
         let margin: CGFloat = 4
-        return VStack(spacing: 6) {
-            birdImage(maxWidth: size.width - margin * 2, maxHeight: size.height - 78)
-            nameLabel
-            Spacer(minLength: 0)
-        }
-        .frame(width: size.width, height: size.height, alignment: .top)
-        .padding(.top, margin)
+        return birdImage(maxWidth: size.width - margin * 2, maxHeight: size.height - margin * 2)
+            .frame(width: size.width, height: size.height, alignment: .top)
+            .padding(.top, margin)
     }
 
     /// The whole photo (never cropped) sized to fill the full available width,
-    /// its height following the photo's aspect — so a typical landscape bird
-    /// photo spans edge to edge. The placeholder uses the same full width (at a
-    /// default 3:2) so it's never narrow.
+    /// its height following the photo's aspect. The placeholder uses the same
+    /// full width (at the photos' usual 4:3) so it's never narrow. The name is
+    /// overlaid across the bottom.
     @ViewBuilder
     private func birdImage(maxWidth: CGFloat, maxHeight: CGFloat) -> some View {
-        if let image = session.lastBirdImage {
-            let fitted = Self.fittedSize(image.size, maxWidth: maxWidth, maxHeight: maxHeight)
-            // Frame matches the photo's aspect exactly → fills the width with no
-            // crop and no letterbox.
-            Image(uiImage: image)
-                .resizable()
-                .interpolation(.medium)
-                .frame(width: fitted.width, height: fitted.height)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .id(session.lastBird?.scientificName)
-                .transition(.opacity)
-        } else {
-            // No image yet (still loading) or none available for this species —
-            // a quiet placeholder keyed to the bird glyph, full width.
-            let fitted = Self.fittedSize(CGSize(width: 3, height: 2), maxWidth: maxWidth, maxHeight: maxHeight)
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.white.opacity(0.12))
-                .frame(width: fitted.width, height: fitted.height)
-                .overlay(
-                    Image(systemName: "bird.fill")
-                        .font(.system(size: min(fitted.width, fitted.height) * 0.3))
-                        .foregroundStyle(.white.opacity(0.5))
-                )
-                .transition(.opacity)
+        let fitted = Self.fittedSize(session.lastBirdImage?.size ?? CGSize(width: 4, height: 3),
+                                     maxWidth: maxWidth, maxHeight: maxHeight)
+        Group {
+            if let image = session.lastBirdImage {
+                // Frame matches the photo's aspect exactly → fills the width with
+                // no crop and no letterbox.
+                Image(uiImage: image)
+                    .resizable()
+                    .interpolation(.medium)
+            } else {
+                // No image yet (still loading) or none available for this
+                // species — a quiet placeholder keyed to the bird glyph.
+                Color.white.opacity(0.12)
+                    .overlay(
+                        Image(systemName: "bird.fill")
+                            .font(.system(size: min(fitted.width, fitted.height) * 0.28))
+                            .foregroundStyle(.white.opacity(0.5))
+                    )
+            }
         }
+        .frame(width: fitted.width, height: fitted.height)
+        .overlay(alignment: .bottom) {
+            nameLabel
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 6)
+                .padding(.top, 22)
+                .padding(.bottom, 7)
+                .background(
+                    LinearGradient(
+                        colors: [.clear, .black.opacity(0.65)],
+                        startPoint: .top, endPoint: .bottom
+                    )
+                )
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .id(session.lastBird?.scientificName)
+        .transition(.opacity)
     }
 
     /// Largest size with the given aspect that fits within `maxWidth × maxHeight`
-    /// — width-limited (full width) for the common landscape case, height-capped
-    /// for tall photos so they never crowd out the name.
+    /// — width-limited (full width) for the common landscape/4:3 case, height-
+    /// capped only for unusually tall photos.
     private static func fittedSize(_ imageSize: CGSize, maxWidth: CGFloat, maxHeight: CGFloat) -> CGSize {
         let aspect = imageSize.width / max(imageSize.height, 1)
         var w = maxWidth
@@ -178,13 +188,10 @@ struct ContentView: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
                 .foregroundStyle(.white)
-                .padding(.horizontal, 6)
-                .id(bird.scientificName)
-                .transition(.opacity)
         } else {
             Text("Listening…")
                 .font(.headline)
-                .foregroundStyle(.white.opacity(0.65))
+                .foregroundStyle(.white.opacity(0.85))
         }
     }
 

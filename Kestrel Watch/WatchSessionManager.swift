@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Observation
+import SwiftUI
 import UIKit
 import WatchConnectivity
 import WatchKit
@@ -48,9 +49,6 @@ final class WatchSessionManager: NSObject {
     /// Serializes the blocking audio-engine start/stop so they never overlap
     /// (a deferred stop and a fresh start can otherwise race the engine).
     private let audioQueue = DispatchQueue(label: "com.kestrel.watch.audio", qos: .userInitiated)
-    /// The deferred audio-engine teardown scheduled by `stop()` — held so a
-    /// quick re-tap to record can skip it instead of killing the new session.
-    private var teardownTask: Task<Void, Never>?
     private let delegate = SessionDelegate()
     private let extendedDelegate = ExtendedSessionDelegate()
     private var activated = false
@@ -208,21 +206,21 @@ final class WatchSessionManager: NSObject {
 
     private func start() {
         guard !isRecording, !isStarting else { return }
-        // A stop's audio teardown may still be pending its post-animation
-        // delay; drop it so it can't kill the session we're about to start.
-        teardownTask?.cancel()
-        teardownTask = nil
         // Fresh session — drop any bird left over from the previous one so the
         // "now hearing" screen starts on "Listening…".
         lastBird = nil
         lastBirdImage = nil
-        // Flip straight to recording so the button morph + "now hearing" screen
-        // animate immediately. Everything heavy (mic permission, audio engine)
-        // happens off the main actor in `startWithPermission`; `isStarting`
-        // marks the bring-up window so a stop tapped during it cancels cleanly.
+        // Flip to recording inside an animated transaction and only touch *any*
+        // audio code once that morph animation has finished. Nothing audio-
+        // related runs on the tap itself, so the first tap is never blocked by
+        // audio-subsystem warm-up. `isStarting` marks the bring-up window so a
+        // stop tapped during it cancels cleanly.
         isStarting = true
-        isRecording = true
-        Task { await self.startWithPermission() }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            isRecording = true
+        } completion: { [weak self] in
+            Task { await self?.startWithPermission() }
+        }
     }
 
     private func startWithPermission() async {
@@ -230,13 +228,8 @@ final class WatchSessionManager: NSObject {
         // we return.
         defer { isStarting = false }
 
-        // Let the 0.3 s button morph play out fully before the audio bring-up.
-        // Mic permission + `AVAudioEngine` startup tax the main thread (the
-        // engine posts route-change callbacks to main on first activation) even
-        // when dispatched off it, which would stutter the animation if run
-        // concurrently. Deferring until the morph has committed keeps it smooth
-        // and means the recording effect is initiated only once it's done.
-        try? await Task.sleep(for: .milliseconds(320))
+        // Runs only after the morph completed (see `start()`), so the audio
+        // bring-up — which taxes the main thread even off it — can't stutter it.
         guard isRecording else { return }  // stopped during the morph
 
         guard await Self.ensureMicrophonePermission() else {
@@ -248,7 +241,7 @@ final class WatchSessionManager: NSObject {
         guard isRecording else { return }
 
         // Bring the audio engine up off the main actor (the heaviest, blocking
-        // step) so the morph animation already on screen never stutters.
+        // step).
         do {
             try await startStreamerOffMain()
         } catch {
@@ -307,9 +300,6 @@ final class WatchSessionManager: NSObject {
         autoRestartTask?.cancel()
         autoRestartTask = nil
 
-        // Flip the UI flag first so the stop → record button morph is instant.
-        isRecording = false
-
         // Tell the phone right away (both cheap + non-blocking) so it tears
         // down too, after flushing any background-queued audio.
         flushBackgroundBuffer()
@@ -318,17 +308,18 @@ final class WatchSessionManager: NSObject {
         session.transferUserInfo(["cmd": "stop"])
         stopExtendedSession()
 
+        // Animate the morph; tear the audio engine down only once it finishes.
         // `engine.stop()` + `setActive(false)` block their caller for seconds on
-        // a cold first stop and post route-change callbacks to the main actor —
-        // doing it inline froze the button morph. Defer it off the main actor
-        // until just after the 0.3 s morph has committed. If the user re-taps
-        // record within that window (`isRecording` flips back true), skip the
+        // a cold first stop and post route-change callbacks to the main actor,
+        // which would freeze the morph if run during it. If the user re-taps
+        // record before it completes (`isRecording` flips back true), skip the
         // teardown so the fresh session keeps its engine.
         let streamer = self.streamer
         let audioQueue = self.audioQueue
-        teardownTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(300))
-            guard !Task.isCancelled, self?.isRecording == false else { return }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            isRecording = false
+        } completion: { [weak self] in
+            guard self?.isRecording == false else { return }
             audioQueue.async { streamer.stop() }
         }
     }
