@@ -178,12 +178,18 @@ final class RecordingManager {
         return s
     }
 
-    /// Send a haptic kind to the watch. Live `sendMessage` is the fast
-    /// path when the watch app is foreground; `transferUserInfo` is the
-    /// background fallback — it queues and can wake a suspended watch app
-    /// to deliver the haptic. There's modest latency (1–5 s) over that
-    /// path, but a slightly-late wrist tap is better than none.
-    private func sendHapticToWatch(reason: SpeciesNotifications.Reason) {
+    /// Tell the watch about a freshly-heard interesting bird: the haptic kind
+    /// (which also drives the watch's purple/blue background) plus the species
+    /// identity so the watch can show it on its "now hearing" screen. Live
+    /// `sendMessage` is the fast path when the watch app is foreground;
+    /// `transferUserInfo` is the background fallback — it queues and can wake a
+    /// suspended watch app. There's modest latency (1–5 s) over that path, but
+    /// a slightly-late wrist tap is better than none.
+    private func sendBirdEventToWatch(
+        commonName: String,
+        scientificName: String,
+        reason: SpeciesNotifications.Reason
+    ) {
         guard WCSession.isSupported() else { return }
         let s = WCSession.default
         guard s.activationState == .activated,
@@ -194,10 +200,15 @@ final class RecordingManager {
         case .starred:    kind = "starred"
         case .newSpecies: kind = "newSpecies"
         }
+        let payload: [String: Any] = [
+            "haptic": kind,
+            "birdCommon": commonName,
+            "birdSci": scientificName,
+        ]
         if s.isReachable {
-            s.sendMessage(["haptic": kind], replyHandler: nil, errorHandler: nil)
+            s.sendMessage(payload, replyHandler: nil, errorHandler: nil)
         } else {
-            s.transferUserInfo(["haptic": kind])
+            s.transferUserInfo(payload)
         }
     }
 
@@ -632,10 +643,15 @@ final class RecordingManager {
                 }
             }
         }
-        // Haptics fire regardless of which device the user is currently
-        // looking at — the wrist tap is the whole point of the watch app.
+        // Haptics + the watch's "now hearing" display fire regardless of which
+        // device the user is currently looking at — the wrist tap is the whole
+        // point of the watch app.
         for item in notifications {
-            sendHapticToWatch(reason: item.reason)
+            sendBirdEventToWatch(
+                commonName: item.common,
+                scientificName: item.scientific,
+                reason: item.reason
+            )
         }
 
         for id in repeatedIDs {

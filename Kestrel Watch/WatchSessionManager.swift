@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import Observation
+import UIKit
 import WatchConnectivity
 import WatchKit
 
@@ -19,6 +20,27 @@ final class WatchSessionManager: NSObject {
     /// shows a non-interactive loading state during this window so the tap
     /// gets immediate feedback instead of appearing dead.
     private(set) var isStarting = false
+
+    /// Why a heard bird is interesting — picks the watch's background color.
+    enum BirdHighlight: Equatable {
+        case newSpecies  // not yet on the life list (purple)
+        case starred     // on the user's alert list (blue)
+    }
+
+    /// The most recent interesting bird the phone reported hearing. Drives the
+    /// "now hearing" screen shown while recording.
+    struct HeardBird: Equatable {
+        let commonName: String
+        let scientificName: String
+        let highlight: BirdHighlight
+    }
+
+    /// Last bird the phone told us about this session (nil until the first one
+    /// is heard, and reset at the start of each session).
+    private(set) var lastBird: HeardBird?
+    /// Cached/transferred image for `lastBird`, or nil while it's still being
+    /// fetched from the phone (or if none is available).
+    private(set) var lastBirdImage: UIImage?
 
     private let streamer = WatchAudioStreamer()
     private let delegate = SessionDelegate()
@@ -133,6 +155,45 @@ final class WatchSessionManager: NSObject {
         WKInterfaceDevice.current().play(type)
     }
 
+    /// Phone reported a freshly-heard interesting bird. Updates the "now
+    /// hearing" display and resolves its image — from the local cache if we've
+    /// seen this species before, otherwise by asking the phone to send it.
+    func handleBirdHeard(commonName: String, scientificName: String, highlight: BirdHighlight) {
+        lastBird = HeardBird(
+            commonName: commonName,
+            scientificName: scientificName,
+            highlight: highlight
+        )
+        if let cached = WatchSpeciesImageCache.shared.image(for: scientificName) {
+            lastBirdImage = cached
+        } else {
+            lastBirdImage = nil
+            requestImage(scientificName: scientificName)
+        }
+    }
+
+    /// Phone delivered image bytes for a species. Cache them, and if it's still
+    /// the bird we're showing, update the display.
+    func handleImageReceived(scientificName: String, data: Data) {
+        let image = WatchSpeciesImageCache.shared.store(data, for: scientificName)
+        if lastBird?.scientificName == scientificName {
+            lastBirdImage = image
+        }
+    }
+
+    /// Asks the phone for a species image we don't have cached. Live path when
+    /// reachable, queued fallback otherwise.
+    private func requestImage(scientificName: String) {
+        guard WCSession.isSupported() else { return }
+        let s = WCSession.default
+        guard s.activationState == .activated else { return }
+        if s.isReachable {
+            s.sendMessage(["needImage": scientificName], replyHandler: nil, errorHandler: nil)
+        } else {
+            s.transferUserInfo(["needImage": scientificName])
+        }
+    }
+
     private func start() {
         guard !isRecording, !isStarting else { return }
         // Flip into the loading state synchronously so the tap registers
@@ -142,6 +203,10 @@ final class WatchSessionManager: NSObject {
         // the first tap (or any tap while permission is undetermined/denied)
         // throws inside `streamer.start()` and leaves us with nothing running.
         isStarting = true
+        // Fresh session — drop any bird left over from the previous one so the
+        // "now hearing" screen starts on "Listening…".
+        lastBird = nil
+        lastBirdImage = nil
         Task { await self.startWithPermission() }
     }
 
@@ -405,6 +470,26 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                 case "remoteStop":  WatchSessionManager.shared.handleRemoteStop()
                 default: break
                 }
+            }
+        }
+        // A bird event carries the haptic kind plus the species identity. The
+        // kind doubles as the highlight (starred → blue, otherwise purple).
+        if let common = payload["birdCommon"] as? String,
+           let scientific = payload["birdSci"] as? String {
+            let highlight: WatchSessionManager.BirdHighlight =
+                (payload["haptic"] as? String == "starred") ? .starred : .newSpecies
+            Task { @MainActor in
+                WatchSessionManager.shared.handleBirdHeard(
+                    commonName: common,
+                    scientificName: scientific,
+                    highlight: highlight
+                )
+            }
+        }
+        if let scientific = payload["imageFor"] as? String,
+           let data = payload["image"] as? Data {
+            Task { @MainActor in
+                WatchSessionManager.shared.handleImageReceived(scientificName: scientific, data: data)
             }
         }
         if let haptic = payload["haptic"] as? String {

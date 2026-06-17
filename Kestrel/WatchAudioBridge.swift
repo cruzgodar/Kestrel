@@ -57,14 +57,18 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-        guard let cmd = message["cmd"] as? String else { return }
-        Task { @MainActor in
-            switch cmd {
-            case "start": await manager.startFromWatch()
-            case "stop": manager.stopFromWatch()
-            case "stopUnexpected": manager.stopFromWatchUnexpectedly()
-            default: break
+        if let cmd = message["cmd"] as? String {
+            Task { @MainActor in
+                switch cmd {
+                case "start": await manager.startFromWatch()
+                case "stop": manager.stopFromWatch()
+                case "stopUnexpected": manager.stopFromWatchUnexpectedly()
+                default: break
+                }
             }
+        }
+        if let scientificName = message["needImage"] as? String {
+            sendWatchImage(for: scientificName)
         }
     }
 
@@ -88,8 +92,26 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
                 }
             }
         }
+        if let scientificName = userInfo["needImage"] as? String {
+            sendWatchImage(for: scientificName)
+        }
         if let audio = userInfo["audio"] as? Data {
             ingest(audio)
+        }
+    }
+
+    /// Produces (or reuses) the downscaled species image and ships it to the
+    /// watch. `transferUserInfo` is the right channel: it's reliable and
+    /// background-tolerant, and the payloads are only a few KB. The watch
+    /// caches what it receives, so each species is normally sent only once.
+    private func sendWatchImage(for scientificName: String) {
+        Task.detached(priority: .utility) {
+            guard let data = await WatchImageProvider.shared.jpegData(for: scientificName) else {
+                return
+            }
+            let session = WCSession.default
+            guard session.activationState == .activated else { return }
+            session.transferUserInfo(["imageFor": scientificName, "image": data])
         }
     }
 
