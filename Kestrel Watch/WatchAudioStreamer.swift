@@ -34,44 +34,6 @@ final class WatchAudioStreamer: @unchecked Sendable {
     private var onChunk: ((Data) -> Void)?
     private var buffer: [Int16] = []
 
-    private let prewarmLock = NSLock()
-    private var prewarmTask: Task<Void, Never>?
-
-    /// Schedules background audio prewarm. Idempotent — later calls reuse the
-    /// in-flight task. The first touch of the audio session + input node makes
-    /// watchOS resolve the hardware route and format, which otherwise costs a
-    /// couple of seconds on a cold first `start()`. Doing it at launch (off the
-    /// main actor) means the route is already cached when the user taps record.
-    func startPrewarm() {
-        prewarmLock.lock()
-        defer { prewarmLock.unlock() }
-        guard prewarmTask == nil else { return }
-        prewarmTask = Task.detached(priority: .userInitiated) { [weak self] in
-            self?.runPrewarm()
-        }
-    }
-
-    /// Awaits any in-flight prewarm so `start()` doesn't contend with it for the
-    /// audio session.
-    func awaitPrewarm() async {
-        prewarmLock.lock()
-        let task = prewarmTask
-        prewarmLock.unlock()
-        await task?.value
-    }
-
-    private func runPrewarm() {
-        let session = AVAudioSession.sharedInstance()
-        do {
-            try session.setCategory(.record, mode: .measurement, options: [])
-            // Touch the input node so the OS resolves the mic route + hardware
-            // format and caches it for a fast first start.
-            _ = engine.inputNode.inputFormat(forBus: 0)
-        } catch {
-            print("WatchAudioStreamer: prewarm error \(error)")
-        }
-    }
-
     /// - Parameter useBackgroundEntitlement: when true, configures the session
     ///   as `.playAndRecord` so it can keep capturing under the declared `audio`
     ///   background mode (which depends on the background-audio entitlement).

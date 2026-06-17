@@ -111,9 +111,6 @@ final class WatchSessionManager: NSObject {
     private let autoRestartInterval: Duration = .seconds(30 * 60)
 
     func activate() {
-        // Warm the audio session/route now (off the main actor) so the first
-        // record tap doesn't pay the cold-start cost. Idempotent.
-        streamer.startPrewarm()
         guard !activated, WCSession.isSupported() else { return }
         activated = true
         let session = WCSession.default
@@ -122,10 +119,14 @@ final class WatchSessionManager: NSObject {
     }
 
     func toggle() {
-        // Ignore taps while a start is in flight — the UI also disables the
-        // button, this just guards the programmatic/remote paths.
-        guard !isStarting else { return }
-        if isRecording { stop() } else { start() }
+        // A stop is always honored (including mid bring-up, since we flip to
+        // recording optimistically); a fresh start is ignored while one is
+        // already in flight.
+        if isRecording {
+            stop()
+        } else if !isStarting {
+            start()
+        }
     }
 
     /// Resolves the watch's microphone permission, prompting once if it's
@@ -211,49 +212,48 @@ final class WatchSessionManager: NSObject {
         // delay; drop it so it can't kill the session we're about to start.
         teardownTask?.cancel()
         teardownTask = nil
-        // Flip into the loading state synchronously so the tap registers
-        // instantly, then do the slow bring-up off the tap. Audio capture
-        // needs microphone permission; on watchOS the system only surfaces the
-        // prompt on first audio-session use, so without an explicit request
-        // the first tap (or any tap while permission is undetermined/denied)
-        // throws inside `streamer.start()` and leaves us with nothing running.
-        isStarting = true
         // Fresh session — drop any bird left over from the previous one so the
         // "now hearing" screen starts on "Listening…".
         lastBird = nil
         lastBirdImage = nil
+        // Flip straight to recording so the button morph + "now hearing" screen
+        // animate immediately. Everything heavy (mic permission, audio engine)
+        // happens off the main actor in `startWithPermission`; `isStarting`
+        // marks the bring-up window so a stop tapped during it cancels cleanly.
+        isStarting = true
+        isRecording = true
         Task { await self.startWithPermission() }
     }
 
     private func startWithPermission() async {
-        // Whatever happens below, we're no longer in the transient loading
-        // state by the time we return (either recording, or back to idle).
+        // Whatever happens below, we're out of the bring-up window by the time
+        // we return.
         defer { isStarting = false }
-
-        // Park on a real timer (not `Task.yield()`, which just re-enqueues on
-        // the main actor and runs straight through the blocking setup below
-        // before the run loop ever renders). A brief sleep hands the thread
-        // back to the run loop so the `isStarting = true` loading spinner is
-        // actually painted before we touch the audio/session subsystems —
-        // their first-use setup blocks the main actor for a second or two.
-        try? await Task.sleep(for: .milliseconds(50))
 
         guard await Self.ensureMicrophonePermission() else {
             print("Kestrel Watch: microphone permission denied")
+            isRecording = false  // undo the optimistic flip
             return
         }
+        // The user may have tapped stop while permission resolved.
+        guard isRecording else { return }
 
-        // Make sure the launch-time prewarm has finished resolving the audio
-        // route before we start, so the two don't contend for the session.
-        await streamer.awaitPrewarm()
-
-        // Bring the audio engine up first (off the main actor) — it's the
-        // heaviest step, so doing it while the spinner is already on screen
-        // keeps the UI animating.
+        // Bring the audio engine up off the main actor (the heaviest, blocking
+        // step) so the morph animation already on screen never stutters.
         do {
             try await startStreamerOffMain()
         } catch {
             print("Kestrel Watch: streamer start error \(error)")
+            isRecording = false
+            return
+        }
+
+        // A stop during the off-main bring-up wins — tear the just-started
+        // engine back down rather than leaving it running under an idle UI.
+        guard isRecording else {
+            let streamer = self.streamer
+            let audioQueue = self.audioQueue
+            audioQueue.async { streamer.stop() }
             return
         }
 
@@ -269,7 +269,6 @@ final class WatchSessionManager: NSObject {
         session.sendMessage(["cmd": "start"], replyHandler: nil, errorHandler: nil)
         session.transferUserInfo(["cmd": "start"])
 
-        isRecording = true
         scheduleAutoRestart()
     }
 

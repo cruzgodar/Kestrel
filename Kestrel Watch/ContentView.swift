@@ -3,12 +3,18 @@ import SwiftUI
 struct ContentView: View {
     @State private var session = WatchSessionManager.shared
 
-    /// Equal margin between the stop button and the bottom-left screen corner.
-    private static let buttonMargin: CGFloat = 10
+    /// Equal margin between the stop button and the bottom-left screen corner —
+    /// large enough to clear the bezel curve.
+    private static let buttonMargin: CGFloat = 16
+    /// Fixed base size of the button; the morph is a uniform `scaleEffect` of
+    /// this so the circle and glyph shrink together as one unit.
+    private static let buttonBaseSize: CGFloat = 110
+    private static let stopSize: CGFloat = 36
 
     var body: some View {
         let recording = session.isRecording
-        let side: CGFloat = recording ? 36 : 110
+        // Visual size of the control: full while idle, small while recording.
+        let side: CGFloat = recording ? Self.stopSize : Self.buttonBaseSize
 
         ZStack {
             backgroundColor.ignoresSafeArea()
@@ -24,12 +30,12 @@ struct ContentView: View {
 
             // The record/stop control is positioned against the *full* screen
             // (ignoring the safe area) so it reaches the true bottom-left
-            // corner. `.position` interpolates linearly — a straight path —
-            // and anchors the circle by its center, so it scales in place and
-            // travels in a straight line between the centered mic and the
-            // corner stop button, identically in both directions.
+            // corner. `.position` interpolates linearly (a straight path) and
+            // the button scales uniformly (see `recordButton`), so it travels
+            // in a straight line between the centered mic and the corner stop
+            // button — identically in both directions.
             GeometryReader { geo in
-                recordButton(side: side)
+                recordButton(scale: side / Self.buttonBaseSize)
                     .position(
                         x: recording ? Self.buttonMargin + side / 2 : geo.size.width / 2,
                         y: recording ? geo.size.height - Self.buttonMargin - side / 2 : geo.size.height / 2
@@ -68,56 +74,41 @@ struct ContentView: View {
 
     // MARK: - Record / stop button
 
-    /// The single control the user taps. A large centered mic while idle that
-    /// shrinks down into a small corner stop button once recording — size,
-    /// position, and glyph all animate together (driven solely by the body's
-    /// `isRecording` animation, so both directions match) and it reads as one
-    /// element morphing rather than two views swapping. Both states share the
-    /// same solid purple fill.
-    private func recordButton(side: CGFloat) -> some View {
-        let recording = session.isRecording
-        return Button {
+    /// The single control the user taps. Rendered at a fixed base size and
+    /// scaled as one unit, so the circle and glyph shrink together — no
+    /// independent icon frame to drift or slide during the swap. Position +
+    /// scale animate solely under the body's `isRecording` animation, so the
+    /// morph is a straight, uniform shrink in both directions.
+    private func recordButton(scale: CGFloat) -> some View {
+        Button {
             session.toggle()
         } label: {
-            ZStack {
-                if session.isStarting {
-                    // Loading state — capture is spinning up (permission
-                    // prompt + extended runtime session + audio engine).
-                    ProgressView()
-                        .progressViewStyle(.circular)
-                        .tint(.white)
-                        .scaleEffect(1.4)
-                } else {
-                    // Resizable + centered so the glyph scales with the circle
-                    // and stays put — no drift toward a corner when the symbol
-                    // swaps mid-morph.
-                    Image(systemName: recording ? "stop.fill" : "mic.fill")
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: side * 0.4, height: side * 0.4)
-                        .foregroundStyle(.white)
-                }
-            }
-            .frame(width: side, height: side)
-            .background(Circle().fill(Self.recordTint.opacity(session.isStarting ? 0.6 : 1.0)))
+            Image(systemName: session.isRecording ? "stop.fill" : "mic.fill")
+                .font(.system(size: 44, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: Self.buttonBaseSize, height: Self.buttonBaseSize)
+                .background(Circle().fill(Self.recordTint))
+                .scaleEffect(scale)
         }
         .buttonStyle(.plain)
-        // Taps are ignored while spinning up so a double-tap can't kick off
-        // a second start or stop a half-started session.
-        .disabled(session.isStarting)
-        .accessibilityLabel(recording ? "Stop recording" : "Start recording")
+        .accessibilityLabel(session.isRecording ? "Stop recording" : "Start recording")
     }
 
     // MARK: - Recording ("now hearing")
 
-    /// The species photo shown whole (never cropped), as wide as the screen
-    /// allows and anchored at the very top with a margin matching the side
-    /// margins. The name sits directly beneath it; a trailing spacer pushes
-    /// both up so the bottom-left stop button keeps clear room.
+    /// The species photo in a fixed, nearly-full-width box anchored at the very
+    /// top (top margin matching the side margins). The name sits directly
+    /// beneath; a trailing spacer pushes both up so the bottom-left stop button
+    /// keeps clear room.
     private func nowHearing(in size: CGSize) -> some View {
         let margin: CGFloat = 4
+        let imageWidth = size.width - margin * 2
+        // Landscape-ish box so typical (wider-than-tall) bird photos fill the
+        // width; capped so the name keeps its room on short watches, floored so
+        // it can't collapse if the safe area is unexpectedly short.
+        let imageHeight = max(min(imageWidth * 0.72, size.height - 88), 64)
         return VStack(spacing: 6) {
-            birdImage(maxWidth: size.width - margin * 2, maxHeight: size.height - 92)
+            birdImage(width: imageWidth, height: imageHeight)
             nameLabel
             Spacer(minLength: 0)
         }
@@ -125,31 +116,32 @@ struct ContentView: View {
         .padding(.top, margin)
     }
 
+    /// Both the photo and its placeholder render into the *same* fixed frame, so
+    /// the layout never shifts when an image arrives. `scaledToFit` shows the
+    /// whole photo — never cropped.
     @ViewBuilder
-    private func birdImage(maxWidth: CGFloat, maxHeight: CGFloat) -> some View {
-        if let image = session.lastBirdImage {
-            // `scaledToFit` shows the whole photo — no cropping.
-            Image(uiImage: image)
-                .resizable()
-                .interpolation(.medium)
-                .scaledToFit()
-                .frame(maxWidth: maxWidth, maxHeight: maxHeight)
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                .id(session.lastBird?.scientificName)
-                .transition(.opacity)
-        } else {
-            // No image yet (still loading) or none available for this species —
-            // a quiet placeholder keyed to the bird glyph.
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(Color.white.opacity(0.12))
-                .frame(width: maxWidth, height: min(maxWidth * 0.66, maxHeight))
-                .overlay(
-                    Image(systemName: "bird.fill")
-                        .font(.system(size: maxWidth * 0.2))
-                        .foregroundStyle(.white.opacity(0.5))
-                )
-                .transition(.opacity)
+    private func birdImage(width: CGFloat, height: CGFloat) -> some View {
+        Group {
+            if let image = session.lastBirdImage {
+                Image(uiImage: image)
+                    .resizable()
+                    .interpolation(.medium)
+                    .scaledToFit()
+            } else {
+                // No image yet (still loading) or none available for this
+                // species — a quiet placeholder keyed to the bird glyph.
+                Color.white.opacity(0.12)
+                    .overlay(
+                        Image(systemName: "bird.fill")
+                            .font(.system(size: min(width, height) * 0.3))
+                            .foregroundStyle(.white.opacity(0.5))
+                    )
+            }
         }
+        .frame(width: width, height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .id(session.lastBird?.scientificName)
+        .transition(.opacity)
     }
 
     @ViewBuilder
