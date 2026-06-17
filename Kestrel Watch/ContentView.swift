@@ -80,18 +80,29 @@ struct ContentView: View {
     /// scale animate solely under the body's `isRecording` animation, so the
     /// morph is a straight, uniform shrink in both directions.
     private func recordButton(scale: CGFloat) -> some View {
-        Button {
+        let recording = session.isRecording
+        return Button {
             session.toggle()
         } label: {
-            Image(systemName: session.isRecording ? "stop.fill" : "mic.fill")
-                .font(.system(size: 44, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: Self.buttonBaseSize, height: Self.buttonBaseSize)
-                .background(Circle().fill(Self.recordTint))
-                .scaleEffect(scale)
+            // Both glyphs are always present and cross-faded by opacity, so the
+            // transition is symmetric and each lands at the correct end opacity
+            // (0 or 1) — a single swapped `Image` left the outgoing glyph
+            // partially visible and snapped at the end.
+            ZStack {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 44, weight: .semibold))
+                    .opacity(recording ? 0 : 1)
+                Image(systemName: "stop.fill")
+                    .font(.system(size: 40, weight: .bold))
+                    .opacity(recording ? 1 : 0)
+            }
+            .foregroundStyle(.white)
+            .frame(width: Self.buttonBaseSize, height: Self.buttonBaseSize)
+            .background(Circle().fill(Self.recordTint))
+            .scaleEffect(scale)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(session.isRecording ? "Stop recording" : "Start recording")
+        .accessibilityLabel(recording ? "Stop recording" : "Start recording")
     }
 
     // MARK: - Recording ("now hearing")
@@ -102,13 +113,8 @@ struct ContentView: View {
     /// keeps clear room.
     private func nowHearing(in size: CGSize) -> some View {
         let margin: CGFloat = 4
-        let imageWidth = size.width - margin * 2
-        // Landscape-ish box so typical (wider-than-tall) bird photos fill the
-        // width; capped so the name keeps its room on short watches, floored so
-        // it can't collapse if the safe area is unexpectedly short.
-        let imageHeight = max(min(imageWidth * 0.72, size.height - 88), 64)
         return VStack(spacing: 6) {
-            birdImage(width: imageWidth, height: imageHeight)
+            birdImage(maxWidth: size.width - margin * 2, maxHeight: size.height - 78)
             nameLabel
             Spacer(minLength: 0)
         }
@@ -116,32 +122,51 @@ struct ContentView: View {
         .padding(.top, margin)
     }
 
-    /// Both the photo and its placeholder render into the *same* fixed frame, so
-    /// the layout never shifts when an image arrives. `scaledToFit` shows the
-    /// whole photo — never cropped.
+    /// The whole photo (never cropped) sized to fill the full available width,
+    /// its height following the photo's aspect — so a typical landscape bird
+    /// photo spans edge to edge. The placeholder uses the same full width (at a
+    /// default 3:2) so it's never narrow.
     @ViewBuilder
-    private func birdImage(width: CGFloat, height: CGFloat) -> some View {
-        Group {
-            if let image = session.lastBirdImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .interpolation(.medium)
-                    .scaledToFit()
-            } else {
-                // No image yet (still loading) or none available for this
-                // species — a quiet placeholder keyed to the bird glyph.
-                Color.white.opacity(0.12)
-                    .overlay(
-                        Image(systemName: "bird.fill")
-                            .font(.system(size: min(width, height) * 0.3))
-                            .foregroundStyle(.white.opacity(0.5))
-                    )
-            }
+    private func birdImage(maxWidth: CGFloat, maxHeight: CGFloat) -> some View {
+        if let image = session.lastBirdImage {
+            let fitted = Self.fittedSize(image.size, maxWidth: maxWidth, maxHeight: maxHeight)
+            // Frame matches the photo's aspect exactly → fills the width with no
+            // crop and no letterbox.
+            Image(uiImage: image)
+                .resizable()
+                .interpolation(.medium)
+                .frame(width: fitted.width, height: fitted.height)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .id(session.lastBird?.scientificName)
+                .transition(.opacity)
+        } else {
+            // No image yet (still loading) or none available for this species —
+            // a quiet placeholder keyed to the bird glyph, full width.
+            let fitted = Self.fittedSize(CGSize(width: 3, height: 2), maxWidth: maxWidth, maxHeight: maxHeight)
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.12))
+                .frame(width: fitted.width, height: fitted.height)
+                .overlay(
+                    Image(systemName: "bird.fill")
+                        .font(.system(size: min(fitted.width, fitted.height) * 0.3))
+                        .foregroundStyle(.white.opacity(0.5))
+                )
+                .transition(.opacity)
         }
-        .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .id(session.lastBird?.scientificName)
-        .transition(.opacity)
+    }
+
+    /// Largest size with the given aspect that fits within `maxWidth × maxHeight`
+    /// — width-limited (full width) for the common landscape case, height-capped
+    /// for tall photos so they never crowd out the name.
+    private static func fittedSize(_ imageSize: CGSize, maxWidth: CGFloat, maxHeight: CGFloat) -> CGSize {
+        let aspect = imageSize.width / max(imageSize.height, 1)
+        var w = maxWidth
+        var h = maxWidth / aspect
+        if h > maxHeight {
+            h = maxHeight
+            w = maxHeight * aspect
+        }
+        return CGSize(width: w, height: h)
     }
 
     @ViewBuilder

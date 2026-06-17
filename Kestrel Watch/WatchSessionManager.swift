@@ -230,6 +230,15 @@ final class WatchSessionManager: NSObject {
         // we return.
         defer { isStarting = false }
 
+        // Let the 0.3 s button morph play out fully before the audio bring-up.
+        // Mic permission + `AVAudioEngine` startup tax the main thread (the
+        // engine posts route-change callbacks to main on first activation) even
+        // when dispatched off it, which would stutter the animation if run
+        // concurrently. Deferring until the morph has committed keeps it smooth
+        // and means the recording effect is initiated only once it's done.
+        try? await Task.sleep(for: .milliseconds(320))
+        guard isRecording else { return }  // stopped during the morph
+
         guard await Self.ensureMicrophonePermission() else {
             print("Kestrel Watch: microphone permission denied")
             isRecording = false  // undo the optimistic flip
