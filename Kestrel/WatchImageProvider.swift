@@ -1,6 +1,4 @@
-import ImageIO
 import UIKit
-import UniformTypeIdentifiers
 
 /// Produces and caches the small JPEGs sent to the watch for its "now hearing"
 /// screen. Downscaling happens at most once per species; the result is cached
@@ -36,9 +34,10 @@ final class WatchImageProvider: @unchecked Sendable {
     }
 
     /// Downscaled JPEG bytes for the species, or nil if no source image is
-    /// available (e.g. embed mode with no network and nothing cached). Honors
-    /// the active image source the same way `SpeciesPhoto` does. Caches the
-    /// result on disk. Call off the main actor — embed mode can hit the network.
+    /// available (no network and nothing cached). Pulls the photo through the
+    /// remote store (memory → disk → network), then downscales the decoded
+    /// image. Caches the result on disk. Call off the main actor — it can hit
+    /// the network.
     func jpegData(for scientificName: String) async -> Data? {
         let slug = SpeciesImage.slug(for: scientificName)
         guard !slug.isEmpty else { return nil }
@@ -47,45 +46,17 @@ final class WatchImageProvider: @unchecked Sendable {
         let cached = fileURL(forSlug: slug)
         if let data = try? Data(contentsOf: cached) { return data }
 
-        let produced: Data?
-        switch AppSettings.persistedImageSource() {
-        case .bundled:
-            // ImageIO thumbnails straight from the bundled file without ever
-            // decoding the full-size image into memory.
-            produced = SpeciesImage.largeURL(for: scientificName)
-                .flatMap { Self.downscaledJPEG(fileURL: $0, maxPixel: maxPixel, quality: jpegQuality) }
-        case .embed:
-            // Pull through the remote store (memory → disk → network), then
-            // downscale the decoded image.
-            if let image = await RemoteSpeciesImageStore.shared.image(for: scientificName) {
-                produced = Self.downscaledJPEG(image: image, maxPixel: maxPixel, quality: jpegQuality)
-            } else {
-                produced = nil
-            }
+        guard let image = await RemoteSpeciesImageStore.shared.image(for: scientificName) else {
+            return nil
         }
-
+        let produced = Self.downscaledJPEG(image: image, maxPixel: maxPixel, quality: jpegQuality)
         if let produced { try? produced.write(to: cached, options: .atomic) }
         return produced
     }
 
     // MARK: - Downscaling
 
-    /// Memory-efficient path: lets ImageIO decode the source directly at the
-    /// target size rather than loading the whole image first.
-    private static func downscaledJPEG(fileURL: URL, maxPixel: Int, quality: CGFloat) -> Data? {
-        guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else { return nil }
-        let options: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
-        ]
-        guard let thumb = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
-            return nil
-        }
-        return encodeJPEG(thumb, quality: quality)
-    }
-
-    /// Fallback for an already-decoded `UIImage` (embed source).
+    /// Downscales an already-decoded `UIImage` and JPEG-encodes it.
     private static func downscaledJPEG(image: UIImage, maxPixel: Int, quality: CGFloat) -> Data? {
         let size = image.size
         let longest = max(size.width, size.height)
@@ -103,17 +74,5 @@ final class WatchImageProvider: @unchecked Sendable {
                 .draw(in: CGRect(origin: .zero, size: target))
         }
         return scaled.jpegData(compressionQuality: quality)
-    }
-
-    /// Encodes a `CGImage` to JPEG via ImageIO (no intermediate `UIImage`).
-    private static func encodeJPEG(_ image: CGImage, quality: CGFloat) -> Data? {
-        let data = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(
-            data, UTType.jpeg.identifier as CFString, 1, nil
-        ) else { return nil }
-        let options: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: quality]
-        CGImageDestinationAddImage(dest, image, options as CFDictionary)
-        guard CGImageDestinationFinalize(dest) else { return nil }
-        return data as Data
     }
 }

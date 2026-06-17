@@ -1,7 +1,7 @@
 import Foundation
 
-/// Filename-slug + Bundle URL helper for the species thumbnails bundled into
-/// the app under `Kestrel/Models/SpeciesImages/<slug>.jpg`. The slugging
+/// Filename-slug helper for species photos. The slug keys both the remote
+/// embed store's on-disk cache and the watch image transfer. The slugging
 /// algorithm is identical to the one in `scripts/fetch_species_images.py`
 /// (`slug_for`) so the two stay in sync.
 enum SpeciesImage {
@@ -31,29 +31,5 @@ enum SpeciesImage {
         while result.hasPrefix("_") { result.removeFirst() }
         while result.hasSuffix("_") { result.removeLast() }
         return result
-    }
-
-    /// Returns the bundle URL of the thumbnail for this species, or nil if
-    /// no image is bundled. The Xcode sync group flattens all bundled
-    /// resources into the bundle root, so we look up by slug + `.jpg`.
-    static func url(for scientificName: String) -> URL? {
-        let slug = slug(for: scientificName)
-        guard !slug.isEmpty else { return nil }
-        return Bundle.main.url(forResource: slug, withExtension: "jpg")
-    }
-
-    /// Returns the bundle URL of the high-resolution image for this species,
-    /// used by notification attachments where the system displays a larger
-    /// thumbnail than the in-app row needs. Large variants share the bundle
-    /// root with the small ones, distinguished by a `_large` filename suffix
-    /// (the source files live under `Kestrel/Models/SpeciesImagesLarge/`).
-    /// Falls back to the small image if the large variant isn't present.
-    static func largeURL(for scientificName: String) -> URL? {
-        let slug = slug(for: scientificName)
-        guard !slug.isEmpty else { return nil }
-        if let url = Bundle.main.url(forResource: "\(slug)_large", withExtension: "jpg") {
-            return url
-        }
-        return url(for: scientificName)
     }
 }

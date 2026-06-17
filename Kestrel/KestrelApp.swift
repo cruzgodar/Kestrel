@@ -33,19 +33,12 @@ struct KestrelApp: App {
         // push the snapshot in.
         manager.lifeListStore = store
 
-        // Warm species photos at launch. For the bundled source, background-
-        // decode every life-list thumbnail so the first switch to the Life List
-        // tab doesn't spend ~hundreds of ms decoding JPEGs on the main thread.
-        // For the embed source, download + persist the life-list and cached
-        // region species so they're available offline and kept forever.
+        // Warm species photos at launch: download + persist the life-list and
+        // cached region species so they're available offline and kept forever.
         let lifeListNames = store.entries.map(\.scientificName)
-        if AppSettings.persistedImageSource() == .bundled {
-            SpeciesImageCache.shared.preheat(scientificNames: lifeListNames)
-        } else {
-            RemoteSpeciesImageStore.shared.prefetch(
-                scientificNames: RemoteSpeciesImageStore.launchTargets(lifeList: lifeListNames)
-            )
-        }
+        RemoteSpeciesImageStore.shared.prefetch(
+            scientificNames: RemoteSpeciesImageStore.launchTargets(lifeList: lifeListNames)
+        )
 
         // Ask for notification permission at first launch rather than
         // deferring to the first Start Recording tap.

@@ -3,7 +3,7 @@ import UserNotifications
 
 /// Fires local notifications when a new species is detected while the
 /// Identify spectrogram isn't on-screen (other tab, app backgrounded, screen
-/// off). The notification carries the species' common name and bundled
+/// off). The notification carries the species' common name and embed
 /// thumbnail as an image attachment.
 @MainActor
 final class SpeciesNotifications {
@@ -52,7 +52,7 @@ final class SpeciesNotifications {
         content.title = commonName
         content.body  = reason.body
         content.sound = .default
-        if let attachment = makeAttachment(scientificName: scientificName) {
+        if let attachment = await makeAttachment(scientificName: scientificName) {
             content.attachments = [attachment]
         }
 
@@ -94,16 +94,18 @@ final class SpeciesNotifications {
         }
     }
 
-    /// Bundled species thumbnails live inside the read-only app bundle.
-    /// `UNNotificationAttachment` moves the file it's given into a private
-    /// notification store, so we copy the bundle image into the temp
-    /// directory first.
-    private func makeAttachment(scientificName: String) -> UNNotificationAttachment? {
-        guard let bundleURL = SpeciesImage.largeURL(for: scientificName) else { return nil }
+    /// Pulls the species' embed photo from `RemoteSpeciesImageStore` (its disk
+    /// cache, downloading if needed). `UNNotificationAttachment` moves the file
+    /// it's given into a private notification store, so we copy the cached image
+    /// into the temp directory first rather than letting it consume our cache.
+    private func makeAttachment(scientificName: String) async -> UNNotificationAttachment? {
+        guard let fileURL = await RemoteSpeciesImageStore.shared.localFileURL(for: scientificName) else {
+            return nil
+        }
         let tmpURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("kestrel-\(UUID().uuidString).jpg")
         do {
-            try FileManager.default.copyItem(at: bundleURL, to: tmpURL)
+            try FileManager.default.copyItem(at: fileURL, to: tmpURL)
             return try UNNotificationAttachment(identifier: scientificName, url: tmpURL)
         } catch {
             print("Kestrel: notification attachment error — \(error)")

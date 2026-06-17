@@ -5,10 +5,10 @@ import UIKit
 /// Three tiers: an in-memory `NSCache` of decoded images, an on-disk JPEG cache
 /// in Application Support (which the system does *not* purge — once downloaded a
 /// photo stays forever), and the network as the source of truth. The on-disk
-/// copy is keyed by the same filename slug the bundled images use.
+/// copy is keyed by the `SpeciesImage` filename slug.
 ///
-/// `@unchecked Sendable` + nonisolated like `SpeciesImageCache`: callers hit it
-/// from view bodies, background prefetch tasks, and the full-screen viewer.
+/// `@unchecked Sendable` + nonisolated: callers hit it from view bodies,
+/// background prefetch tasks, and the full-screen viewer.
 final class RemoteSpeciesImageStore: @unchecked Sendable {
     static let shared = RemoteSpeciesImageStore()
 
@@ -80,14 +80,26 @@ final class RemoteSpeciesImageStore: @unchecked Sendable {
         return prepared
     }
 
+    /// Ensures the species photo is on disk (downloading if needed) and returns
+    /// its local file URL, or nil if unavailable. Used by the notification
+    /// attachment, which needs a real file to hand to the system. Call off the
+    /// main actor.
+    func localFileURL(for scientificName: String) async -> URL? {
+        let slug = SpeciesImage.slug(for: scientificName)
+        guard !slug.isEmpty else { return nil }
+        let dest = fileURL(forSlug: slug)
+        if FileManager.default.fileExists(atPath: dest.path) { return dest }
+        await ensureDownloaded(scientificName)
+        return FileManager.default.fileExists(atPath: dest.path) ? dest : nil
+    }
+
     // MARK: - Prefetch
 
     /// Downloads + persists every not-yet-cached species in the list, in the
-    /// background, with bounded concurrency. No-ops unless the embed source is
-    /// active. Idempotent — already-downloaded photos are skipped, so this is
-    /// cheap to call on every launch and whenever the region list changes.
+    /// background, with bounded concurrency. Idempotent — already-downloaded
+    /// photos are skipped, so this is cheap to call on every launch and
+    /// whenever the region list changes.
     func prefetch(scientificNames: [String]) {
-        guard AppSettings.persistedImageSource() == .embed else { return }
         let targets = scientificNames.filter { name in
             let slug = SpeciesImage.slug(for: name)
             return !slug.isEmpty

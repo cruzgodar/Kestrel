@@ -254,8 +254,8 @@ struct ContentView: View {
 }
 
 /// Full-width image for an unseen species. Pinned to a 16:9 aspect box and
-/// cropped (`.scaledToFill`) so rows look uniform even though the bundled
-/// `SpeciesImagesLarge` files have varying aspect ratios.
+/// cropped (`.scaledToFill`) so rows look uniform even though the source
+/// photos have varying aspect ratios.
 private struct SpeciesHeroImage: View {
     let scientificName: String
 

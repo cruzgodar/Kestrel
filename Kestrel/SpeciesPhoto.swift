@@ -1,14 +1,13 @@
 import SwiftUI
 
-/// Single source of truth for rendering a species photo, honoring the current
-/// `AppSettings.imageSource`. Renders the photo `.scaledToFill` inside whatever
-/// frame the caller imposes (callers own framing, clipping, and borders); shows
-/// the caller-supplied `placeholder` when no image is available.
+/// Single source of truth for rendering a species photo. Renders the photo
+/// `.scaledToFill` inside whatever frame the caller imposes (callers own
+/// framing, clipping, and borders); shows the caller-supplied `placeholder`
+/// when no image is available.
 ///
-/// - `.bundled` → the decoded JPEG from `SpeciesImageCache`.
-/// - `.embed`   → the Macaulay photo from `RemoteSpeciesImageStore` (memory →
-///   persistent disk → network), with an attribution caption when `showsCredit`
-///   is set (large contexts only — it's unreadable behind a 60pt thumbnail).
+/// The photo is the Macaulay embed from `RemoteSpeciesImageStore` (memory →
+/// persistent disk → network), with an attribution caption when `showsCredit`
+/// is set (large contexts only — it's unreadable behind a 60pt thumbnail).
 ///
 /// When `tappable` and an image is available, tapping opens the full-screen
 /// viewer via the `SpeciesPhotoPresenter` in the environment. Callers that need
@@ -30,32 +29,17 @@ struct SpeciesPhoto<Placeholder: View>: View {
             ))
     }
 
-    /// Whether an image exists (or is expected, for embed) — gates tappability
-    /// so a bare placeholder doesn't open an empty viewer. Embed mode depends
-    /// only on remote metadata — it never falls back to a bundled image, so the
-    /// app stays correct when shipped with no bundled images at all.
+    /// Whether an image is expected — gates tappability so a bare placeholder
+    /// doesn't open an empty viewer. Depends only on remote metadata; species
+    /// without it (e.g. Indonesian Honeyeater) show the placeholder.
     private var hasImage: Bool {
-        switch AppSettings.shared.imageSource {
-        case .bundled:
-            return SpeciesImageCache.shared.image(for: scientificName) != nil
-        case .embed:
-            return SpeciesPhotoMetadata.shared.info(for: scientificName) != nil
-        }
+        SpeciesPhotoMetadata.shared.info(for: scientificName) != nil
     }
 
     @ViewBuilder
     private var content: some View {
-        switch AppSettings.shared.imageSource {
-        case .bundled:
-            if let img = SpeciesImageCache.shared.image(for: scientificName) {
-                speciesPhotoFill(Image(uiImage: img))
-            } else {
-                placeholder()
-            }
-        case .embed:
-            RemoteSpeciesImage(scientificName: scientificName, showsCredit: showsCredit) {
-                placeholder()
-            }
+        RemoteSpeciesImage(scientificName: scientificName, showsCredit: showsCredit) {
+            placeholder()
         }
     }
 }

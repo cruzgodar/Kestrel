@@ -21,9 +21,8 @@ final class SpeciesPhotoPresenter {
 }
 
 /// Full-screen, zoomable view of a single species photo with its Macaulay
-/// attribution. Loads the image from whichever source is active (bundled cache
-/// or the remote store), falling back to the bundled image for manual/exception
-/// species that have no remote photo.
+/// attribution. Loads the image from the remote store (memory → disk →
+/// network); species with no remote photo show the placeholder.
 ///
 /// Gestures (zoom, pan, swipe-to-dismiss) live here at the top level: the
 /// dismiss drag moves the *entire* view — image, caption, and close button —
@@ -210,28 +209,13 @@ struct SpeciesPhotoFullScreen: View {
         image = nil
         loadFailed = false
         let name = scientificName
-        switch AppSettings.shared.imageSource {
-        case .bundled:
-            image = await bundledImage(name)
-            loadFailed = image == nil
-        case .embed:
-            if let mem = RemoteSpeciesImageStore.shared.memoryImage(for: name) {
-                image = mem
-                return
-            }
-            // Remote only — no bundled fallback, so embed mode matches a
-            // build that ships with no bundled images.
-            let loaded = await RemoteSpeciesImageStore.shared.image(for: name)
-            guard !Task.isCancelled else { return }
-            image = loaded
-            loadFailed = loaded == nil
+        if let mem = RemoteSpeciesImageStore.shared.memoryImage(for: name) {
+            image = mem
+            return
         }
-    }
-
-    /// Decodes the bundled image off the main actor to avoid a hitch.
-    private func bundledImage(_ name: String) async -> UIImage? {
-        await Task.detached(priority: .userInitiated) {
-            SpeciesImageCache.shared.image(for: name)
-        }.value
+        let loaded = await RemoteSpeciesImageStore.shared.image(for: name)
+        guard !Task.isCancelled else { return }
+        image = loaded
+        loadFailed = loaded == nil
     }
 }

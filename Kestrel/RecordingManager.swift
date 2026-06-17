@@ -712,8 +712,7 @@ final class RecordingManager {
     }
 
     /// Kicks off a background download of the embed photos for the just-computed
-    /// region species so they're cached and available offline. No-ops unless the
-    /// embed image source is active (the store gates on it).
+    /// region species so they're cached and available offline.
     private func prefetchRegionImages(_ allowed: Set<Int>) {
         let all = SpeciesCatalog.shared.all
         let names = allowed.compactMap { all.indices.contains($0) ? all[$0].scientificName : nil }
