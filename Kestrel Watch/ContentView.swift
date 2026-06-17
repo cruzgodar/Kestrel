@@ -3,15 +3,39 @@ import SwiftUI
 struct ContentView: View {
     @State private var session = WatchSessionManager.shared
 
+    /// Equal margin between the stop button and the bottom-left screen corner.
+    private static let buttonMargin: CGFloat = 10
+
     var body: some View {
+        let recording = session.isRecording
+        let side: CGFloat = recording ? 36 : 110
+
         ZStack {
             backgroundColor.ignoresSafeArea()
 
-            if session.isRecording {
-                nowHearing
-            } else {
-                idleButton
+            // Bird + name respect the safe area so the photo sits just under the
+            // clock, as high as the OS allows.
+            if recording {
+                GeometryReader { geo in
+                    nowHearing(in: geo.size)
+                }
+                .transition(.opacity)
             }
+
+            // The record/stop control is positioned against the *full* screen
+            // (ignoring the safe area) so it reaches the true bottom-left
+            // corner. `.position` interpolates linearly — a straight path —
+            // and anchors the circle by its center, so it scales in place and
+            // travels in a straight line between the centered mic and the
+            // corner stop button, identically in both directions.
+            GeometryReader { geo in
+                recordButton(side: side)
+                    .position(
+                        x: recording ? Self.buttonMargin + side / 2 : geo.size.width / 2,
+                        y: recording ? geo.size.height - Self.buttonMargin - side / 2 : geo.size.height / 2
+                    )
+            }
+            .ignoresSafeArea()
         }
         .animation(.easeInOut(duration: 0.3), value: session.isRecording)
         .animation(.easeInOut(duration: 0.3), value: session.lastBird)
@@ -21,12 +45,14 @@ struct ContentView: View {
     // MARK: - Background
 
     /// Black until a bird is heard, then the dark-mode highlight color for its
-    /// kind. Outside a recording session it's always black (the idle button).
+    /// kind. A heard-but-unremarkable bird (already on the life list, not
+    /// starred) stays black; only new/starred ones tint the screen.
     private var backgroundColor: Color {
         guard session.isRecording, let bird = session.lastBird else { return .black }
         switch bird.highlight {
         case .newSpecies: return Self.newSpeciesBackground
         case .starred:    return Self.starredBackground
+        case .normal:     return .black
         }
     }
 
@@ -40,10 +66,17 @@ struct ContentView: View {
 
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
 
-    // MARK: - Idle / starting (big button)
+    // MARK: - Record / stop button
 
-    private var idleButton: some View {
-        Button {
+    /// The single control the user taps. A large centered mic while idle that
+    /// shrinks down into a small corner stop button once recording — size,
+    /// position, and glyph all animate together (driven solely by the body's
+    /// `isRecording` animation, so both directions match) and it reads as one
+    /// element morphing rather than two views swapping. Both states share the
+    /// same solid purple fill.
+    private func recordButton(side: CGFloat) -> some View {
+        let recording = session.isRecording
+        return Button {
             session.toggle()
         } label: {
             ZStack {
@@ -55,68 +88,68 @@ struct ContentView: View {
                         .tint(.white)
                         .scaleEffect(1.4)
                 } else {
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 44, weight: .semibold))
+                    // Resizable + centered so the glyph scales with the circle
+                    // and stays put — no drift toward a corner when the symbol
+                    // swaps mid-morph.
+                    Image(systemName: recording ? "stop.fill" : "mic.fill")
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: side * 0.4, height: side * 0.4)
                         .foregroundStyle(.white)
-                        .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
                 }
             }
-            .frame(width: 110, height: 110)
+            .frame(width: side, height: side)
             .background(Circle().fill(Self.recordTint.opacity(session.isStarting ? 0.6 : 1.0)))
-            .animation(.easeOut(duration: 0.15), value: session.isStarting)
         }
         .buttonStyle(.plain)
         // Taps are ignored while spinning up so a double-tap can't kick off
         // a second start or stop a half-started session.
         .disabled(session.isStarting)
-        .transition(.scale(scale: 0.6).combined(with: .opacity))
+        .accessibilityLabel(recording ? "Stop recording" : "Start recording")
     }
 
     // MARK: - Recording ("now hearing")
 
-    private var nowHearing: some View {
-        ZStack(alignment: .bottomLeading) {
-            GeometryReader { geo in
-                // Square image sized to the available width, capped so the
-                // name always has room beneath it on the shortest watches.
-                let side = min(geo.size.width - 16, geo.size.height * 0.62)
-                VStack(spacing: 8) {
-                    birdImage(side: max(side, 64))
-                    nameLabel
-                }
-                .frame(width: geo.size.width, height: geo.size.height)
-                .padding(.bottom, 4)
-            }
-
-            stopButton
-                .padding(.leading, 6)
-                .padding(.bottom, 6)
+    /// The species photo shown whole (never cropped), as wide as the screen
+    /// allows and anchored at the very top with a margin matching the side
+    /// margins. The name sits directly beneath it; a trailing spacer pushes
+    /// both up so the bottom-left stop button keeps clear room.
+    private func nowHearing(in size: CGSize) -> some View {
+        let margin: CGFloat = 4
+        return VStack(spacing: 6) {
+            birdImage(maxWidth: size.width - margin * 2, maxHeight: size.height - 92)
+            nameLabel
+            Spacer(minLength: 0)
         }
+        .frame(width: size.width, height: size.height, alignment: .top)
+        .padding(.top, margin)
     }
 
     @ViewBuilder
-    private func birdImage(side: CGFloat) -> some View {
-        Group {
-            if let image = session.lastBirdImage {
-                Image(uiImage: image)
-                    .resizable()
-                    .interpolation(.medium)
-                    .scaledToFill()
-            } else {
-                // No image yet (still loading) or none available for this
-                // species — a quiet placeholder keyed to the bird glyph.
-                Color.white.opacity(0.12)
-                    .overlay(
-                        Image(systemName: "bird.fill")
-                            .font(.system(size: side * 0.3))
-                            .foregroundStyle(.white.opacity(0.5))
-                    )
-            }
+    private func birdImage(maxWidth: CGFloat, maxHeight: CGFloat) -> some View {
+        if let image = session.lastBirdImage {
+            // `scaledToFit` shows the whole photo — no cropping.
+            Image(uiImage: image)
+                .resizable()
+                .interpolation(.medium)
+                .scaledToFit()
+                .frame(maxWidth: maxWidth, maxHeight: maxHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .id(session.lastBird?.scientificName)
+                .transition(.opacity)
+        } else {
+            // No image yet (still loading) or none available for this species —
+            // a quiet placeholder keyed to the bird glyph.
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.white.opacity(0.12))
+                .frame(width: maxWidth, height: min(maxWidth * 0.66, maxHeight))
+                .overlay(
+                    Image(systemName: "bird.fill")
+                        .font(.system(size: maxWidth * 0.2))
+                        .foregroundStyle(.white.opacity(0.5))
+                )
+                .transition(.opacity)
         }
-        .frame(width: side, height: side)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .id(session.lastBird?.scientificName)
-        .transition(.opacity)
     }
 
     @ViewBuilder
@@ -138,22 +171,6 @@ struct ContentView: View {
         }
     }
 
-    /// The shrunk record button — a small stop control tucked into the corner.
-    private var stopButton: some View {
-        Button {
-            session.toggle()
-        } label: {
-            Image(systemName: "stop.fill")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: 34, height: 34)
-                .background(Circle().fill(.black.opacity(0.35)))
-                .overlay(Circle().stroke(.white.opacity(0.35), lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Stop recording")
-        .transition(.scale(scale: 0.6).combined(with: .opacity))
-    }
 }
 
 #Preview {

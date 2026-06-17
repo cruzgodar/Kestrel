@@ -21,14 +21,16 @@ final class WatchSessionManager: NSObject {
     /// gets immediate feedback instead of appearing dead.
     private(set) var isStarting = false
 
-    /// Why a heard bird is interesting — picks the watch's background color.
-    enum BirdHighlight: Equatable {
+    /// How a heard bird is highlighted — picks the watch's background color.
+    /// The raw values match the strings the phone sends in the `highlight` key.
+    enum BirdHighlight: String, Equatable {
         case newSpecies  // not yet on the life list (purple)
         case starred     // on the user's alert list (blue)
+        case normal      // already known + not starred (no tint)
     }
 
-    /// The most recent interesting bird the phone reported hearing. Drives the
-    /// "now hearing" screen shown while recording.
+    /// The most recent bird the phone reported hearing. Drives the "now
+    /// hearing" screen shown while recording.
     struct HeardBird: Equatable {
         let commonName: String
         let scientificName: String
@@ -43,6 +45,12 @@ final class WatchSessionManager: NSObject {
     private(set) var lastBirdImage: UIImage?
 
     private let streamer = WatchAudioStreamer()
+    /// Serializes the blocking audio-engine start/stop so they never overlap
+    /// (a deferred stop and a fresh start can otherwise race the engine).
+    private let audioQueue = DispatchQueue(label: "com.kestrel.watch.audio", qos: .userInitiated)
+    /// The deferred audio-engine teardown scheduled by `stop()` — held so a
+    /// quick re-tap to record can skip it instead of killing the new session.
+    private var teardownTask: Task<Void, Never>?
     private let delegate = SessionDelegate()
     private let extendedDelegate = ExtendedSessionDelegate()
     private var activated = false
@@ -103,6 +111,9 @@ final class WatchSessionManager: NSObject {
     private let autoRestartInterval: Duration = .seconds(30 * 60)
 
     func activate() {
+        // Warm the audio session/route now (off the main actor) so the first
+        // record tap doesn't pay the cold-start cost. Idempotent.
+        streamer.startPrewarm()
         guard !activated, WCSession.isSupported() else { return }
         activated = true
         let session = WCSession.default
@@ -196,6 +207,10 @@ final class WatchSessionManager: NSObject {
 
     private func start() {
         guard !isRecording, !isStarting else { return }
+        // A stop's audio teardown may still be pending its post-animation
+        // delay; drop it so it can't kill the session we're about to start.
+        teardownTask?.cancel()
+        teardownTask = nil
         // Flip into the loading state synchronously so the tap registers
         // instantly, then do the slow bring-up off the tap. Audio capture
         // needs microphone permission; on watchOS the system only surfaces the
@@ -227,6 +242,10 @@ final class WatchSessionManager: NSObject {
             print("Kestrel Watch: microphone permission denied")
             return
         }
+
+        // Make sure the launch-time prewarm has finished resolving the audio
+        // route before we start, so the two don't contend for the session.
+        await streamer.awaitPrewarm()
 
         // Bring the audio engine up first (off the main actor) — it's the
         // heaviest step, so doing it while the spinner is already on screen
@@ -262,7 +281,7 @@ final class WatchSessionManager: NSObject {
         let streamer = self.streamer
         let useBackgroundEntitlement = self.useBackgroundAudioEntitlement
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            DispatchQueue.global(qos: .userInitiated).async {
+            audioQueue.async {
                 do {
                     try streamer.start(useBackgroundEntitlement: useBackgroundEntitlement) { [weak self] data in
                         self?.deliver(data)
@@ -279,15 +298,31 @@ final class WatchSessionManager: NSObject {
         guard isRecording else { return }
         autoRestartTask?.cancel()
         autoRestartTask = nil
-        streamer.stop()
+
+        // Flip the UI flag first so the stop → record button morph is instant.
         isRecording = false
-        // Flush any background-queued audio before sending stop so the phone
-        // processes the final samples before tearing down its keepalive.
+
+        // Tell the phone right away (both cheap + non-blocking) so it tears
+        // down too, after flushing any background-queued audio.
         flushBackgroundBuffer()
         let session = WCSession.default
         session.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
         session.transferUserInfo(["cmd": "stop"])
         stopExtendedSession()
+
+        // `engine.stop()` + `setActive(false)` block their caller for seconds on
+        // a cold first stop and post route-change callbacks to the main actor —
+        // doing it inline froze the button morph. Defer it off the main actor
+        // until just after the 0.3 s morph has committed. If the user re-taps
+        // record within that window (`isRecording` flips back true), skip the
+        // teardown so the fresh session keeps its engine.
+        let streamer = self.streamer
+        let audioQueue = self.audioQueue
+        teardownTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, self?.isRecording == false else { return }
+            audioQueue.async { streamer.stop() }
+        }
     }
 
     /// Schedules the next 30-minute audio + ERS cycle. Idempotent — calling
@@ -472,12 +507,15 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                 }
             }
         }
-        // A bird event carries the haptic kind plus the species identity. The
-        // kind doubles as the highlight (starred → blue, otherwise purple).
+        // A bird event carries the species identity plus a `highlight` that
+        // picks the background tint (new = purple, starred = blue, normal =
+        // none). The display fires for every heard bird; the haptic (below) is
+        // sent separately and only for new/starred ones.
         if let common = payload["birdCommon"] as? String,
            let scientific = payload["birdSci"] as? String {
-            let highlight: WatchSessionManager.BirdHighlight =
-                (payload["haptic"] as? String == "starred") ? .starred : .newSpecies
+            let highlight = WatchSessionManager.BirdHighlight(
+                rawValue: payload["highlight"] as? String ?? ""
+            ) ?? .normal
             Task { @MainActor in
                 WatchSessionManager.shared.handleBirdHeard(
                     commonName: common,

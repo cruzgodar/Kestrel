@@ -62,6 +62,10 @@ final class RecordingManager {
     /// of staying muted for the rest of the session.
     private var lastHeardAt: [String: Date] = [:]
     private let notifyCooldown: TimeInterval = 30
+    /// Scientific name of the species currently shown on the watch's "now
+    /// hearing" screen, so we only push an update when it actually changes.
+    /// Reset at the start of every session.
+    private var lastWatchDisplaySci: String?
     /// Tracks the deferred audio engine start/stop task so rapid taps can
     /// cancel a pending transition before its sleep elapses.
     private var pendingTransitionTask: Task<Void, Never>?
@@ -178,35 +182,45 @@ final class RecordingManager {
         return s
     }
 
-    /// Tell the watch about a freshly-heard interesting bird: the haptic kind
-    /// (which also drives the watch's purple/blue background) plus the species
-    /// identity so the watch can show it on its "now hearing" screen. Live
-    /// `sendMessage` is the fast path when the watch app is foreground;
-    /// `transferUserInfo` is the background fallback — it queues and can wake a
-    /// suspended watch app. There's modest latency (1–5 s) over that path, but
-    /// a slightly-late wrist tap is better than none.
-    private func sendBirdEventToWatch(
-        commonName: String,
-        scientificName: String,
-        reason: SpeciesNotifications.Reason
-    ) {
-        guard WCSession.isSupported() else { return }
-        let s = WCSession.default
-        guard s.activationState == .activated,
-              s.isPaired,
-              s.isWatchAppInstalled else { return }
+    /// Update the watch's "now hearing" screen with a freshly-heard species —
+    /// any species, since the watch always shows the last one heard. `highlight`
+    /// ("starred"/"newSpecies"/"normal") tints the watch background. No haptic:
+    /// buzzing is reserved for new/starred birds and sent via `sendHapticToWatch`.
+    private func sendBirdDisplayToWatch(commonName: String, scientificName: String, highlight: String) {
+        sendToWatch([
+            "birdCommon": commonName,
+            "birdSci": scientificName,
+            "highlight": highlight,
+        ])
+    }
+
+    /// Buzz the wrist for a fresh new/starred bird. The kind picks a distinct
+    /// `WKHapticType` on the watch (sharper for starred, softer for a new
+    /// species) and is independent of the display — an already-known bird
+    /// updates the screen without a tap.
+    private func sendHapticToWatch(reason: SpeciesNotifications.Reason) {
         let kind: String
         switch reason {
         case .starred:    kind = "starred"
         case .newSpecies: kind = "newSpecies"
         }
-        let payload: [String: Any] = [
-            "haptic": kind,
-            "birdCommon": commonName,
-            "birdSci": scientificName,
-        ]
+        sendToWatch(["haptic": kind])
+    }
+
+    /// Shared watch delivery. Live `sendMessage` is the fast path when the watch
+    /// app is reachable; `transferUserInfo` is the background-tolerant fallback
+    /// — used both when unreachable and as the recovery path for a `sendMessage`
+    /// that races the app backgrounding (it queues and can wake a suspended app).
+    private func sendToWatch(_ payload: [String: Any]) {
+        guard WCSession.isSupported() else { return }
+        let s = WCSession.default
+        guard s.activationState == .activated,
+              s.isPaired,
+              s.isWatchAppInstalled else { return }
         if s.isReachable {
-            s.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+            s.sendMessage(payload, replyHandler: nil, errorHandler: { _ in
+                WCSession.default.transferUserInfo(payload)
+            })
         } else {
             s.transferUserInfo(payload)
         }
@@ -250,6 +264,7 @@ final class RecordingManager {
         detectionMap = [:]
         flashIDs = []
         lastFlashAt = [:]
+        lastWatchDisplaySci = nil
         spectrogram.reset()
         refreshLifeListFromStore()
         // Don't clear locationStatus — leave the previous filter visible until
@@ -343,6 +358,7 @@ final class RecordingManager {
         detectionMap = [:]
         flashIDs = []
         lastFlashAt = [:]
+        lastWatchDisplaySci = nil
         watchWindowBuffer.removeAll(keepingCapacity: true)
         watchLastSample = 0
         spectrogram.reset()
@@ -643,14 +659,31 @@ final class RecordingManager {
                 }
             }
         }
-        // Haptics + the watch's "now hearing" display fire regardless of which
-        // device the user is currently looking at — the wrist tap is the whole
-        // point of the watch app.
+        // Haptics fire only for fresh new/starred birds — the wrist tap signals
+        // something worth looking up, regardless of which device is in hand.
         for item in notifications {
-            sendBirdEventToWatch(
-                commonName: item.common,
-                scientificName: item.scientific,
-                reason: item.reason
+            sendHapticToWatch(reason: item.reason)
+        }
+
+        // The watch's "now hearing" screen always shows the *last* species
+        // heard, interesting or not. Push the most-confident detection of this
+        // window when it differs from what the watch is already showing, so a
+        // continuously-singing bird isn't re-sent every window.
+        if let top = results.max(by: { $0.confidence < $1.confidence }),
+           top.scientificName != lastWatchDisplaySci {
+            lastWatchDisplaySci = top.scientificName
+            let highlight: String
+            if starredNames.contains(top.scientificName) {
+                highlight = "starred"
+            } else if !lifeListSnapshot.contains(top.scientificName) {
+                highlight = "newSpecies"
+            } else {
+                highlight = "normal"
+            }
+            sendBirdDisplayToWatch(
+                commonName: top.commonName,
+                scientificName: top.scientificName,
+                highlight: highlight
             )
         }
 
