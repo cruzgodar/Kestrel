@@ -3,13 +3,19 @@ import SwiftUI
 struct ContentView: View {
     @State private var session = WatchSessionManager.shared
 
-    /// Equal margin between the stop button and the top-right screen corner —
-    /// large enough to clear the bezel curve.
-    private static let buttonMargin: CGFloat = 12
-    /// Fixed base size of the button; the morph is a uniform `scaleEffect` of
-    /// this so the circle and glyph shrink together as one unit.
+    /// Fixed base size of the record control; the morph is a uniform
+    /// `scaleEffect` of this so the circle and glyph shrink together as one unit.
     private static let buttonBaseSize: CGFloat = 110
-    private static let stopSize: CGFloat = 50
+    /// The 12pt gap used everywhere for the corner buttons: their *diagonal*
+    /// clearance from the rounded bezel, the space below them and the species
+    /// name, and the space between the stop and add buttons.
+    private static let gap: CGFloat = 12
+    /// Floor for how far the stop/add buttons are allowed to shrink.
+    private static let minCornerButtonSize: CGFloat = 24
+    /// Estimated rendered height of a single line of the species name
+    /// (`.headline`), used to place the buttons a fixed `gap` above it.
+    private static let estimatedNameHeight: CGFloat = 22
+    private static let sqrt2: CGFloat = 1.414213562373095
     /// Inset between the bird image/placeholder and the screen edges. Paired
     /// with `ContainerRelativeShape` so the corner radius stays concentric with
     /// the watch bezel as this changes.
@@ -18,12 +24,10 @@ struct ContentView: View {
     /// no public API for this, so we set it as the root container shape; the
     /// image's `ContainerRelativeShape` then insets it by `imageMargin` to stay
     /// concentric. Tune this to match the bezel on the target watch size.
-    private static let screenCornerRadius: CGFloat = 50
+    private static let screenCornerRadius: CGFloat = 52
 
     var body: some View {
         let recording = session.isRecording
-        // Visual size of the control: full while idle, small while recording.
-        let side: CGFloat = recording ? Self.stopSize : Self.buttonBaseSize
 
         ZStack {
             backgroundColor.ignoresSafeArea()
@@ -50,26 +54,31 @@ struct ContentView: View {
                 .ignoresSafeArea()
                 .opacity(recording ? 1 : 0)
 
-            // The record/stop control morphs from the centered mic to the
-            // top-left stop button; the add-to-life-list button sits opposite
-            // in the top-right and is shown only for a new species. Both are
-            // positioned against the *full* screen (ignoring the safe area) so
-            // they reach the true corners. `.position` interpolates linearly
+            // The record/stop control morphs from the centered mic into the
+            // top-left stop button; the add-to-life-list button sits just to
+            // its right (a `gap` apart) and is shown only for a new species.
+            // Both are sized + placed against the *full* screen (ignoring the
+            // safe area): shrunk so their bottom clears the species name by a
+            // `gap`, and positioned so the stop button sits a `gap` diagonally
+            // off the rounded bezel corner. `.position` interpolates linearly
             // and the button scales uniformly (see `recordButton`), so the
             // record control travels in a straight line between the centered
             // mic and the corner stop button — identically in both directions.
             GeometryReader { geo in
+                let cornerSize = Self.cornerButtonSize(in: geo.size)
+                let r = cornerSize / 2
+                let cornerC = Self.cornerCenter(radius: r)
+                let side: CGFloat = recording ? cornerSize : Self.buttonBaseSize
+
                 recordButton(scale: side / Self.buttonBaseSize)
                     .position(
-                        x: recording ? Self.buttonMargin + side / 2 : geo.size.width / 2,
-                        y: recording ? Self.buttonMargin + side / 2 : geo.size.height / 2
+                        x: recording ? cornerC : geo.size.width / 2,
+                        y: recording ? cornerC : geo.size.height / 2
                     )
 
-                addButton
-                    .position(
-                        x: geo.size.width - Self.buttonMargin - Self.stopSize / 2,
-                        y: Self.buttonMargin + Self.stopSize / 2
-                    )
+                addButton(size: cornerSize)
+                    // A `gap` to the right of the stop button, on the same row.
+                    .position(x: cornerC + 2 * r + Self.gap, y: cornerC)
                     // Visible only while recording a bird that was new to the
                     // life list at session start; fades with the rest of the
                     // content.
@@ -161,21 +170,51 @@ struct ContentView: View {
     /// plus → checkmark add-to-life-list affordance as the phone's Identify and
     /// life-list rows (`symbolEffect(.replace)`), including tap-to-undo. The
     /// checkmark state is remembered for the whole session, so re-hearing an
-    /// already-added bird shows the checkmark without re-adding.
-    private var addButton: some View {
+    /// already-added bird shows the checkmark without re-adding. `size` matches
+    /// the (shrunk) stop button.
+    private func addButton(size: CGFloat) -> some View {
         let added = session.isCurrentBirdAdded
         return Button {
             session.toggleCurrentBirdLifeList()
         } label: {
             Image(systemName: added ? "checkmark" : "plus")
-                .font(.system(size: 22, weight: .bold))
+                .font(.system(size: size * 0.4, weight: .bold))
                 .foregroundStyle(.white)
                 .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
-                .frame(width: Self.stopSize, height: Self.stopSize)
+                .frame(width: size, height: size)
                 .background(Circle().fill(Self.recordTint))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(added ? "Remove from life list" : "Add to life list")
+    }
+
+    // MARK: - Corner button geometry
+
+    /// Center coordinate (x == y, on the diagonal) for a corner button of
+    /// radius `r` so its nearest edge sits `gap` points off the rounded bezel,
+    /// measured along the diagonal. Derived from the bezel's corner radius: the
+    /// bezel surface in the diagonal direction is `screenCornerRadius` from the
+    /// corner's center of curvature at `(R, R)`.
+    private static func cornerCenter(radius r: CGFloat) -> CGFloat {
+        cornerConst + r / sqrt2
+    }
+
+    /// Distance from the screen corner to a zero-radius button's center that
+    /// already accounts for the bezel curve + the diagonal `gap`. `cornerCenter`
+    /// just adds the button's own `r / √2`.
+    private static let cornerConst: CGFloat =
+        screenCornerRadius * (1 - 1 / sqrt2) + gap / sqrt2
+
+    /// Diameter for the stop/add buttons, shrunk so their bottom edge clears the
+    /// species name by `gap`. Solves `cornerCenter(r) + r == nameTop - gap` for
+    /// the diameter, where `nameTop` is the name's top in full-screen coords
+    /// (see `nowHearing`: bottom margin + 4:3 image + gap + name, all pinned to
+    /// the bottom). Clamped so it never grows past the base size or vanishes.
+    private static func cornerButtonSize(in size: CGSize) -> CGFloat {
+        let imageHeight = (size.width - 2 * imageMargin) * 3.0 / 4.0
+        let nameTop = size.height - imageHeight - estimatedNameHeight - 2 * gap
+        let r = (nameTop - gap - cornerConst) / (1 + 1 / sqrt2)
+        return min(buttonBaseSize, max(minCornerButtonSize, 2 * r))
     }
 
     // MARK: - Recording ("now hearing")
