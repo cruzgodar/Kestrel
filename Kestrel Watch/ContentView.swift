@@ -13,7 +13,6 @@ struct ContentView: View {
 
     var body: some View {
         let recording = session.isRecording
-        let _ = Self.ts("body eval rec=\(recording)")  // TEMP DIAGNOSTIC
         // Visual size of the control: full while idle, small while recording.
         let side: CGFloat = recording ? Self.stopSize : Self.buttonBaseSize
 
@@ -40,7 +39,6 @@ struct ContentView: View {
                 nowHearing
                     .ignoresSafeArea()
                     .transition(.opacity)
-                    .onAppear { Self.ts("nowHearing onAppear") }  // TEMP DIAGNOSTIC
             }
 
             // The record/stop control is positioned against the *full* screen
@@ -59,16 +57,13 @@ struct ContentView: View {
             .ignoresSafeArea()
         }
         // The record/stop morph is animated explicitly via `withAnimation` in
-        // the session manager so audio bring-up/teardown can hang off the
-        // animation's completion. Only the bird cross-fade is animated here.
+        // the session manager (so the audio bring-up/teardown can be deferred
+        // until after it). Only the bird cross-fade is animated here.
         .animation(.easeInOut(duration: 0.3), value: session.lastBird)
         .task {
             WatchSessionManager.shared.activate()
             Self.prewarmText()
         }
-        // TEMP DIAGNOSTIC
-        .onAppear { Self.ts("view onAppear") }
-        .onChange(of: session.isRecording) { _, v in Self.ts("view sees isRecording=\(v)") }
     }
 
     // MARK: - Background
@@ -105,7 +100,6 @@ struct ContentView: View {
     private func recordButton(scale: CGFloat) -> some View {
         let recording = session.isRecording
         return Button {
-            Self.ts("button TAP")  // TEMP DIAGNOSTIC
             session.toggle()
         } label: {
             // Both glyphs are always present and cross-faded by opacity, so the
@@ -138,8 +132,7 @@ struct ContentView: View {
     /// `GeometryReader` — its first-time layout pass was the render stall; the
     /// image sizes itself with `aspectRatio` instead.
     private var nowHearing: some View {
-        let _ = Self.ts("nowHearing build")  // TEMP DIAGNOSTIC
-        return VStack(spacing: 0) {
+        VStack(spacing: 0) {
             // Fixed top margin (matching the sides), then the photo, then a
             // flexible spacer — so the photo is pinned to the top rather than
             // centered in the available height.
@@ -153,12 +146,9 @@ struct ContentView: View {
 
     /// The whole photo (never cropped) filling the full width, its height
     /// following the photo's aspect (`aspectRatio`). The placeholder uses the
-    /// same full width at the photos' usual 4:3 so it's never narrow.
-    ///
-    /// Order matters: the photo is clipped to the rounded rect *first*, then the
-    /// name scrim is overlaid on top. Clipping the image together with the name
-    /// overlay forced an offscreen render pass that stalled the
-    /// record→listen transition ~0.8s on first show.
+    /// same full width at the photos' usual 4:3 so it's never narrow. The photo
+    /// is clipped to the rounded rect *before* the name scrim is overlaid, so
+    /// the clip only ever processes the single image layer (no offscreen pass).
     @ViewBuilder
     private var birdImage: some View {
         Group {
@@ -228,12 +218,6 @@ extension ContentView {
         )
         renderer.scale = 2
         _ = renderer.uiImage
-    }
-
-    // TEMP DIAGNOSTIC: monotonic-clock timestamp logging to localize the
-    // start-tap delay. Remove once the slowdown is found.
-    static func ts(_ msg: String) {
-        print(String(format: "Kestrel⏱ %.3f  %@", ProcessInfo.processInfo.systemUptime, msg))
     }
 }
 

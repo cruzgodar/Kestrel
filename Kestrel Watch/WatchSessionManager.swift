@@ -14,13 +14,6 @@ import WatchKit
 final class WatchSessionManager: NSObject {
     static let shared = WatchSessionManager()
 
-    /// TEMP DIAGNOSTIC: when true, the record/stop buttons run *only* their
-    /// animation — no mic permission, no audio engine, no WCSession, no
-    /// extended-runtime session. Used to isolate whether the start-tap delay
-    /// lives in the recording code or in SwiftUI/rendering. Flip back to false
-    /// to restore recording.
-    static let recordingDisabled = true
-
     private(set) var isRecording = false
     /// True from the moment the button is tapped until audio capture is
     /// actually running (microphone-permission prompt + extended-runtime
@@ -52,9 +45,7 @@ final class WatchSessionManager: NSObject {
     /// fetched from the phone (or if none is available).
     private(set) var lastBirdImage: UIImage?
 
-    /// Lazy so the diagnostic (recording-disabled) path never even constructs
-    /// the `AVAudioEngine` — created on first real use.
-    @ObservationIgnored private lazy var streamer = WatchAudioStreamer()
+    private let streamer = WatchAudioStreamer()
     /// Serializes the blocking audio-engine start/stop so they never overlap
     /// (a deferred stop and a fresh start can otherwise race the engine).
     private let audioQueue = DispatchQueue(label: "com.kestrel.watch.audio", qos: .userInitiated)
@@ -118,7 +109,6 @@ final class WatchSessionManager: NSObject {
     private let autoRestartInterval: Duration = .seconds(30 * 60)
 
     func activate() {
-        if Self.recordingDisabled { return }  // TEMP DIAGNOSTIC
         guard !activated, WCSession.isSupported() else { return }
         activated = true
         let session = WCSession.default
@@ -215,35 +205,26 @@ final class WatchSessionManager: NSObject {
     }
 
     private func start() {
-        Self.ts("start() enter")  // TEMP DIAGNOSTIC
         guard !isRecording, !isStarting else { return }
         // Fresh session — drop any bird left over from the previous one so the
         // "now hearing" screen starts on "Listening…".
         lastBird = nil
         lastBirdImage = nil
-        // Flip to recording inside an animated transaction and only touch *any*
-        // audio code once that morph animation has finished. Nothing audio-
-        // related runs on the tap itself, so the first tap is never blocked by
-        // audio-subsystem warm-up. `isStarting` marks the bring-up window so a
-        // stop tapped during it cancels cleanly.
+        // Flip to recording inside an animated transaction, then touch audio
+        // only after the morph has played (the timed sleep below). Nothing
+        // audio-related runs on the tap itself, so the first tap is never
+        // blocked by audio-subsystem warm-up. A plain `withAnimation` is used
+        // deliberately — the `completion:` variant stalled the first render by
+        // ~1 s on watchOS. `isStarting` marks the bring-up window so a stop
+        // tapped during it cancels cleanly.
         isStarting = true
-        // Plain `withAnimation` (no `completion:` variant — testing whether its
-        // completion tracking is the source of the first-tap render stall). The
-        // post-animation audio bring-up hangs off a timed sleep instead.
         withAnimation(.easeInOut(duration: 0.3)) {
             isRecording = true
         }
-        Self.ts("start() withAnimation returned")  // TEMP DIAGNOSTIC
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(320))
             await self?.startWithPermission()
         }
-    }
-
-    // TEMP DIAGNOSTIC: monotonic-clock timestamp logging to localize the
-    // start-tap delay. Remove once the slowdown is found.
-    static func ts(_ msg: String) {
-        print(String(format: "Kestrel⏱ %.3f  %@", ProcessInfo.processInfo.systemUptime, msg))
     }
 
     private func startWithPermission() async {
@@ -251,9 +232,7 @@ final class WatchSessionManager: NSObject {
         // we return.
         defer { isStarting = false }
 
-        if Self.recordingDisabled { return }  // TEMP DIAGNOSTIC: animation only
-
-        // Runs only after the morph completed (see `start()`), so the audio
+        // Runs only after the morph played out (see `start()`), so the audio
         // bring-up — which taxes the main thread even off it — can't stutter it.
         guard isRecording else { return }  // stopped during the morph
 
@@ -325,11 +304,6 @@ final class WatchSessionManager: NSObject {
         autoRestartTask?.cancel()
         autoRestartTask = nil
 
-        if Self.recordingDisabled {  // TEMP DIAGNOSTIC: animation only
-            withAnimation(.easeInOut(duration: 0.3)) { isRecording = false }
-            return
-        }
-
         // Tell the phone right away (both cheap + non-blocking) so it tears
         // down too, after flushing any background-queued audio.
         flushBackgroundBuffer()
@@ -338,17 +312,22 @@ final class WatchSessionManager: NSObject {
         session.transferUserInfo(["cmd": "stop"])
         stopExtendedSession()
 
-        // Animate the morph; tear the audio engine down only once it finishes.
-        // `engine.stop()` + `setActive(false)` block their caller for seconds on
-        // a cold first stop and post route-change callbacks to the main actor,
-        // which would freeze the morph if run during it. If the user re-taps
-        // record before it completes (`isRecording` flips back true), skip the
-        // teardown so the fresh session keeps its engine.
+        // Animate the morph; tear the audio engine down only once it has played
+        // out (the timed sleep below). `engine.stop()` + `setActive(false)`
+        // block their caller for seconds on a cold first stop and post
+        // route-change callbacks to the main actor, which would freeze the morph
+        // if run during it. A plain `withAnimation` is used deliberately — the
+        // `completion:` variant stalled the first render by ~1 s on watchOS. If
+        // the user re-taps record before the sleep elapses (`isRecording` flips
+        // back true), the teardown is skipped so the fresh session keeps its
+        // engine.
         let streamer = self.streamer
         let audioQueue = self.audioQueue
         withAnimation(.easeInOut(duration: 0.3)) {
             isRecording = false
-        } completion: { [weak self] in
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(320))
             guard self?.isRecording == false else { return }
             audioQueue.async { streamer.stop() }
         }
