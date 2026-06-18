@@ -9,7 +9,16 @@ struct ContentView: View {
     /// Fixed base size of the button; the morph is a uniform `scaleEffect` of
     /// this so the circle and glyph shrink together as one unit.
     private static let buttonBaseSize: CGFloat = 110
-    private static let stopSize: CGFloat = 46
+    private static let stopSize: CGFloat = 50
+    /// Inset between the bird image/placeholder and the screen edges. Paired
+    /// with `ContainerRelativeShape` so the corner radius stays concentric with
+    /// the watch bezel as this changes.
+    private static let imageMargin: CGFloat = 12
+    /// Approximate corner radius of the watch's physical screen. watchOS exposes
+    /// no public API for this, so we set it as the root container shape; the
+    /// image's `ContainerRelativeShape` then insets it by `imageMargin` to stay
+    /// concentric. Tune this to match the bezel on the target watch size.
+    private static let screenCornerRadius: CGFloat = 48
 
     var body: some View {
         let recording = session.isRecording
@@ -136,12 +145,19 @@ struct ContentView: View {
             // Fixed top margin (matching the sides), then the photo, then a
             // flexible spacer — so the photo is pinned to the top rather than
             // centered in the available height.
-            Color.clear.frame(height: 4)
+            Color.clear.frame(height: Self.imageMargin)
             birdImage
             Spacer(minLength: 0)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .padding(.horizontal, 4)
+        .padding(.horizontal, Self.imageMargin)
+        // Define the container shape for this full-screen region so the image's
+        // `ContainerRelativeShape` has the bezel's rounded rect to inset from.
+        // Without this, a standalone watchOS app has no container shape and
+        // `ContainerRelativeShape` degrades to a sharp-cornered rectangle.
+        .containerShape(
+            RoundedRectangle(cornerRadius: Self.screenCornerRadius, style: .continuous)
+        )
     }
 
     /// The whole photo (never cropped) filling the full width, its height
@@ -170,14 +186,17 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        // `ContainerRelativeShape` inherits the watch screen's rounded-rect
+        // corner and insets its radius by however far this view sits from the
+        // screen edge (`imageMargin`), keeping the photo's corners concentric
+        // with the bezel automatically.
+        .clipShape(ContainerRelativeShape())
         .overlay(alignment: .bottom) {
             nameLabel
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 6)
                 .padding(.top, 10)
                 .padding(.bottom, 7)
-                .background(Color.black.opacity(0.45))
         }
         .id(session.lastBird?.scientificName)
         .transition(.opacity)
@@ -192,10 +211,12 @@ struct ContentView: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
                 .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
         } else {
             Text("Listening…")
                 .font(.headline)
                 .foregroundStyle(.white.opacity(0.85))
+                .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
         }
     }
 
