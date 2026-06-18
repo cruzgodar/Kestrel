@@ -13,21 +13,34 @@ struct ContentView: View {
 
     var body: some View {
         let recording = session.isRecording
+        let _ = Self.ts("body eval rec=\(recording)")  // TEMP DIAGNOSTIC
         // Visual size of the control: full while idle, small while recording.
         let side: CGFloat = recording ? Self.stopSize : Self.buttonBaseSize
 
         ZStack {
             backgroundColor.ignoresSafeArea()
 
+            // Pre-warm the text-rendering pipeline during launch. The idle
+            // screen is all SF Symbols, so the bird name would otherwise be the
+            // first `Text` in the app and pay ~0.8s of CoreText first-use init
+            // on the record tap. Rendered black-on-black behind the button —
+            // invisible, but it warms the pipeline as part of launch.
+            if !recording {
+                Text(verbatim: "Listening…")
+                    .font(.headline)
+                    .foregroundStyle(.black)
+                    .accessibilityHidden(true)
+                    .allowsHitTesting(false)
+            }
+
             // Bird + name use the full screen (ignoring the safe area) so the
             // photo can sit at the very top rather than below the large top
             // (clock) inset.
             if recording {
-                GeometryReader { geo in
-                    nowHearing(in: geo.size)
-                }
-                .ignoresSafeArea()
-                .transition(.opacity)
+                nowHearing
+                    .ignoresSafeArea()
+                    .transition(.opacity)
+                    .onAppear { Self.ts("nowHearing onAppear") }  // TEMP DIAGNOSTIC
             }
 
             // The record/stop control is positioned against the *full* screen
@@ -49,7 +62,10 @@ struct ContentView: View {
         // the session manager so audio bring-up/teardown can hang off the
         // animation's completion. Only the bird cross-fade is animated here.
         .animation(.easeInOut(duration: 0.3), value: session.lastBird)
-        .task { WatchSessionManager.shared.activate() }
+        .task {
+            WatchSessionManager.shared.activate()
+            Self.prewarmText()
+        }
         // TEMP DIAGNOSTIC
         .onAppear { Self.ts("view onAppear") }
         .onChange(of: session.isRecording) { _, v in Self.ts("view sees isRecording=\(v)") }
@@ -118,77 +134,63 @@ struct ContentView: View {
     /// The species photo filling the full width, anchored at the very top (top
     /// margin matching the side margins). A full-width 4:3 photo is nearly as
     /// tall as the whole screen, so the name is overlaid across its bottom (with
-    /// a scrim for legibility) rather than given its own band beneath it.
-    private func nowHearing(in size: CGSize) -> some View {
-        let margin: CGFloat = 4
+    /// a scrim for legibility) rather than given its own band beneath it. No
+    /// `GeometryReader` — its first-time layout pass was the render stall; the
+    /// image sizes itself with `aspectRatio` instead.
+    private var nowHearing: some View {
+        let _ = Self.ts("nowHearing build")  // TEMP DIAGNOSTIC
         return VStack(spacing: 0) {
             // Fixed top margin (matching the sides), then the photo, then a
             // flexible spacer — so the photo is pinned to the top rather than
             // centered in the available height.
-            Color.clear.frame(height: margin)
-            birdImage(maxWidth: size.width - margin * 2, maxHeight: size.height - margin * 2)
+            Color.clear.frame(height: 4)
+            birdImage
             Spacer(minLength: 0)
         }
-        .frame(width: size.width, height: size.height, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .padding(.horizontal, 4)
     }
 
-    /// The whole photo (never cropped) sized to fill the full available width,
-    /// its height following the photo's aspect. The placeholder uses the same
-    /// full width (at the photos' usual 4:3) so it's never narrow. The name is
-    /// overlaid across the bottom.
+    /// The whole photo (never cropped) filling the full width, its height
+    /// following the photo's aspect (`aspectRatio`). The placeholder uses the
+    /// same full width at the photos' usual 4:3 so it's never narrow.
+    ///
+    /// Order matters: the photo is clipped to the rounded rect *first*, then the
+    /// name scrim is overlaid on top. Clipping the image together with the name
+    /// overlay forced an offscreen render pass that stalled the
+    /// record→listen transition ~0.8s on first show.
     @ViewBuilder
-    private func birdImage(maxWidth: CGFloat, maxHeight: CGFloat) -> some View {
-        let fitted = Self.fittedSize(session.lastBirdImage?.size ?? CGSize(width: 4, height: 3),
-                                     maxWidth: maxWidth, maxHeight: maxHeight)
+    private var birdImage: some View {
         Group {
             if let image = session.lastBirdImage {
-                // Frame matches the photo's aspect exactly → fills the width with
-                // no crop and no letterbox.
                 Image(uiImage: image)
                     .resizable()
                     .interpolation(.medium)
+                    .aspectRatio(image.size, contentMode: .fit)
             } else {
                 // No image yet (still loading) or none available for this
                 // species — a quiet placeholder keyed to the bird glyph.
                 Color.white.opacity(0.12)
+                    .aspectRatio(4.0 / 3.0, contentMode: .fit)
                     .overlay(
                         Image(systemName: "bird.fill")
-                            .font(.system(size: min(fitted.width, fitted.height) * 0.28))
+                            .font(.system(size: 52))
                             .foregroundStyle(.white.opacity(0.5))
                     )
             }
         }
-        .frame(width: fitted.width, height: fitted.height)
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(alignment: .bottom) {
             nameLabel
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 6)
-                .padding(.top, 22)
+                .padding(.top, 10)
                 .padding(.bottom, 7)
-                .background(
-                    LinearGradient(
-                        colors: [.clear, .black.opacity(0.65)],
-                        startPoint: .top, endPoint: .bottom
-                    )
-                )
+                .background(Color.black.opacity(0.45))
         }
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .id(session.lastBird?.scientificName)
         .transition(.opacity)
-    }
-
-    /// Largest size with the given aspect that fits within `maxWidth × maxHeight`
-    /// — width-limited (full width) for the common landscape/4:3 case, height-
-    /// capped only for unusually tall photos.
-    private static func fittedSize(_ imageSize: CGSize, maxWidth: CGFloat, maxHeight: CGFloat) -> CGSize {
-        let aspect = imageSize.width / max(imageSize.height, 1)
-        var w = maxWidth
-        var h = maxWidth / aspect
-        if h > maxHeight {
-            h = maxHeight
-            w = maxHeight * aspect
-        }
-        return CGSize(width: w, height: h)
     }
 
     @ViewBuilder
@@ -209,9 +211,27 @@ struct ContentView: View {
 
 }
 
-// TEMP DIAGNOSTIC: monotonic-clock timestamp logging to localize the start-tap
-// delay. Remove once the slowdown is found.
 extension ContentView {
+    /// Fully renders a representative name `Text` off-screen at launch so the
+    /// first on-screen bird name doesn't pay CoreText/text-pipeline first-use
+    /// init (~0.8s) on the record tap. `ImageRenderer` forces the complete
+    /// pipeline (layout + rasterization), unlike an invisible in-tree view which
+    /// only warms layout.
+    @MainActor
+    static func prewarmText() {
+        let renderer = ImageRenderer(content:
+            Text("Northern Cardinal")
+                .font(.headline)
+                .lineLimit(2)
+                .minimumScaleFactor(0.7)
+                .frame(width: 180)
+        )
+        renderer.scale = 2
+        _ = renderer.uiImage
+    }
+
+    // TEMP DIAGNOSTIC: monotonic-clock timestamp logging to localize the
+    // start-tap delay. Remove once the slowdown is found.
     static func ts(_ msg: String) {
         print(String(format: "Kestrel⏱ %.3f  %@", ProcessInfo.processInfo.systemUptime, msg))
     }

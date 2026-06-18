@@ -227,13 +227,17 @@ final class WatchSessionManager: NSObject {
         // audio-subsystem warm-up. `isStarting` marks the bring-up window so a
         // stop tapped during it cancels cleanly.
         isStarting = true
+        // Plain `withAnimation` (no `completion:` variant — testing whether its
+        // completion tracking is the source of the first-tap render stall). The
+        // post-animation audio bring-up hangs off a timed sleep instead.
         withAnimation(.easeInOut(duration: 0.3)) {
             isRecording = true
-        } completion: { [weak self] in
-            Self.ts("start() animation completion")  // TEMP DIAGNOSTIC
-            Task { await self?.startWithPermission() }
         }
         Self.ts("start() withAnimation returned")  // TEMP DIAGNOSTIC
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(320))
+            await self?.startWithPermission()
+        }
     }
 
     // TEMP DIAGNOSTIC: monotonic-clock timestamp logging to localize the
