@@ -6,25 +6,27 @@ struct ContentView: View {
     /// Fixed base size of the record control; the morph is a uniform
     /// `scaleEffect` of this so the circle and glyph shrink together as one unit.
     private static let buttonBaseSize: CGFloat = 110
-    /// The 12pt gap used everywhere for the corner buttons: their *diagonal*
-    /// clearance from the rounded bezel, the space below them and the species
-    /// name, and the space between the stop and add buttons.
-    private static let gap: CGFloat = 12
-    /// Floor for how far the stop/add buttons are allowed to shrink.
-    private static let minCornerButtonSize: CGFloat = 24
-    /// Estimated rendered height of a single line of the species name
-    /// (`.headline`), used to place the buttons a fixed `gap` above it.
-    private static let estimatedNameHeight: CGFloat = 22
+    /// Diameter of the stop and add buttons — the small buttons shown while
+    /// recording. Set this directly; the margin between the buttons and the
+    /// species name below them follows from this and the screen size.
+    private static let cornerButtonSize: CGFloat = 42
+    /// Horizontal gap between the stop button and the add button beside it.
+    private static let interButtonGap: CGFloat = 8
+    /// The stop button's clearance from the rounded bezel, measured *diagonally*
+    /// from the corner.
+    private static let cornerDiagonalGap: CGFloat = 12
     private static let sqrt2: CGFloat = 1.414213562373095
     /// Inset between the bird image/placeholder and the screen edges. Paired
     /// with `ContainerRelativeShape` so the corner radius stays concentric with
     /// the watch bezel as this changes.
     private static let imageMargin: CGFloat = 12
+    /// Vertical gap between the species name and the photo below it.
+    private static let nameImageGap: CGFloat = 10
     /// Approximate corner radius of the watch's physical screen. watchOS exposes
     /// no public API for this, so we set it as the root container shape; the
     /// image's `ContainerRelativeShape` then insets it by `imageMargin` to stay
     /// concentric. Tune this to match the bezel on the target watch size.
-    private static let screenCornerRadius: CGFloat = 52
+    private static let screenCornerRadius: CGFloat = 51
 
     var body: some View {
         let recording = session.isRecording
@@ -65,10 +67,9 @@ struct ContentView: View {
             // record control travels in a straight line between the centered
             // mic and the corner stop button — identically in both directions.
             GeometryReader { geo in
-                let cornerSize = Self.cornerButtonSize(in: geo.size)
-                let r = cornerSize / 2
+                let r = Self.cornerButtonSize / 2
                 let cornerC = Self.cornerCenter(radius: r)
-                let side: CGFloat = recording ? cornerSize : Self.buttonBaseSize
+                let side: CGFloat = recording ? Self.cornerButtonSize : Self.buttonBaseSize
 
                 recordButton(scale: side / Self.buttonBaseSize)
                     .position(
@@ -76,9 +77,9 @@ struct ContentView: View {
                         y: recording ? cornerC : geo.size.height / 2
                     )
 
-                addButton(size: cornerSize)
-                    // A `gap` to the right of the stop button, on the same row.
-                    .position(x: cornerC + 2 * r + Self.gap, y: cornerC)
+                addButton(size: Self.cornerButtonSize)
+                    // `interButtonGap` to the right of the stop button, same row.
+                    .position(x: cornerC + 2 * r + Self.interButtonGap, y: cornerC)
                     // Visible only while recording a bird that was new to the
                     // life list at session start; fades with the rest of the
                     // content.
@@ -200,22 +201,10 @@ struct ContentView: View {
     }
 
     /// Distance from the screen corner to a zero-radius button's center that
-    /// already accounts for the bezel curve + the diagonal `gap`. `cornerCenter`
-    /// just adds the button's own `r / √2`.
+    /// already accounts for the bezel curve + the diagonal corner gap.
+    /// `cornerCenter` just adds the button's own `r / √2`.
     private static let cornerConst: CGFloat =
-        screenCornerRadius * (1 - 1 / sqrt2) + gap / sqrt2
-
-    /// Diameter for the stop/add buttons, shrunk so their bottom edge clears the
-    /// species name by `gap`. Solves `cornerCenter(r) + r == nameTop - gap` for
-    /// the diameter, where `nameTop` is the name's top in full-screen coords
-    /// (see `nowHearing`: bottom margin + 4:3 image + gap + name, all pinned to
-    /// the bottom). Clamped so it never grows past the base size or vanishes.
-    private static func cornerButtonSize(in size: CGSize) -> CGFloat {
-        let imageHeight = (size.width - 2 * imageMargin) * 3.0 / 4.0
-        let nameTop = size.height - imageHeight - estimatedNameHeight - 2 * gap
-        let r = (nameTop - gap - cornerConst) / (1 + 1 / sqrt2)
-        return min(buttonBaseSize, max(minCornerButtonSize, 2 * r))
-    }
+        screenCornerRadius * (1 - 1 / sqrt2) + cornerDiagonalGap / sqrt2
 
     // MARK: - Recording ("now hearing")
 
@@ -226,13 +215,13 @@ struct ContentView: View {
     private var nowHearing: some View {
         VStack(spacing: 0) {
             // A flexible spacer pushes the name + photo to the bottom; the name
-            // sits 12pt above the photo, which keeps a fixed bottom margin
-            // (matching the sides).
+            // sits `nameImageGap` above the photo, which keeps a fixed bottom
+            // margin (matching the sides).
             Spacer(minLength: 0)
             nameLabel
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal, 6)
-            Color.clear.frame(height: 12)
+            Color.clear.frame(height: Self.nameImageGap)
             birdImage
             Color.clear.frame(height: Self.imageMargin)
         }
