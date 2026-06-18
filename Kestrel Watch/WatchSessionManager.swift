@@ -41,6 +41,57 @@ final class WatchSessionManager: NSObject {
     /// Last bird the phone told us about this session (nil until the first one
     /// is heard, and reset at the start of each session).
     private(set) var lastBird: HeardBird?
+
+    /// Scientific names the user has added to the life list (via the watch's add
+    /// button) during the current listening session. Tracked here so the add
+    /// button's checkmark state survives the bird being re-heard later in the
+    /// same session, and undone with a second tap. Reset at the start of each
+    /// session.
+    private(set) var addedThisSession: Set<String> = []
+
+    /// Whether the currently-displayed bird has been added to the life list this
+    /// session — drives the add button's plus ↔ checkmark state.
+    var isCurrentBirdAdded: Bool {
+        guard let sci = lastBird?.scientificName else { return false }
+        return addedThisSession.contains(sci)
+    }
+
+    /// Toggles the displayed bird's life-list membership. Optimistically updates
+    /// `addedThisSession` (so the button flips immediately) and tells the phone
+    /// to add/remove it from the persisted life list. No-op unless a new-species
+    /// bird is showing.
+    func toggleCurrentBirdLifeList() {
+        guard let bird = lastBird, bird.highlight == .newSpecies else { return }
+        let sci = bird.scientificName
+        if addedThisSession.contains(sci) {
+            withAnimation { _ = addedThisSession.remove(sci) }
+            sendLifeListCommand("removeFromLifeList", bird: bird)
+        } else {
+            withAnimation { _ = addedThisSession.insert(sci) }
+            sendLifeListCommand("addToLifeList", bird: bird)
+        }
+    }
+
+    /// Sends an add/remove life-list command to the phone, carrying the species
+    /// identity so the phone can persist it. Live `sendMessage` when reachable,
+    /// background-tolerant `transferUserInfo` otherwise.
+    private func sendLifeListCommand(_ cmd: String, bird: HeardBird) {
+        guard WCSession.isSupported() else { return }
+        let s = WCSession.default
+        guard s.activationState == .activated else { return }
+        let payload: [String: Any] = [
+            "cmd": cmd,
+            "lifeListCommon": bird.commonName,
+            "lifeListSci": bird.scientificName,
+        ]
+        if s.isReachable {
+            s.sendMessage(payload, replyHandler: nil, errorHandler: { _ in
+                WCSession.default.transferUserInfo(payload)
+            })
+        } else {
+            s.transferUserInfo(payload)
+        }
+    }
     /// Cached/transferred image for `lastBird`, or nil while it's still being
     /// fetched from the phone (or if none is available).
     private(set) var lastBirdImage: UIImage?
@@ -158,8 +209,8 @@ final class WatchSessionManager: NSObject {
     func playHaptic(kind: String) {
         let type: WKHapticType
         switch kind {
-        case "starred": type = .notification  // sharper double-tap
-        case "newSpecies": type = .success    // softer rising chime
+        case "starred": type = .success       // softer rising chime
+        case "newSpecies": type = .notification  // sharper double-tap
         default: type = .click
         }
         WKInterfaceDevice.current().play(type)
@@ -207,9 +258,11 @@ final class WatchSessionManager: NSObject {
     private func start() {
         guard !isRecording, !isStarting else { return }
         // Fresh session — drop any bird left over from the previous one so the
-        // "now hearing" screen starts on "Listening…".
+        // "now hearing" screen starts on "Listening…", and clear the per-session
+        // add-to-life-list tracking.
         lastBird = nil
         lastBirdImage = nil
+        addedThisSession = []
         // Flip to recording inside an animated transaction, then touch audio
         // only after the morph has played (the timed sleep below). Nothing
         // audio-related runs on the tap itself, so the first tap is never

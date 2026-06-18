@@ -3,9 +3,9 @@ import SwiftUI
 struct ContentView: View {
     @State private var session = WatchSessionManager.shared
 
-    /// Equal margin between the stop button and the bottom-left screen corner —
+    /// Equal margin between the stop button and the top-right screen corner —
     /// large enough to clear the bezel curve.
-    private static let buttonMargin: CGFloat = 16
+    private static let buttonMargin: CGFloat = 12
     /// Fixed base size of the button; the morph is a uniform `scaleEffect` of
     /// this so the circle and glyph shrink together as one unit.
     private static let buttonBaseSize: CGFloat = 110
@@ -18,7 +18,7 @@ struct ContentView: View {
     /// no public API for this, so we set it as the root container shape; the
     /// image's `ContainerRelativeShape` then insets it by `imageMargin` to stay
     /// concentric. Tune this to match the bezel on the target watch size.
-    private static let screenCornerRadius: CGFloat = 48
+    private static let screenCornerRadius: CGFloat = 50
 
     var body: some View {
         let recording = session.isRecording
@@ -42,26 +42,39 @@ struct ContentView: View {
             }
 
             // Bird + name use the full screen (ignoring the safe area) so the
-            // photo can sit at the very top rather than below the large top
-            // (clock) inset.
-            if recording {
-                nowHearing
-                    .ignoresSafeArea()
-                    .transition(.opacity)
-            }
+            // photo can sit at the very bottom in the true corner. Always in
+            // the tree and driven by opacity (not an `if` + `.transition`) so
+            // it fades symmetrically: in when recording starts, out when it
+            // stops — both under the manager's `withAnimation(isRecording)`.
+            nowHearing
+                .ignoresSafeArea()
+                .opacity(recording ? 1 : 0)
 
-            // The record/stop control is positioned against the *full* screen
-            // (ignoring the safe area) so it reaches the true bottom-left
-            // corner. `.position` interpolates linearly (a straight path) and
-            // the button scales uniformly (see `recordButton`), so it travels
-            // in a straight line between the centered mic and the corner stop
-            // button — identically in both directions.
+            // The record/stop control morphs from the centered mic to the
+            // top-left stop button; the add-to-life-list button sits opposite
+            // in the top-right and is shown only for a new species. Both are
+            // positioned against the *full* screen (ignoring the safe area) so
+            // they reach the true corners. `.position` interpolates linearly
+            // and the button scales uniformly (see `recordButton`), so the
+            // record control travels in a straight line between the centered
+            // mic and the corner stop button — identically in both directions.
             GeometryReader { geo in
                 recordButton(scale: side / Self.buttonBaseSize)
                     .position(
                         x: recording ? Self.buttonMargin + side / 2 : geo.size.width / 2,
-                        y: recording ? geo.size.height - Self.buttonMargin - side / 2 : geo.size.height / 2
+                        y: recording ? Self.buttonMargin + side / 2 : geo.size.height / 2
                     )
+
+                addButton
+                    .position(
+                        x: geo.size.width - Self.buttonMargin - Self.stopSize / 2,
+                        y: Self.buttonMargin + Self.stopSize / 2
+                    )
+                    // Visible only while recording a bird that was new to the
+                    // life list at session start; fades with the rest of the
+                    // content.
+                    .opacity(showAddButton ? 1 : 0)
+                    .allowsHitTesting(showAddButton)
             }
             .ignoresSafeArea()
         }
@@ -132,24 +145,59 @@ struct ContentView: View {
         .accessibilityLabel(recording ? "Stop recording" : "Start recording")
     }
 
+    // MARK: - Add to life list button
+
+    /// Whether the add-to-life-list button is shown: only while recording and
+    /// only for a bird that was *not* on the life list at the start of this
+    /// listening session. The phone freezes its life-list snapshot per session,
+    /// so a bird's `.newSpecies` highlight (and thus this button) stays constant
+    /// for the whole session even after the user adds it — the button just
+    /// flips to its checkmark state.
+    private var showAddButton: Bool {
+        session.isRecording && session.lastBird?.highlight == .newSpecies
+    }
+
+    /// A circle matching the stop button in size and color, carrying the same
+    /// plus → checkmark add-to-life-list affordance as the phone's Identify and
+    /// life-list rows (`symbolEffect(.replace)`), including tap-to-undo. The
+    /// checkmark state is remembered for the whole session, so re-hearing an
+    /// already-added bird shows the checkmark without re-adding.
+    private var addButton: some View {
+        let added = session.isCurrentBirdAdded
+        return Button {
+            session.toggleCurrentBirdLifeList()
+        } label: {
+            Image(systemName: added ? "checkmark" : "plus")
+                .font(.system(size: 22, weight: .bold))
+                .foregroundStyle(.white)
+                .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
+                .frame(width: Self.stopSize, height: Self.stopSize)
+                .background(Circle().fill(Self.recordTint))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(added ? "Remove from life list" : "Add to life list")
+    }
+
     // MARK: - Recording ("now hearing")
 
-    /// The species photo filling the full width, anchored at the very top (top
-    /// margin matching the side margins). A full-width 4:3 photo is nearly as
-    /// tall as the whole screen, so the name is overlaid across its bottom (with
-    /// a scrim for legibility) rather than given its own band beneath it. No
+    /// The species name centered above the photo, both anchored to the bottom
+    /// of the screen (bottom margin matching the side margins). No
     /// `GeometryReader` — its first-time layout pass was the render stall; the
     /// image sizes itself with `aspectRatio` instead.
     private var nowHearing: some View {
         VStack(spacing: 0) {
-            // Fixed top margin (matching the sides), then the photo, then a
-            // flexible spacer — so the photo is pinned to the top rather than
-            // centered in the available height.
-            Color.clear.frame(height: Self.imageMargin)
-            birdImage
+            // A flexible spacer pushes the name + photo to the bottom; the name
+            // sits 12pt above the photo, which keeps a fixed bottom margin
+            // (matching the sides).
             Spacer(minLength: 0)
+            nameLabel
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 6)
+            Color.clear.frame(height: 12)
+            birdImage
+            Color.clear.frame(height: Self.imageMargin)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
         .padding(.horizontal, Self.imageMargin)
         // Define the container shape for this full-screen region so the image's
         // `ContainerRelativeShape` has the bezel's rounded rect to inset from.
@@ -162,9 +210,7 @@ struct ContentView: View {
 
     /// The whole photo (never cropped) filling the full width, its height
     /// following the photo's aspect (`aspectRatio`). The placeholder uses the
-    /// same full width at the photos' usual 4:3 so it's never narrow. The photo
-    /// is clipped to the rounded rect *before* the name scrim is overlaid, so
-    /// the clip only ever processes the single image layer (no offscreen pass).
+    /// same full width at the photos' usual 4:3 so it's never narrow.
     @ViewBuilder
     private var birdImage: some View {
         Group {
@@ -191,13 +237,6 @@ struct ContentView: View {
         // screen edge (`imageMargin`), keeping the photo's corners concentric
         // with the bezel automatically.
         .clipShape(ContainerRelativeShape())
-        .overlay(alignment: .bottom) {
-            nameLabel
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 6)
-                .padding(.top, 10)
-                .padding(.bottom, 7)
-        }
         .id(session.lastBird?.scientificName)
         .transition(.opacity)
     }
@@ -211,12 +250,10 @@ struct ContentView: View {
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
                 .foregroundStyle(.white)
-                .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
         } else {
             Text("Listening…")
                 .font(.headline)
                 .foregroundStyle(.white.opacity(0.85))
-                .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
         }
     }
 

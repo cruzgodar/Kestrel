@@ -57,16 +57,7 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
-        if let cmd = message["cmd"] as? String {
-            Task { @MainActor in
-                switch cmd {
-                case "start": await manager.startFromWatch()
-                case "stop": manager.stopFromWatch()
-                case "stopUnexpected": manager.stopFromWatchUnexpectedly()
-                default: break
-                }
-            }
-        }
+        handleControl(message)
         if let scientificName = message["needImage"] as? String {
             sendWatchImage(for: scientificName)
         }
@@ -82,21 +73,41 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
     /// from suspension). Carries either a `cmd:` control message or an
     /// `audio:` Data payload of accumulated Int16 PCM.
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
-        if let cmd = userInfo["cmd"] as? String {
-            Task { @MainActor in
-                switch cmd {
-                case "start": await manager.startFromWatch()
-                case "stop": manager.stopFromWatch()
-                case "stopUnexpected": manager.stopFromWatchUnexpectedly()
-                default: break
-                }
-            }
-        }
+        handleControl(userInfo)
         if let scientificName = userInfo["needImage"] as? String {
             sendWatchImage(for: scientificName)
         }
         if let audio = userInfo["audio"] as? Data {
             ingest(audio)
+        }
+    }
+
+    /// Dispatches a `cmd` control message — shared by the live `sendMessage` and
+    /// background `transferUserInfo` paths, which carry the same payloads.
+    private func handleControl(_ payload: [String: Any]) {
+        guard let cmd = payload["cmd"] as? String else { return }
+        switch cmd {
+        case "start":
+            Task { @MainActor in await manager.startFromWatch() }
+        case "stop":
+            Task { @MainActor in manager.stopFromWatch() }
+        case "stopUnexpected":
+            Task { @MainActor in manager.stopFromWatchUnexpectedly() }
+        case "addToLifeList":
+            if let common = payload["lifeListCommon"] as? String,
+               let sci = payload["lifeListSci"] as? String {
+                Task { @MainActor in
+                    manager.addBirdToLifeListFromWatch(commonName: common, scientificName: sci)
+                }
+            }
+        case "removeFromLifeList":
+            if let sci = payload["lifeListSci"] as? String {
+                Task { @MainActor in
+                    manager.removeBirdFromLifeListFromWatch(scientificName: sci)
+                }
+            }
+        default:
+            break
         }
     }
 
