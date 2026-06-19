@@ -160,6 +160,11 @@ final class RecordingManager {
     /// isn't paired / installed / currently reachable, fall back to the
     /// local mic so the user always gets *something* on tap.
     func start() async {
+        // When the user prefers the phone mic, never hand off to the watch.
+        guard AppSettings.shared.preferWatchMicrophone else {
+            await startLocally()
+            return
+        }
         if let watch = preferredWatchSession {
             // Optimistic — we don't wait for the watch's handshake before
             // returning. The watch will echo "start" back via its normal
@@ -280,6 +285,10 @@ final class RecordingManager {
         // refreshSpeciesFilter overwrites it, otherwise the text flickers.
         isRecording = true
 
+        // Mirror this phone-mic session onto the watch so its "now hearing"
+        // screen shows the same birds, as though the watch were the source.
+        sendToWatch(["cmd": "phoneStart"])
+
         // Audio engine startup secretly uses main-thread time even when called
         // from a detached task (AVAudioEngine posts route-change callbacks to
         // main during first activation). Letting it run concurrently with the
@@ -329,6 +338,9 @@ final class RecordingManager {
 
         guard isRecording else { return }
         isRecording = false
+
+        // Tell the watch to drop its mirrored "now hearing" display.
+        sendToWatch(["cmd": "phoneStop"])
 
         // If the engine never actually started (we cancelled a pending start
         // task before its 280ms sleep elapsed), there's nothing to tear down.

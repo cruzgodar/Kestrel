@@ -17,22 +17,26 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
         let session = WCSession.default
         session.delegate = self
         session.activate()
-        // Mirror the background-audio setting to the watch whenever it changes.
+        // Mirror the watch-facing settings to the watch whenever they change.
         Task { @MainActor in
-            AppSettings.shared.watchSyncHook = { [weak self] enabled in
-                self?.pushWatchBackgroundAudioSetting(enabled)
+            AppSettings.shared.watchSyncHook = { [weak self] in
+                self?.pushWatchSettings()
             }
         }
     }
 
-    /// Pushes the latest background-audio entitlement preference to the watch
-    /// as the WCSession application context — the watch reads it before it
-    /// configures its capture session. `updateApplicationContext` always
-    /// delivers the most recent value, even if the watch app is asleep.
-    func pushWatchBackgroundAudioSetting(_ enabled: Bool) {
+    /// Pushes the latest watch-facing preferences to the watch as the WCSession
+    /// application context — the watch reads them before it configures its
+    /// capture session. `updateApplicationContext` always delivers the most
+    /// recent value, even if the watch app is asleep. (The mic-preference is
+    /// phone-only — it gates the phone's own Start — so it isn't sent.)
+    @MainActor
+    func pushWatchSettings() {
         let session = WCSession.default
         guard session.activationState == .activated else { return }
-        try? session.updateApplicationContext(["watchBgAudioEntitlement": enabled])
+        try? session.updateApplicationContext([
+            "watchBgAudioEntitlement": AppSettings.shared.watchUsesBackgroundAudioEntitlement,
+        ])
     }
 
     // MARK: - WCSessionDelegate
@@ -45,7 +49,7 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
         // launched watch app starts from the right configuration.
         guard activationState == .activated else { return }
         Task { @MainActor in
-            pushWatchBackgroundAudioSetting(AppSettings.shared.watchUsesBackgroundAudioEntitlement)
+            pushWatchSettings()
         }
     }
 
@@ -89,6 +93,10 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
         switch cmd {
         case "start":
             Task { @MainActor in await manager.startFromWatch() }
+        case "stopPhone":
+            // User tapped Stop on the watch while it was mirroring a phone-mic
+            // session — stop the phone's local recording.
+            Task { @MainActor in manager.stop() }
         case "stop":
             Task { @MainActor in manager.stopFromWatch() }
         case "stopUnexpected":

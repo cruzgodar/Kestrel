@@ -6,6 +6,7 @@ import Observation
 /// reference them without an actor hop.
 private nonisolated enum SettingsKeys {
     static let watchEntitlement = "settings.watchUsesBackgroundAudioEntitlement"
+    static let preferWatchMic = "settings.preferWatchMicrophone"
 }
 
 /// App-wide user settings, persisted to `UserDefaults`. A single shared
@@ -26,19 +27,34 @@ final class AppSettings {
     var watchUsesBackgroundAudioEntitlement: Bool {
         didSet {
             defaults.set(watchUsesBackgroundAudioEntitlement, forKey: SettingsKeys.watchEntitlement)
-            // Let the watch bridge re-push the value over WatchConnectivity.
-            watchSyncHook?(watchUsesBackgroundAudioEntitlement)
+            // Let the watch bridge re-push the watch-facing settings over
+            // WatchConnectivity.
+            watchSyncHook?()
         }
     }
 
-    /// Set by `WatchAudioBridge` so a change to `watchUsesBackgroundAudioEntitlement`
-    /// is mirrored to the paired watch via `updateApplicationContext`. Kept as a
+    /// When enabled (the default), tapping Start Recording on either device
+    /// uses the paired Apple Watch's microphone if it's reachable, falling back
+    /// to the phone mic otherwise. When disabled, both devices' Start buttons
+    /// always capture with the phone's own microphone.
+    /// Phone-only: the watch's own Start always uses the watch mic, so this
+    /// preference doesn't need to sync over WatchConnectivity.
+    var preferWatchMicrophone: Bool {
+        didSet {
+            defaults.set(preferWatchMicrophone, forKey: SettingsKeys.preferWatchMic)
+        }
+    }
+
+    /// Set by `WatchAudioBridge` so a change to any watch-facing setting is
+    /// mirrored to the paired watch via `updateApplicationContext`. Kept as a
     /// closure so this model stays free of WatchConnectivity dependencies.
-    var watchSyncHook: ((Bool) -> Void)?
+    var watchSyncHook: (() -> Void)?
 
     private let defaults = UserDefaults.standard
 
     private init() {
         watchUsesBackgroundAudioEntitlement = defaults.bool(forKey: SettingsKeys.watchEntitlement)
+        // Defaults to on when the user has never set it.
+        preferWatchMicrophone = defaults.object(forKey: SettingsKeys.preferWatchMic) as? Bool ?? true
     }
 }

@@ -5,74 +5,95 @@ struct ContentView: View {
     @Environment(RecordingManager.self) private var manager
     @Environment(LifeListStore.self) private var lifeListStore
 
+    /// Measured width of the record-button row, used to compute how far the
+    /// stop button must slide left from center to reach the leading edge.
+    @State private var bottomBarWidth: CGFloat = 0
+
+    /// Diameter of the circular stop button.
+    private static let stopButtonDiameter: CGFloat = 56
+    /// How far the stop button is nudged right from the leading edge.
+    private static let stopButtonRightInset: CGFloat = 4
+
+    /// Horizontal offset that carries the centered stop button to the leading
+    /// edge (plus `stopButtonRightInset`). Negative = leftward.
+    private var stopButtonOffsetX: CGFloat {
+        Self.stopButtonRightInset + Self.stopButtonDiameter / 2 - bottomBarWidth / 2
+    }
+
     var body: some View {
-        VStack(spacing: 0) {
-            ZStack(alignment: .top) {
-                resultsView
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    // Reserve 80pt at the top for the spectrogram only when
-                    // there are real rows to scroll; the empty filler renders
-                    // through the overlay and shouldn't get shoved down.
-                    .padding(.top, (manager.isRecording && !manager.detections.isEmpty) ? 80 : 0)
-                    .animation(.easeOut(duration: 0.15), value: manager.isRecording)
-                    .animation(.easeOut(duration: 0.15), value: manager.detections.isEmpty)
+        ZStack(alignment: .top) {
+            // Results fill the entire screen and scroll under both the floating
+            // record button and the tab bar; `contentMargins` (see resultsView)
+            // keeps the final rows reachable above the button.
+            resultsView
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Reserve 80pt at the top for the spectrogram only when
+                // there are real rows to scroll; the empty filler renders
+                // through the overlay and shouldn't get shoved down.
+                .padding(.top, (manager.isRecording && !manager.detections.isEmpty) ? 80 : 0)
+                .animation(.easeOut(duration: 0.15), value: manager.isRecording)
+                .animation(.easeOut(duration: 0.15), value: manager.detections.isEmpty)
 
-                if manager.isRecording {
-                    SpectrogramView(renderer: manager.spectrogram)
-                        .frame(height: 80)
-                        .frame(maxWidth: .infinity)
-                        .clipped()
-                        .transition(.opacity.animation(.smooth(duration: 0.16)))
-                }
-            }
-            .overlay {
-                if manager.detections.isEmpty {
-                    ContentUnavailableView {
-                        Label("No detections yet", systemImage: "magnifyingglass")
-                    } description: {
-                        Text("Tap Start Recording here or on your Apple Watch to begin identifying birds. You will be notified about starred birds and those not on your life list.")
+            if manager.isRecording {
+                SpectrogramView(renderer: manager.spectrogram)
+                    .frame(height: 80)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    // Small Apple Watch glyph in the top-left while the watch
+                    // is the audio source — replaces the old text caption.
+                    .overlay(alignment: .topLeading) {
+                        if manager.watchRecording {
+                            Image(systemName: "applewatch")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 24, height: 24)
+                                .background(.black.opacity(0.35), in: Circle())
+                                .padding(8)
+                                .transition(.opacity)
+                                .accessibilityLabel("Listening on Apple Watch")
+                        }
                     }
-                    .opacity(manager.isRecording ? 0 : 1)
-                    .animation(.easeInOut(duration: 0.25), value: manager.isRecording)
-                    .allowsHitTesting(false)
+                    .animation(.easeInOut(duration: 0.25), value: manager.watchRecording)
+                    .transition(.opacity.animation(.smooth(duration: 0.16)))
+            }
+        }
+        .overlay {
+            if manager.detections.isEmpty {
+                ContentUnavailableView {
+                    Label("No detections yet", systemImage: "magnifyingglass")
+                } description: {
+                    Text("Tap Start Recording here or on your Apple Watch to begin identifying birds. You will be notified about starred birds and those not on your life list.")
                 }
+                .opacity(manager.isRecording ? 0 : 1)
+                .animation(.easeInOut(duration: 0.25), value: manager.isRecording)
+                .allowsHitTesting(false)
             }
+        }
+        // Floating record button + error caption pinned to the bottom, over
+        // the scrolling list. The button slides from centered (start) to the
+        // leading edge (stop) via a GPU-composited `.offset` rather than an
+        // animated layout (Spacer), so the move stays at full frame rate.
+        .overlay(alignment: .bottom) {
+            VStack(spacing: 0) {
+                if let message = manager.errorMessage {
+                    Text(message)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .padding(.horizontal)
+                        .padding(.bottom, 8)
+                }
 
-            // Watch-session caption. Always rendered (with a space as the
-            // placeholder string) so the layout below doesn't jump when it
-            // appears / disappears.
-            Text(manager.watchRecording ? "Listening on Apple Watch" : " ")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.horizontal)
-                .padding(.bottom, 2)
-                .opacity(manager.watchRecording ? 1 : 0)
-                .animation(.easeInOut(duration: 0.25), value: manager.watchRecording)
-
-            // Always render a single-line caption here so the record
-            // button's vertical position is fixed from launch. While the
-            // range filter is still loading, the text is an invisible
-            // placeholder; it fades in once `locationStatus` resolves.
-            Text(manager.locationStatus ?? " ")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .padding(.horizontal)
-                .padding(.bottom, 6)
-                .opacity(manager.locationStatus == nil ? 0 : 1)
-                .animation(.easeIn(duration: 0.25), value: manager.locationStatus)
-
-            if let message = manager.errorMessage {
-                Text(message)
-                    .font(.footnote)
-                    .foregroundStyle(.red)
-                    .padding(.horizontal)
-                    .padding(.bottom, 8)
+                recordButton
+                    // Base position: centered in the row. Only the button label
+                    // (56pt square / wide pill) is hit-testable; the empty
+                    // frame around it passes taps through to the list.
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { bottomBarWidth = $0 }
+                    .offset(x: manager.isRecording ? stopButtonOffsetX : 0)
+                    .animation(.easeOut(duration: 0.16), value: manager.isRecording)
             }
-
-            recordButton
-                .padding(.bottom, 8)
+            .padding(.horizontal, 16)
+            .padding(.bottom, 8)
         }
         .onChange(of: manager.isRecording) { wasRecording, isNowRecording in
             if !wasRecording && isNowRecording {
@@ -95,17 +116,26 @@ struct ContentView: View {
         Button {
             Task { await manager.toggle() }
         } label: {
+            // One stable HStack so the glass capsule cleanly *morphs* rather
+            // than crossfading: the icon swaps in place via a symbol replace,
+            // the label drops out, and the frame animates from a wide pill to a
+            // 56pt square — which a `Capsule` renders as a perfect circle.
             HStack(spacing: 0) {
                 Image(systemName: manager.isRecording ? "stop.fill" : "mic.fill")
-                    .contentTransition(.opacity)
+                    .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
                 if !manager.isRecording {
                     Text("Start Recording")
                         .padding(.leading, 8)
+                        .fixedSize()
                         .transition(.opacity.combined(with: .scale(scale: 0.92)))
                 }
             }
             .font(.title3.weight(.semibold))
-            .frame(height: 26)
+            .frame(
+                width: manager.isRecording ? Self.stopButtonDiameter : nil,
+                height: manager.isRecording ? Self.stopButtonDiameter : 58
+            )
+            .padding(.horizontal, manager.isRecording ? 0 : 28)
         }
         .buttonStyle(RecordButtonStyle(tint: Self.recordTint))
         .animation(.easeOut(duration: 0.16), value: manager.isRecording)
@@ -127,6 +157,10 @@ struct ContentView: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .scrollBounceBehavior(.basedOnSize)
+            // Inset the scrollable content so the last rows can be scrolled
+            // clear of the floating record button while still scrolling
+            // *under* it (and the tab bar) for the translucent glass look.
+            .contentMargins(.bottom, 84, for: .scrollContent)
         } else {
             // Filler is rendered via the body's .overlay so its position
             // isn't affected when the spectrogram appears above it.
@@ -279,26 +313,22 @@ private struct SpeciesHeroImage: View {
         .environment(RecordingManager())
 }
 
-/// Custom record button style that replaces `.borderedProminent` so we have
-/// full control over the press animation. No spring overshoots, no Liquid
-/// Glass settling — just a tinted capsule. On press the button briefly
-/// grows + dims, both with the same fast easeOut so they feel like one motion.
+/// Custom record button style: a translucent, purple-tinted Liquid Glass
+/// capsule for both the "Start Recording" pill and the circular stop button
+/// (the label's frame is what morphs one shape into the other). On press the
+/// button briefly grows + dims, both with the same fast easeOut so they feel
+/// like one motion.
 struct RecordButtonStyle: ButtonStyle {
     let tint: Color
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(.white)
-            .padding(.horizontal, 28)
-            .padding(.vertical, 16)
-            .frame(minHeight: 50)
-            .background {
-                Capsule(style: .continuous).fill(tint)
-            }
-            // Clip to the capsule so the "Start Recording" label can't spill
-            // out the right edge while the button is mid-shrink toward its
-            // mic-only width.
-            .clipShape(Capsule(style: .continuous))
+            .glassEffect(.regular.tint(tint).interactive(), in: .capsule)
+            // Pin the tappable region to the capsule so the button reliably
+            // consumes taps over a list image scrolling beneath it (otherwise
+            // the tap can fall through to the image's open-full-screen gesture).
+            .contentShape(.capsule)
             .scaleEffect(configuration.isPressed ? 1.1 : 1.0)
             .opacity(configuration.isPressed ? 0.85 : 1.0)
             .animation(.easeOut(duration: 0.12), value: configuration.isPressed)

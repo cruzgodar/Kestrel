@@ -134,6 +134,12 @@ final class WatchSessionManager: NSObject {
         useBackgroundAudioEntitlement = enabled
     }
 
+    /// True while the watch is mirroring a recording the *phone* started with
+    /// its own mic: the now-hearing screen shows the phone's birds (driven by
+    /// the same bird/haptic messages), but the watch captures no audio. Tapping
+    /// Stop in this mode tells the phone to end its recording.
+    private(set) var mirroringPhone = false
+
     /// When `WCSession.isReachable` flips to false (watch backgrounded,
     /// phone backgrounded, etc.) `sendMessageData` silently drops chunks.
     /// We accumulate ~1 s of audio here and ship it via `transferUserInfo`,
@@ -171,7 +177,10 @@ final class WatchSessionManager: NSObject {
         // A stop is always honored (including mid bring-up, since we flip to
         // recording optimistically); a fresh start is ignored while one is
         // already in flight.
-        if isRecording {
+        if mirroringPhone {
+            // Mirroring a phone-mic session — stop the phone, not a local engine.
+            stopMirroring()
+        } else if isRecording {
             stop()
         } else if !isStarting {
             start()
@@ -201,6 +210,56 @@ final class WatchSessionManager: NSObject {
     func handleRemoteStop() {
         guard isRecording else { return }
         stop()
+    }
+
+    /// Phone started recording with its own mic — mirror its now-hearing screen
+    /// without capturing any audio here. No-op if a real watch recording is in
+    /// progress (the watch's own capture wins).
+    func handlePhoneRecordingStarted() {
+        guard !isRecording, !isStarting else { return }
+        lastBird = nil
+        lastBirdImage = nil
+        addedThisSession = []
+        mirroringPhone = true
+        withAnimation(.easeInOut(duration: 0.3)) {
+            isRecording = true
+        }
+    }
+
+    /// Phone stopped its mic recording — drop the mirrored display.
+    func handlePhoneRecordingStopped() {
+        guard mirroringPhone else { return }
+        endMirrorDisplay()
+    }
+
+    /// Tells the phone to stop its mic recording, then drops the mirror locally.
+    private func stopMirroring() {
+        let session = WCSession.default
+        session.sendMessage(["cmd": "stopPhone"], replyHandler: nil, errorHandler: nil)
+        session.transferUserInfo(["cmd": "stopPhone"])
+        endMirrorDisplay()
+    }
+
+    /// Shared mirror teardown: fade the now-hearing screen out, then clear the
+    /// retained bird once it's hidden so the next session doesn't flash it.
+    private func endMirrorDisplay() {
+        mirroringPhone = false
+        withAnimation(.easeInOut(duration: 0.3)) {
+            isRecording = false
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(320))
+            guard self?.isRecording == false else { return }
+            self?.clearHeardBird()
+        }
+    }
+
+    /// Drops the last-heard species + its photo so a hidden now-hearing screen
+    /// holds no stale content into the next session.
+    private func clearHeardBird() {
+        lastBird = nil
+        lastBirdImage = nil
+        addedThisSession = []
     }
 
     /// Phone fires this on a fresh detection that crossed the notify
@@ -257,6 +316,7 @@ final class WatchSessionManager: NSObject {
 
     private func start() {
         guard !isRecording, !isStarting else { return }
+
         // Fresh session — drop any bird left over from the previous one so the
         // "now hearing" screen starts on "Listening…", and clear the per-session
         // add-to-life-list tracking.
@@ -274,10 +334,33 @@ final class WatchSessionManager: NSObject {
         withAnimation(.easeInOut(duration: 0.3)) {
             isRecording = true
         }
+        // Tell the phone immediately — optimistically, before the seconds-long
+        // audio-engine bring-up below — so its UI flips to the watch-recording
+        // state without waiting. The failure paths in `startWithPermission`
+        // roll this back with a matching "stop".
+        notifyPhoneStarted()
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(320))
             await self?.startWithPermission()
         }
+    }
+
+    /// Optimistic "we're recording" handshake. sendMessage is the fast path when
+    /// both apps are foreground; transferUserInfo is the background-tolerant
+    /// fallback that can wake the iOS app from suspension. Both fire — duplicates
+    /// are no-ops on the iOS side.
+    private func notifyPhoneStarted() {
+        let session = WCSession.default
+        session.sendMessage(["cmd": "start"], replyHandler: nil, errorHandler: nil)
+        session.transferUserInfo(["cmd": "start"])
+    }
+
+    /// Rollback handshake for when an optimistically-announced start fails to
+    /// bring audio up (permission denied, engine error).
+    private func notifyPhoneStopped() {
+        let session = WCSession.default
+        session.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
+        session.transferUserInfo(["cmd": "stop"])
     }
 
     private func startWithPermission() async {
@@ -292,6 +375,7 @@ final class WatchSessionManager: NSObject {
         guard await Self.ensureMicrophonePermission() else {
             print("Kestrel Watch: microphone permission denied")
             isRecording = false  // undo the optimistic flip
+            notifyPhoneStopped()  // roll back the optimistic start on the phone
             return
         }
         // The user may have tapped stop while permission resolved.
@@ -304,6 +388,7 @@ final class WatchSessionManager: NSObject {
         } catch {
             print("Kestrel Watch: streamer start error \(error)")
             isRecording = false
+            notifyPhoneStopped()  // roll back the optimistic start on the phone
             return
         }
 
@@ -320,13 +405,8 @@ final class WatchSessionManager: NSObject {
         // start it now that audio is flowing.
         startExtendedSession()
 
-        let session = WCSession.default
-        // Tell the phone we're recording. sendMessage is the fast path when
-        // both apps are foreground; transferUserInfo is the background-tolerant
-        // fallback that can wake the iOS app from suspension. Both fire —
-        // duplicates are no-ops on the iOS side.
-        session.sendMessage(["cmd": "start"], replyHandler: nil, errorHandler: nil)
-        session.transferUserInfo(["cmd": "start"])
+        // The phone was already told we're recording (optimistically, in
+        // `start()`), so audio it receives lines up with its UI state.
 
         scheduleAutoRestart()
     }
@@ -383,6 +463,9 @@ final class WatchSessionManager: NSObject {
             try? await Task.sleep(for: .milliseconds(320))
             guard self?.isRecording == false else { return }
             audioQueue.async { streamer.stop() }
+            // Now-hearing screen is hidden — drop the retained bird so the next
+            // session doesn't briefly flash this one.
+            self?.clearHeardBird()
         }
     }
 
@@ -504,6 +587,7 @@ final class WatchSessionManager: NSObject {
         streamer.stop()
         isRecording = false
         isStarting = false
+        clearHeardBird()
         flushBackgroundBuffer()
         let session = WCSession.default
         session.sendMessage(["cmd": "stopUnexpected"], replyHandler: nil, errorHandler: nil)
@@ -552,9 +636,10 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
     }
 
     private func applyContext(_ context: [String: Any]) {
-        guard let enabled = context["watchBgAudioEntitlement"] as? Bool else { return }
-        Task { @MainActor in
-            WatchSessionManager.shared.setBackgroundAudioEntitlement(enabled)
+        if let enabled = context["watchBgAudioEntitlement"] as? Bool {
+            Task { @MainActor in
+                WatchSessionManager.shared.setBackgroundAudioEntitlement(enabled)
+            }
         }
     }
 
@@ -564,6 +649,8 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                 switch cmd {
                 case "remoteStart": WatchSessionManager.shared.handleRemoteStart()
                 case "remoteStop":  WatchSessionManager.shared.handleRemoteStop()
+                case "phoneStart":  WatchSessionManager.shared.handlePhoneRecordingStarted()
+                case "phoneStop":   WatchSessionManager.shared.handlePhoneRecordingStopped()
                 default: break
                 }
             }
