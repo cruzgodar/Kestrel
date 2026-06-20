@@ -5,6 +5,9 @@ struct LifeListView: View {
     @Environment(LifeListStore.self) private var store
 
     @State private var isImporting = false
+    /// Drives the explanatory import modal opened from the toolbar button. The
+    /// actual file picker (`isImporting`) is launched from its bottom button.
+    @State private var showImportInfo = false
     @State private var importMessage: String?
     @State private var showImportResult = false
     /// The species the user just swiped to delete — drives the confirmation
@@ -95,18 +98,23 @@ struct LifeListView: View {
     /// area" header. When no location filter is cached (`allowed == nil`)
     /// the rows are returned unchanged. The relative order within each group
     /// is preserved.
+    ///
+    /// Lifers (existing life-list entries) are always treated as in-range so
+    /// they group above the header regardless of where they were seen — a bird
+    /// you've already recorded should surface instantly when searching, not get
+    /// buried under "not found in this area." Only catalog suggestions
+    /// (non-lifers) are range-tested, so that section contains non-lifers only.
     private static func partitionByRange(_ rows: [SearchRow], allowed: Set<Int>?) -> [SearchRow] {
         guard let allowed else { return rows }
         let index = SpeciesCatalog.shared.indexByScientificName
         func inRange(_ row: SearchRow) -> Bool {
-            let sci: String
             switch row {
-            case .existing(let e):       sci = e.scientificName
-            case .suggestion(let s, _):  sci = s
+            case .existing:              return true
             case .header:                return true
+            case .suggestion(let s, _):
+                guard let i = index[s] else { return false }
+                return allowed.contains(i)
             }
-            guard let i = index[sci] else { return false }
-            return allowed.contains(i)
         }
         let here = rows.filter(inRange)
         let notHere = rows.filter { !inRange($0) }
@@ -263,13 +271,7 @@ struct LifeListView: View {
                 ContentUnavailableView {
                     Label("Your life list is empty", systemImage: "bird")
                 } description: {
-                    VStack(spacing: 12) {
-                        Text("Search to add species manually, or tap the import button above to load a CSV export of your eBird life list.")
-                        Link(
-                            "Download your eBird data",
-                            destination: URL(string: "https://ebird.org/downloadMyData")!
-                        )
-                    }
+                    Text("Search to add species manually, or tap the import button above to load a CSV export of your eBird life list.")
                 }
             }
         }
@@ -312,7 +314,7 @@ struct LifeListView: View {
             ToolbarSpacer(.fixed, placement: .topBarTrailing)
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
-                    isImporting = true
+                    showImportInfo = true
                 } label: {
                     Image(systemName: "square.and.arrow.down")
                 }
@@ -360,6 +362,16 @@ struct LifeListView: View {
                 SpeciesRangeFilter.cachedAllowedIndices()
             }.value
             allowedIndices = allowed
+        }
+        .sheet(isPresented: $showImportInfo) {
+            ImportInfoSheet {
+                // Dismiss the modal, then launch the system file picker on the
+                // next runloop so the two presentations don't collide.
+                showImportInfo = false
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    isImporting = true
+                }
+            }
         }
         .fileImporter(
             isPresented: $isImporting,
@@ -419,9 +431,16 @@ struct LifeListView: View {
                 Text(entry.commonName)
                     .font(.headline)
                 HStack(spacing: 4) {
-                    Text(entry.scientificName)
-                        .italic()
-                    Text("•")
+                    // The CSV's Location column for the earliest sighting, shown
+                    // in place of the scientific name. Falls back to a dash when
+                    // an entry has no recorded location (e.g. manually added
+                    // before a fix resolved).
+                    if let location = entry.firstLocation, !location.isEmpty {
+                        Text(location)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Text("•")
+                    }
                     Text(entry.firstSeen, format: .dateTime.year().month(.abbreviated).day())
                         .monospacedDigit()
                 }
@@ -606,6 +625,58 @@ struct LifeListView: View {
 struct NoDimButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+    }
+}
+
+/// Explanatory modal shown before importing. Describes the eBird/Merlin
+/// workflow (with an inline link to download the data) and offers an import
+/// button at the bottom that hands off to the system file picker via `onImport`.
+private struct ImportInfoSheet: View {
+    /// Invoked when the user taps the bottom Import button. The caller dismisses
+    /// the sheet and launches the file picker.
+    let onImport: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 24) {
+            VStack(spacing: 16) {
+                Image(systemName: "square.and.arrow.down")
+                    .font(.system(size: 44, weight: .regular))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.top, 8)
+                Text("Import Your Life List")
+                    .font(.title2.weight(.bold))
+                    .multilineTextAlignment(.center)
+                // Markdown so "download your eBird data" renders as an inline
+                // tappable link to eBird's data-download page.
+                Text(.init("If you track the birds you've seen in eBird or Merlin, you can import them here. First [download your eBird data](https://ebird.org/downloadMyData), then import the CSV file here."))
+                    .font(.body)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .tint(.accentColor)
+            }
+            .padding(.horizontal, 28)
+
+            Spacer(minLength: 0)
+
+            Button {
+                onImport()
+            } label: {
+                Text("Import CSV File")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .frame(height: 26)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background { Capsule(style: .continuous).fill(Color.accentColor) }
+            }
+            .buttonStyle(NoDimButtonStyle())
+            .padding(.horizontal, 28)
+            .padding(.bottom, 12)
+        }
+        .padding(.top, 32)
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 }
 

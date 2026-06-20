@@ -34,21 +34,16 @@ final class WatchAudioStreamer: @unchecked Sendable {
     private var onChunk: ((Data) -> Void)?
     private var buffer: [Int16] = []
 
-    /// - Parameter useBackgroundEntitlement: when true, configures the session
-    ///   as `.playAndRecord` so it can keep capturing under the declared `audio`
-    ///   background mode (which depends on the background-audio entitlement).
-    ///   When false, uses plain `.record`, which only keeps running while the
-    ///   app is in the foreground or inside an extended runtime session.
-    func start(useBackgroundEntitlement: Bool, onChunk: @escaping (Data) -> Void) throws {
+    /// Configures a plain `.record` session, which keeps running while the app
+    /// is in the foreground or inside a `WKExtendedRuntimeSession`. (Background
+    /// capture via the `audio` background mode would need a background-audio
+    /// entitlement Apple does not generally grant, so we don't rely on it.)
+    func start(onChunk: @escaping (Data) -> Void) throws {
         self.onChunk = onChunk
         buffer.removeAll(keepingCapacity: true)
 
         let session = AVAudioSession.sharedInstance()
-        if useBackgroundEntitlement {
-            try session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers])
-        } else {
-            try session.setCategory(.record, mode: .measurement, options: [])
-        }
+        try session.setCategory(.record, mode: .measurement, options: [])
         try session.setActive(true, options: [])
 
         let input = engine.inputNode

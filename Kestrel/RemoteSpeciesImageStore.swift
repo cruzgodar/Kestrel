@@ -16,6 +16,21 @@ final class RemoteSpeciesImageStore: @unchecked Sendable {
     private let dir: URL
     private let session: URLSession
 
+    /// Ceiling for cached "other" images — anything neither on the life list
+    /// nor in the current nearby list — enforced only while the user's "Limit
+    /// Cached Images" setting is on.
+    static let otherImagesLimitBytes: Int64 = 50 * 1024 * 1024
+
+    /// Guards `protectedSlugs` + `limitOtherImages`, which are read/written from
+    /// the main actor (settings, launch) and background prefetch/eviction.
+    private let protectedLock = NSLock()
+    /// Slugs that must never be evicted: life-list + current nearby species.
+    /// Kept current as the life list and region filter change.
+    private var protectedSlugs = Set<String>()
+    /// When on, caching a new non-protected image prunes the oldest
+    /// non-protected images past the cap. Enabled at launch.
+    private var limitOtherImages = false
+
     private init() {
         let base = (try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
@@ -75,6 +90,7 @@ final class RemoteSpeciesImageStore: @unchecked Sendable {
             return nil
         }
         try? data.write(to: fileURL(forSlug: slug), options: .atomic)
+        didCacheImage(slug: slug)
         let prepared = img.preparingForDisplay() ?? img
         memory.setObject(prepared, forKey: key)
         return prepared
@@ -138,6 +154,7 @@ final class RemoteSpeciesImageStore: @unchecked Sendable {
             return
         }
         try? data.write(to: dest, options: .atomic)
+        didCacheImage(slug: slug)
     }
 
     private func download(_ url: URL) async -> Data? {
@@ -153,13 +170,94 @@ final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// launch. Deduplicated, life list first.
     static func launchTargets(lifeList: [String]) -> [String] {
         var names = lifeList
-        if let allowed = SpeciesRangeFilter.cachedAllowedIndices() {
-            let all = SpeciesCatalog.shared.all
-            for i in allowed where all.indices.contains(i) {
-                names.append(all[i].scientificName)
-            }
-        }
+        names.append(contentsOf: nearbyNames())
         var seen = Set<String>()
         return names.filter { seen.insert($0).inserted }
+    }
+
+    /// Scientific names of the species in the currently-cached nearby-region
+    /// filter, or empty when no location filter has been computed yet.
+    static func nearbyNames() -> [String] {
+        guard let allowed = SpeciesRangeFilter.cachedAllowedIndices() else { return [] }
+        let all = SpeciesCatalog.shared.all
+        return allowed.compactMap { all.indices.contains($0) ? all[$0].scientificName : nil }
+    }
+
+    // MARK: - "Other" image cap
+
+    /// Sets the species whose cached images are never evicted — the life list
+    /// plus the nearby region. Pass scientific names; they're slugged here.
+    /// Enforces the cap afterward in case the protected set shrank.
+    func setProtectedSpecies(_ scientificNames: [String]) {
+        let slugs = Set(scientificNames.map { SpeciesImage.slug(for: $0) }.filter { !$0.isEmpty })
+        protectedLock.lock()
+        protectedSlugs = slugs
+        let enabled = limitOtherImages
+        protectedLock.unlock()
+        if enabled { enforceOtherImageLimit() }
+    }
+
+    /// Mirrors the user's "Limit Cached Images" setting. Enforces immediately
+    /// when turned on so existing over-cap images are pruned right away.
+    func setLimitOtherImages(_ enabled: Bool) {
+        protectedLock.lock()
+        limitOtherImages = enabled
+        protectedLock.unlock()
+        if enabled { enforceOtherImageLimit() }
+    }
+
+    /// Called after a fresh image lands on disk. Triggers a prune only when the
+    /// cap is on and the just-cached image is non-protected (so region/life-list
+    /// prefetch, which is all protected, never thrashes the eviction pass).
+    private func didCacheImage(slug: String) {
+        protectedLock.lock()
+        let shouldEnforce = limitOtherImages && !protectedSlugs.contains(slug)
+        protectedLock.unlock()
+        if shouldEnforce { enforceOtherImageLimit() }
+    }
+
+    private func enforceOtherImageLimit() {
+        Task.detached(priority: .utility) { [weak self] in
+            self?.pruneOtherImages()
+        }
+    }
+
+    /// Evicts the oldest non-protected cached images until the "other" bucket is
+    /// back under `otherImagesLimitBytes`. No-op when the cap is off.
+    private func pruneOtherImages() {
+        protectedLock.lock()
+        guard limitOtherImages else { protectedLock.unlock(); return }
+        let protectedSlugs = self.protectedSlugs
+        protectedLock.unlock()
+
+        let fm = FileManager.default
+        guard let urls = try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        struct Cached { let url: URL; let slug: String; let size: Int64; let date: Date }
+        var others: [Cached] = []
+        var total: Int64 = 0
+        for url in urls where url.pathExtension == "jpg" {
+            let slug = url.deletingPathExtension().lastPathComponent
+            if protectedSlugs.contains(slug) { continue }
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let size = Int64(values?.fileSize ?? 0)
+            let date = values?.contentModificationDate ?? .distantPast
+            others.append(Cached(url: url, slug: slug, size: size, date: date))
+            total += size
+        }
+        guard total > Self.otherImagesLimitBytes else { return }
+
+        // Oldest first, evicting until back under the cap.
+        others.sort { $0.date < $1.date }
+        for entry in others {
+            if total <= Self.otherImagesLimitBytes { break }
+            try? fm.removeItem(at: entry.url)
+            memory.removeObject(forKey: entry.slug as NSString)
+            total -= entry.size
+        }
     }
 }

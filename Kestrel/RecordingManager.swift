@@ -918,6 +918,10 @@ final class RecordingManager {
     private func prefetchRegionImages(_ allowed: Set<Int>) {
         let all = SpeciesCatalog.shared.all
         let names = allowed.compactMap { all.indices.contains($0) ? all[$0].scientificName : nil }
+        // The region just changed — refresh the set the image-cache cap
+        // protects from eviction (life list + nearby) before prefetching.
+        let lifeNames = lifeListStore?.entries.map(\.scientificName) ?? []
+        RemoteSpeciesImageStore.shared.setProtectedSpecies(lifeNames + names)
         RemoteSpeciesImageStore.shared.prefetch(scientificNames: names)
     }
 

@@ -57,6 +57,19 @@ final class LifeListStore {
         entries.contains(where: { $0.scientificName == scientificName })
     }
 
+    /// Coordinate of the earliest recorded sighting of a species, if it's on
+    /// the life list and that sighting carries coordinates. Drives the
+    /// full-screen photo viewer's "Show on Map" button — returns `nil` when the
+    /// species has never been seen (so the button is hidden) or was logged
+    /// without a location.
+    func firstObservationCoordinate(for scientificName: String) -> (latitude: Double, longitude: Double)? {
+        guard let entry = entries.first(where: { $0.scientificName == scientificName }),
+              let lat = entry.firstLatitude, let lon = entry.firstLongitude else {
+            return nil
+        }
+        return (lat, lon)
+    }
+
     /// Back-fills the first-seen coordinate on an existing entry. Used by
     /// the manual-add flows when the device hadn't yet resolved a location
     /// at the moment of the tap; the resolved fix arrives shortly after via
@@ -100,79 +113,81 @@ final class LifeListStore {
     }
 
     private func merge(rows: [EBirdRawRow]) -> ImportSummary {
-        var map: [String: LifeListEntry] = Dictionary(
+        // Accumulate the *full* observation set per species — every CSV row is
+        // kept, not just the earliest. Seeded from the existing entries' own
+        // observations so a re-import folds new sightings in alongside the old.
+        var observationsBySci: [String: [LifeListEntry.Observation]] = [:]
+        // Common name tracked at its earliest-seen date so an earlier row can
+        // override it, matching the old "earliest sighting wins display fields"
+        // behavior.
+        var commonBySci: [String: (name: String, date: Date)] = [:]
+        var starredBySci: [String: Bool] = [:]
+        for e in entries {
+            observationsBySci[e.scientificName] = e.allObservations
+            commonBySci[e.scientificName] = (e.commonName, e.firstSeen)
+            starredBySci[e.scientificName] = e.isStarred
+        }
+
+        // Species already on the life list before this import began, and a
+        // snapshot of their displayed fields so we can tell afterward which
+        // ones the import actually changed (= "updated") vs. merely re-stated
+        // (= "already known"). Keyed by scientific name; multiple CSV rows for
+        // one species collapse into a single tally.
+        let originalKeys = Set(entries.map(\.scientificName))
+        let originalBySci: [String: LifeListEntry] = Dictionary(
             uniqueKeysWithValues: entries.map { ($0.scientificName, $0) }
         )
-        // Species already on the life list before this import began. The
-        // counts below are tracked as distinct-species sets keyed off this,
-        // so multiple CSV rows for the same species (every sighting is its
-        // own row) don't inflate the "already known" tally — and a fresh
-        // import into an empty list reports zero already-known.
-        let originalKeys = Set(entries.map(\.scientificName))
-        var addedKeys: Set<String> = []
-        var updatedKeys: Set<String> = []
         var knownKeys: Set<String> = []
 
         for row in rows {
-            if originalKeys.contains(row.scientificName) {
-                knownKeys.insert(row.scientificName)
-            } else if map[row.scientificName] != nil {
-                // Already added earlier in this same import — a duplicate CSV
-                // row for a brand-new species. Counted once via addedKeys.
-                addedKeys.insert(row.scientificName)
-            }
-            if let existing = map[row.scientificName] {
-                var copy = existing
-                var changed = false
-                if row.date < existing.firstSeen {
-                    copy.firstSeen = row.date
-                    copy.firstLocation = row.location
-                    copy.firstLatitude = row.latitude
-                    copy.firstLongitude = row.longitude
-                    copy.commonName = row.commonName
-                    changed = true
-                } else if row.date == existing.firstSeen {
-                    // Same earliest-seen date: fill in any field the
-                    // existing entry is missing. Coords stay tied to the
-                    // earliest sighting; this just heals entries that
-                    // pre-date coord tracking (the previous import didn't
-                    // read Latitude/Longitude) so the matching row in the
-                    // CSV would otherwise be skipped outright.
-                    if copy.firstLocation == nil, let loc = row.location {
-                        copy.firstLocation = loc
-                        changed = true
-                    }
-                    if copy.firstLatitude == nil, let lat = row.latitude {
-                        copy.firstLatitude = lat
-                        changed = true
-                    }
-                    if copy.firstLongitude == nil, let lon = row.longitude {
-                        copy.firstLongitude = lon
-                        changed = true
-                    }
-                }
-                if changed {
-                    map[row.scientificName] = copy
-                    if originalKeys.contains(row.scientificName) {
-                        updatedKeys.insert(row.scientificName)
-                    }
-                }
-            } else {
-                map[row.scientificName] = LifeListEntry(
-                    scientificName: row.scientificName,
-                    commonName: row.commonName,
-                    firstSeen: row.date,
-                    firstLocation: row.location,
-                    firstLatitude: row.latitude,
-                    firstLongitude: row.longitude
+            let sci = row.scientificName
+            if originalKeys.contains(sci) { knownKeys.insert(sci) }
+            observationsBySci[sci, default: []].append(
+                LifeListEntry.Observation(
+                    date: row.date,
+                    location: row.location,
+                    latitude: row.latitude,
+                    longitude: row.longitude
                 )
-                addedKeys.insert(row.scientificName)
+            )
+            if let existing = commonBySci[sci] {
+                if row.date < existing.date { commonBySci[sci] = (row.commonName, row.date) }
+            } else {
+                commonBySci[sci] = (row.commonName, row.date)
             }
+            if starredBySci[sci] == nil { starredBySci[sci] = false }
         }
 
-        // "Already known" = pre-existing species the import touched but didn't
-        // change. Updated ones are reported separately, so subtract them out.
-        let added = addedKeys.count
+        // Reconstitute one entry per species from its full observation set —
+        // `make` promotes the earliest to the displayed fields and parks the
+        // rest in `otherObservations`.
+        let prelim = observationsBySci.map { sci, observations in
+            LifeListEntry.make(
+                scientificName: sci,
+                commonName: commonBySci[sci]?.name ?? sci,
+                isStarred: starredBySci[sci] ?? false,
+                observations: observations
+            )
+        }
+        let prelimBySci = Dictionary(uniqueKeysWithValues: prelim.map { ($0.scientificName, $0) })
+
+        // Counts mirror the previous behavior: a brand-new species is "added";
+        // a pre-existing one whose displayed earliest sighting shifted (earlier
+        // date, or a healed location/coordinate) is "updated"; the rest of the
+        // touched pre-existing species are "already known". Computed on the
+        // pre-canonicalization keys, which the parser has already reduced to
+        // BirdNET-canonical binomials.
+        var updatedKeys: Set<String> = []
+        for sci in knownKeys {
+            guard let before = originalBySci[sci], let after = prelimBySci[sci] else { continue }
+            if before.firstSeen != after.firstSeen
+                || before.firstLocation != after.firstLocation
+                || before.firstLatitude != after.firstLatitude
+                || before.firstLongitude != after.firstLongitude {
+                updatedKeys.insert(sci)
+            }
+        }
+        let added = Set(observationsBySci.keys).subtracting(originalKeys).count
         let updated = updatedKeys.count
         let skipped = knownKeys.subtracting(updatedKeys).count
 
@@ -181,7 +196,7 @@ final class LifeListStore {
         // eBird name like "Astur cooperii" (Cooper's Hawk) or "Spilopelia
         // chinensis" (Spotted Dove) would slug to a missing image and show the
         // placeholder until the next launch.
-        entries = Self.canonicalize(Array(map.values)).sorted { $0.firstSeen > $1.firstSeen }
+        entries = Self.canonicalize(prelim).sorted { $0.firstSeen > $1.firstSeen }
         save()
         return ImportSummary(added: added, updated: updated, skipped: skipped)
     }
@@ -242,44 +257,27 @@ final class LifeListStore {
         for entry in entries {
             let key = speciesBinomial(entry.scientificName)
             guard let existing = byBinomial[key] else {
-                var copy = entry
-                if copy.scientificName != key {
-                    copy = LifeListEntry(
-                        scientificName: key,
-                        commonName: copy.commonName,
-                        firstSeen: copy.firstSeen,
-                        firstLocation: copy.firstLocation,
-                        firstLatitude: copy.firstLatitude,
-                        firstLongitude: copy.firstLongitude,
-                        isStarred: copy.isStarred
-                    )
-                }
-                byBinomial[key] = copy
+                // Rebuild via `make` so the binomial rename carries the full
+                // observation set (and earliest-sighting promotion) intact.
+                byBinomial[key] = LifeListEntry.make(
+                    scientificName: key,
+                    commonName: entry.commonName,
+                    isStarred: entry.isStarred,
+                    observations: entry.allObservations
+                )
                 continue
             }
-            // Earlier sighting wins firstSeen + firstLocation + coords.
-            let useNew = entry.firstSeen < existing.firstSeen
-            let firstSeen = useNew ? entry.firstSeen : existing.firstSeen
-            let firstLocation = useNew ? entry.firstLocation : existing.firstLocation
-            let firstLatitude = useNew ? entry.firstLatitude : existing.firstLatitude
-            let firstLongitude = useNew ? entry.firstLongitude : existing.firstLongitude
             // Prefer a common name without a parenthetical clarifier.
             let existingHasParen = existing.commonName.contains("(")
             let candidateHasParen = entry.commonName.contains("(")
-            let commonName: String
-            if existingHasParen && !candidateHasParen {
-                commonName = entry.commonName
-            } else {
-                commonName = existing.commonName
-            }
-            byBinomial[key] = LifeListEntry(
+            let commonName = (existingHasParen && !candidateHasParen) ? entry.commonName : existing.commonName
+            // Union both rows' observations; `make` re-picks the earliest as
+            // the displayed sighting and keeps the rest.
+            byBinomial[key] = LifeListEntry.make(
                 scientificName: key,
                 commonName: commonName,
-                firstSeen: firstSeen,
-                firstLocation: firstLocation,
-                firstLatitude: firstLatitude,
-                firstLongitude: firstLongitude,
-                isStarred: existing.isStarred || entry.isStarred
+                isStarred: existing.isStarred || entry.isStarred,
+                observations: existing.allObservations + entry.allObservations
             )
         }
         return Array(byBinomial.values)
@@ -307,11 +305,6 @@ final class LifeListStore {
                 byCommon[key] = entry
                 continue
             }
-            let useNew = entry.firstSeen < existing.firstSeen
-            let firstSeen = useNew ? entry.firstSeen : existing.firstSeen
-            let firstLocation = useNew ? entry.firstLocation : existing.firstLocation
-            let firstLatitude = useNew ? entry.firstLatitude : existing.firstLatitude
-            let firstLongitude = useNew ? entry.firstLongitude : existing.firstLongitude
             // Prefer the scientific name BirdNET emits so detections map to this row.
             let existingInCatalog = catalogNames.contains(existing.scientificName)
             let candidateInCatalog = catalogNames.contains(entry.scientificName)
@@ -321,14 +314,11 @@ final class LifeListStore {
             } else {
                 scientificName = existing.scientificName
             }
-            byCommon[key] = LifeListEntry(
+            byCommon[key] = LifeListEntry.make(
                 scientificName: scientificName,
                 commonName: existing.commonName,
-                firstSeen: firstSeen,
-                firstLocation: firstLocation,
-                firstLatitude: firstLatitude,
-                firstLongitude: firstLongitude,
-                isStarred: existing.isStarred || entry.isStarred
+                isStarred: existing.isStarred || entry.isStarred,
+                observations: existing.allObservations + entry.allObservations
             )
         }
         // Final pass: rewrite singletons whose scientific name doesn't exist
@@ -341,14 +331,11 @@ final class LifeListStore {
             guard let canonical = catalogByCommon[entry.commonName.lowercased()] else {
                 return entry
             }
-            return LifeListEntry(
+            return LifeListEntry.make(
                 scientificName: canonical,
                 commonName: entry.commonName,
-                firstSeen: entry.firstSeen,
-                firstLocation: entry.firstLocation,
-                firstLatitude: entry.firstLatitude,
-                firstLongitude: entry.firstLongitude,
-                isStarred: entry.isStarred
+                isStarred: entry.isStarred,
+                observations: entry.allObservations
             )
         }
     }
@@ -363,14 +350,11 @@ final class LifeListStore {
         entries.map { entry in
             let canonical = TaxonomyAliases.canonical(entry.scientificName)
             guard canonical != entry.scientificName else { return entry }
-            return LifeListEntry(
+            return LifeListEntry.make(
                 scientificName: canonical,
                 commonName: entry.commonName,
-                firstSeen: entry.firstSeen,
-                firstLocation: entry.firstLocation,
-                firstLatitude: entry.firstLatitude,
-                firstLongitude: entry.firstLongitude,
-                isStarred: entry.isStarred
+                isStarred: entry.isStarred,
+                observations: entry.allObservations
             )
         }
     }

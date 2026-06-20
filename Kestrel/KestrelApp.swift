@@ -7,6 +7,7 @@ struct KestrelApp: App {
     @State private var lifeListStore: LifeListStore
     @State private var selectedTab: AppTab = .identify
     @State private var photoPresenter = SpeciesPhotoPresenter()
+    @State private var mapNavigator = MapNavigator()
     @Environment(\.scenePhase) private var scenePhase
 
     /// Held for lifetime; activates a WCSession and routes watch audio +
@@ -34,11 +35,18 @@ struct KestrelApp: App {
         manager.lifeListStore = store
 
         // Warm species photos at launch: download + persist the life-list and
-        // cached region species so they're available offline and kept forever.
+        // cached region species so they're available offline. These are also
+        // the "protected" set the image-cache cap never evicts — set it before
+        // prefetching so newly-downloaded protected images aren't pruned.
         let lifeListNames = store.entries.map(\.scientificName)
-        RemoteSpeciesImageStore.shared.prefetch(
-            scientificNames: RemoteSpeciesImageStore.launchTargets(lifeList: lifeListNames)
-        )
+        let targets = RemoteSpeciesImageStore.launchTargets(lifeList: lifeListNames)
+        RemoteSpeciesImageStore.shared.setProtectedSpecies(targets)
+        RemoteSpeciesImageStore.shared.prefetch(scientificNames: targets)
+
+        // Cap cached "other" images (anything not on the life list or in the
+        // current nearby list) at 50 MB so the on-disk cache can't grow without
+        // bound. Life-list + nearby images are protected and never evicted.
+        RemoteSpeciesImageStore.shared.setLimitOtherImages(true)
 
         // Ask for notification permission at first launch rather than
         // deferring to the first Start Recording tap.
@@ -106,12 +114,27 @@ struct KestrelApp: App {
             // Drives the full-screen photo viewer; read by every SpeciesPhoto
             // and the map's annotation tap handlers.
             .environment(photoPresenter)
-            // Full-screen species photo, opened by tapping any bird image.
+            // Lets the full-screen viewer focus the Map tab on a bird.
+            .environment(mapNavigator)
+            // Full-screen species photo, opened by tapping any bird image. When
+            // the species has a recorded first sighting, a "Show on Map" button
+            // switches to the Map tab and zooms to that location.
             .fullScreenCover(item: Binding(
                 get: { photoPresenter.presented },
                 set: { photoPresenter.presented = $0 }
             )) { species in
-                SpeciesPhotoFullScreen(scientificName: species.scientificName)
+                let coordinate = lifeListStore.firstObservationCoordinate(for: species.scientificName)
+                SpeciesPhotoFullScreen(
+                    scientificName: species.scientificName,
+                    mapButtonTitle: coordinate != nil ? "Show on Map" : nil,
+                    onShowOnMap: coordinate.map { coord in
+                        {
+                            photoPresenter.presented = nil
+                            selectedTab = .map
+                            mapNavigator.focus(latitude: coord.latitude, longitude: coord.longitude)
+                        }
+                    }
+                )
             }
             // Push "is the spectrogram visible?" into the recording manager
             // — true only when the Identify tab is selected AND the scene

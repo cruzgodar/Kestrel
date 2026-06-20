@@ -30,6 +30,12 @@ final class SpeciesPhotoPresenter {
 /// on the midpoint between the fingers.
 struct SpeciesPhotoFullScreen: View {
     let scientificName: String
+    /// Title for the optional map button at the bottom ("Show on Map" from the
+    /// Life List / Identify tabs, "Pinpoint on Map" from a map cluster card).
+    /// When `nil` — or when `onShowOnMap` is `nil` — no button is shown.
+    var mapButtonTitle: String? = nil
+    /// Action for the map button: switch to / focus the Map tab on this bird.
+    var onShowOnMap: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
 
     @State private var image: UIImage?
@@ -94,6 +100,18 @@ struct SpeciesPhotoFullScreen: View {
                     .padding(.top, 8)
                 }
                 Spacer()
+                if let mapButtonTitle, let onShowOnMap {
+                    Button(action: onShowOnMap) {
+                        Label(mapButtonTitle, systemImage: "mappin.and.ellipse")
+                            .font(.headline)
+                            .foregroundStyle(.white)
+                            .padding(.vertical, 13)
+                            .padding(.horizontal, 26)
+                            .background(.black.opacity(0.45), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.bottom, 10)
+                }
                 caption
             }
         }

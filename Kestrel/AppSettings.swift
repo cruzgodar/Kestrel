@@ -5,8 +5,8 @@ import Observation
 /// MainActor isolation) so the nonisolated persisted-value readers can
 /// reference them without an actor hop.
 private nonisolated enum SettingsKeys {
-    static let watchEntitlement = "settings.watchUsesBackgroundAudioEntitlement"
     static let preferWatchMic = "settings.preferWatchMicrophone"
+    static let showRepeatObservations = "settings.showRepeatObservationsOnMap"
 }
 
 /// App-wide user settings, persisted to `UserDefaults`. A single shared
@@ -17,21 +17,6 @@ private nonisolated enum SettingsKeys {
 @Observable
 final class AppSettings {
     static let shared = AppSettings()
-
-    /// When enabled, the watch attempts to keep its capture session running in
-    /// the background using the declared `audio` background mode (which depends
-    /// on a background-audio entitlement Apple does not generally grant) rather
-    /// than relying solely on a `WKExtendedRuntimeSession`. Off by default — it
-    /// only does anything on a build whose provisioning profile actually has
-    /// the entitlement, so it's effectively a testing switch.
-    var watchUsesBackgroundAudioEntitlement: Bool {
-        didSet {
-            defaults.set(watchUsesBackgroundAudioEntitlement, forKey: SettingsKeys.watchEntitlement)
-            // Let the watch bridge re-push the watch-facing settings over
-            // WatchConnectivity.
-            watchSyncHook?()
-        }
-    }
 
     /// When enabled (the default), tapping Start Recording on either device
     /// uses the paired Apple Watch's microphone if it's reachable, falling back
@@ -45,16 +30,23 @@ final class AppSettings {
         }
     }
 
-    /// Set by `WatchAudioBridge` so a change to any watch-facing setting is
-    /// mirrored to the paired watch via `updateApplicationContext`. Kept as a
-    /// closure so this model stays free of WatchConnectivity dependencies.
-    var watchSyncHook: (() -> Void)?
+    /// When enabled (the default), the Map tab plots every stored sighting of
+    /// each species, not just the earliest one — so a bird imported with many
+    /// eBird observations drops a pin at each location. The extra observations
+    /// are always stored on import regardless; this just controls whether
+    /// they're mapped.
+    var showRepeatObservationsOnMap: Bool {
+        didSet {
+            defaults.set(showRepeatObservationsOnMap, forKey: SettingsKeys.showRepeatObservations)
+        }
+    }
 
     private let defaults = UserDefaults.standard
 
     private init() {
-        watchUsesBackgroundAudioEntitlement = defaults.bool(forKey: SettingsKeys.watchEntitlement)
         // Defaults to on when the user has never set it.
         preferWatchMicrophone = defaults.object(forKey: SettingsKeys.preferWatchMic) as? Bool ?? true
+        // Defaults to on.
+        showRepeatObservationsOnMap = defaults.object(forKey: SettingsKeys.showRepeatObservations) as? Bool ?? true
     }
 }

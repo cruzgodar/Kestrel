@@ -1,20 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
-<dict>
-	<key>WKBackgroundModes</key>
-	<array>
-		<string>self-care</string>
-	</array>
-	<!-- Backs the optional "Background audio on Watch" setting, which keeps the
-	     capture session running with the wrist down. On watchOS background audio
-	     is declared via UIBackgroundModes/audio (NOT WKBackgroundModes), and it
-	     depends on a background-audio entitlement Apple does not generally grant.
-	     The setting is off by default and gated for testing; remove this key if
-	     shipping without the entitlement. -->
-	<key>UIBackgroundModes</key>
-	<array>
-		<string>audio</string>
-	</array>
-</dict>
+<dict/>
 </plist>

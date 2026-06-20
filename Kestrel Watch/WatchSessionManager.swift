@@ -112,26 +112,13 @@ final class WatchSessionManager: NSObject {
     private override init() {
         super.init()
         // The system can invalidate our extended runtime session at any time
-        // — most commonly `.resignedFrontmost` when the wrist drops without
-        // the background-audio entitlement. Route that back here so we can
-        // tear down and tell the phone to notify the user.
+        // — most commonly `.resignedFrontmost` when the wrist drops. Route that
+        // back here so we can tear down and tell the phone to notify the user.
         extendedDelegate.onInvalidate = { reason in
             Task { @MainActor [weak self] in
                 self?.handleExtendedSessionInvalidation(reason)
             }
         }
-    }
-
-    /// Mirrored from the phone's Settings tab via the WCSession application
-    /// context. When true the streamer requests a background-capable audio
-    /// session (see `WatchAudioStreamer.start(useBackgroundEntitlement:)`).
-    /// Takes effect on the next `start()`; an in-flight recording isn't
-    /// reconfigured mid-session.
-    private(set) var useBackgroundAudioEntitlement = false
-
-    /// Applies a preference pushed from the phone. Stored for the next capture.
-    func setBackgroundAudioEntitlement(_ enabled: Bool) {
-        useBackgroundAudioEntitlement = enabled
     }
 
     /// True while the watch is mirroring a recording the *phone* started with
@@ -417,11 +404,10 @@ final class WatchSessionManager: NSObject {
     /// never rendered and the start → recording transition never animated.
     private func startStreamerOffMain() async throws {
         let streamer = self.streamer
-        let useBackgroundEntitlement = self.useBackgroundAudioEntitlement
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
             audioQueue.async {
                 do {
-                    try streamer.start(useBackgroundEntitlement: useBackgroundEntitlement) { [weak self] data in
+                    try streamer.start { [weak self] data in
                         self?.deliver(data)
                     }
                     continuation.resume()
@@ -566,10 +552,10 @@ final class WatchSessionManager: NSObject {
             expectedERSInvalidation = false
             return
         }
-        // The system tore the session down on us (wrist lowered without the
-        // background-audio entitlement, the 1-hour cap, an error...). Nothing
-        // is capturing audio anymore. Drop our reference — it's already
-        // invalid — tear the rest down, and tell the phone to notify.
+        // The system tore the session down on us (wrist lowered, the 1-hour
+        // cap, an error...). Nothing is capturing audio anymore. Drop our
+        // reference — it's already invalid — tear the rest down, and tell the
+        // phone to notify.
         extendedSession = nil
         guard isRecording || isStarting else { return }
         print("Kestrel Watch: extended session killed by system — \(reason.rawValue)")
@@ -619,8 +605,6 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                  activationDidCompleteWith activationState: WCSessionActivationState,
                  error: Error?) {
         if let error { print("Kestrel Watch: WCSession activation error \(error)") }
-        // Pick up the last preference the phone pushed before we activated.
-        applyContext(session.receivedApplicationContext)
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
@@ -629,18 +613,6 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         route(userInfo)
-    }
-
-    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
-        applyContext(applicationContext)
-    }
-
-    private func applyContext(_ context: [String: Any]) {
-        if let enabled = context["watchBgAudioEntitlement"] as? Bool {
-            Task { @MainActor in
-                WatchSessionManager.shared.setBackgroundAudioEntitlement(enabled)
-            }
-        }
     }
 
     private func route(_ payload: [String: Any]) {

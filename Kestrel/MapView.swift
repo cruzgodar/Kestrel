@@ -2,9 +2,59 @@ import CoreLocation
 import MapKit
 import SwiftUI
 
+/// A single plotted point on the map. Usually one per life-list entry (its
+/// first sighting), but with "Show repeat observations on map" enabled an
+/// entry contributes one point per stored observation, so the same species can
+/// appear at several locations. `id` is unique per point; `scientificName`
+/// stays the species key used for photo lookups.
+struct MapPoint: Identifiable, Hashable {
+    let id: String
+    let scientificName: String
+    let commonName: String
+    let date: Date
+    let latitude: Double
+    let longitude: Double
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+}
+
+/// Carries a request to focus the Map tab on a specific coordinate. Set from
+/// the full-screen photo viewer's "Show on Map" / "Pinpoint on Map" button;
+/// `MapView` observes `pendingFocus`, animates its camera there, then clears it.
+@MainActor
+@Observable
+final class MapNavigator {
+    var pendingFocus: MapFocus?
+
+    func focus(latitude: Double, longitude: Double) {
+        // A fresh token guarantees `onChange` fires even when the user asks to
+        // focus the same coordinate twice in a row.
+        pendingFocus = MapFocus(latitude: latitude, longitude: longitude, token: UUID())
+    }
+}
+
+/// A one-shot map focus request. `token` makes otherwise-identical requests
+/// distinct so SwiftUI's `onChange` always fires.
+struct MapFocus: Equatable {
+    let latitude: Double
+    let longitude: Double
+    let token: UUID
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+}
+
 struct MapView: View {
     @Environment(LifeListStore.self) private var store
     @Environment(SpeciesPhotoPresenter.self) private var photoPresenter: SpeciesPhotoPresenter?
+    @Environment(MapNavigator.self) private var navigator: MapNavigator?
+    /// Drives whether repeat observations are plotted. `@Bindable` isn't needed
+    /// (read-only here) but the `@Observable` model re-renders this view when
+    /// the toggle flips.
+    private var settings = AppSettings.shared
 
     @State private var position: MapCameraPosition = .userLocation(
         fallback: .automatic
@@ -19,12 +69,12 @@ struct MapView: View {
     @State private var lastZoomStep: Int?
     @State private var viewSize: CGSize = .zero
 
-    /// Cached subset of `entriesWithCoordinates` whose coords fall inside
+    /// Cached subset of `mapPoints` whose coords fall inside
     /// the current viewport plus a generous buffer. Drives ForEach so we
     /// mount ~the visible neighborhood worth of annotations instead of
     /// every life-list bird. Updated only when the camera moves beyond
     /// the buffer, so panning doesn't churn the annotation list.
-    @State private var visibleEntries: [LifeListEntry] = []
+    @State private var visiblePoints: [MapPoint] = []
     @State private var lastFilterCenter: CLLocationCoordinate2D?
     @State private var lastFilterSpan: MKCoordinateSpan?
     /// One-shot guard for the post-load annotation refresh. See
@@ -52,13 +102,13 @@ struct MapView: View {
     struct RepInfo: Equatable {
         let count: Int
         let coordinate: CLLocationCoordinate2D
-        let representative: LifeListEntry
-        let others: [LifeListEntry]
+        let representative: MapPoint
+        let others: [MapPoint]
 
         static func == (lhs: RepInfo, rhs: RepInfo) -> Bool {
-            lhs.representative.scientificName == rhs.representative.scientificName
+            lhs.representative.id == rhs.representative.id
                 && lhs.count == rhs.count
-                && lhs.others.map(\.scientificName) == rhs.others.map(\.scientificName)
+                && lhs.others.map(\.id) == rhs.others.map(\.id)
         }
     }
 
@@ -84,8 +134,37 @@ struct MapView: View {
         )
     }
 
-    private var entriesWithCoordinates: [LifeListEntry] {
-        store.entries.filter { $0.firstLatitude != nil && $0.firstLongitude != nil }
+    /// All map points to plot. Always includes each species' earliest sighting
+    /// (its displayed `first*` fields); when the setting is on, each stored
+    /// repeat observation with coordinates contributes an additional point.
+    private var mapPoints: [MapPoint] {
+        var points: [MapPoint] = []
+        let showRepeats = settings.showRepeatObservationsOnMap
+        for entry in store.entries {
+            if let lat = entry.firstLatitude, let lon = entry.firstLongitude {
+                points.append(MapPoint(
+                    id: entry.scientificName,
+                    scientificName: entry.scientificName,
+                    commonName: entry.commonName,
+                    date: entry.firstSeen,
+                    latitude: lat,
+                    longitude: lon
+                ))
+            }
+            guard showRepeats else { continue }
+            for (i, obs) in entry.otherObservations.enumerated() {
+                guard let lat = obs.latitude, let lon = obs.longitude else { continue }
+                points.append(MapPoint(
+                    id: "\(entry.scientificName)#\(i)",
+                    scientificName: entry.scientificName,
+                    commonName: entry.commonName,
+                    date: obs.date,
+                    latitude: lat,
+                    longitude: lon
+                ))
+            }
+        }
+        return points
     }
 
 
@@ -94,18 +173,15 @@ struct MapView: View {
             GeometryReader { geo in
                 Map(position: $position) {
                     UserAnnotation()
-                    ForEach(visibleEntries) { entry in
+                    ForEach(visiblePoints) { point in
                         Annotation(
-                            entry.commonName,
-                            coordinate: CLLocationCoordinate2D(
-                                latitude: entry.firstLatitude ?? 0,
-                                longitude: entry.firstLongitude ?? 0
-                            ),
+                            point.commonName,
+                            coordinate: point.coordinate,
                             anchor: .center
                         ) {
                             FadingAnnotationContent(
-                                entry: entry,
-                                info: visibleReps[entry.scientificName],
+                                point: point,
+                                info: visibleReps[point.id],
                                 thumbSize: Self.thumbSize,
                                 onTap: { tappedInfo in
                                     // Multi-bird stacks open a card; a lone bird
@@ -159,6 +235,12 @@ struct MapView: View {
                     updateVisibleEntries(force: true)
                     rebuildClusters(animated: true)
                 }
+                // Flipping the repeat-observations setting changes the point
+                // set, so rebuild the culled annotations and clusters.
+                .onChange(of: settings.showRepeatObservationsOnMap) { _, _ in
+                    updateVisibleEntries(force: true)
+                    rebuildClusters(animated: true)
+                }
             }
             .ignoresSafeArea(edges: .bottom)
         }
@@ -169,9 +251,30 @@ struct MapView: View {
             }
             _ = await LocationCache.shared.current()
         }
+        // Focus requests can arrive while the Map tab is already on screen
+        // (pinpoint from a cluster card) or just before it appears (Show on Map
+        // from another tab) — handle both.
+        .onChange(of: navigator?.pendingFocus) { _, _ in applyPendingFocus() }
+        .onAppear { applyPendingFocus() }
         .sheet(item: $expandedCluster) { cluster in
-            ClusterSheet(cluster: cluster)
+            ClusterSheet(cluster: cluster) { point in
+                expandedCluster = nil
+                navigator?.focus(latitude: point.latitude, longitude: point.longitude)
+            }
         }
+    }
+
+    /// Consumes a pending focus request from `MapNavigator`, animating the
+    /// camera to a tight region around the coordinate, then clears it.
+    private func applyPendingFocus() {
+        guard let focus = navigator?.pendingFocus else { return }
+        withAnimation(.easeInOut(duration: 0.45)) {
+            position = .region(MKCoordinateRegion(
+                center: focus.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+            ))
+        }
+        navigator?.pendingFocus = nil
     }
 
     // MARK: - Camera + clustering
@@ -198,7 +301,7 @@ struct MapView: View {
         rebuildClusters(animated: true)
     }
 
-    /// Update the cached `visibleEntries` set. When `force` is false,
+    /// Update the cached `visiblePoints` set. When `force` is false,
     /// skip the work if the camera hasn't moved beyond ~30% of the
     /// current span (so a gentle pan doesn't churn ForEach diffs).
     private func updateVisibleEntries(force: Bool) {
@@ -223,13 +326,11 @@ struct MapView: View {
         let lonRange = span.longitudeDelta * (0.5 + Self.visibleBufferFactor)
         let centerLat = lastCenter.latitude
         let centerLon = lastCenter.longitude
-        let filtered = entriesWithCoordinates.filter { entry in
-            guard let lat = entry.firstLatitude,
-                  let lon = entry.firstLongitude else { return false }
-            return abs(lat - centerLat) <= latRange
-                && abs(lon - centerLon) <= lonRange
+        let filtered = mapPoints.filter { point in
+            abs(point.latitude - centerLat) <= latRange
+                && abs(point.longitude - centerLon) <= lonRange
         }
-        visibleEntries = filtered
+        visiblePoints = filtered
         lastFilterCenter = lastCenter
         lastFilterSpan = span
     }
@@ -239,7 +340,7 @@ struct MapView: View {
             return
         }
         let computed = Self.computeClusters(
-            entries: entriesWithCoordinates,
+            points: mapPoints,
             span: span,
             centerLatitude: lastCenter.latitude,
             viewSize: viewSize,
@@ -249,7 +350,7 @@ struct MapView: View {
         var next: [String: RepInfo] = [:]
         next.reserveCapacity(computed.count)
         for cluster in computed {
-            next[cluster.representative.scientificName] = RepInfo(
+            next[cluster.representative.id] = RepInfo(
                 count: cluster.all.count,
                 coordinate: cluster.coordinate,
                 representative: cluster.representative,
@@ -287,23 +388,23 @@ struct MapView: View {
     /// the annotation views *with* content present, which wires up their
     /// tap handling. Runs exactly once.
     private func warmUpAnnotations() {
-        guard !visibleEntries.isEmpty else { return }
-        let saved = visibleEntries
-        visibleEntries = []
+        guard !visiblePoints.isEmpty else { return }
+        let saved = visiblePoints
+        visiblePoints = []
         DispatchQueue.main.async {
-            visibleEntries = saved
+            visiblePoints = saved
         }
     }
 
     static func computeClusters(
-        entries: [LifeListEntry],
+        points: [MapPoint],
         span: MKCoordinateSpan,
         centerLatitude: Double,
         viewSize: CGSize,
         footprint: CGSize,
         gutter: CGFloat
     ) -> [BirdCluster] {
-        guard !entries.isEmpty,
+        guard !points.isEmpty,
               viewSize.width > 0, viewSize.height > 0,
               span.latitudeDelta > 0 else { return [] }
 
@@ -312,37 +413,37 @@ struct MapView: View {
         let cosLat = max(cos(centerLatitude * .pi / 180), 0.05)
         let thresholdLon = (degPerPoint * Double(footprint.width + gutter)) / cosLat
 
-        let sorted = entries.sorted { $0.firstSeen > $1.firstSeen }
+        let sorted = points.sorted { $0.date > $1.date }
 
         struct WIP {
-            let entry: LifeListEntry
+            let point: MapPoint
             let lat: Double
             let lon: Double
-            var others: [LifeListEntry] = []
+            var others: [MapPoint] = []
         }
         var reps: [WIP] = []
         reps.reserveCapacity(sorted.count)
 
-        for entry in sorted {
-            guard let lat = entry.firstLatitude,
-                  let lon = entry.firstLongitude else { continue }
+        for point in sorted {
+            let lat = point.latitude
+            let lon = point.longitude
             var folded = false
             for i in reps.indices {
                 if abs(reps[i].lat - lat) < thresholdLat
                     && abs(reps[i].lon - lon) < thresholdLon {
-                    reps[i].others.append(entry)
+                    reps[i].others.append(point)
                     folded = true
                     break
                 }
             }
             if !folded {
-                reps.append(WIP(entry: entry, lat: lat, lon: lon))
+                reps.append(WIP(point: point, lat: lat, lon: lon))
             }
         }
 
         return reps.map {
             BirdCluster(
-                representative: $0.entry,
+                representative: $0.point,
                 coordinate: CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon),
                 others: $0.others
             )
@@ -370,7 +471,7 @@ struct MapView: View {
 // mounted view, not a transition), and the dead annotations have no
 // footprint.
 private struct FadingAnnotationContent: View {
-    let entry: LifeListEntry
+    let point: MapPoint
     let info: MapView.RepInfo?
     let thumbSize: CGSize
     let onTap: (MapView.RepInfo) -> Void
@@ -387,7 +488,7 @@ private struct FadingAnnotationContent: View {
         Group {
             if let rendered {
                 MapAnnotationContent(
-                    entry: entry,
+                    point: point,
                     clusterCount: rendered.count,
                     thumbSize: thumbSize
                 )
@@ -428,18 +529,18 @@ private struct FadingAnnotationContent: View {
 // MARK: - On-map annotation content (thumbnail + label)
 
 private struct MapAnnotationContent: View {
-    let entry: LifeListEntry
+    let point: MapPoint
     let clusterCount: Int
     let thumbSize: CGSize
 
     private var labelText: String {
-        clusterCount > 1 ? "\(clusterCount) Birds" : entry.commonName
+        clusterCount > 1 ? "\(clusterCount) Birds" : point.commonName
     }
 
     var body: some View {
         VStack(spacing: 4) {
             BirdMapThumbnail(
-                scientificName: entry.scientificName,
+                scientificName: point.scientificName,
                 size: thumbSize,
                 cornerRadius: 8,
                 showBorder: true
@@ -467,21 +568,21 @@ private struct MapAnnotationContent: View {
 // MARK: - Cluster model
 
 struct BirdCluster: Identifiable, Hashable {
-    let representative: LifeListEntry
+    let representative: MapPoint
     let coordinate: CLLocationCoordinate2D
-    let others: [LifeListEntry]
+    let others: [MapPoint]
 
-    var id: String { representative.scientificName }
-    var all: [LifeListEntry] { [representative] + others }
+    var id: String { representative.id }
+    var all: [MapPoint] { [representative] + others }
 
     static func == (lhs: BirdCluster, rhs: BirdCluster) -> Bool {
         lhs.id == rhs.id
-            && lhs.others.map(\.scientificName) == rhs.others.map(\.scientificName)
+            && lhs.others.map(\.id) == rhs.others.map(\.id)
     }
 
     func hash(into hasher: inout Hasher) {
-        hasher.combine(representative.scientificName)
-        hasher.combine(others.map(\.scientificName))
+        hasher.combine(representative.id)
+        hasher.combine(others.map(\.id))
     }
 }
 
@@ -489,11 +590,15 @@ struct BirdCluster: Identifiable, Hashable {
 
 private struct ClusterSheet: View {
     let cluster: BirdCluster
+    /// Invoked when the user taps "Pinpoint on Map" in the full-screen viewer.
+    /// The parent closes this sheet and focuses the map on the tapped point.
+    let onShowOnMap: (MapPoint) -> Void
     @State private var detent: PresentationDetent = .medium
     /// Local full-screen presentation. Presenting from the sheet's own context
     /// (rather than the root presenter) avoids a nested-presentation conflict
-    /// with this sheet.
-    @State private var presentedSpecies: PresentedSpecies?
+    /// with this sheet. Holds the tapped point so its coordinate is available
+    /// for the "Pinpoint on Map" action.
+    @State private var presentedPoint: MapPoint?
 
     private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 12)]
     /// Tuned against the system sheet's top-corner radius at medium
@@ -503,13 +608,13 @@ private struct ClusterSheet: View {
     var body: some View {
         ScrollView {
             LazyVGrid(columns: columns, alignment: .center, spacing: 12) {
-                ForEach(cluster.all) { entry in
+                ForEach(cluster.all) { point in
                     ClusterGridItem(
-                        entry: entry,
+                        point: point,
                         cornerRadius: Self.thumbCornerRadius
                     )
                     .onTapGesture {
-                        presentedSpecies = PresentedSpecies(scientificName: entry.scientificName)
+                        presentedPoint = point
                     }
                 }
             }
@@ -533,8 +638,15 @@ private struct ClusterSheet: View {
         // screen's curve" regression.
         .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         .presentationBackground(.thinMaterial)
-        .fullScreenCover(item: $presentedSpecies) { species in
-            SpeciesPhotoFullScreen(scientificName: species.scientificName)
+        .fullScreenCover(item: $presentedPoint) { point in
+            SpeciesPhotoFullScreen(
+                scientificName: point.scientificName,
+                mapButtonTitle: "Pinpoint on Map",
+                onShowOnMap: {
+                    presentedPoint = nil
+                    onShowOnMap(point)
+                }
+            )
         }
     }
 }
@@ -542,7 +654,7 @@ private struct ClusterSheet: View {
 /// Top-aligned cell so a 2-line caption doesn't shove its neighbor's
 /// image down a row.
 private struct ClusterGridItem: View {
-    let entry: LifeListEntry
+    let point: MapPoint
     let cornerRadius: CGFloat
 
     private static let thumbSize = CGSize(width: 116, height: 87)
@@ -550,12 +662,12 @@ private struct ClusterGridItem: View {
     var body: some View {
         VStack(alignment: .center, spacing: 6) {
             BirdMapThumbnail(
-                scientificName: entry.scientificName,
+                scientificName: point.scientificName,
                 size: Self.thumbSize,
                 cornerRadius: cornerRadius,
                 showBorder: false
             )
-            Text(entry.commonName)
+            Text(point.commonName)
                 .font(.caption)
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
