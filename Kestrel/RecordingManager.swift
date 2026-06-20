@@ -1,8 +1,10 @@
 import AVFoundation
+import CoreHaptics
 import CoreLocation
 import Foundation
 import Observation
 import SwiftUI
+import UIKit
 import WatchConnectivity
 
 @Observable
@@ -43,6 +45,13 @@ final class RecordingManager {
     /// the in-app UI.
     var spectrogramVisible: Bool = true
 
+    /// True while the iOS app is foregrounded (scene active), regardless of
+    /// which tab is showing or which microphone is the audio source. Pushed
+    /// from `KestrelApp`'s scene-phase observer. When true, fresh new/starred
+    /// detections buzz the *phone* locally; when false, the haptic is sent to
+    /// the watch instead.
+    var appForegrounded: Bool = false
+
     /// The life list, wired up in `KestrelApp.init`. Held weakly since the
     /// app owns it for its whole lifetime. The manager reads it directly at
     /// session start so `lifeListSnapshot`/`starredNames` are correct even
@@ -64,11 +73,17 @@ final class RecordingManager {
     /// 5-second cooldown so a species doesn't strobe on every overlapping
     /// 1.5 s window of inference.
     private var lastFlashAt: [String: Date] = [:]
-    /// Last time each species was heard. A species becomes eligible for a
-    /// fresh notification + haptic once it's been silent for the cooldown
+    /// Last time each species fired a *notification*. A species becomes
+    /// eligible for a fresh notification once it's been silent for the cooldown
     /// window (30 s), letting a bird that comes back later re-fire instead
     /// of staying muted for the rest of the session.
     private var lastHeardAt: [String: Date] = [:]
+    /// Per-species timestamp of the last *haptic*. Haptics use a much shorter
+    /// cooldown than notifications so a still-singing new/starred bird keeps
+    /// buzzing on repeat detections instead of going quiet for the rest of the
+    /// notification window.
+    private var lastHapticAt: [String: Date] = [:]
+    private let hapticCooldown: TimeInterval = 5
     private let notifyCooldown: TimeInterval = 30
     /// Scientific name of the species currently shown on the watch's "now
     /// hearing" screen, so we only push an update when it actually changes.
@@ -78,6 +93,9 @@ final class RecordingManager {
     /// cancel a pending transition before its sleep elapses.
     private var pendingTransitionTask: Task<Void, Never>?
     private nonisolated(unsafe) var interruptionObserver: NSObjectProtocol?
+    /// Lazily-created Core Haptics engine for the new-lifer tap+buzz pattern.
+    /// Rebuilt on demand if the system stops it (e.g. after an interruption).
+    private var hapticEngine: CHHapticEngine?
 
     // Watch-audio ingestion state. Samples arrive 16 kHz Float mono from the
     // watch; we upsample to 48 kHz via linear interpolation, hand them to the
@@ -220,6 +238,72 @@ final class RecordingManager {
         sendToWatch(["haptic": kind])
     }
 
+    /// Buzz the *phone* for a fresh new/starred bird while its app is
+    /// foregrounded. Mirrors the watch's distinction: a softer `.success`
+    /// notification for a starred bird, and a sharp tap followed by a buzz for a
+    /// brand-new lifer (the phone analogue of the watch's `.notification`).
+    private func playLocalHaptic(reason: SpeciesNotifications.Reason) {
+        switch reason {
+        case .starred:
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+        case .newSpecies:
+            playNewLiferHaptic()
+        }
+    }
+
+    /// A crisp transient tap immediately followed by a short continuous buzz —
+    /// the phone version of the watch's brand-new-lifer alert. The canned
+    /// `UINotificationFeedbackGenerator` styles can't express a tap→buzz, so
+    /// this builds it with Core Haptics. Falls back to a `.warning` notification
+    /// on hardware without haptics or if the engine fails to start.
+    private func playNewLiferHaptic() {
+        guard CHHapticEngine.capabilitiesForHardware().supportsHaptics else {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            return
+        }
+        do {
+            let engine: CHHapticEngine
+            if let existing = hapticEngine {
+                engine = existing
+            } else {
+                engine = try CHHapticEngine()
+                // Forget the engine if the system stops it (e.g. audio
+                // interruption) so the next lifer lazily rebuilds it; recover
+                // in place on a reset.
+                engine.stoppedHandler = { [weak self] _ in
+                    Task { @MainActor in self?.hapticEngine = nil }
+                }
+                engine.resetHandler = { [weak engine] in try? engine?.start() }
+                hapticEngine = engine
+            }
+            try engine.start()
+
+            // Sharp tap at t=0, then a softer, less-sharp buzz a beat later.
+            let tap = CHHapticEvent(
+                eventType: .hapticTransient,
+                parameters: [
+                    CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
+                    CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.9),
+                ],
+                relativeTime: 0
+            )
+            let buzz = CHHapticEvent(
+                eventType: .hapticContinuous,
+                parameters: [
+                    CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.7),
+                    CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.3),
+                ],
+                relativeTime: 0.12,
+                duration: 0.28
+            )
+            let pattern = try CHHapticPattern(events: [tap, buzz], parameters: [])
+            let player = try engine.makePlayer(with: pattern)
+            try player.start(atTime: CHHapticTimeImmediate)
+        } catch {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+    }
+
     /// Shared watch delivery. Live `sendMessage` is the fast path when the watch
     /// app is reachable; `transferUserInfo` is the background-tolerant fallback
     /// — used both when unreachable and as the recovery path for a `sendMessage`
@@ -277,6 +361,7 @@ final class RecordingManager {
         detectionMap = [:]
         flashIDs = []
         lastFlashAt = [:]
+        lastHapticAt = [:]
         lastWatchDisplaySci = nil
         watchAddedThisSession = []
         spectrogram.reset()
@@ -379,6 +464,7 @@ final class RecordingManager {
         detectionMap = [:]
         flashIDs = []
         lastFlashAt = [:]
+        lastHapticAt = [:]
         lastWatchDisplaySci = nil
         watchAddedThisSession = []
         watchWindowBuffer.removeAll(keepingCapacity: true)
@@ -669,9 +755,13 @@ final class RecordingManager {
         if !results.isEmpty { lastDetectionAt = now }
         let cooldown: TimeInterval = 5
         var repeatedIDs: [String] = []
-        // Detections that should fire a notification + haptic this batch:
-        // species heard with no detection in the last `notifyCooldown` s.
+        // Detections that should fire a notification this batch: species heard
+        // with no detection in the last `notifyCooldown` s.
         var notifications: [(common: String, scientific: String, reason: SpeciesNotifications.Reason)] = []
+        // Detections that should buzz this batch — gated by the much shorter
+        // `hapticCooldown`, so a repeated new/starred bird keeps tapping even
+        // while its notification is still on cooldown.
+        var haptics: [SpeciesNotifications.Reason] = []
         for d in results {
             if let existing = detectionMap[d.id] {
                 if d.confidence > existing.confidence {
@@ -702,10 +792,17 @@ final class RecordingManager {
             // notify again — they've acknowledged it.
             let alreadyAdded = watchAddedThisSession.contains(d.scientificName)
             if (isStarred || isNew) && !alreadyAdded {
+                let reason: SpeciesNotifications.Reason = isStarred ? .starred : .newSpecies
                 let last = lastHeardAt[d.scientificName]
                 if last == nil || now.timeIntervalSince(last!) >= notifyCooldown {
-                    let reason: SpeciesNotifications.Reason = isStarred ? .starred : .newSpecies
                     notifications.append((d.commonName, d.scientificName, reason))
+                }
+                // Haptic on its own, shorter clock so repeats still buzz while
+                // the notification stays muted for the rest of its window.
+                let lastBuzz = lastHapticAt[d.scientificName]
+                if lastBuzz == nil || now.timeIntervalSince(lastBuzz!) >= hapticCooldown {
+                    haptics.append(reason)
+                    lastHapticAt[d.scientificName] = now
                 }
             }
             lastHeardAt[d.scientificName] = now
@@ -724,10 +821,17 @@ final class RecordingManager {
                 }
             }
         }
-        // Haptics fire only for fresh new/starred birds — the wrist tap signals
-        // something worth looking up, regardless of which device is in hand.
-        for item in notifications {
-            sendHapticToWatch(reason: item.reason)
+        // Haptics fire for new/starred birds — including repeats, on the short
+        // `hapticCooldown` — since a tap signals something worth looking up,
+        // regardless of which microphone is the audio source. When the phone's
+        // app is foregrounded the phone buzzes itself (the device in hand);
+        // otherwise the wrist gets it.
+        for reason in haptics {
+            if appForegrounded {
+                playLocalHaptic(reason: reason)
+            } else {
+                sendHapticToWatch(reason: reason)
+            }
         }
 
         // The watch's "now hearing" screen always shows the *last* species

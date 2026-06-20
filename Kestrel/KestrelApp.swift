@@ -129,5 +129,8 @@ struct KestrelApp: App {
     private func updateSpectrogramVisibility() {
         recordingManager.spectrogramVisible =
             (selectedTab == .identify) && (scenePhase == .active)
+        // Foreground = scene active, independent of tab. Drives whether
+        // new/starred haptics buzz the phone (foregrounded) or the watch.
+        recordingManager.appForegrounded = (scenePhase == .active)
     }
 }

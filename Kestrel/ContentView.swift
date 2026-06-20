@@ -112,14 +112,19 @@ struct ContentView: View {
         }
     }
 
+    // The single button morphs from a wide "Start Recording" pill to a 56pt
+    // circular stop button (and back). It's a plain solid-fill capsule (not
+    // Liquid Glass): morphing the glass shape re-sampled its backdrop blur every
+    // frame and dropped the animation to ~30fps, whereas a solid capsule morphs
+    // at full frame rate. The morph geometry itself is unchanged.
     private var recordButton: some View {
         Button {
             Task { await manager.toggle() }
         } label: {
-            // One stable HStack so the glass capsule cleanly *morphs* rather
-            // than crossfading: the icon swaps in place via a symbol replace,
-            // the label drops out, and the frame animates from a wide pill to a
-            // 56pt square — which a `Capsule` renders as a perfect circle.
+            // One stable HStack so the capsule cleanly *morphs* rather than
+            // crossfading: the icon swaps in place via a symbol replace, the
+            // label drops out, and the frame animates from a wide pill to a 56pt
+            // square — which a `Capsule` renders as a perfect circle.
             HStack(spacing: 0) {
                 Image(systemName: manager.isRecording ? "stop.fill" : "mic.fill")
                     .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
@@ -294,7 +299,9 @@ private struct SpeciesHeroImage: View {
     let scientificName: String
 
     var body: some View {
-        SpeciesPhoto(scientificName: scientificName, showsCredit: true) {
+        // No attribution caption inline — it's shown in the full-screen viewer
+        // instead (tap the image). Keeps the Identify rows uncluttered.
+        SpeciesPhoto(scientificName: scientificName, showsCredit: false) {
             Image(systemName: "bird")
                 .font(.system(size: 36))
                 .foregroundStyle(.secondary)
@@ -313,18 +320,18 @@ private struct SpeciesHeroImage: View {
         .environment(RecordingManager())
 }
 
-/// Custom record button style: a translucent, purple-tinted Liquid Glass
-/// capsule for both the "Start Recording" pill and the circular stop button
-/// (the label's frame is what morphs one shape into the other). On press the
-/// button briefly grows + dims, both with the same fast easeOut so they feel
-/// like one motion.
+/// Custom record button style: a solid, purple-tinted capsule for both the
+/// "Start Recording" pill and the circular stop button (the label's frame is
+/// what morphs one shape into the other). A plain fill rather than Liquid Glass
+/// so the morph animates at full frame rate. On press the button briefly grows
+/// + dims, both with the same fast easeOut so they feel like one motion.
 struct RecordButtonStyle: ButtonStyle {
     let tint: Color
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .foregroundStyle(.white)
-            .glassEffect(.regular.tint(tint).interactive(), in: .capsule)
+            .background(tint, in: .capsule)
             // Pin the tappable region to the capsule so the button reliably
             // consumes taps over a list image scrolling beneath it (otherwise
             // the tap can fall through to the image's open-full-screen gesture).

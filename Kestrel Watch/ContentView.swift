@@ -275,8 +275,11 @@ struct ContentView: View {
             Text(bird.commonName)
                 .font(.headline)
                 .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
+                // Keep the name on one line and shrink it to fit rather than
+                // wrapping — a long name scales down instead of stealing a
+                // second line from the photo below.
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
                 .foregroundStyle(.white)
         } else {
             Text("Listening…")
@@ -298,8 +301,8 @@ extension ContentView {
         let renderer = ImageRenderer(content:
             Text("Northern Cardinal")
                 .font(.headline)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+                .minimumScaleFactor(0.5)
                 .frame(width: 180)
         )
         renderer.scale = 2

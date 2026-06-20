@@ -77,6 +77,10 @@ final class AudioPipeline {
 
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
+        // A `.playAndRecord` session silences the Taptic Engine by default, so
+        // the phone's new-species haptics wouldn't fire while its own mic is
+        // recording. Opt back in so `UINotificationFeedbackGenerator` works.
+        try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
         try session.setActive(true, options: [])
 
         let input = engine.inputNode
