@@ -49,7 +49,6 @@ struct MapFocus: Equatable {
 
 struct MapView: View {
     @Environment(LifeListStore.self) private var store
-    @Environment(SpeciesPhotoPresenter.self) private var photoPresenter: SpeciesPhotoPresenter?
     @Environment(MapNavigator.self) private var navigator: MapNavigator?
     /// Drives whether repeat observations are plotted. `@Bindable` isn't needed
     /// (read-only here) but the `@Observable` model re-renders this view when
@@ -77,9 +76,16 @@ struct MapView: View {
     @State private var visiblePoints: [MapPoint] = []
     @State private var lastFilterCenter: CLLocationCoordinate2D?
     @State private var lastFilterSpan: MKCoordinateSpan?
-    /// One-shot guard for the post-load annotation refresh. See
-    /// `warmUpAnnotations()`.
+    /// Set once the post-load annotation refresh has actually run (not merely
+    /// been scheduled). See `warmUpAnnotations()`.
     @State private var didWarmUpAnnotations = false
+    /// Guards against scheduling more than one in-flight warm-up chain at a
+    /// time. Reset if the chain gives up so a later rebuild can re-arm it.
+    @State private var warmUpScheduled = false
+    /// Bounded retry counter for the warm-up — keeps it from looping forever if
+    /// annotations never settle (e.g. the camera sits over an empty region).
+    @State private var warmUpAttempts = 0
+    private static let maxWarmUpAttempts = 8
     /// Buffer expressed in spans — render entries within 1.5× the visible
     /// region in each direction. Big enough that gentle panning never
     /// touches the ForEach set; small enough that we're not mounting the
@@ -96,6 +102,9 @@ struct MapView: View {
     @State private var visibleReps: [String: RepInfo] = [:]
 
     @State private var expandedCluster: BirdCluster?
+    /// A lone (non-clustered) pin tapped on the map. Presented full-screen here
+    /// without a map button — there's nowhere new to take the user.
+    @State private var presentedSinglePoint: PresentedSpecies?
 
     /// Snapshot of a cluster's representative; what each annotation
     /// needs to know to render its label and respond to taps.
@@ -193,7 +202,13 @@ struct MapView: View {
                                             others: tappedInfo.others
                                         )
                                     } else {
-                                        photoPresenter?.present(tappedInfo.representative.scientificName)
+                                        // Present locally (not via the shared
+                                        // presenter) so the full-screen viewer
+                                        // shows no map button — a lone pin is
+                                        // already pinpointed where you tapped.
+                                        presentedSinglePoint = PresentedSpecies(
+                                            scientificName: tappedInfo.representative.scientificName
+                                        )
                                     }
                                 }
                             )
@@ -226,20 +241,22 @@ struct MapView: View {
                     handleCameraChange(context)
                 }
                 .onAppear { viewSize = geo.size }
+                // Clusters before culling in every path (see handleCameraChange)
+                // so annotation hosts always mount with their content present.
                 .onChange(of: geo.size) { _, new in
                     viewSize = new
-                    updateVisibleEntries(force: true)
                     rebuildClusters(animated: false)
+                    updateVisibleEntries(force: true)
                 }
                 .onChange(of: store.entries) { _, _ in
-                    updateVisibleEntries(force: true)
                     rebuildClusters(animated: true)
+                    updateVisibleEntries(force: true)
                 }
                 // Flipping the repeat-observations setting changes the point
                 // set, so rebuild the culled annotations and clusters.
                 .onChange(of: settings.showRepeatObservationsOnMap) { _, _ in
-                    updateVisibleEntries(force: true)
                     rebuildClusters(animated: true)
+                    updateVisibleEntries(force: true)
                 }
             }
             .ignoresSafeArea(edges: .bottom)
@@ -261,6 +278,9 @@ struct MapView: View {
                 expandedCluster = nil
                 navigator?.focus(latitude: point.latitude, longitude: point.longitude)
             }
+        }
+        .fullScreenCover(item: $presentedSinglePoint) { species in
+            SpeciesPhotoFullScreen(scientificName: species.scientificName)
         }
     }
 
@@ -292,13 +312,20 @@ struct MapView: View {
         lastSpan = span
         lastCenter = center
 
+        // Rebuild clusters (which fills `visibleReps`, the annotation *content*)
+        // before culling `visiblePoints` (which mounts the annotation *hosts*),
+        // so each host is created with its content already present. If a host is
+        // mounted while its rep info is still missing, it renders empty and
+        // MapKit caches a zero-size hit area that it never re-measures — that's
+        // the root cause of fresh stacks silently swallowing the first taps.
+        if step != lastZoomStep {
+            lastZoomStep = step
+            rebuildClusters(animated: true)
+        }
+
         // Refresh the viewport-culled set whenever pan or zoom crosses a
         // meaningful threshold. Cheap relative to the cluster compute.
         updateVisibleEntries(force: false)
-
-        if step == lastZoomStep { return }
-        lastZoomStep = step
-        rebuildClusters(animated: true)
     }
 
     /// Update the cached `visiblePoints` set. When `force` is false,
@@ -358,7 +385,6 @@ struct MapView: View {
             )
         }
         guard next != visibleReps else { return }
-        let wasEmpty = visibleReps.isEmpty
         if animated {
             withAnimation(.easeInOut(duration: 0.3)) {
                 visibleReps = next
@@ -367,13 +393,13 @@ struct MapView: View {
             visibleReps = next
         }
 
-        // First time we get real cluster data, schedule a one-shot
-        // annotation refresh once MapKit has settled (see
-        // `warmUpAnnotations`). This is what makes the stacks tappable on
-        // first load without the user having to zoom first.
-        if wasEmpty, !next.isEmpty, !didWarmUpAnnotations {
-            didWarmUpAnnotations = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+        // Once real cluster data exists, schedule the one-shot annotation
+        // refresh (see `warmUpAnnotations`). Armed on the first rebuild that
+        // produces clusters and not retried while a chain is already in flight;
+        // the chain re-arms itself if it has to wait for annotations to settle.
+        if !next.isEmpty, !didWarmUpAnnotations, !warmUpScheduled {
+            warmUpScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 warmUpAnnotations()
             }
         }
@@ -386,9 +412,27 @@ struct MapView: View {
     /// until a camera move triggers a fresh annotation layout. Briefly
     /// clearing and restoring the ForEach data forces MapKit to recreate
     /// the annotation views *with* content present, which wires up their
-    /// tap handling. Runs exactly once.
+    /// tap handling. Runs at most once successfully; until then it retries a
+    /// bounded number of times if the annotations haven't mounted yet, so a
+    /// slow first layout can't leave the stacks permanently untappable.
     private func warmUpAnnotations() {
-        guard !visiblePoints.isEmpty else { return }
+        guard !didWarmUpAnnotations else { return }
+        // Nothing mounted to remount yet — wait and try again rather than
+        // consuming the one-shot on an empty set (the bug where an early fire
+        // left the stacks dead until the user happened to move the camera).
+        guard !visiblePoints.isEmpty else {
+            warmUpAttempts += 1
+            if warmUpAttempts < Self.maxWarmUpAttempts {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                    warmUpAnnotations()
+                }
+            } else {
+                // Give up this chain; a future rebuild may re-arm it.
+                warmUpScheduled = false
+            }
+            return
+        }
+        didWarmUpAnnotations = true
         let saved = visiblePoints
         visiblePoints = []
         DispatchQueue.main.async {
@@ -643,7 +687,12 @@ private struct ClusterSheet: View {
                 scientificName: point.scientificName,
                 mapButtonTitle: "Pinpoint on Map",
                 onShowOnMap: {
-                    presentedPoint = nil
+                    // Dismiss the whole card (the sheet) directly — that tears
+                    // down this full-screen cover along with it, so the card is
+                    // already gone the moment the photo finishes dismissing,
+                    // rather than lingering until the zoom completes. (Clearing
+                    // `presentedPoint` first would dismiss the cover alone and
+                    // leave the card behind underneath.)
                     onShowOnMap(point)
                 }
             )

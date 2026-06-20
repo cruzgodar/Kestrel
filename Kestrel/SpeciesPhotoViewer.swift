@@ -107,7 +107,9 @@ struct SpeciesPhotoFullScreen: View {
                             .foregroundStyle(.white)
                             .padding(.vertical, 13)
                             .padding(.horizontal, 26)
-                            .background(.black.opacity(0.45), in: Capsule())
+                            // Solid gray rather than translucent black so the
+                            // button reads clearly against a dark photo.
+                            .background(Color(.systemGray2), in: Capsule())
                     }
                     .buttonStyle(.plain)
                     .padding(.bottom, 10)
