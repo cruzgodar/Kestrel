@@ -86,6 +86,10 @@ struct MapView: View {
     /// annotations never settle (e.g. the camera sits over an empty region).
     @State private var warmUpAttempts = 0
     private static let maxWarmUpAttempts = 8
+    /// Debounce token for the post-zoom hit-test rehydration (see
+    /// `scheduleHitTestRehydration`). Bumped on every cluster change so only
+    /// the last one in a continuous pinch actually fires the remount.
+    @State private var rehydrateToken = 0
     /// Buffer expressed in spans — render entries within 1.5× the visible
     /// region in each direction. Big enough that gentle panning never
     /// touches the ForEach set; small enough that we're not mounting the
@@ -220,23 +224,14 @@ struct MapView: View {
                     MapUserLocationButton()
                     MapCompass()
                 }
-                // Tapping the map background while a card is open closes
-                // it. We catch the tap on a transparent overlay that only
-                // exists while a card is open, rather than via
-                // `.onTapGesture` on the Map itself: a tap gesture on the
-                // Map is forced to wait for the map's double-tap-to-zoom
-                // recognizer to fail before firing, which adds a visible
-                // delay before the card dismisses. A plain overlay has no
-                // such recognizer, so it fires the instant the tap ends.
-                .overlay {
-                    if expandedCluster != nil {
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                expandedCluster = nil
-                            }
-                    }
-                }
+                // The multi-bird card (a half-height sheet) leaves the map
+                // fully interactive behind it — pan/zoom work while it's open,
+                // matching Apple Maps. We deliberately do *not* lay a
+                // tap-catching overlay over the map to dismiss the card: that
+                // overlay also swallowed pan/drag gestures, freezing the map.
+                // The card is dismissed by swiping it down (native sheet
+                // behavior), including a swipe that starts on the map, crosses
+                // the card's top edge, and continues down.
                 .onMapCameraChange(frequency: .continuous) { context in
                     handleCameraChange(context)
                 }
@@ -402,6 +397,32 @@ struct MapView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 warmUpAnnotations()
             }
+        } else if didWarmUpAnnotations {
+            // After the initial load, every *subsequent* cluster change (most
+            // commonly a pinch that merges/splits stacks) re-mounts the
+            // annotations once the camera settles, so MapKit re-measures the
+            // hosts whose footprint changed. Without this, a freshly-formed
+            // stack renders but keeps the stale (often zero-size) hit area
+            // MapKit cached for the host's previous content — taps fall
+            // straight through to the map until the next interaction.
+            scheduleHitTestRehydration()
+        }
+    }
+
+    /// Debounced remount of the annotation hosts to refresh MapKit's cached
+    /// hit areas after the cluster set changes. Coalesces a continuous pinch
+    /// into a single remount fired ~0.25 s after the last change, so it doesn't
+    /// churn mid-gesture. The remount itself is visually silent — annotations
+    /// that are still reps reappear solid (see `FadingAnnotationContent`), no
+    /// re-fade.
+    private func scheduleHitTestRehydration() {
+        rehydrateToken &+= 1
+        let token = rehydrateToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            guard token == rehydrateToken, !visiblePoints.isEmpty else { return }
+            let saved = visiblePoints
+            visiblePoints = []
+            DispatchQueue.main.async { visiblePoints = saved }
         }
     }
 
@@ -527,6 +548,13 @@ private struct FadingAnnotationContent: View {
     /// completion callback.
     @State private var rendered: MapView.RepInfo?
     @State private var opacity: Double = 0
+    /// False until the first `info` resolution after this view mounts. Lets us
+    /// distinguish a genuine first appearance (or a hit-test rehydration
+    /// remount, which destroys + recreates this view) — which should settle to
+    /// its final opacity instantly — from a later transition while mounted,
+    /// which should animate. This keeps the post-pinch remount silent instead
+    /// of flashing every thumbnail through a fresh fade-in.
+    @State private var didResolve = false
 
     var body: some View {
         Group {
@@ -549,6 +577,15 @@ private struct FadingAnnotationContent: View {
     }
 
     private func handle(_ newInfo: MapView.RepInfo?) {
+        // First resolution after mount (incl. a rehydration remount): jump
+        // straight to the final opacity with no animation, so re-creating an
+        // already-visible annotation doesn't replay its fade-in.
+        if !didResolve {
+            didResolve = true
+            rendered = newInfo
+            opacity = newInfo == nil ? 0 : 1
+            return
+        }
         if let newInfo {
             let wasOff = (rendered == nil)
             rendered = newInfo

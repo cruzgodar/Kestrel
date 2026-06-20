@@ -57,9 +57,6 @@ struct SpeciesPhotoFullScreen: View {
     private var dismissProgress: CGFloat {
         min(max(dragOffset.height, 0) / 250, 1)
     }
-    private var backgroundOpacity: Double {
-        Double(1 - dismissProgress * 0.85)
-    }
 
     private var commonName: String {
         SpeciesCatalog.shared.commonName(for: scientificName) ?? scientificName
@@ -70,7 +67,11 @@ struct SpeciesPhotoFullScreen: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(backgroundOpacity).ignoresSafeArea()
+            // The black backdrop stays fully opaque while swiping down to
+            // dismiss — only the content moves/scales with the finger. (The
+            // photo viewer is presented over a clear background, so the solid
+            // black keeps whatever's behind hidden during the drag.)
+            Color.black.ignoresSafeArea()
 
             content
                 .scaleEffect(1 - dismissProgress * 0.08)
@@ -107,9 +108,10 @@ struct SpeciesPhotoFullScreen: View {
                             .foregroundStyle(.white)
                             .padding(.vertical, 13)
                             .padding(.horizontal, 26)
-                            // Solid gray rather than translucent black so the
-                            // button reads clearly against a dark photo.
-                            .background(Color(.systemGray2), in: Capsule())
+                            // Gray rather than translucent black so the button
+                            // reads clearly against a dark photo; at half
+                            // opacity it stays legible without dominating.
+                            .background(Color(.systemGray2).opacity(0.5), in: Capsule())
                     }
                     .buttonStyle(.plain)
                     .padding(.bottom, 10)

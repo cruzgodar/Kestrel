@@ -10,9 +10,9 @@ import Foundation
 ///
 /// `@unchecked Sendable`: `start()`/`stop()` are the only externally-mutating
 /// entry points and the manager never runs them concurrently (a session is
-/// fully started before it can be stopped, and the auto-restart cycle stops
-/// then starts sequentially). This lets the manager dispatch the blocking
-/// `start()` off the main actor so the UI can animate while audio spins up.
+/// fully started before it can be stopped). This lets the manager dispatch the
+/// blocking `start()` off the main actor so the UI can animate while audio
+/// spins up.
 final class WatchAudioStreamer: @unchecked Sendable {
     static let targetSampleRate: Double = 16_000
     /// 3200 samples @ 16 kHz = 200 ms per chunk → 5 messages/sec.
@@ -34,10 +34,10 @@ final class WatchAudioStreamer: @unchecked Sendable {
     private var onChunk: ((Data) -> Void)?
     private var buffer: [Int16] = []
 
-    /// Configures a plain `.record` session, which keeps running while the app
-    /// is in the foreground or inside a `WKExtendedRuntimeSession`. (Background
-    /// capture via the `audio` background mode would need a background-audio
-    /// entitlement Apple does not generally grant, so we don't rely on it.)
+    /// Configures a plain `.record` session, which captures while the app is in
+    /// the foreground. (Background capture would need an extended-runtime
+    /// session or the `audio` background mode — both require entitlements we
+    /// don't use — so the watch records only while its app is frontmost.)
     func start(onChunk: @escaping (Data) -> Void) throws {
         self.onChunk = onChunk
         buffer.removeAll(keepingCapacity: true)
