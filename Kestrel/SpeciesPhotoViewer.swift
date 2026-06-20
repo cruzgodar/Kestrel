@@ -67,15 +67,17 @@ struct SpeciesPhotoFullScreen: View {
 
     var body: some View {
         ZStack {
-            // The black backdrop stays fully opaque while swiping down to
-            // dismiss — only the content moves/scales with the finger. (The
-            // photo viewer is presented over a clear background, so the solid
-            // black keeps whatever's behind hidden during the drag.)
-            Color.black.ignoresSafeArea()
-
-            content
-                .scaleEffect(1 - dismissProgress * 0.08)
-                .offset(dragOffset)
+            // The viewer behaves like a card: the black backdrop and the photo
+            // move together with the finger, so dragging down slides the whole
+            // thing off and reveals the app behind it in real time (rather than
+            // waiting for the touch to release). The viewer is presented over a
+            // clear background, so the gap above the card shows what's beneath.
+            ZStack {
+                Color.black.ignoresSafeArea()
+                content
+            }
+            .scaleEffect(1 - dismissProgress * 0.08)
+            .offset(dragOffset)
         }
         // Clear presentation background so the fade reveals the app behind.
         .presentationBackground(.clear)
