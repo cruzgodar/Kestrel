@@ -109,7 +109,10 @@ struct MapView: View {
     /// or the map-options settings. Both share one `.sheet(isPresented:)` so that
     /// switching from one to the other (or from one cluster to another) swaps the
     /// sheet's content live, rather than dismissing the old card and waiting for
-    /// it to close before presenting the new one.
+    /// it to close before presenting the new one. The native sheet is what keeps
+    /// the card's corners concentric with the device's display radius and its
+    /// layering correct; the content crossfades on a swap (see `MapCardSheet`),
+    /// the map stays live behind it, and a tap on the empty map dismisses it.
     @State private var mapCard: MapCard?
     /// A lone (non-clustered) pin tapped on the map. Presented full-screen here
     /// without a map button — there's nowhere new to take the user.
@@ -117,7 +120,7 @@ struct MapView: View {
 
     /// The two kinds of bottom card the map can show. Routed through a single
     /// sheet (see `mapCard`) so re-targeting it never tears the sheet down.
-    private enum MapCard: Identifiable {
+    enum MapCard: Identifiable {
         case cluster(BirdCluster)
         case settings
 
@@ -203,7 +206,11 @@ struct MapView: View {
     var body: some View {
         ZStack {
             GeometryReader { geo in
-                Map(position: $position) {
+                // Rotation (and the 3D pitch that rides with it) is disabled —
+                // a birding map only ever wants north-up pan + zoom, and a
+                // stray two-finger twist that tilts/spins the map is pure
+                // annoyance here.
+                Map(position: $position, interactionModes: [.pan, .zoom]) {
                     UserAnnotation()
                     ForEach(visiblePoints) { point in
                         Annotation(
@@ -216,8 +223,7 @@ struct MapView: View {
                                 info: visibleReps[point.id],
                                 thumbSize: Self.thumbSize,
                                 onTap: { tappedInfo in
-                                    // Multi-bird stacks open a card; a lone bird
-                                    // opens its photo full-screen.
+                                    // Multi-bird stacks open (or swap to) a card.
                                     if tappedInfo.count > 1 {
                                         mapCard = .cluster(BirdCluster(
                                             representative: tappedInfo.representative,
@@ -225,10 +231,17 @@ struct MapView: View {
                                             others: tappedInfo.others
                                         ))
                                     } else {
-                                        // Present locally (not via the shared
-                                        // presenter) so the full-screen viewer
-                                        // shows no map button — a lone pin is
-                                        // already pinpointed where you tapped.
+                                        // A lone bird opens its photo full-screen.
+                                        // Drop any open card *without* a dismiss
+                                        // animation first, so the sheet is gone
+                                        // immediately and the root cover presents
+                                        // right away instead of waiting for the
+                                        // sheet's slide-down to finish.
+                                        if mapCard != nil {
+                                            var t = Transaction()
+                                            t.disablesAnimations = true
+                                            withTransaction(t) { mapCard = nil }
+                                        }
                                         presentedSinglePoint = PresentedSpecies(
                                             scientificName: tappedInfo.representative.scientificName
                                         )
@@ -245,14 +258,16 @@ struct MapView: View {
                     // map-settings button; only the compass stays a map control.
                     MapCompass()
                 }
-                // The multi-bird card (a half-height sheet) leaves the map
-                // fully interactive behind it — pan/zoom work while it's open,
-                // matching Apple Maps. We deliberately do *not* lay a
-                // tap-catching overlay over the map to dismiss the card: that
-                // overlay also swallowed pan/drag gestures, freezing the map.
-                // The card is dismissed by swiping it down (native sheet
-                // behavior), including a swipe that starts on the map, crosses
-                // the card's top edge, and continues down.
+                // A single tap on the empty map dismisses whatever card is open.
+                // This rides on the map's *own* tap gesture rather than a
+                // tap-catching overlay, so it only fires on genuine taps — drags
+                // still pan/zoom the map untouched, and taps that land on an
+                // annotation are consumed by that annotation (opening another
+                // bird / cluster) instead of bubbling here. That's what lets the
+                // map stay fully live behind the card.
+                .onTapGesture {
+                    if mapCard != nil { mapCard = nil }
+                }
                 .onMapCameraChange(frequency: .continuous) { context in
                     handleCameraChange(context)
                 }
@@ -316,25 +331,17 @@ struct MapView: View {
         // from another tab) — handle both.
         .onChange(of: navigator?.pendingFocus) { _, _ in applyPendingFocus() }
         .onAppear { applyPendingFocus() }
-        // A single sheet for both the cluster card and the settings card. Bound
-        // to `isPresented` (not `item`) so re-pointing `mapCard` at a different
-        // card swaps the content in place — the sheet stays up and the new card
-        // rises as the old one's content crossfades out, instead of the sheet
-        // fully dismissing and re-presenting.
+        // One sheet for both cards. Bound to `isPresented` (not `item`) so
+        // re-pointing `mapCard` swaps the content live; `MapCardSheet` crossfades
+        // between cards, keeps the map interactive behind it, and never dims it.
         .sheet(isPresented: Binding(
             get: { mapCard != nil },
             set: { if !$0 { mapCard = nil } }
         )) {
-            switch mapCard {
-            case .cluster(let cluster):
-                ClusterSheet(cluster: cluster) { point in
-                    mapCard = nil
-                    navigator?.focus(latitude: point.latitude, longitude: point.longitude)
-                }
-            case .settings:
-                MapSettingsSheet()
-            case .none:
-                EmptyView()
+            MapCardSheet(card: mapCard) { point in
+                // "Pinpoint on Map" from a bird inside a cluster card.
+                mapCard = nil
+                navigator?.focus(latitude: point.latitude, longitude: point.longitude)
             }
         }
         .fullScreenCover(item: $presentedSinglePoint) { species in
@@ -730,26 +737,72 @@ struct BirdCluster: Identifiable, Hashable {
     }
 }
 
-// MARK: - Native iOS 26 cluster sheet
+// MARK: - The shared map card (native sheet)
 
-private struct ClusterSheet: View {
-    let cluster: BirdCluster
-    /// Invoked when the user taps "Pinpoint on Map" in the full-screen viewer.
-    /// The parent closes this sheet and focuses the map on the tapped point.
-    let onShowOnMap: (MapPoint) -> Void
+/// Hosts both map cards inside one native sheet. The sheet itself stays mounted
+/// while `card` changes, so the body just crossfades between the cluster grid and
+/// the settings pane (keyed by `card.id`) instead of tearing the sheet down and
+/// re-presenting it — that's the in-place swap the user sees when tapping a
+/// second cluster, or the gear, while a card is already open.
+///
+/// Presentation modifiers are applied here (once, uniformly) rather than per
+/// card, so *both* cards get the frosted, non-dimming, background-interactive
+/// treatment: the map stays live behind either one, you can tap another bird /
+/// the gear to swap, and a tap on the empty map dismisses (handled by the map's
+/// own tap gesture in `MapView`).
+private struct MapCardSheet: View {
+    let card: MapView.MapCard?
+    /// "Pinpoint on Map" for a bird tapped inside a cluster card.
+    let onPinpoint: (MapPoint) -> Void
+
     @State private var detent: PresentationDetent = .medium
-    /// Local full-screen presentation. Presenting from the sheet's own context
-    /// (rather than the root presenter) avoids a nested-presentation conflict
-    /// with this sheet. Holds the tapped point so its coordinate is available
-    /// for the "Pinpoint on Map" action.
+    /// Full-screen photo presented from *this sheet's* context (not the root) so
+    /// it doesn't collide with the sheet's own presentation. Holds the tapped
+    /// point so its coordinate is available to "Pinpoint on Map".
     @State private var presentedPoint: MapPoint?
 
     private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 12)]
-    /// Tuned against the system sheet's top-corner radius at medium
-    /// detent.
     private static let thumbCornerRadius: CGFloat = 26
 
     var body: some View {
+        ZStack {
+            switch card {
+            case .cluster(let cluster):
+                clusterGrid(cluster)
+                    .id("cluster-" + cluster.id)
+                    .transition(.opacity)
+            case .settings:
+                MapSettingsContent()
+                    .id("settings")
+                    .transition(.opacity)
+            case .none:
+                Color.clear
+            }
+        }
+        // Crossfade whenever the card identity changes (cluster→cluster,
+        // cluster→settings, …). The sheet host is unaffected; only the contents
+        // animate, so the swap reads as a smooth dissolve rather than a snap.
+        .animation(.easeInOut(duration: 0.22), value: card?.id)
+        .presentationDetents([.medium, .large], selection: $detent)
+        .presentationDragIndicator(.hidden)
+        // Keep the map interactive (and undimmed) behind the card at the medium
+        // detent — this is what lets you open other things from either card and
+        // tap the map to dismiss. At .large the sheet is modal, as expected.
+        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
+        // Intentionally not setting `.presentationCornerRadius` — the system
+        // default tracks the device's display corner radius so the card's bottom
+        // corners stay concentric with the screen's curve.
+        .presentationBackground(.thinMaterial)
+        .fullScreenCover(item: $presentedPoint) { point in
+            SpeciesPhotoFullScreen(
+                scientificName: point.scientificName,
+                mapButtonTitle: "Pinpoint on Map",
+                onShowOnMap: { onPinpoint(point) }
+            )
+        }
+    }
+
+    private func clusterGrid(_ cluster: BirdCluster) -> some View {
         ScrollView {
             LazyVGrid(columns: columns, alignment: .center, spacing: 12) {
                 ForEach(cluster.all) { point in
@@ -762,40 +815,11 @@ private struct ClusterSheet: View {
                     }
                 }
             }
-            // Symmetric 12pt inset on all four sides. Bottom gets a bit
-            // extra so the last row clears the home indicator at large
-            // detent; visually that area is below the safe-area line
-            // and the user reads it as "system" space, not "padding".
+            // Symmetric 12pt inset; a bit more at the bottom so the last row
+            // clears the home indicator at the large detent.
             .padding(.horizontal, 12)
             .padding(.top, 12)
             .padding(.bottom, 24)
-        }
-        .presentationDetents([.medium, .large], selection: $detent)
-        // Hide the system grab handle — the sheet is still dismissable
-        // by swiping anywhere downward.
-        .presentationDragIndicator(.hidden)
-        // Intentionally not setting `.presentationCornerRadius` — the
-        // system default tracks the device's display corner radius, so
-        // the sheet's bottom corners line up with the iPhone's screen
-        // bottom corners instead of clipping outside them. Hard-coding a
-        // radius (e.g. 28) was the source of the "clips past the
-        // screen's curve" regression.
-        .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-        .presentationBackground(.thinMaterial)
-        .fullScreenCover(item: $presentedPoint) { point in
-            SpeciesPhotoFullScreen(
-                scientificName: point.scientificName,
-                mapButtonTitle: "Pinpoint on Map",
-                onShowOnMap: {
-                    // Dismiss the whole card (the sheet) directly — that tears
-                    // down this full-screen cover along with it, so the card is
-                    // already gone the moment the photo finishes dismissing,
-                    // rather than lingering until the zoom completes. (Clearing
-                    // `presentedPoint` first would dismiss the cover alone and
-                    // leave the card behind underneath.)
-                    onShowOnMap(point)
-                }
-            )
         }
     }
 }
@@ -896,7 +920,7 @@ private struct GlassMapButton: View {
 /// The card opened from the map's settings button. Mirrors the import card's
 /// look and holds the single "Show Repeat Observations on Map" toggle that
 /// formerly lived in the Settings tab.
-private struct MapSettingsSheet: View {
+private struct MapSettingsContent: View {
     @Bindable private var settings = AppSettings.shared
 
     var body: some View {
@@ -905,7 +929,6 @@ private struct MapSettingsSheet: View {
                 Image(systemName: "mappin.and.ellipse")
                     .font(.system(size: 44, weight: .regular))
                     .foregroundStyle(Color.accentColor)
-                    .padding(.top, 8)
                 Text("Map Options")
                     .font(.title2.weight(.bold))
                     .multilineTextAlignment(.center)
@@ -926,9 +949,7 @@ private struct MapSettingsSheet: View {
 
             Spacer(minLength: 0)
         }
-        .padding(.top, 32)
-        .presentationDetents([.medium])
-        .presentationDragIndicator(.visible)
+        .padding(.top, 12)
     }
 }
 
