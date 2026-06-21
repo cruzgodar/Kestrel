@@ -15,6 +15,12 @@ enum RecordingIntentRequest {
     static let notification = Notification.Name("KestrelStartRecordingIntent")
     private static let pendingKey = "KestrelPendingStartRecording"
 
+    /// Deep link the watch complication opens (via `widgetURL`) to ask the app
+    /// to start recording. Handled in-process by the app's `onOpenURL`, which
+    /// calls `fire()` — reliable where the widget-extension AppIntent path was
+    /// not (its `perform()` runs out-of-process and never reached the app).
+    static let startRecordingURL = URL(string: "kestrel://start-recording")!
+
     /// Called from `StartRecordingIntent.perform()` (which runs in the app
     /// process). Leaves a flag for a cold launch and posts for a warm one.
     static func fire() {

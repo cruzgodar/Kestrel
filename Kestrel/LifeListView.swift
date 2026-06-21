@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 struct LifeListView: View {
@@ -297,6 +298,14 @@ struct LifeListView: View {
                     .frame(height: max(geo.frame(in: .global).maxY - (searchFieldTop - 4), 0))
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
+            // Without this the `safeAreaInset` below squeezes this overlay into
+            // the region *above* the search field, so `geo…maxY` lands at the
+            // field's top and the swallowing strip collapses to ~4pt (the bug).
+            // Ignoring the bottom inset lets the GeometryReader reach the true
+            // screen bottom, so the strip actually covers the field's footprint.
+            // The overlay still sits below the field in z-order (the inset is
+            // applied after), so the field's controls stay tappable.
+            .ignoresSafeArea(.container, edges: .bottom)
             .allowsHitTesting(searchFieldTop > 0)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -473,6 +482,8 @@ struct LifeListView: View {
             }
             Spacer()
             Button {
+                // A single short tap to confirm the star toggled.
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
                 store.setStarred(
                     scientificName: entry.scientificName,
                     isStarred: !entry.isStarred

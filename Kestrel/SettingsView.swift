@@ -12,7 +12,7 @@ struct SettingsView: View {
             if manager.isWatchAppInstalled {
                 Section {
                     Toggle(
-                        "Prefer Apple Watch microphone",
+                        "Prefer Apple Watch Microphone",
                         isOn: $settings.preferWatchMicrophone
                     )
                 } footer: {
@@ -22,7 +22,7 @@ struct SettingsView: View {
 
             Section {
                 Toggle(
-                    "Show repeat observations on map",
+                    "Show Repeat Observations on Map",
                     isOn: $settings.showRepeatObservationsOnMap
                 )
             } footer: {
