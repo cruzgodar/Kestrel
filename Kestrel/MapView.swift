@@ -114,9 +114,20 @@ struct MapView: View {
     /// layering correct; the content crossfades on a swap (see `MapCardSheet`),
     /// the map stays live behind it, and a tap on the empty map dismisses it.
     @State private var mapCard: MapCard?
-    /// A lone (non-clustered) pin tapped on the map. Presented full-screen here
-    /// without a map button — there's nowhere new to take the user.
+    /// A lone (non-clustered) pin tapped on the map *while no card is open*.
+    /// Presented full-screen from the root without a map button — there's nowhere
+    /// new to take the user.
     @State private var presentedSinglePoint: PresentedSpecies?
+    /// A full-screen photo presented from *inside* the open card's sheet (so it
+    /// appears instantly, with no wait for the sheet to dismiss): either a bird
+    /// tapped in a cluster grid (`.pinpoint`, keeps the card) or a lone pin
+    /// tapped on the map while a card is open (`.lone`, closes the card on exit).
+    @State private var sheetPhoto: MapSheetPhoto?
+    /// When an annotation was last tapped. The map's own tap-to-dismiss gesture
+    /// recognizes simultaneously (so it isn't delayed waiting for double-tap), so
+    /// it also sees taps that land on an annotation; this lets it tell those
+    /// apart from genuine empty-map taps and skip dismissing for them.
+    @State private var lastAnnotationTapAt: Date = .distantPast
 
     /// The two kinds of bottom card the map can show. Routed through a single
     /// sheet (see `mapCard`) so re-targeting it never tears the sheet down.
@@ -223,6 +234,9 @@ struct MapView: View {
                                 info: visibleReps[point.id],
                                 thumbSize: Self.thumbSize,
                                 onTap: { tappedInfo in
+                                    // Mark this as an annotation tap so the map's
+                                    // simultaneous dismiss gesture skips it.
+                                    lastAnnotationTapAt = Date()
                                     // Multi-bird stacks open (or swap to) a card.
                                     if tappedInfo.count > 1 {
                                         mapCard = .cluster(BirdCluster(
@@ -230,18 +244,17 @@ struct MapView: View {
                                             coordinate: tappedInfo.coordinate,
                                             others: tappedInfo.others
                                         ))
+                                    } else if mapCard != nil {
+                                        // A card is already open. Present the photo
+                                        // from the *sheet's own* context so it
+                                        // appears instantly — a root cover would
+                                        // have to wait for the sheet to finish
+                                        // dismissing first. The card is closed when
+                                        // this photo is dismissed (see MapCardSheet).
+                                        sheetPhoto = .lone(tappedInfo.representative)
                                     } else {
-                                        // A lone bird opens its photo full-screen.
-                                        // Drop any open card *without* a dismiss
-                                        // animation first, so the sheet is gone
-                                        // immediately and the root cover presents
-                                        // right away instead of waiting for the
-                                        // sheet's slide-down to finish.
-                                        if mapCard != nil {
-                                            var t = Transaction()
-                                            t.disablesAnimations = true
-                                            withTransaction(t) { mapCard = nil }
-                                        }
+                                        // No card open: present full-screen from the
+                                        // root (nothing to wait on).
                                         presentedSinglePoint = PresentedSpecies(
                                             scientificName: tappedInfo.representative.scientificName
                                         )
@@ -265,9 +278,26 @@ struct MapView: View {
                 // annotation are consumed by that annotation (opening another
                 // bird / cluster) instead of bubbling here. That's what lets the
                 // map stay fully live behind the card.
-                .onTapGesture {
-                    if mapCard != nil { mapCard = nil }
-                }
+                //
+                // It's a `simultaneousGesture`, not `.onTapGesture`: the latter
+                // installs a tap that must wait for MapKit's double-tap-to-zoom
+                // recognizer to fail before it fires, which is the ~0.3 s delay
+                // before the card closes. Recognizing simultaneously drops that
+                // require-to-fail dependency, so the tap registers immediately.
+                .simultaneousGesture(
+                    TapGesture().onEnded {
+                        // Defer one runloop so any annotation tap from the same
+                        // touch is processed first (it stamps `lastAnnotationTapAt`
+                        // and opens/swaps a card); then only dismiss if this tap
+                        // landed on the empty map, not on an annotation.
+                        DispatchQueue.main.async {
+                            guard mapCard != nil else { return }
+                            if Date().timeIntervalSince(lastAnnotationTapAt) > 0.1 {
+                                mapCard = nil
+                            }
+                        }
+                    }
+                )
                 .onMapCameraChange(frequency: .continuous) { context in
                     handleCameraChange(context)
                 }
@@ -338,11 +368,24 @@ struct MapView: View {
             get: { mapCard != nil },
             set: { if !$0 { mapCard = nil } }
         )) {
-            MapCardSheet(card: mapCard) { point in
-                // "Pinpoint on Map" from a bird inside a cluster card.
-                mapCard = nil
-                navigator?.focus(latitude: point.latitude, longitude: point.longitude)
-            }
+            MapCardSheet(
+                card: mapCard,
+                photo: $sheetPhoto,
+                onPinpoint: { point in
+                    // "Pinpoint on Map" from a bird inside a cluster card. Clear
+                    // the photo explicitly: closing the card tears down the cover
+                    // visually, but the item binding would otherwise stay set and
+                    // re-present the photo the next time a card opens.
+                    sheetPhoto = nil
+                    mapCard = nil
+                    navigator?.focus(latitude: point.latitude, longitude: point.longitude)
+                },
+                onLoneDismissed: {
+                    // The lone-bird photo opened over the card was dismissed —
+                    // put the card away instead of returning to it.
+                    mapCard = nil
+                }
+            )
         }
         .fullScreenCover(item: $presentedSinglePoint) { species in
             SpeciesPhotoFullScreen(scientificName: species.scientificName)
@@ -752,14 +795,20 @@ struct BirdCluster: Identifiable, Hashable {
 /// own tap gesture in `MapView`).
 private struct MapCardSheet: View {
     let card: MapView.MapCard?
+    /// Full-screen photo presented from *this sheet's* context (not the root) so
+    /// it doesn't collide with the sheet's own presentation — that's what makes
+    /// it open instantly over the card. `.pinpoint` carries the map button and
+    /// returns to the card; `.lone` has no button and closes the card on exit.
+    @Binding var photo: MapSheetPhoto?
     /// "Pinpoint on Map" for a bird tapped inside a cluster card.
     let onPinpoint: (MapPoint) -> Void
+    /// The lone-bird photo (opened over a card) was dismissed.
+    let onLoneDismissed: () -> Void
 
     @State private var detent: PresentationDetent = .medium
-    /// Full-screen photo presented from *this sheet's* context (not the root) so
-    /// it doesn't collide with the sheet's own presentation. Holds the tapped
-    /// point so its coordinate is available to "Pinpoint on Map".
-    @State private var presentedPoint: MapPoint?
+    /// Whether dismissing the current photo should also close the card. Tracked
+    /// here because `onDismiss` can't read the (already-cleared) `photo` item.
+    @State private var closeCardOnPhotoDismiss = false
 
     private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 12)]
     private static let thumbCornerRadius: CGFloat = 26
@@ -782,7 +831,7 @@ private struct MapCardSheet: View {
         // Crossfade whenever the card identity changes (cluster→cluster,
         // cluster→settings, …). The sheet host is unaffected; only the contents
         // animate, so the swap reads as a smooth dissolve rather than a snap.
-        .animation(.easeInOut(duration: 0.22), value: card?.id)
+        .animation(.easeInOut(duration: 0.14), value: card?.id)
         .presentationDetents([.medium, .large], selection: $detent)
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card at the medium
@@ -793,12 +842,33 @@ private struct MapCardSheet: View {
         // default tracks the device's display corner radius so the card's bottom
         // corners stay concentric with the screen's curve.
         .presentationBackground(.thinMaterial)
-        .fullScreenCover(item: $presentedPoint) { point in
-            SpeciesPhotoFullScreen(
-                scientificName: point.scientificName,
-                mapButtonTitle: "Pinpoint on Map",
-                onShowOnMap: { onPinpoint(point) }
-            )
+        // Remember (before the item clears) whether to close the card on exit.
+        .onChange(of: photo) { _, newValue in
+            switch newValue {
+            case .lone:     closeCardOnPhotoDismiss = true
+            case .pinpoint: closeCardOnPhotoDismiss = false
+            case .none:     break   // keep the flag for onDismiss to read
+            }
+        }
+        .fullScreenCover(
+            item: $photo,
+            onDismiss: {
+                if closeCardOnPhotoDismiss {
+                    closeCardOnPhotoDismiss = false
+                    onLoneDismissed()
+                }
+            }
+        ) { photo in
+            switch photo {
+            case .pinpoint(let point):
+                SpeciesPhotoFullScreen(
+                    scientificName: point.scientificName,
+                    mapButtonTitle: "Pinpoint on Map",
+                    onShowOnMap: { onPinpoint(point) }
+                )
+            case .lone(let point):
+                SpeciesPhotoFullScreen(scientificName: point.scientificName)
+            }
         }
     }
 
@@ -811,7 +881,7 @@ private struct MapCardSheet: View {
                         cornerRadius: Self.thumbCornerRadius
                     )
                     .onTapGesture {
-                        presentedPoint = point
+                        photo = .pinpoint(point)
                     }
                 }
             }
@@ -820,6 +890,28 @@ private struct MapCardSheet: View {
             .padding(.horizontal, 12)
             .padding(.top, 12)
             .padding(.bottom, 24)
+        }
+    }
+}
+
+/// A full-screen photo presented from within an open map card's sheet.
+private enum MapSheetPhoto: Identifiable, Equatable {
+    /// A bird tapped in a cluster grid — shows "Pinpoint on Map", keeps the card.
+    case pinpoint(MapPoint)
+    /// A lone pin tapped on the map while a card was open — no button; closes
+    /// the card when dismissed.
+    case lone(MapPoint)
+
+    var point: MapPoint {
+        switch self {
+        case .pinpoint(let p), .lone(let p): return p
+        }
+    }
+
+    var id: String {
+        switch self {
+        case .pinpoint(let p): return "pinpoint-" + p.id
+        case .lone(let p):     return "lone-" + p.id
         }
     }
 }

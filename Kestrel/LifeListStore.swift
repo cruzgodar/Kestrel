@@ -12,8 +12,29 @@ final class LifeListStore {
 
     private(set) var entries: [LifeListEntry] = []
 
+    /// Authoritative set of starred ("alert me") scientific names, persisted
+    /// *separately* from the life list (see `starsURL`). Keeping it independent
+    /// of `entries` is what lets stars survive a wipe-and-reimport: clearing the
+    /// life list leaves this set untouched, and `load`/`merge` re-stamp the
+    /// matching entries from it. Each `LifeListEntry.isStarred` is kept in sync
+    /// with this set for the UI; this set is the source of truth.
+    private(set) var starredNames: Set<String> = []
+
     init() {
-        load()
+        if let saved = Self.loadStars() {
+            starredNames = saved
+            load()
+            // Re-stamp entries from the authoritative set (their decoded flags
+            // may be stale relative to it).
+            applyStarsToEntries()
+        } else {
+            // First run after this feature shipped: no separate stars file yet.
+            // Seed it from whatever stars the entries already carry, then it
+            // becomes the source of truth going forward.
+            load()
+            starredNames = Set(entries.lazy.filter(\.isStarred).map(\.scientificName))
+            saveStars()
+        }
     }
 
     /// Reads the CSV at `url`, parses it as an eBird export, and merges into the life list.
@@ -83,18 +104,37 @@ final class LifeListStore {
         save()
     }
 
-    /// Sets or clears the "alert me" star on an existing entry.
+    /// Sets or clears the "alert me" star. Writes through to the persistent
+    /// `starredNames` set (so it survives a wipe-and-reimport) and mirrors the
+    /// flag onto the entry, if present, for the UI.
     func setStarred(scientificName: String, isStarred: Bool) {
-        guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }),
-              entries[idx].isStarred != isStarred else { return }
-        entries[idx].isStarred = isStarred
-        save()
+        let setChanged: Bool
+        if isStarred {
+            setChanged = starredNames.insert(scientificName).inserted
+        } else {
+            setChanged = starredNames.remove(scientificName) != nil
+        }
+        if setChanged { saveStars() }
+
+        if let idx = entries.firstIndex(where: { $0.scientificName == scientificName }),
+           entries[idx].isStarred != isStarred {
+            entries[idx].isStarred = isStarred
+            save()
+        }
     }
 
-    /// Scientific names of every starred entry. Recomputed on access — cheap
-    /// at life-list sizes and saves us from having to keep a side cache in sync.
-    var starredNames: Set<String> {
-        Set(entries.lazy.filter(\.isStarred).map(\.scientificName))
+    /// Re-stamps every entry's `isStarred` flag from the authoritative
+    /// `starredNames` set, persisting the life list only if anything changed.
+    private func applyStarsToEntries() {
+        var changed = false
+        for i in entries.indices {
+            let want = starredNames.contains(entries[i].scientificName)
+            if entries[i].isStarred != want {
+                entries[i].isStarred = want
+                changed = true
+            }
+        }
+        if changed { save() }
     }
 
     /// Removes a species from the life list. No-op if it isn't present.
@@ -197,6 +237,10 @@ final class LifeListStore {
         // chinensis" (Spotted Dove) would slug to a missing image and show the
         // placeholder until the next launch.
         entries = Self.canonicalize(prelim).sorted { $0.firstSeen > $1.firstSeen }
+        // Re-stamp stars from the persistent set so a wipe-and-reimport (or any
+        // import) restores the user's "alert me" choices even though the cleared
+        // entries no longer carried them.
+        applyStarsToEntries()
         save()
         return ImportSummary(added: added, updated: updated, skipped: skipped)
     }
@@ -211,6 +255,45 @@ final class LifeListStore {
             create: true
         )
         return dir.appendingPathComponent("life_list.json")
+    }
+
+    /// Separate file for the starred ("alert me") set, intentionally decoupled
+    /// from `life_list.json` so the stars outlive a wipe-and-reimport.
+    private static func starsURL() throws -> URL {
+        let dir = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        return dir.appendingPathComponent("starred_species.json")
+    }
+
+    /// Loads the persisted star set. Returns `nil` (not empty) when the file
+    /// has never been written, so `init` can tell "no stars" apart from
+    /// "pre-feature install, migrate from the entries."
+    private static func loadStars() -> Set<String>? {
+        do {
+            let url = try starsURL()
+            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode(Set<String>.self, from: data)
+        } catch {
+            print("LifeListStore: stars load failed — \(error)")
+            return nil
+        }
+    }
+
+    private func saveStars() {
+        do {
+            let url = try Self.starsURL()
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(starredNames.sorted())
+            try data.write(to: url, options: .atomic)
+        } catch {
+            print("LifeListStore: stars save failed — \(error)")
+        }
     }
 
     private func load() {
