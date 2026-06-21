@@ -6,7 +6,7 @@ struct AboutView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                Text(Self.intro)
+                HighlightedText(segments: Self.introSegments)
                 Text(Self.watch)
                 Text(Self.importing)
 
@@ -56,34 +56,16 @@ struct AboutView: View {
 
     // MARK: - Body copy
 
-    // Blue used by the life list's star toggle; purple used by the
-    // add-to-life-list affordance. Reused here so the two phrases point at the
-    // features they describe.
-    private static let starColor = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
-    private static let addColor = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
-
-    /// First paragraph, with "starred in your life list" tinted star-blue and
-    /// "have never seen before" tinted add-to-life-list purple.
-    private static var intro: AttributedString {
-        var s = AttributedString(
-            "Kestrel listens for birds in the background so that you can focus on the nature around you. It uses the open-source BirdNET model to identify birds by their songs and calls, and when it hears one that you have "
-        )
-
-        var starred = AttributedString("starred in your life list")
-        starred.foregroundColor = starColor
-        s += starred
-
-        s += AttributedString(" or ")
-
-        var unseen = AttributedString("have never seen before")
-        unseen.foregroundColor = addColor
-        s += unseen
-
-        s += AttributedString(
-            ", it notifies you. That lets you keep your focus off of your phone, with confidence that you'll know when a bird you care about is nearby."
-        )
-        return s
-    }
+    /// First paragraph, with "starred in your life list" on a blue pill and
+    /// "have never seen before" on a purple pill — the same row-background tints
+    /// the Identify tab uses for starred and not-yet-on-the-list birds.
+    private static let introSegments: [HighlightedText.Segment] = [
+        .init("Kestrel listens for birds in the background so you can focus on the nature around you. It uses Cornell Lab's BirdNET model to identify birds by their songs and calls, and when it hears one that you have "),
+        .init("starred in your life list", highlight: HighlightedText.starHighlight),
+        .init(" or "),
+        .init("have never seen before", highlight: HighlightedText.addHighlight),
+        .init(", it notifies you. That lets you keep your focus off of your phone, with confidence that you'll know when a bird you care about is nearby."),
+    ]
 
     private static let watch = AttributedString(
         "On Apple Watch, Kestrel can log your birding walk as a workout. That lets it use the watch's microphone, and so your phone can stay in your pocket. Since birds are identified on your phone, you must keep it with you to use Kestrel."

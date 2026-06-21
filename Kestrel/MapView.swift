@@ -105,13 +105,29 @@ struct MapView: View {
     /// "annotations never fade" problem.
     @State private var visibleReps: [String: RepInfo] = [:]
 
-    /// Drives the map-options card opened from the top-right settings button.
-    @State private var showMapSettings = false
-
-    @State private var expandedCluster: BirdCluster?
+    /// The single bottom card currently presented — either a multi-bird cluster
+    /// or the map-options settings. Both share one `.sheet(isPresented:)` so that
+    /// switching from one to the other (or from one cluster to another) swaps the
+    /// sheet's content live, rather than dismissing the old card and waiting for
+    /// it to close before presenting the new one.
+    @State private var mapCard: MapCard?
     /// A lone (non-clustered) pin tapped on the map. Presented full-screen here
     /// without a map button — there's nowhere new to take the user.
     @State private var presentedSinglePoint: PresentedSpecies?
+
+    /// The two kinds of bottom card the map can show. Routed through a single
+    /// sheet (see `mapCard`) so re-targeting it never tears the sheet down.
+    private enum MapCard: Identifiable {
+        case cluster(BirdCluster)
+        case settings
+
+        var id: String {
+            switch self {
+            case .cluster(let cluster): return "cluster-" + cluster.id
+            case .settings:             return "settings"
+            }
+        }
+    }
 
     /// Snapshot of a cluster's representative; what each annotation
     /// needs to know to render its label and respond to taps.
@@ -203,11 +219,11 @@ struct MapView: View {
                                     // Multi-bird stacks open a card; a lone bird
                                     // opens its photo full-screen.
                                     if tappedInfo.count > 1 {
-                                        expandedCluster = BirdCluster(
+                                        mapCard = .cluster(BirdCluster(
                                             representative: tappedInfo.representative,
                                             coordinate: tappedInfo.coordinate,
                                             others: tappedInfo.others
-                                        )
+                                        ))
                                     } else {
                                         // Present locally (not via the shared
                                         // presenter) so the full-screen viewer
@@ -261,25 +277,32 @@ struct MapView: View {
             }
             .ignoresSafeArea(edges: .bottom)
 
-            // Liquid-glass controls pinned to the top-right: a settings button
-            // that opens the map-options card, and a recenter button (replacing
-            // the stock MapUserLocationButton) just below it.
-            VStack(spacing: 12) {
-                GlassMapButton(systemImage: "gearshape", accessibility: "Map settings") {
-                    showMapSettings = true
-                }
+            // Liquid-glass controls pinned to the top-right, laid out side by
+            // side to mirror the Life List tab's two trailing buttons: a
+            // recenter button on the left and the map-settings button on the
+            // right (replacing the stock MapUserLocationButton).
+            HStack(spacing: 12) {
                 GlassMapButton(systemImage: "location.fill", accessibility: "Center on current location") {
-                    withAnimation(.easeInOut(duration: 0.45)) {
-                        position = .userLocation(fallback: .automatic)
+                    Task {
+                        guard let coord = await LocationCache.shared.current() else { return }
+                        withAnimation(.easeInOut(duration: 0.45)) {
+                            position = .region(MKCoordinateRegion(
+                                center: CLLocationCoordinate2D(
+                                    latitude: coord.latitude,
+                                    longitude: coord.longitude
+                                ),
+                                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                            ))
+                        }
                     }
+                }
+                GlassMapButton(systemImage: "gearshape", accessibility: "Map settings") {
+                    mapCard = .settings
                 }
             }
             .padding(.top, 8)
             .padding(.trailing, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-        }
-        .sheet(isPresented: $showMapSettings) {
-            MapSettingsSheet()
         }
         .task {
             let manager = CLLocationManager()
@@ -293,10 +316,25 @@ struct MapView: View {
         // from another tab) — handle both.
         .onChange(of: navigator?.pendingFocus) { _, _ in applyPendingFocus() }
         .onAppear { applyPendingFocus() }
-        .sheet(item: $expandedCluster) { cluster in
-            ClusterSheet(cluster: cluster) { point in
-                expandedCluster = nil
-                navigator?.focus(latitude: point.latitude, longitude: point.longitude)
+        // A single sheet for both the cluster card and the settings card. Bound
+        // to `isPresented` (not `item`) so re-pointing `mapCard` at a different
+        // card swaps the content in place — the sheet stays up and the new card
+        // rises as the old one's content crossfades out, instead of the sheet
+        // fully dismissing and re-presenting.
+        .sheet(isPresented: Binding(
+            get: { mapCard != nil },
+            set: { if !$0 { mapCard = nil } }
+        )) {
+            switch mapCard {
+            case .cluster(let cluster):
+                ClusterSheet(cluster: cluster) { point in
+                    mapCard = nil
+                    navigator?.focus(latitude: point.latitude, longitude: point.longitude)
+                }
+            case .settings:
+                MapSettingsSheet()
+            case .none:
+                EmptyView()
             }
         }
         .fullScreenCover(item: $presentedSinglePoint) { species in
