@@ -22,6 +22,10 @@ struct LifeListView: View {
     /// until the filter is toggled off and back on. See `displayedEntries`.
     @State private var starredSnapshot: Set<String> = []
     @State private var searchText = ""
+    /// Global-space Y of the top edge of the bottom search field, measured so
+    /// the tap-swallowing overlay (see `body`) knows where the list content
+    /// stops being directly tappable.
+    @State private var searchFieldTop: CGFloat = 0
     /// Cached geo range-filter allowed-index set, loaded once on appear. Used
     /// to split search results into in-range / out-of-range groups. `nil`
     /// when no location filter has been computed yet (no grouping then).
@@ -278,8 +282,28 @@ struct LifeListView: View {
         .navigationTitle("Life List")
         .navigationSubtitle(speciesCountText)
         .toolbarTitleDisplayMode(.inlineLarge)
+        // Swallow taps in the bottom strip — the glass search field plus the
+        // gap up to 4pt above its top — so taps meant for the search field or
+        // tab bar don't fall through to the list rows scrolling beneath the
+        // glass and errantly hit a row's star button or species thumbnail.
+        // Placed *before* `safeAreaInset` so it sits above the list but below
+        // the search field (which the inset renders on top); the tab bar lives
+        // above this view entirely, so both stay tappable.
+        .overlay {
+            GeometryReader { geo in
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture { }
+                    .frame(height: max(geo.frame(in: .global).maxY - (searchFieldTop - 4), 0))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            }
+            .allowsHitTesting(searchFieldTop > 0)
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             BottomSearchField(text: $searchText, prompt: "Search or add species")
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.frame(in: .global).minY
+                } action: { searchFieldTop = $0 }
         }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -649,7 +673,7 @@ private struct ImportInfoSheet: View {
                     .multilineTextAlignment(.center)
                 // Markdown so "download your eBird data" renders as an inline
                 // tappable link to eBird's data-download page.
-                Text(.init("If you track the birds you've seen in eBird or Merlin, you can import them here. First [download your eBird data](https://ebird.org/downloadMyData), then import the CSV file here."))
+                Text(.init("If you track the birds you've seen with eBird or Merlin, you can import them to Kestrel. First [download your eBird data](https://ebird.org/downloadMyData), then import the CSV file here."))
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)

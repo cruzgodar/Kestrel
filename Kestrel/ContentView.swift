@@ -62,7 +62,9 @@ struct ContentView: View {
                 ContentUnavailableView {
                     Label("No detections yet", systemImage: "magnifyingglass")
                 } description: {
-                    Text("Tap Start Recording here or on your Apple Watch to begin identifying birds. You will be notified about starred birds and those not on your life list.")
+                    Text(manager.isWatchAppInstalled
+                         ? "Tap Start Recording here or on Apple Watch to listen for birds in the background. You will be notified about starred birds and those not on your life list."
+                         : "Tap Start Recording to listen for birds in the background. You will be notified about starred birds and those not on your life list.")
                 }
                 .opacity(manager.isRecording ? 0 : 1)
                 .animation(.easeInOut(duration: 0.25), value: manager.isRecording)

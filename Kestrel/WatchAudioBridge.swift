@@ -25,6 +25,7 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
                  activationDidCompleteWith activationState: WCSessionActivationState,
                  error: Error?) {
         if let error { print("Kestrel: WCSession activation error \(error)") }
+        refreshWatchAppInstalled(session)
     }
 
     func sessionDidBecomeInactive(_ session: WCSession) {}
@@ -32,6 +33,21 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
         // iOS lets the user re-pair / switch watches at runtime. Re-activate
         // so a fresh session is ready for the new watch.
         WCSession.default.activate()
+    }
+
+    /// Fires when the user pairs/unpairs a watch or installs/removes the watch
+    /// app — keep the manager's `isWatchAppInstalled` flag (and the UI it
+    /// drives) in sync.
+    func sessionWatchStateDidChange(_ session: WCSession) {
+        refreshWatchAppInstalled(session)
+    }
+
+    /// Pushes the current watch-app-installed state into the manager. Both
+    /// `isPaired` and `isWatchAppInstalled` are only meaningful once the
+    /// session has activated, which is the only place this is called from.
+    private func refreshWatchAppInstalled(_ session: WCSession) {
+        let installed = session.isPaired && session.isWatchAppInstalled
+        Task { @MainActor in manager.updateWatchAppInstalled(installed) }
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {

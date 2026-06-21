@@ -54,10 +54,6 @@ struct SpeciesPhotoFullScreen: View {
     /// Past this much downward travel, release dismisses.
     private let dismissThreshold: CGFloat = 120
 
-    private var dismissProgress: CGFloat {
-        min(max(dragOffset.height, 0) / 250, 1)
-    }
-
     private var commonName: String {
         SpeciesCatalog.shared.commonName(for: scientificName) ?? scientificName
     }
@@ -72,12 +68,16 @@ struct SpeciesPhotoFullScreen: View {
             // thing off and reveals the app behind it in real time (rather than
             // waiting for the touch to release). The viewer is presented over a
             // clear background, so the gap above the card shows what's beneath.
-            ZStack {
-                Color.black.ignoresSafeArea()
-                content
-            }
-            .scaleEffect(1 - dismissProgress * 0.08)
-            .offset(dragOffset)
+            //
+            // The backdrop ignores the safe area *before* it's offset (rather
+            // than offsetting a parent of the safe-area-ignoring color) so its
+            // status-bar and home-indicator extensions slide with the card
+            // instead of snapping to the revealed app the moment the drag starts.
+            Color.black
+                .ignoresSafeArea()
+                .offset(dragOffset)
+            content
+                .offset(dragOffset)
         }
         // Clear presentation background so the fade reveals the app behind.
         .presentationBackground(.clear)
@@ -196,8 +196,10 @@ struct SpeciesPhotoFullScreen: View {
                         height: lastPan.height + value.translation.height
                     )
                 } else {
-                    // Move the whole view with the finger.
-                    dragOffset = value.translation
+                    // Move the whole card with the finger, vertically only —
+                    // horizontal drift is locked out so the dismiss reads as a
+                    // clean downward card slide.
+                    dragOffset = CGSize(width: 0, height: value.translation.height)
                 }
             }
             .onEnded { value in

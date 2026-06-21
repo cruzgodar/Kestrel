@@ -14,6 +14,11 @@ final class RecordingManager {
     /// True while audio is being streamed in from the Apple Watch companion.
     /// The Identify view disables its own record button while this is true.
     private(set) var watchRecording = false
+    /// Whether a paired Apple Watch currently has the Kestrel watch app
+    /// installed. Pushed from `WatchAudioBridge` on activation and whenever the
+    /// watch state changes. Drives watch-specific UI copy/controls (the Identify
+    /// placeholder text and the Settings "Prefer Apple Watch microphone" toggle).
+    private(set) var isWatchAppInstalled = false
     private(set) var detections: [Detection] = []
     private(set) var errorMessage: String?
     private(set) var locationStatus: String?
@@ -174,6 +179,14 @@ final class RecordingManager {
         }
     }
 
+    /// Entry point for the Start Recording app intent (lock-screen widget /
+    /// Shortcuts). Starts a new session only when nothing is already running,
+    /// so a tap while recording is a no-op rather than a restart.
+    func startFromIntent() async {
+        guard !isRecording, !watchRecording else { return }
+        await start()
+    }
+
     /// Try to start the recording on the paired Apple Watch. If the watch
     /// isn't paired / installed / currently reachable, fall back to the
     /// local mic so the user always gets *something* on tap.
@@ -197,6 +210,12 @@ final class RecordingManager {
             return
         }
         await startLocally()
+    }
+
+    /// Records whether a paired watch has the watch app installed. Called by
+    /// `WatchAudioBridge` from the `WCSessionDelegate` callbacks.
+    func updateWatchAppInstalled(_ installed: Bool) {
+        isWatchAppInstalled = installed
     }
 
     /// `WCSession.default` only if a watch companion is currently available

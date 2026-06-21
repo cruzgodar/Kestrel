@@ -8,15 +8,16 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section {
-                Toggle(
-                    "Prefer Apple Watch microphone",
-                    isOn: $settings.preferWatchMicrophone
-                )
-            } header: {
-                Text("Apple Watch")
-            } footer: {
-                Text("When Prefer Apple Watch microphone is on, tapping Start Recording on the phone listens through the Watch if it's reachable, falling back to the phone. Turn it off to always use the phone's microphone. Starting from the Watch itself always uses the Watch microphone.")
+            // Only meaningful when there's a watch app to hand off to.
+            if manager.isWatchAppInstalled {
+                Section {
+                    Toggle(
+                        "Prefer Apple Watch microphone",
+                        isOn: $settings.preferWatchMicrophone
+                    )
+                } footer: {
+                    Text("Tapping Start Recording on iPhone will use your Apple Watch's microphone if possible.")
+                }
             }
 
             Section {
@@ -24,10 +25,8 @@ struct SettingsView: View {
                     "Show repeat observations on map",
                     isOn: $settings.showRepeatObservationsOnMap
                 )
-            } header: {
-                Text("Map")
             } footer: {
-                Text("The Map normally shows each species where you first saw it. Turn this on to drop a pin for every imported sighting, so a bird you've recorded many times appears at each location.")
+                Text("Show every recorded observation of a species on the map, rather than only the earliest.")
             }
         }
         .navigationTitle("Settings")

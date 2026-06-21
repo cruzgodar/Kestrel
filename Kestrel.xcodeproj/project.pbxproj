@@ -9,6 +9,12 @@
 /* Begin PBXBuildFile section */
 		E596B13CF58B29E6A0984CC9 /* Pods_Kestrel.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5FED5EB5F821424EC7097832 /* Pods_Kestrel.framework */; };
 		FC5ECB802FC0B83000667FD7 /* Kestrel Watch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = FC5ECB762FC0B82F00667FD7 /* Kestrel Watch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		FC5FFF582FE76654003F0F43 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FC5FFF572FE76654003F0F43 /* WidgetKit.framework */; };
+		FC5FFF5A2FE76654003F0F43 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FC5FFF592FE76654003F0F43 /* SwiftUI.framework */; };
+		FC5FFF672FE76655003F0F43 /* KestrelWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = FC5FFF562FE76654003F0F43 /* KestrelWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		FC5FFF722FE766B5003F0F43 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FC5FFF572FE76654003F0F43 /* WidgetKit.framework */; };
+		FC5FFF732FE766B5003F0F43 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = FC5FFF592FE76654003F0F43 /* SwiftUI.framework */; };
+		FC5FFF802FE766B6003F0F43 /* KestrelWatchWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = FC5FFF712FE766B5003F0F43 /* KestrelWatchWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -18,6 +24,20 @@
 			proxyType = 1;
 			remoteGlobalIDString = FC5ECB752FC0B82F00667FD7;
 			remoteInfo = "Kestrel Watch Watch App";
+		};
+		FC5FFF652FE76655003F0F43 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FC4BA87A2FB951AA00955EA2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FC5FFF552FE76654003F0F43;
+			remoteInfo = KestrelWidgetExtension;
+		};
+		FC5FFF7E2FE766B6003F0F43 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FC4BA87A2FB951AA00955EA2 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FC5FFF702FE766B5003F0F43;
+			remoteInfo = KestrelWatchWidgetExtension;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -33,6 +53,28 @@
 			name = "Embed Watch Content";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FC5FFF6C2FE76655003F0F43 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				FC5FFF672FE76655003F0F43 /* KestrelWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FC5FFF852FE766B6003F0F43 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				FC5FFF802FE766B6003F0F43 /* KestrelWatchWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -41,6 +83,10 @@
 		F8B639173D7779B7186B01BC /* Pods-Kestrel.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Kestrel.debug.xcconfig"; path = "Target Support Files/Pods-Kestrel/Pods-Kestrel.debug.xcconfig"; sourceTree = "<group>"; };
 		FC4BA8822FB951AA00955EA2 /* Kestrel.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Kestrel.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		FC5ECB762FC0B82F00667FD7 /* Kestrel Watch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Kestrel Watch.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		FC5FFF562FE76654003F0F43 /* KestrelWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = KestrelWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		FC5FFF572FE76654003F0F43 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		FC5FFF592FE76654003F0F43 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
+		FC5FFF712FE766B5003F0F43 /* KestrelWatchWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = KestrelWatchWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -55,8 +101,37 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Kestrel.icon,
+				RecordingIntent.swift,
 			);
 			target = FC5ECB752FC0B82F00667FD7 /* Kestrel Watch */;
+		};
+		FC5FFF6B2FE76655003F0F43 /* Exceptions for "KestrelWidget" folder in "KestrelWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = FC5FFF552FE76654003F0F43 /* KestrelWidgetExtension */;
+		};
+		FC5FFF842FE766B6003F0F43 /* Exceptions for "KestrelWatchWidget" folder in "KestrelWatchWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = FC5FFF702FE766B5003F0F43 /* KestrelWatchWidgetExtension */;
+		};
+		FC5FFF892FE766DE003F0F43 /* Exceptions for "Kestrel" folder in "KestrelWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				RecordingIntent.swift,
+			);
+			target = FC5FFF552FE76654003F0F43 /* KestrelWidgetExtension */;
+		};
+		FC5FFF8A2FE766DE003F0F43 /* Exceptions for "Kestrel" folder in "KestrelWatchWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				RecordingIntent.swift,
+			);
+			target = FC5FFF702FE766B5003F0F43 /* KestrelWatchWidgetExtension */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -66,6 +141,8 @@
 			exceptions = (
 				FC4BA8932FB9527200955EA2 /* Exceptions for "Kestrel" folder in "Kestrel" target */,
 				FC5E2BE32FC0CE8D00667FD7 /* Exceptions for "Kestrel" folder in "Kestrel Watch" target */,
+				FC5FFF892FE766DE003F0F43 /* Exceptions for "Kestrel" folder in "KestrelWidgetExtension" target */,
+				FC5FFF8A2FE766DE003F0F43 /* Exceptions for "Kestrel" folder in "KestrelWatchWidgetExtension" target */,
 			);
 			path = Kestrel;
 			sourceTree = "<group>";
@@ -73,6 +150,22 @@
 		FC5ECB772FC0B82F00667FD7 /* Kestrel Watch */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = "Kestrel Watch";
+			sourceTree = "<group>";
+		};
+		FC5FFF5B2FE76654003F0F43 /* KestrelWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				FC5FFF6B2FE76655003F0F43 /* Exceptions for "KestrelWidget" folder in "KestrelWidgetExtension" target */,
+			);
+			path = KestrelWidget;
+			sourceTree = "<group>";
+		};
+		FC5FFF742FE766B5003F0F43 /* KestrelWatchWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				FC5FFF842FE766B6003F0F43 /* Exceptions for "KestrelWatchWidget" folder in "KestrelWatchWidgetExtension" target */,
+			);
+			path = KestrelWatchWidget;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -93,6 +186,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FC5FFF532FE76654003F0F43 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FC5FFF5A2FE76654003F0F43 /* SwiftUI.framework in Frameworks */,
+				FC5FFF582FE76654003F0F43 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FC5FFF6E2FE766B5003F0F43 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FC5FFF732FE766B5003F0F43 /* SwiftUI.framework in Frameworks */,
+				FC5FFF722FE766B5003F0F43 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -109,6 +220,8 @@
 			isa = PBXGroup;
 			children = (
 				5FED5EB5F821424EC7097832 /* Pods_Kestrel.framework */,
+				FC5FFF572FE76654003F0F43 /* WidgetKit.framework */,
+				FC5FFF592FE76654003F0F43 /* SwiftUI.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -118,6 +231,8 @@
 			children = (
 				FC4BA8842FB951AA00955EA2 /* Kestrel */,
 				FC5ECB772FC0B82F00667FD7 /* Kestrel Watch */,
+				FC5FFF5B2FE76654003F0F43 /* KestrelWidget */,
+				FC5FFF742FE766B5003F0F43 /* KestrelWatchWidget */,
 				FC4BA8832FB951AA00955EA2 /* Products */,
 				7B8323A5C10D41178D1D3EAE /* Pods */,
 				E907AB40143F97C5FDBBB25D /* Frameworks */,
@@ -129,6 +244,8 @@
 			children = (
 				FC4BA8822FB951AA00955EA2 /* Kestrel.app */,
 				FC5ECB762FC0B82F00667FD7 /* Kestrel Watch.app */,
+				FC5FFF562FE76654003F0F43 /* KestrelWidgetExtension.appex */,
+				FC5FFF712FE766B5003F0F43 /* KestrelWatchWidgetExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -145,11 +262,13 @@
 				FC4BA87F2FB951AA00955EA2 /* Frameworks */,
 				FC4BA8802FB951AA00955EA2 /* Resources */,
 				FC5ECB812FC0B83000667FD7 /* Embed Watch Content */,
+				FC5FFF6C2FE76655003F0F43 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				FC5ECB7F2FC0B83000667FD7 /* PBXTargetDependency */,
+				FC5FFF662FE76655003F0F43 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				FC4BA8842FB951AA00955EA2 /* Kestrel */,
@@ -166,10 +285,12 @@
 				FC5ECB722FC0B82F00667FD7 /* Sources */,
 				FC5ECB732FC0B82F00667FD7 /* Frameworks */,
 				FC5ECB742FC0B82F00667FD7 /* Resources */,
+				FC5FFF852FE766B6003F0F43 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				FC5FFF7F2FE766B6003F0F43 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				FC5ECB772FC0B82F00667FD7 /* Kestrel Watch */,
@@ -180,6 +301,50 @@
 			productName = "Kestrel Watch Watch App";
 			productReference = FC5ECB762FC0B82F00667FD7 /* Kestrel Watch.app */;
 			productType = "com.apple.product-type.application";
+		};
+		FC5FFF552FE76654003F0F43 /* KestrelWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FC5FFF682FE76655003F0F43 /* Build configuration list for PBXNativeTarget "KestrelWidgetExtension" */;
+			buildPhases = (
+				FC5FFF522FE76654003F0F43 /* Sources */,
+				FC5FFF532FE76654003F0F43 /* Frameworks */,
+				FC5FFF542FE76654003F0F43 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				FC5FFF5B2FE76654003F0F43 /* KestrelWidget */,
+			);
+			name = KestrelWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = KestrelWidgetExtension;
+			productReference = FC5FFF562FE76654003F0F43 /* KestrelWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		FC5FFF702FE766B5003F0F43 /* KestrelWatchWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FC5FFF812FE766B6003F0F43 /* Build configuration list for PBXNativeTarget "KestrelWatchWidgetExtension" */;
+			buildPhases = (
+				FC5FFF6D2FE766B5003F0F43 /* Sources */,
+				FC5FFF6E2FE766B5003F0F43 /* Frameworks */,
+				FC5FFF6F2FE766B5003F0F43 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				FC5FFF742FE766B5003F0F43 /* KestrelWatchWidget */,
+			);
+			name = KestrelWatchWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = KestrelWatchWidgetExtension;
+			productReference = FC5FFF712FE766B5003F0F43 /* KestrelWatchWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -195,6 +360,12 @@
 						CreatedOnToolsVersion = 26.5;
 					};
 					FC5ECB752FC0B82F00667FD7 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+					FC5FFF552FE76654003F0F43 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+					FC5FFF702FE766B5003F0F43 = {
 						CreatedOnToolsVersion = 26.5;
 					};
 				};
@@ -215,6 +386,8 @@
 			targets = (
 				FC4BA8812FB951AA00955EA2 /* Kestrel */,
 				FC5ECB752FC0B82F00667FD7 /* Kestrel Watch */,
+				FC5FFF552FE76654003F0F43 /* KestrelWidgetExtension */,
+				FC5FFF702FE766B5003F0F43 /* KestrelWatchWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -228,6 +401,20 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		FC5ECB742FC0B82F00667FD7 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FC5FFF542FE76654003F0F43 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FC5FFF6F2FE766B5003F0F43 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -276,6 +463,20 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FC5FFF522FE76654003F0F43 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FC5FFF6D2FE766B5003F0F43 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -283,6 +484,16 @@
 			isa = PBXTargetDependency;
 			target = FC5ECB752FC0B82F00667FD7 /* Kestrel Watch */;
 			targetProxy = FC5ECB7E2FC0B83000667FD7 /* PBXContainerItemProxy */;
+		};
+		FC5FFF662FE76655003F0F43 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FC5FFF552FE76654003F0F43 /* KestrelWidgetExtension */;
+			targetProxy = FC5FFF652FE76655003F0F43 /* PBXContainerItemProxy */;
+		};
+		FC5FFF7F2FE766B6003F0F43 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FC5FFF702FE766B5003F0F43 /* KestrelWatchWidgetExtension */;
+			targetProxy = FC5FFF7E2FE766B6003F0F43 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -560,6 +771,140 @@
 			};
 			name = Release;
 		};
+		FC5FFF692FE76655003F0F43 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GJ5547PK3X;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = KestrelWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = KestrelWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cruzgodar.Kestrel.KestrelWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		FC5FFF6A2FE76655003F0F43 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GJ5547PK3X;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = KestrelWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = KestrelWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cruzgodar.Kestrel.KestrelWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		FC5FFF822FE766B6003F0F43 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GJ5547PK3X;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = KestrelWatchWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = KestrelWatchWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cruzgodar.Kestrel.watchkitapp.KestrelWatchWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.5;
+			};
+			name = Debug;
+		};
+		FC5FFF832FE766B6003F0F43 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = GJ5547PK3X;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = KestrelWatchWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = KestrelWatchWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.cruzgodar.Kestrel.watchkitapp.KestrelWatchWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 26.5;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -586,6 +931,24 @@
 			buildConfigurations = (
 				FC5ECB822FC0B83000667FD7 /* Debug */,
 				FC5ECB832FC0B83000667FD7 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FC5FFF682FE76655003F0F43 /* Build configuration list for PBXNativeTarget "KestrelWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FC5FFF692FE76655003F0F43 /* Debug */,
+				FC5FFF6A2FE76655003F0F43 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FC5FFF812FE766B6003F0F43 /* Build configuration list for PBXNativeTarget "KestrelWatchWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FC5FFF822FE766B6003F0F43 /* Debug */,
+				FC5FFF832FE766B6003F0F43 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

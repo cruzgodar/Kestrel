@@ -1,7 +1,9 @@
+import Combine
 import SwiftUI
 
 struct ContentView: View {
     @State private var session = WatchSessionManager.shared
+    @Environment(\.scenePhase) private var scenePhase
 
     /// Fixed base size of the record control; the morph is a uniform
     /// `scaleEffect` of this so the circle and glyph shrink together as one unit.
@@ -96,6 +98,21 @@ struct ContentView: View {
             WatchSessionManager.shared.activate()
             Self.prewarmText()
         }
+        // Start Recording complication: drain a pending request when the app
+        // becomes active (cold/background launch) and immediately when it fires
+        // while already active. `handleRemoteStart()` is idempotent — a no-op if
+        // a session is already running.
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            if phase == .active { startRecordingIfRequested() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: RecordingIntentRequest.notification)) { _ in
+            startRecordingIfRequested()
+        }
+    }
+
+    private func startRecordingIfRequested() {
+        guard RecordingIntentRequest.consume() else { return }
+        session.handleRemoteStart()
     }
 
     // MARK: - Background

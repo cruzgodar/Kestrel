@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -143,10 +144,24 @@ struct KestrelApp: App {
             .onChange(of: selectedTab, initial: true) { _, _ in
                 updateSpectrogramVisibility()
             }
-            .onChange(of: scenePhase, initial: true) { _, _ in
+            .onChange(of: scenePhase, initial: true) { _, phase in
                 updateSpectrogramVisibility()
+                // Cold-launch / background-launch path for the Start Recording
+                // widget: drain the pending request once the scene is active.
+                if phase == .active { startRecordingIfRequested() }
+            }
+            // Warm path: the intent fired while the app was already active.
+            .onReceive(NotificationCenter.default.publisher(for: RecordingIntentRequest.notification)) { _ in
+                startRecordingIfRequested()
             }
         }
+    }
+
+    /// Honors a pending Start Recording widget tap. No-op unless a request is
+    /// queued; the manager itself ignores it if a session is already running.
+    private func startRecordingIfRequested() {
+        guard RecordingIntentRequest.consume() else { return }
+        Task { await recordingManager.startFromIntent() }
     }
 
     private func updateSpectrogramVisibility() {
