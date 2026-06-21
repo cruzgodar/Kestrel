@@ -105,6 +105,9 @@ struct MapView: View {
     /// "annotations never fade" problem.
     @State private var visibleReps: [String: RepInfo] = [:]
 
+    /// Drives the map-options card opened from the top-right settings button.
+    @State private var showMapSettings = false
+
     @State private var expandedCluster: BirdCluster?
     /// A lone (non-clustered) pin tapped on the map. Presented full-screen here
     /// without a map button — there's nowhere new to take the user.
@@ -221,7 +224,9 @@ struct MapView: View {
                     }
                 }
                 .mapControls {
-                    MapUserLocationButton()
+                    // The recenter control is provided as a custom glass button
+                    // (see the top-trailing overlay) so it can stack beneath the
+                    // map-settings button; only the compass stays a map control.
                     MapCompass()
                 }
                 // The multi-bird card (a half-height sheet) leaves the map
@@ -255,6 +260,26 @@ struct MapView: View {
                 }
             }
             .ignoresSafeArea(edges: .bottom)
+
+            // Liquid-glass controls pinned to the top-right: a settings button
+            // that opens the map-options card, and a recenter button (replacing
+            // the stock MapUserLocationButton) just below it.
+            VStack(spacing: 12) {
+                GlassMapButton(systemImage: "gearshape", accessibility: "Map settings") {
+                    showMapSettings = true
+                }
+                GlassMapButton(systemImage: "location.fill", accessibility: "Center on current location") {
+                    withAnimation(.easeInOut(duration: 0.45)) {
+                        position = .userLocation(fallback: .automatic)
+                    }
+                }
+            }
+            .padding(.top, 8)
+            .padding(.trailing, 12)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        }
+        .sheet(isPresented: $showMapSettings) {
+            MapSettingsSheet()
         }
         .task {
             let manager = CLLocationManager()
@@ -801,6 +826,71 @@ private struct BirdMapThumbnail: View {
             y: showBorder ? 1.5 : 0
         )
         .contentShape(Rectangle())
+    }
+}
+
+// MARK: - Top-right glass controls
+
+/// A circular liquid-glass map control, matching the search field's glass
+/// buttons. Used for the map-settings and recenter buttons.
+private struct GlassMapButton: View {
+    let systemImage: String
+    let accessibility: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(.primary)
+                .frame(width: 22, height: 22)
+                .padding(11)
+                .glassEffect(.regular.interactive(), in: .circle)
+                .contentShape(Circle())
+        }
+        .buttonStyle(NoDimButtonStyle())
+        .accessibilityLabel(accessibility)
+    }
+}
+
+// MARK: - Map options card
+
+/// The card opened from the map's settings button. Mirrors the import card's
+/// look and holds the single "Show Repeat Observations on Map" toggle that
+/// formerly lived in the Settings tab.
+private struct MapSettingsSheet: View {
+    @Bindable private var settings = AppSettings.shared
+
+    var body: some View {
+        VStack(spacing: 24) {
+            VStack(spacing: 16) {
+                Image(systemName: "mappin.and.ellipse")
+                    .font(.system(size: 44, weight: .regular))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.top, 8)
+                Text("Map Options")
+                    .font(.title2.weight(.bold))
+                    .multilineTextAlignment(.center)
+            }
+            .padding(.horizontal, 28)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(
+                    "Show Repeat Observations on Map",
+                    isOn: $settings.showRepeatObservationsOnMap
+                )
+                .font(.body.weight(.semibold))
+                Text("Show every recorded observation of a species on the map, rather than only the earliest.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 28)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 32)
+        .presentationDetents([.medium])
+        .presentationDragIndicator(.visible)
     }
 }
 

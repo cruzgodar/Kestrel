@@ -22,6 +22,12 @@ final class WatchWorkoutManager {
     private let healthStore = HKHealthStore()
     private var session: HKWorkoutSession?
     private var builder: HKLiveWorkoutBuilder?
+    /// When the current workout began, so `stop()` can discard walks shorter
+    /// than `minimumDuration` rather than logging a trivially short workout.
+    private var startDate: Date?
+    /// Birding walks under a minute aren't worth saving to HealthKit — they're
+    /// usually an accidental start/stop, not a real walk.
+    private let minimumDuration: TimeInterval = 60
 
     private init() {}
 
@@ -65,25 +71,44 @@ final class WatchWorkoutManager {
             self.builder = builder
 
             let start = Date()
+            self.startDate = start
             session.startActivity(with: start)
             try await builder.beginCollection(at: start)
         } catch {
             print("Kestrel Watch: workout start error \(error)")
             session = nil
             builder = nil
+            startDate = nil
         }
     }
 
-    /// Ends the workout and saves it to HealthKit. No-op if none is running.
+    /// Ends the workout. Saves it to HealthKit only if it ran for at least
+    /// `minimumDuration`; shorter walks are discarded so a quick start/stop
+    /// doesn't litter the user's activity history. No-op if none is running.
     func stop() async {
         guard let session, let builder else { return }
         // Clear our references first so a stop/start race can't end up finishing
         // a fresh session by mistake.
         self.session = nil
         self.builder = nil
+        let started = startDate
+        self.startDate = nil
 
         let end = Date()
         session.end()
+
+        // Too short to be a real birding walk — end collection and throw the
+        // workout away rather than saving it.
+        if let started, end.timeIntervalSince(started) < minimumDuration {
+            do {
+                try await builder.endCollection(at: end)
+                builder.discardWorkout()
+            } catch {
+                print("Kestrel Watch: workout discard error \(error)")
+            }
+            return
+        }
+
         do {
             try await builder.endCollection(at: end)
             _ = try await builder.finishWorkout()

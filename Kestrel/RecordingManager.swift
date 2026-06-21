@@ -187,28 +187,10 @@ final class RecordingManager {
         await start()
     }
 
-    /// Try to start the recording on the paired Apple Watch. If the watch
-    /// isn't paired / installed / currently reachable, fall back to the
-    /// local mic so the user always gets *something* on tap.
+    /// Start recording on the phone. Tapping Start Recording on the phone always
+    /// listens on the phone's own microphone; the watch's own Start button is
+    /// what captures on the watch.
     func start() async {
-        // When the user prefers the phone mic, never hand off to the watch.
-        guard AppSettings.shared.preferWatchMicrophone else {
-            await startLocally()
-            return
-        }
-        if let watch = preferredWatchSession {
-            // Optimistic — we don't wait for the watch's handshake before
-            // returning. The watch will echo "start" back via its normal
-            // path, which flips `watchRecording = true` and updates the UI.
-            watch.sendMessage(["cmd": "remoteStart"], replyHandler: nil) { [weak self] _ in
-                // sendMessage failed mid-flight (watch slipped out of
-                // reachability). Recover by starting locally.
-                Task { @MainActor [weak self] in
-                    await self?.startLocally()
-                }
-            }
-            return
-        }
         await startLocally()
     }
 
@@ -216,20 +198,6 @@ final class RecordingManager {
     /// `WatchAudioBridge` from the `WCSessionDelegate` callbacks.
     func updateWatchAppInstalled(_ installed: Bool) {
         isWatchAppInstalled = installed
-    }
-
-    /// `WCSession.default` only if a watch companion is currently available
-    /// for live messaging. We don't bother trying to wake the watch from
-    /// suspension via transferUserInfo here — the local mic is a fine
-    /// fallback and tapping the watch button later still works.
-    private var preferredWatchSession: WCSession? {
-        guard WCSession.isSupported() else { return nil }
-        let s = WCSession.default
-        guard s.activationState == .activated,
-              s.isPaired,
-              s.isWatchAppInstalled,
-              s.isReachable else { return nil }
-        return s
     }
 
     /// Update the watch's "now hearing" screen with a freshly-heard species —

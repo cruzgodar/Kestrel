@@ -60,11 +60,9 @@ struct ContentView: View {
         .overlay {
             if manager.detections.isEmpty {
                 ContentUnavailableView {
-                    Label("No detections yet", systemImage: "magnifyingglass")
+                    Label("Identify Birds", systemImage: "magnifyingglass")
                 } description: {
-                    Text(manager.isWatchAppInstalled
-                         ? "Tap Start Recording here or on Apple Watch to listen for birds in the background. You will be notified about starred birds and those not on your life list."
-                         : "Tap Start Recording to listen for birds in the background. You will be notified about starred birds and those not on your life list.")
+                    Text(Self.placeholderDescription(watchInstalled: manager.isWatchAppInstalled))
                 }
                 .opacity(manager.isRecording ? 0 : 1)
                 .animation(.easeInOut(duration: 0.25), value: manager.isRecording)
@@ -177,6 +175,36 @@ struct ContentView: View {
 
     // Faint blue persistent tint for starred species (alert-me list).
     private static let starredTint = Color(hue: 215.0 / 360.0, saturation: 0.5, brightness: 1.0)
+
+    /// Blue used by the life list's star toggle — reused here to color the
+    /// "starred birds" phrase so it matches the star control.
+    private static let starPhraseColor = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
+    /// Purple used by the add-to-life-list affordance — colors the
+    /// "those not on your life list" phrase to match the plus button.
+    private static let addPhraseColor = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
+
+    /// The Identify empty-state description with "starred birds" tinted the
+    /// star blue and "those not on your life list" tinted the add-to-life-list
+    /// purple, so the copy points at the two controls it describes.
+    private static func placeholderDescription(watchInstalled: Bool) -> AttributedString {
+        let lead = watchInstalled
+            ? "Start recording here or on your Apple Watch to listen for birds in the background. You will be notified about "
+            : "Start recording to listen for birds in the background. You will be notified about "
+        var result = AttributedString(lead)
+
+        var starred = AttributedString("starred birds")
+        starred.foregroundColor = starPhraseColor
+        result += starred
+
+        result += AttributedString(" and ")
+
+        var unseen = AttributedString("those not on your life list")
+        unseen.foregroundColor = addPhraseColor
+        result += unseen
+
+        result += AttributedString(".")
+        return result
+    }
 
     private func detectionRow(for detection: Detection) -> some View {
         let flashing = manager.flashIDs.contains(detection.id)
