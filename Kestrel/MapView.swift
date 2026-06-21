@@ -811,7 +811,20 @@ private struct MapCardSheet: View {
     @State private var closeCardOnPhotoDismiss = false
 
     private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 12)]
-    private static let thumbCornerRadius: CGFloat = 26
+    /// The card's *top* corner radius. `.presentationCornerRadius` only shapes the
+    /// top corners; the bottom corners reach the screen edge and are clipped by
+    /// the device's corner mask, so they stay perfectly concentric with the phone
+    /// automatically. This is set by hand (a little tighter than the system
+    /// default), and the thumbnails derive from it so they're concentric with the
+    /// card's top corners.
+    private static let cardTopCornerRadius: CGFloat = 34
+    /// Inset of each thumbnail from the card edges (`clusterGrid`'s padding).
+    /// Subtracting it from the top corner radius keeps each thumbnail's corners
+    /// concentric with the card, since both share one radius.
+    private static let thumbInset: CGFloat = 12
+    private static var thumbCornerRadius: CGFloat {
+        cardTopCornerRadius - thumbInset
+    }
 
     var body: some View {
         ZStack {
@@ -838,9 +851,10 @@ private struct MapCardSheet: View {
         // detent — this is what lets you open other things from either card and
         // tap the map to dismiss. At .large the sheet is modal, as expected.
         .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-        // Intentionally not setting `.presentationCornerRadius` — the system
-        // default tracks the device's display corner radius so the card's bottom
-        // corners stay concentric with the screen's curve.
+        // Set only the top corner radius (a little tighter than the system
+        // default). The bottom corners are left to the system, which clips them to
+        // the screen edge — keeping them concentric with the phone automatically.
+        .presentationCornerRadius(Self.cardTopCornerRadius)
         .presentationBackground(.thinMaterial)
         // Remember (before the item clears) whether to close the card on exit.
         .onChange(of: photo) { _, newValue in
@@ -885,10 +899,11 @@ private struct MapCardSheet: View {
                     }
                 }
             }
-            // Symmetric 12pt inset; a bit more at the bottom so the last row
-            // clears the home indicator at the large detent.
-            .padding(.horizontal, 12)
-            .padding(.top, 12)
+            // Symmetric inset (shared with the thumbnail concentricity math); a
+            // bit more at the bottom so the last row clears the home indicator at
+            // the large detent.
+            .padding(.horizontal, Self.thumbInset)
+            .padding(.top, Self.thumbInset)
             .padding(.bottom, 24)
         }
     }

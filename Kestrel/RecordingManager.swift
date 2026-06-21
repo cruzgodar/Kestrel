@@ -734,6 +734,45 @@ final class RecordingManager {
         store.remove(scientificName: scientificName)
     }
 
+#if DEBUG
+    /// Scientific names injected by the debug tool. Drives the pure-red highlight
+    /// on both the phone rows and the watch screen so simulated birds are obvious.
+    private(set) var debugDetectionNames: Set<String> = []
+
+    /// Debug-only: inject a synthetic detection as if BirdNET had just heard
+    /// `scientificName`, with no audio involved. Runs the exact same `merge`
+    /// path as a real inference window, so it updates the results list, fires
+    /// haptics/notifications, and pushes the bird to the watch's "now hearing"
+    /// screen — which is what makes it a hands-off way to test the watch.
+    ///
+    /// Refreshes the life-list snapshot first so the new/starred highlight is
+    /// accurate even when not actively recording.
+    func debugSimulateDetection(scientificName: String, commonName: String, confidence: Float = 0.9) {
+        refreshLifeListFromStore()
+        debugDetectionNames.insert(scientificName)
+        merge([
+            Detection(
+                scientificName: scientificName,
+                commonName: commonName,
+                confidence: confidence,
+                lastSeen: Date()
+            )
+        ])
+    }
+
+    /// Debug-only: pick a random species from the catalog and simulate hearing
+    /// it. Returns the common name so the caller can surface what it fired.
+    @discardableResult
+    func debugSimulateRandomDetection() -> String? {
+        guard let species = SpeciesCatalog.shared.all.randomElement() else { return nil }
+        debugSimulateDetection(
+            scientificName: species.scientificName,
+            commonName: species.commonName
+        )
+        return species.commonName
+    }
+#endif
+
     private func merge(_ results: [Detection]) {
         // Flash any repeat match (regardless of confidence change), but
         // enforce a per-species cooldown so the same row doesn't strobe on
@@ -828,7 +867,7 @@ final class RecordingManager {
         if let top = results.max(by: { $0.confidence < $1.confidence }),
            top.scientificName != lastWatchDisplaySci {
             lastWatchDisplaySci = top.scientificName
-            let highlight: String
+            var highlight: String
             if starredNames.contains(top.scientificName) {
                 highlight = "starred"
             } else if !lifeListSnapshot.contains(top.scientificName) {
@@ -836,6 +875,10 @@ final class RecordingManager {
             } else {
                 highlight = "normal"
             }
+#if DEBUG
+            // Debug-injected birds override to pure red on the watch.
+            if debugDetectionNames.contains(top.scientificName) { highlight = "debug" }
+#endif
             sendBirdDisplayToWatch(
                 commonName: top.commonName,
                 scientificName: top.scientificName,

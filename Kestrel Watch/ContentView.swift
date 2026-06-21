@@ -27,8 +27,9 @@ struct ContentView: View {
     /// Approximate corner radius of the watch's physical screen. watchOS exposes
     /// no public API for this, so we set it as the root container shape; the
     /// image's `ContainerRelativeShape` then insets it by `imageMargin` to stay
-    /// concentric. Tune this to match the bezel on the target watch size.
-    private static let screenCornerRadius: CGFloat = 51
+    /// concentric. Resolved per device by `WatchMetrics` — add measured sizes
+    /// there to tune the bezel match on new watches.
+    private static var screenCornerRadius: CGFloat { WatchMetrics.screenCornerRadius }
 
     var body: some View {
         let recording = session.isRecording
@@ -145,6 +146,7 @@ struct ContentView: View {
         case .newSpecies: return Self.newSpeciesBackground
         case .starred:    return Self.starredBackground
         case .normal:     return .black
+        case .debug:      return .red   // debug-injected bird — pure red, full opacity
         }
     }
 

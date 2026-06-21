@@ -443,7 +443,7 @@ struct LifeListView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Are you sure you want to permanently remove all \(store.entries.count) species from your life list? This cannot be undone.")
+            Text("Are you sure you want to permanently remove all \(store.entries.count) species from your life list? This cannot be undone. Your stars will be preserved if you re-add the species later.")
         }
         }
     }

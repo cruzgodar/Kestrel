@@ -28,6 +28,7 @@ final class WatchSessionManager: NSObject {
         case newSpecies  // not yet on the life list (purple)
         case starred     // on the user's alert list (blue)
         case normal      // already known + not starred (no tint)
+        case debug       // injected from the phone's debug tool (pure red)
     }
 
     /// The most recent bird the phone reported hearing. Drives the "now
