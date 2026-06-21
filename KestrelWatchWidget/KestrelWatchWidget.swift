@@ -30,10 +30,9 @@ struct StartRecordingProvider: TimelineProvider {
 struct StartRecordingComplicationView: View {
     @Environment(\.widgetFamily) private var family
 
-    /// The start-recording button's purple (matches the app's record button:
-    /// hue 252°). Used filled for the glyph and as a light wash on the
-    /// complication background.
-    private static let purple = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
+    /// The start-recording button's purple. Used filled for the glyph and as a
+    /// light wash on the complication background.
+    private static let purple = Color(red: 0.6, green: 0.5, blue: 1.0)
 
     var body: some View {
         label
@@ -49,8 +48,8 @@ struct StartRecordingComplicationView: View {
         case .accessoryCircular, .accessoryCorner:
             ZStack {
                 AccessoryWidgetBackground()
-                // Slight purple tint over the standard gray background.
-                Self.purple.opacity(0.35)
+                // Faint purple tint over the standard gray background.
+                Self.purple.opacity(0.2)
                 Image(systemName: "bird.fill")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(Self.purple)

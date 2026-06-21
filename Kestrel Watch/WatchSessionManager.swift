@@ -360,10 +360,14 @@ final class WatchSessionManager: NSObject {
             return
         }
 
-        // No extended runtime session: the watch records on the default
-        // (non-entitlement) path, so capture runs while the app is foreground.
+        // Recording is truly underway now — begin the outdoor-walk workout.
+        // The active workout session (with the workout-processing background
+        // mode) keeps the app and microphone alive when the wrist drops, and is
+        // saved to HealthKit when the user stops. Started here, after the audio
+        // engine is up, so the rollback paths above never have a workout to undo.
         // The phone was already told we're recording (optimistically, in
         // `start()`), so audio it receives lines up with its UI state.
+        await WatchWorkoutManager.shared.start()
     }
 
     /// Starts the audio engine on a background queue. `AVAudioSession.setActive`
@@ -395,6 +399,10 @@ final class WatchSessionManager: NSObject {
         let session = WCSession.default
         session.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
         session.transferUserInfo(["cmd": "stop"])
+
+        // End the birding-walk workout and save it to HealthKit. A no-op if no
+        // workout was running (e.g. stopped before audio came up).
+        Task { await WatchWorkoutManager.shared.stop() }
 
         // Animate the morph; tear the audio engine down only once it has played
         // out (the timed sleep below). `engine.stop()` + `setActive(false)`

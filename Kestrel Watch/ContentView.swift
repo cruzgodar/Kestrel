@@ -79,6 +79,22 @@ struct ContentView: View {
                         y: recording ? cornerC : geo.size.height / 2
                     )
 
+                // Idle-screen caption sitting just below the centered play
+                // button. Fades out (with the button's morph to the corner) as
+                // recording starts, so the now-hearing screen has the space.
+                Text("Start a Birding Walk")
+                    .font(.system(size: 16, weight: .medium))
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.white)
+                    .frame(width: geo.size.width - 24)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .position(
+                        x: geo.size.width / 2,
+                        y: geo.size.height / 2 + Self.buttonBaseSize / 2 + 24
+                    )
+                    .opacity(recording ? 0 : 1)
+                    .allowsHitTesting(false)
+
                 addButton(size: Self.cornerButtonSize)
                     // `interButtonGap` to the right of the stop button, same row.
                     .position(x: cornerC + 2 * r + Self.interButtonGap, y: cornerC)
@@ -97,6 +113,9 @@ struct ContentView: View {
         .task {
             WatchSessionManager.shared.activate()
             Self.prewarmText()
+            // Prompt for HealthKit access (once) so the birding walk can be
+            // saved as an outdoor workout when the user stops.
+            await WatchWorkoutManager.shared.requestAuthorization()
         }
         // Start Recording complication: drain a pending request when the app
         // becomes active (cold/background launch) and immediately when it fires
@@ -156,7 +175,7 @@ struct ContentView: View {
             // (0 or 1) — a single swapped `Image` left the outgoing glyph
             // partially visible and snapped at the end.
             ZStack {
-                Image(systemName: "mic.fill")
+                Image(systemName: "play.fill")
                     .font(.system(size: 44, weight: .semibold))
                     .opacity(recording ? 0 : 1)
                 Image(systemName: "stop.fill")

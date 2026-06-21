@@ -13,5 +13,13 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Kestrel reads workout metrics while you record a birding walk so it can be saved as an outdoor walk.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Kestrel saves your birding walks to Health as outdoor walk workouts.</string>
+	<key>WKBackgroundModes</key>
+	<array>
+		<string>workout-processing</string>
+	</array>
 </dict>
 </plist>

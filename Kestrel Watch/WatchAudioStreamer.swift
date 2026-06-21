@@ -34,10 +34,11 @@ final class WatchAudioStreamer: @unchecked Sendable {
     private var onChunk: ((Data) -> Void)?
     private var buffer: [Int16] = []
 
-    /// Configures a plain `.record` session, which captures while the app is in
-    /// the foreground. (Background capture would need an extended-runtime
-    /// session or the `audio` background mode — both require entitlements we
-    /// don't use — so the watch records only while its app is frontmost.)
+    /// Configures a plain `.record` session. Background capture (wrist-down,
+    /// screen off) is kept alive by the outdoor-walk `HKWorkoutSession` that
+    /// `WatchSessionManager` runs for the duration of a recording (see
+    /// `WatchWorkoutManager`); without an active workout the watch only captures
+    /// while its app is frontmost.
     func start(onChunk: @escaping (Data) -> Void) throws {
         self.onChunk = onChunk
         buffer.removeAll(keepingCapacity: true)
