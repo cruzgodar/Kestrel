@@ -21,9 +21,6 @@ struct ContentView: View {
     private static let cornerButtonSize: CGFloat = 42
     /// Horizontal gap between the stop button and the add button beside it.
     private static let interButtonGap: CGFloat = 8
-    /// The stop button's clearance from the rounded bezel, measured *diagonally*
-    /// from the corner.
-    private static let cornerDiagonalGap: CGFloat = 12
     private static let sqrt2: CGFloat = 1.414213562373095
     /// Inset between the bird image/placeholder and the screen edges. Paired
     /// with `ContainerRelativeShape` so the corner radius stays concentric with
@@ -304,9 +301,12 @@ struct ContentView: View {
 
     /// Distance from the screen corner to a zero-radius button's center that
     /// already accounts for the bezel curve + the diagonal corner gap.
-    /// `cornerCenter` just adds the button's own `r / √2`.
-    private static let cornerConst: CGFloat =
-        screenCornerRadius * (1 - 1 / sqrt2) + cornerDiagonalGap / sqrt2
+    /// `cornerCenter` just adds the button's own `r / √2`. The diagonal
+    /// clearance reuses `imageMargin`, so the stop button sits the same distance
+    /// off the bezel as the bird image's inset — both track the per-watch margin.
+    private static var cornerConst: CGFloat {
+        screenCornerRadius * (1 - 1 / sqrt2) + imageMargin / sqrt2
+    }
 
     // MARK: - Recording ("now hearing")
 
