@@ -1,14 +1,22 @@
 import SwiftUI
 
-/// The About tab — explains what Kestrel does and credits the model, paper,
-/// and image sources it relies on.
+/// The About tab — explains what Kestrel does, introduces the developer, and
+/// credits the model, paper, and image sources it relies on.
 struct AboutView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                HighlightedText(segments: Self.introSegments)
+                Text("About Kestrel")
+                    .font(.title2.bold())
+
+                Text(Self.intro)
                 Text(Self.watch)
                 Text(Self.importing)
+
+                Divider()
+                    .padding(.vertical, 4)
+
+                aboutMeSection
 
                 Divider()
                     .padding(.vertical, 4)
@@ -22,6 +30,25 @@ struct AboutView: View {
         }
         .navigationTitle("About")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    // MARK: - About Me
+
+    private var aboutMeSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("About Me")
+                .font(.title2.bold())
+
+            Image("Cruz")
+                .resizable()
+                .scaledToFill()
+                .frame(width: 72, height: 72)
+                .clipShape(Circle())
+
+            Text(.init(Self.aboutMe))
+                .tint(.accentColor)
+                .fixedSize(horizontal: false, vertical: true)
+        }
     }
 
     // MARK: - Credits
@@ -56,16 +83,9 @@ struct AboutView: View {
 
     // MARK: - Body copy
 
-    /// First paragraph, with "starred in your life list" on a blue pill and
-    /// "have never seen before" on a purple pill — the same row-background tints
-    /// the Identify tab uses for starred and not-yet-on-the-list birds.
-    private static let introSegments: [HighlightedText.Segment] = [
-        .init("Kestrel listens for birds in the background so you can focus on the nature around you. It uses Cornell Lab's BirdNET model to identify birds by their songs and calls, and when it hears one that you have "),
-        .init("starred in your life list", highlight: HighlightedText.starHighlight),
-        .init(" or "),
-        .init("have never seen before", highlight: HighlightedText.addHighlight),
-        .init(", it notifies you. That lets you keep your focus off of your phone, with confidence that you'll know when a bird you care about is nearby."),
-    ]
+    private static let intro = AttributedString(
+        "Kestrel listens for birds in the background so you can focus on the nature around you. It uses Cornell Lab's BirdNET model to identify birds by their songs and calls, and when it hears one that you have starred in your life list or have never seen before, it notifies you. That lets you keep your focus off of your phone, with confidence that you'll know when a bird you care about is nearby."
+    )
 
     private static let watch = AttributedString(
         "On Apple Watch, Kestrel can log your birding walk as a workout. That lets it use the watch's microphone, and so your phone can stay in your pocket. Since birds are identified on your phone, you must keep it with you to use Kestrel."
@@ -74,6 +94,9 @@ struct AboutView: View {
     private static let importing = AttributedString(
         "If you use eBird or Merlin to track your observations, it's a good idea to periodically import your eBird life list into Kestrel to keep its life list and map up-to-date."
     )
+
+    private static let aboutMe =
+        "I'm a web developer and college math teacher, and most of my work focuses on mathematical art and illustration, as well as thoughtful and high-quality teaching. I've found myself hopelessly into birding on the side, though, and Kestrel is my idea of an ideal companion app that can be used independently or in conjunction with eBird and Merlin. You can see more of my work at [cruzgodar.com](https://cruzgodar.com) or reach me at [me@cruzgodar.com](mailto:me@cruzgodar.com) with bug reports or feature suggestions."
 }
 
 #Preview {

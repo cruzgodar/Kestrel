@@ -27,24 +27,27 @@ struct ContentView: View {
     private static let sqrt2: CGFloat = 1.414213562373095
     /// Inset between the bird image/placeholder and the screen edges. Paired
     /// with `ContainerRelativeShape` so the corner radius stays concentric with
-    /// the watch bezel as this changes.
-    private static let imageMargin: CGFloat = 12
-    /// Vertical gap between the species name and the photo below it.
-    private static let nameImageGap: CGFloat = 10
+    /// the watch bezel as this changes. Tunable per watch size in `WatchMetrics`.
+    private static var imageMargin: CGFloat { WatchMetrics.current.imageMargin }
+    /// Vertical gap between the species name and the photo below it. Tunable per
+    /// watch size in `WatchMetrics`.
+    private static var nameImageGap: CGFloat { WatchMetrics.current.nameImageGap }
     /// Approximate corner radius of the watch's physical screen. watchOS exposes
     /// no public API for this, so we set it as the root container shape; the
     /// image's `ContainerRelativeShape` then insets it by `imageMargin` to stay
     /// concentric. Resolved per device by `WatchMetrics` — add measured sizes
     /// there to tune the bezel match on new watches.
-    private static var screenCornerRadius: CGFloat { WatchMetrics.screenCornerRadius }
+    private static var screenCornerRadius: CGFloat { WatchMetrics.current.screenCornerRadius }
 
     var body: some View {
         let recording = session.isRecording
 
         ZStack {
-            // Black base; a heard bird flashes a color over it (see `flash()`),
-            // mirroring the phone Identify tab's per-detection row flash.
-            Color.black.ignoresSafeArea()
+            // Standing background for the current bird's kind (black / blue /
+            // purple), with a brighter flash of the same hue pulsed over it on
+            // each detection and fading back to the standing color — mirroring
+            // the phone Identify tab's per-detection row flash (see `flash()`).
+            backgroundColor.ignoresSafeArea()
             flashColor
                 .ignoresSafeArea()
                 .opacity(flashOpacity)
@@ -100,7 +103,10 @@ struct ContentView: View {
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white)
                     .frame(width: geo.size.width - 24)
-                    .fixedSize(horizontal: false, vertical: true)
+                    // Keep the caption on one line and scale it down to fit a
+                    // narrow screen rather than wrapping to a second line.
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
                     .position(
                         x: geo.size.width / 2,
                         y: geo.size.height / 2 + Self.buttonBaseSize / 2 + 24
@@ -149,11 +155,36 @@ struct ContentView: View {
         session.handleRemoteStart()
     }
 
-    // MARK: - Background flash
+    // MARK: - Background
 
-    /// The color the background flashes to for the current bird's kind, mirroring
-    /// the phone Identify tab: darker purple for a new species, darker blue for a
-    /// starred one, yellow otherwise (and red for a debug-injected bird).
+    /// Standing (solid-state) background for the current bird's kind — black for
+    /// a normal/known bird, dark blue for a starred one, dark purple for a new
+    /// lifer (red for a debug injection). Unchanged from the original design; the
+    /// flash pulses over this and fades back to it.
+    private var backgroundColor: Color {
+        guard session.isRecording, let bird = session.lastBird else { return Self.idleBackground }
+        switch bird.highlight {
+        case .newSpecies: return Self.newSpeciesBackground
+        case .starred:    return Self.starredBackground
+        case .normal:     return .black
+        case .debug:      return .red
+        }
+    }
+
+    /// Standing background before any bird has been heard (idle, or recording but
+    /// nothing identified yet). Normally black; in a debug build it's red so the
+    /// build flavor is obvious at a glance, with no input needed from the phone.
+    private static var idleBackground: Color {
+        #if DEBUG
+        return .red
+        #else
+        return .black
+        #endif
+    }
+
+    /// The color flashed over the standing background when a bird is heard — a
+    /// brighter beat of the same hue (yellow over black for a normal bird),
+    /// mirroring the phone Identify tab's per-detection row flash.
     private var flashColor: Color {
         switch session.lastBird?.highlight {
         case .newSpecies:    return Self.newSpeciesFlash
@@ -163,8 +194,8 @@ struct ContentView: View {
         }
     }
 
-    /// Snap the overlay to full tint, then ease it back to black — the same shape
-    /// as the phone's per-detection row flash. Suppressed while the always-on
+    /// Snap the flash overlay to full, then ease it back to transparent so the
+    /// standing background shows through again. Suppressed while the always-on
     /// display is dimmed, and when not recording.
     private func flash() {
         guard session.isRecording, !isLuminanceReduced else { return }
@@ -174,13 +205,20 @@ struct ContentView: View {
         }
     }
 
-    // Flash colors mirroring the iOS app's row tints — purple (hue 252°) for a
-    // new species, blue (hue 215°) for a starred one, yellow (hue 48°) otherwise.
-    // The blue/purple are darkened for a full-screen pulse; yellow stays bright.
+    // Standing background tints — darkened hues for a full-screen background:
+    // purple (hue 252°) for a new species, blue (hue 215°) for a starred one.
+    private static let newSpeciesBackground =
+        Color(hue: 252.0 / 360.0, saturation: 0.55, brightness: 0.42)
+    private static let starredBackground =
+        Color(hue: 215.0 / 360.0, saturation: 0.55, brightness: 0.42)
+
+    // Flash pulse — a brighter beat of the same hue than the standing tint so the
+    // pulse reads, fading back to the standing color. Yellow (hue 48°) for a
+    // normal bird, which has no standing tint, so it pulses over black.
     private static let newSpeciesFlash =
-        Color(hue: 252.0 / 360.0, saturation: 0.60, brightness: 0.50)
+        Color(hue: 252.0 / 360.0, saturation: 0.60, brightness: 0.68)
     private static let starredFlash =
-        Color(hue: 215.0 / 360.0, saturation: 0.60, brightness: 0.50)
+        Color(hue: 215.0 / 360.0, saturation: 0.60, brightness: 0.68)
     private static let normalFlash =
         Color(hue: 48.0 / 360.0, saturation: 0.90, brightness: 0.85)
 
