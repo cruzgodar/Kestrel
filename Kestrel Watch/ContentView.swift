@@ -4,6 +4,13 @@ import SwiftUI
 struct ContentView: View {
     @State private var session = WatchSessionManager.shared
     @Environment(\.scenePhase) private var scenePhase
+    /// True while the always-on display is dimmed (wrist down). We suppress the
+    /// detection flash then — a full-screen pulse on the dimmed screen is jarring
+    /// and burns battery for something the user isn't looking at.
+    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
+    /// Opacity of the full-screen detection flash overlay. Snapped to 1 when a
+    /// bird is heard, then eased back to 0.
+    @State private var flashOpacity: Double = 0
 
     /// Fixed base size of the record control; the morph is a uniform
     /// `scaleEffect` of this so the circle and glyph shrink together as one unit.
@@ -35,7 +42,12 @@ struct ContentView: View {
         let recording = session.isRecording
 
         ZStack {
-            backgroundColor.ignoresSafeArea()
+            // Black base; a heard bird flashes a color over it (see `flash()`),
+            // mirroring the phone Identify tab's per-detection row flash.
+            Color.black.ignoresSafeArea()
+            flashColor
+                .ignoresSafeArea()
+                .opacity(flashOpacity)
 
             // Pre-warm the text-rendering pipeline during launch. The idle
             // screen is all SF Symbols, so the bird name would otherwise be the
@@ -128,6 +140,8 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: RecordingIntentRequest.notification)) { _ in
             startRecordingIfRequested()
         }
+        // Flash the background each time a bird is heard.
+        .onChange(of: session.heardTick) { _, _ in flash() }
     }
 
     private func startRecordingIfRequested() {
@@ -135,28 +149,40 @@ struct ContentView: View {
         session.handleRemoteStart()
     }
 
-    // MARK: - Background
+    // MARK: - Background flash
 
-    /// Black until a bird is heard, then the dark-mode highlight color for its
-    /// kind. A heard-but-unremarkable bird (already on the life list, not
-    /// starred) stays black; only new/starred ones tint the screen.
-    private var backgroundColor: Color {
-        guard session.isRecording, let bird = session.lastBird else { return .black }
-        switch bird.highlight {
-        case .newSpecies: return Self.newSpeciesBackground
-        case .starred:    return Self.starredBackground
-        case .normal:     return .black
-        case .debug:      return .red   // debug-injected bird — pure red, full opacity
+    /// The color the background flashes to for the current bird's kind, mirroring
+    /// the phone Identify tab: darker purple for a new species, darker blue for a
+    /// starred one, yellow otherwise (and red for a debug-injected bird).
+    private var flashColor: Color {
+        switch session.lastBird?.highlight {
+        case .newSpecies:    return Self.newSpeciesFlash
+        case .starred:       return Self.starredFlash
+        case .debug:         return .red
+        case .normal, .none: return Self.normalFlash
         }
     }
 
-    // Dark-mode highlight colors mirroring the iOS app's row tints — purple
-    // (recordHighlight, hue 252°) for a new species, blue (starredTint, hue
-    // 215°) for a starred one — darkened for use as a full-screen background.
-    private static let newSpeciesBackground =
-        Color(hue: 252.0 / 360.0, saturation: 0.55, brightness: 0.42)
-    private static let starredBackground =
-        Color(hue: 215.0 / 360.0, saturation: 0.55, brightness: 0.42)
+    /// Snap the overlay to full tint, then ease it back to black — the same shape
+    /// as the phone's per-detection row flash. Suppressed while the always-on
+    /// display is dimmed, and when not recording.
+    private func flash() {
+        guard session.isRecording, !isLuminanceReduced else { return }
+        flashOpacity = 1
+        withAnimation(.easeOut(duration: 0.6)) {
+            flashOpacity = 0
+        }
+    }
+
+    // Flash colors mirroring the iOS app's row tints — purple (hue 252°) for a
+    // new species, blue (hue 215°) for a starred one, yellow (hue 48°) otherwise.
+    // The blue/purple are darkened for a full-screen pulse; yellow stays bright.
+    private static let newSpeciesFlash =
+        Color(hue: 252.0 / 360.0, saturation: 0.60, brightness: 0.50)
+    private static let starredFlash =
+        Color(hue: 215.0 / 360.0, saturation: 0.60, brightness: 0.50)
+    private static let normalFlash =
+        Color(hue: 48.0 / 360.0, saturation: 0.90, brightness: 0.85)
 
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
 

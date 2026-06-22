@@ -1,8 +1,8 @@
 import Foundation
 import HealthKit
 
-/// Runs an outdoor-walk `HKWorkoutSession` for the duration of a watch-started
-/// birding session. Two reasons it exists:
+/// Runs a walking `HKWorkoutSession`, branded "Birding", for the duration of a
+/// watch-started birding session. Two reasons it exists:
 ///
 ///   1. An active workout session (plus the `workout-processing` background
 ///      mode) keeps the app running — and the microphone live — when the wrist
@@ -11,6 +11,10 @@ import HealthKit
 ///   2. A birding walk is a real outdoor walk, so we save it to HealthKit on
 ///      stop where it counts toward the user's activity rings — the legitimate,
 ///      user-facing use that justifies the workout background mode.
+///
+/// The optical heart-rate sensor is deliberately left off (we never request HR
+/// authorization and disable its collection on the live builder) — birding
+/// doesn't need it and the green LEDs are a battery + wrist-comfort cost.
 ///
 /// The session is started only for the watch's own recordings (not when the
 /// watch is merely mirroring a phone-mic session) and finished + saved when the
@@ -37,9 +41,10 @@ final class WatchWorkoutManager {
     func requestAuthorization() async {
         guard HKHealthStore.isHealthDataAvailable() else { return }
         let share: Set<HKSampleType> = [HKQuantityType.workoutType()]
+        // No heart rate — we never use the optical HR sensor during a birding
+        // walk, so we don't ask for it (keeping it out of the permission sheet).
         let read: Set<HKObjectType> = [
             HKQuantityType.workoutType(),
-            HKQuantityType(.heartRate),
             HKQuantityType(.activeEnergyBurned),
             HKQuantityType(.distanceWalkingRunning),
         ]
@@ -50,8 +55,8 @@ final class WatchWorkoutManager {
         }
     }
 
-    /// Begins an outdoor-walk workout. No-op if HealthKit is unavailable or a
-    /// session is already running.
+    /// Begins a walking workout branded "Birding". No-op if HealthKit is
+    /// unavailable or a session is already running.
     func start() async {
         guard HKHealthStore.isHealthDataAvailable(), session == nil else { return }
 
@@ -62,10 +67,15 @@ final class WatchWorkoutManager {
         do {
             let session = try HKWorkoutSession(healthStore: healthStore, configuration: config)
             let builder = session.associatedWorkoutBuilder()
-            builder.dataSource = HKLiveWorkoutDataSource(
+            let dataSource = HKLiveWorkoutDataSource(
                 healthStore: healthStore,
                 workoutConfiguration: config
             )
+            // Never collect heart rate — keep the optical sensor off for the
+            // whole walk. The live data source enables HR by default for a
+            // walking workout, so we explicitly disable it.
+            dataSource.disableCollection(for: HKQuantityType(.heartRate))
+            builder.dataSource = dataSource
 
             self.session = session
             self.builder = builder
@@ -74,6 +84,9 @@ final class WatchWorkoutManager {
             self.startDate = start
             session.startActivity(with: start)
             try await builder.beginCollection(at: start)
+            // Brand the workout "Birding" so it shows up under that name in the
+            // Fitness app instead of the generic "Outdoor Walk".
+            try await builder.addMetadata([HKMetadataKeyWorkoutBrandName: "Birding"])
         } catch {
             print("Kestrel Watch: workout start error \(error)")
             session = nil

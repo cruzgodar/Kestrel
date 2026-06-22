@@ -43,6 +43,12 @@ final class WatchSessionManager: NSObject {
     /// is heard, and reset at the start of each session).
     private(set) var lastBird: HeardBird?
 
+    /// Bumped every time the phone reports a heard bird, so the UI can flash the
+    /// background on each detection — including a `.normal` bird, which doesn't
+    /// change `lastBird`'s tint and so couldn't be caught by observing `lastBird`
+    /// alone. The flash color is read from `lastBird.highlight` when it fires.
+    private(set) var heardTick = 0
+
     /// Scientific names the user has added to the life list (via the watch's add
     /// button) during the current listening session. Tracked here so the add
     /// button's checkmark state survives the bird being re-heard later in the
@@ -244,6 +250,9 @@ final class WatchSessionManager: NSObject {
             scientificName: scientificName,
             highlight: highlight
         )
+        // Drive the background flash. Bumped after `lastBird` is set so the view
+        // reads the new bird's highlight when it picks the flash color.
+        heardTick &+= 1
         if let cached = WatchSpeciesImageCache.shared.image(for: scientificName) {
             lastBirdImage = cached
         } else {
@@ -361,7 +370,7 @@ final class WatchSessionManager: NSObject {
             return
         }
 
-        // Recording is truly underway now — begin the outdoor-walk workout.
+        // Recording is truly underway now — begin the birding walk workout.
         // The active workout session (with the workout-processing background
         // mode) keeps the app and microphone alive when the wrist drops, and is
         // saved to HealthKit when the user stops. Started here, after the audio

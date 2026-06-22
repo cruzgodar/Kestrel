@@ -1,6 +1,7 @@
 import CoreLocation
 import MapKit
 import SwiftUI
+import UIKit
 
 /// A single plotted point on the map. Usually one per life-list entry (its
 /// first sighting), but with "Show repeat observations on map" enabled an
@@ -127,7 +128,11 @@ struct MapView: View {
     /// recognizes simultaneously (so it isn't delayed waiting for double-tap), so
     /// it also sees taps that land on an annotation; this lets it tell those
     /// apart from genuine empty-map taps and skip dismissing for them.
-    @State private var lastAnnotationTapAt: Date = .distantPast
+    /// Set by an annotation tap and consumed by the map's simultaneous
+    /// dismiss gesture on the same touch, so a tap that opened/swapped a card
+    /// doesn't also dismiss it. A boolean token rather than a timestamp — see
+    /// the dismiss gesture for why.
+    @State private var annotationTapConsumed = false
 
     /// The two kinds of bottom card the map can show. Routed through a single
     /// sheet (see `mapCard`) so re-targeting it never tears the sheet down.
@@ -235,8 +240,9 @@ struct MapView: View {
                                 thumbSize: Self.thumbSize,
                                 onTap: { tappedInfo in
                                     // Mark this as an annotation tap so the map's
-                                    // simultaneous dismiss gesture skips it.
-                                    lastAnnotationTapAt = Date()
+                                    // simultaneous dismiss gesture consumes it
+                                    // instead of dismissing the card.
+                                    annotationTapConsumed = true
                                     // Multi-bird stacks open (or swap to) a card.
                                     if tappedInfo.count > 1 {
                                         mapCard = .cluster(BirdCluster(
@@ -287,14 +293,28 @@ struct MapView: View {
                 .simultaneousGesture(
                     TapGesture().onEnded {
                         // Defer one runloop so any annotation tap from the same
-                        // touch is processed first (it stamps `lastAnnotationTapAt`
-                        // and opens/swaps a card); then only dismiss if this tap
+                        // touch is processed first (it sets `annotationTapConsumed`
+                        // and opens/swaps a card); then dismiss only if this tap
                         // landed on the empty map, not on an annotation.
+                        //
+                        // A boolean token, not a wall-clock comparison: the old
+                        // heuristic ("dismiss unless an annotation tap landed in the
+                        // last 0.1 s") misfired under main-thread load. Presenting a
+                        // fresh card and decoding its thumbnails can push this
+                        // deferred block well past 0.1 s after the annotation tap, so
+                        // a legitimate cluster tap dismissed its own just-opened card
+                        // — the "card appears then instantly disappears" bug, which
+                        // cleared up after zooming in (fewer/cheaper annotations =
+                        // less jank). Every map tap fires this gesture, so the flag an
+                        // annotation tap sets is always consumed by the paired run
+                        // here; an empty-map tap finds it clear and dismisses.
                         DispatchQueue.main.async {
-                            guard mapCard != nil else { return }
-                            if Date().timeIntervalSince(lastAnnotationTapAt) > 0.1 {
-                                mapCard = nil
+                            if annotationTapConsumed {
+                                annotationTapConsumed = false
+                                return
                             }
+                            guard mapCard != nil else { return }
+                            mapCard = nil
                         }
                     }
                 )
@@ -486,7 +506,10 @@ struct MapView: View {
         next.reserveCapacity(computed.count)
         for cluster in computed {
             next[cluster.representative.id] = RepInfo(
-                count: cluster.all.count,
+                // Count distinct species, matching the deduped card grid — so a
+                // stack of repeat observations of one bird reads as "1" (and is
+                // tapped straight through to its photo) rather than "N Birds".
+                count: cluster.uniqueByMostRecent.count,
                 coordinate: cluster.coordinate,
                 representative: cluster.representative,
                 others: cluster.others
@@ -769,6 +792,22 @@ struct BirdCluster: Identifiable, Hashable {
     var id: String { representative.id }
     var all: [MapPoint] { [representative] + others }
 
+    /// One point per species — the most recent observation — newest first.
+    /// With repeat observations enabled a cluster can hold several sightings of
+    /// the same bird; the card shows a single, latest thumbnail for each instead
+    /// of duplicates.
+    var uniqueByMostRecent: [MapPoint] {
+        var latest: [String: MapPoint] = [:]
+        for point in all {
+            if let existing = latest[point.scientificName] {
+                if point.date > existing.date { latest[point.scientificName] = point }
+            } else {
+                latest[point.scientificName] = point
+            }
+        }
+        return latest.values.sorted { $0.date > $1.date }
+    }
+
     static func == (lhs: BirdCluster, rhs: BirdCluster) -> Bool {
         lhs.id == rhs.id
             && lhs.others.map(\.id) == rhs.others.map(\.id)
@@ -811,11 +850,23 @@ private struct MapCardSheet: View {
     @State private var closeCardOnPhotoDismiss = false
 
     private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 12)]
-    /// Inset of each thumbnail from the card edges (`clusterGrid`'s padding).
+    /// Equal inset of each thumbnail from the card's top and side edges (applied
+    /// as `clusterGrid`'s padding). Equal on top and sides so the corner-radius
+    /// math below yields *concentric* corners, not just matching ones.
     private static let thumbInset: CGFloat = 12
-    /// Thumbnail corner radius — sized to read as concentric with the sheet's
-    /// (system-drawn) top corners.
-    private static let thumbCornerRadius: CGFloat = 22
+    /// The presenting sheet's actual top corner radius, measured at runtime (see
+    /// `SheetTopCornerRadiusReader`). iOS rounds a non-full sheet's top corners to
+    /// a fixed, device-independent system value — its bottom corners are square
+    /// and simply sit inside the phone's rounded display corner — but that value
+    /// isn't public API, so we read it off the presentation layer. Seeded with a
+    /// sane default until the probe resolves the real one.
+    @State private var sheetTopCornerRadius: CGFloat = 34
+    /// Thumbnail corner radius that is concentric with the card's top corners:
+    /// the outer (card) radius minus the equal inset between them. Guaranteed
+    /// concentric on every device because it tracks the measured top radius.
+    private var thumbCornerRadius: CGFloat {
+        max(0, sheetTopCornerRadius - Self.thumbInset)
+    }
 
     var body: some View {
         // A plain native sheet, matching the life-list import card: the system
@@ -836,6 +887,15 @@ private struct MapCardSheet: View {
                 Color.clear
             }
         }
+        // Read the real top corner radius off the live presentation so the
+        // thumbnails can be made concentric with it on any device.
+        .background(
+            SheetTopCornerRadiusReader { radius in
+                if abs(radius - sheetTopCornerRadius) > 0.5 {
+                    sheetTopCornerRadius = radius
+                }
+            }
+        )
         // Crossfade whenever the card identity changes (cluster→cluster,
         // cluster→settings, …). The sheet host is unaffected; only the contents
         // animate, so the swap reads as a smooth dissolve rather than a snap.
@@ -879,10 +939,10 @@ private struct MapCardSheet: View {
     private func clusterGrid(_ cluster: BirdCluster) -> some View {
         ScrollView {
             LazyVGrid(columns: columns, alignment: .center, spacing: 12) {
-                ForEach(cluster.all) { point in
+                ForEach(cluster.uniqueByMostRecent) { point in
                     ClusterGridItem(
                         point: point,
-                        cornerRadius: Self.thumbCornerRadius
+                        cornerRadius: thumbCornerRadius
                     )
                     .onTapGesture {
                         photo = .pinpoint(point)
@@ -895,6 +955,57 @@ private struct MapCardSheet: View {
             .padding(.horizontal, Self.thumbInset)
             .padding(.top, Self.thumbInset)
             .padding(.bottom, 24)
+        }
+    }
+}
+
+/// Reports the presenting sheet's actual top corner radius back to SwiftUI.
+///
+/// iOS rounds a non-full sheet's *top* corners to a fixed, device-independent
+/// system value (the bottom corners are left square, sitting inside the phone's
+/// rounded display corner) and doesn't expose that value as API. We read it off
+/// the live presentation by walking up from this probe to the nearest ancestor
+/// layer that rounds its top corners — that's the sheet's container — and
+/// reporting its `cornerRadius`. The card uses it to size thumbnails concentric
+/// with the top corners on every device, rather than guessing a constant.
+private struct SheetTopCornerRadiusReader: UIViewRepresentable {
+    let onResolve: (CGFloat) -> Void
+
+    func makeUIView(context: Context) -> ProbeView { ProbeView(onResolve: onResolve) }
+    func updateUIView(_ uiView: ProbeView, context: Context) { uiView.onResolve = onResolve }
+
+    final class ProbeView: UIView {
+        var onResolve: (CGFloat) -> Void
+
+        init(onResolve: @escaping (CGFloat) -> Void) {
+            self.onResolve = onResolve
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+            backgroundColor = .clear
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            // Defer so the presentation container is fully attached and laid out
+            // (its corner radius is set during the present transition).
+            DispatchQueue.main.async { [weak self] in self?.resolve() }
+        }
+
+        private func resolve() {
+            var view: UIView? = superview
+            while let current = view {
+                let corners = current.layer.maskedCorners
+                let roundsTop = corners.contains(.layerMinXMinYCorner)
+                    || corners.contains(.layerMaxXMinYCorner)
+                if current.layer.cornerRadius > 1, roundsTop {
+                    onResolve(current.layer.cornerRadius)
+                    return
+                }
+                view = current.superview
+            }
         }
     }
 }

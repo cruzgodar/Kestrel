@@ -314,9 +314,17 @@ final class RecordingManager {
         let s = WCSession.default
         s.sendMessage(["cmd": "remoteStop"], replyHandler: nil, errorHandler: nil)
         s.transferUserInfo(["cmd": "remoteStop"])
-        // Don't flip `watchRecording` here — the watch sends "stop" back
-        // through its normal channel and we let that update our state, so
-        // the UI matches reality even if the remote tear-down is slow.
+        // Tear our own side down immediately rather than waiting for the watch's
+        // "stop" handshake to flip our state. If the watch has died (battery,
+        // crash, out of range with no app left to answer) that handshake never
+        // arrives — the phone would stay stuck in the watch-recording state and
+        // the stop button would appear dead until the 60 s heartbeat watchdog
+        // eventually fired. Stopping locally makes the button always work: a
+        // live watch still gets `remoteStop` above and tears its own capture +
+        // workout down, and the "stop" it echoes back is a harmless no-op here
+        // (guarded by `watchRecording`, already false). Incoming audio from a
+        // still-running watch is ignored once `watchRecording` is false.
+        stopFromWatch()
     }
 
     func startLocally() async {
