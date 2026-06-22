@@ -811,13 +811,23 @@ private struct MapCardSheet: View {
     @State private var closeCardOnPhotoDismiss = false
 
     private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 12)]
-    /// The card's *top* corner radius. `.presentationCornerRadius` only shapes the
-    /// top corners; the bottom corners reach the screen edge and are clipped by
-    /// the device's corner mask, so they stay perfectly concentric with the phone
-    /// automatically. This is set by hand (a little tighter than the system
-    /// default), and the thumbnails derive from it so they're concentric with the
-    /// card's top corners.
+    /// The card's *top* corner radius — set by hand (a little tighter than the
+    /// system default). The card shape is drawn ourselves as an
+    /// `UnevenRoundedRectangle` so the top can use this tight value while the
+    /// bottom uses the device's display corner radius, tracing the phone's
+    /// physical corners (`.presentationCornerRadius` can't differ top vs bottom —
+    /// it rounds all four the same). Thumbnails derive from this so they're
+    /// concentric with the card's top corners.
     private static let cardTopCornerRadius: CGFloat = 34
+    /// The card's *bottom* corner radius — the device display corner radius (which
+    /// the radii tables unanimously agree on, e.g. 62 on a 16 Pro) minus a small
+    /// inset. The raw display radius reads a hair too round because the card's
+    /// bottom edge doesn't sit exactly on the physical screen edge; this nudges it
+    /// back so the corners trace the phone concentrically. Tune to taste.
+    private static let cardBottomCornerInset: CGFloat = 2
+    private static var cardBottomCornerRadius: CGFloat {
+        max(0, DeviceMetrics.displayCornerRadius - cardBottomCornerInset)
+    }
     /// Inset of each thumbnail from the card edges (`clusterGrid`'s padding).
     /// Subtracting it from the top corner radius keeps each thumbnail's corners
     /// concentric with the card, since both share one radius.
@@ -851,11 +861,22 @@ private struct MapCardSheet: View {
         // detent — this is what lets you open other things from either card and
         // tap the map to dismiss. At .large the sheet is modal, as expected.
         .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-        // Set only the top corner radius (a little tighter than the system
-        // default). The bottom corners are left to the system, which clips them to
-        // the screen edge — keeping them concentric with the phone automatically.
-        .presentationCornerRadius(Self.cardTopCornerRadius)
-        .presentationBackground(.thinMaterial)
+        // Draw the card shape ourselves so the top corners can be tight while the
+        // bottom corners trace the phone's screen corners (concentric). The system
+        // corner radius is set to 0 (square clip) so it doesn't re-round our shape
+        // to a uniform radius; the custom background defines what's actually visible.
+        .presentationCornerRadius(0)
+        .presentationBackground {
+            UnevenRoundedRectangle(
+                topLeadingRadius: Self.cardTopCornerRadius,
+                bottomLeadingRadius: Self.cardBottomCornerRadius,
+                bottomTrailingRadius: Self.cardBottomCornerRadius,
+                topTrailingRadius: Self.cardTopCornerRadius,
+                style: .continuous
+            )
+            .fill(.thinMaterial)
+            .ignoresSafeArea()
+        }
         // Remember (before the item clears) whether to close the card on exit.
         .onChange(of: photo) { _, newValue in
             switch newValue {
