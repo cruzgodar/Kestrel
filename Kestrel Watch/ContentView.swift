@@ -172,11 +172,11 @@ struct ContentView: View {
     /// nothing identified yet). Normally black; in a debug build it's red so the
     /// build flavor is obvious at a glance, with no input needed from the phone.
     private static var idleBackground: Color {
-        #if DEBUG
-        return .red
-        #else
+//        #if DEBUG
+//        return .red
+//        #else
         return .black
-        #endif
+//        #endif
     }
 
     /// The color flashed over the standing background when a bird is heard — a
