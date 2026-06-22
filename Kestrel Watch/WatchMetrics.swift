@@ -59,7 +59,6 @@ enum WatchMetrics {
         // automatically, so it stays concentric with the bezel.
         let imageMargin: CGFloat
         let nameImageGap: CGFloat
-        print(size)
         switch size {
         case CGSize(width: 162, height: 197): imageMargin = 6; nameImageGap = 7    // 40mm  (SE 2/3, Series 6)
         case CGSize(width: 184, height: 224): imageMargin = 8; nameImageGap = 11   // 44mm  (SE 2/3, Series 6)

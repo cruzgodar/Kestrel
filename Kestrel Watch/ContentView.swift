@@ -121,7 +121,29 @@ struct ContentView: View {
                     .allowsHitTesting(showAddButton)
             }
             .ignoresSafeArea()
+
+            // Shown when the phone refuses a start (e.g. no location access for
+            // the species filter). Covers the screen with the reason and points
+            // the user at the iPhone; tap to dismiss.
+            if let error = session.recordingError {
+                ZStack {
+                    Color.black.opacity(0.85).ignoresSafeArea()
+                    VStack(spacing: 10) {
+                        Image(systemName: "location.slash.fill")
+                            .font(.system(size: 30))
+                            .foregroundStyle(.yellow)
+                        Text(error)
+                            .font(.system(size: 15, weight: .medium))
+                            .multilineTextAlignment(.center)
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 16)
+                }
+                .transition(.opacity)
+                .onTapGesture { session.recordingError = nil }
+            }
         }
+        .animation(.easeInOut(duration: 0.25), value: session.recordingError)
         // The record/stop morph is animated explicitly via `withAnimation` in
         // the session manager (so the audio bring-up/teardown can be deferred
         // until after it). Only the bird cross-fade is animated here.

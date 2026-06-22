@@ -33,7 +33,7 @@ struct StartRecordingComplicationView: View {
     /// The start-recording button's purple. Used filled for the glyph and as a
     /// light wash on the complication background.
     private static let purple = Color(red: 0.6, green: 0.5, blue: 1.0)
-    private static let glyphPurple = Color(red: 0.58, green: 0.48, blue: 1.0)
+    private static let glyphPurple = Color(red: 0.6, green: 0.5, blue: 1.0)
 
     var body: some View {
         label
@@ -50,7 +50,7 @@ struct StartRecordingComplicationView: View {
             ZStack {
                 AccessoryWidgetBackground()
                 // Faint purple tint over the standard gray background.
-                Self.purple.opacity(0.12)
+                Self.purple.opacity(0.05)
                 Image(systemName: "bird.fill")
                     .font(.system(size: 20, weight: .semibold))
                     .foregroundStyle(Self.glyphPurple)

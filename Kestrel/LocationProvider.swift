@@ -15,6 +15,33 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
         manager.desiredAccuracy = kCLLocationAccuracyHundredMeters
     }
 
+    /// The current location authorization status, read straight off the manager.
+    var authorizationStatus: CLAuthorizationStatus { manager.authorizationStatus }
+
+    private var authContinuation: CheckedContinuation<CLAuthorizationStatus, Never>?
+
+    /// Returns the authorization status, prompting once and awaiting the user's
+    /// choice if it's still undetermined. Used to gate recording on location
+    /// access — the nearby-species filter can't be built without it.
+    func requestAuthorization() async -> CLAuthorizationStatus {
+        let status = manager.authorizationStatus
+        guard status == .notDetermined else { return status }
+        // Only one prompt can be outstanding; if one already is, report the
+        // current (still-undetermined) status rather than stacking continuations.
+        guard authContinuation == nil else { return status }
+        return await withCheckedContinuation { (cont: CheckedContinuation<CLAuthorizationStatus, Never>) in
+            self.authContinuation = cont
+            self.manager.requestWhenInUseAuthorization()
+        }
+    }
+
+    private func finishAuth(with status: CLAuthorizationStatus) {
+        if let cont = authContinuation {
+            authContinuation = nil
+            cont.resume(returning: status)
+        }
+    }
+
     /// Returns a single `CLLocation` fix, or `nil` on denial/timeout/error.
     func currentLocation(timeout: Duration = .seconds(5)) async -> CLLocation? {
         // If we already have a pending request, don't start another one.
@@ -66,6 +93,16 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         print("LocationProvider: error \(error)")
         Task { @MainActor in self.finish(with: nil) }
+    }
+
+    nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
+        Task { @MainActor in
+            let status = self.manager.authorizationStatus
+            // Ignore the initial callback that fires before the user has chosen;
+            // resume only once the prompt resolves to a concrete status.
+            guard status != .notDetermined else { return }
+            self.finishAuth(with: status)
+        }
     }
 }
 

@@ -22,6 +22,10 @@ final class RecordingManager {
     private(set) var detections: [Detection] = []
     private(set) var errorMessage: String?
     private(set) var locationStatus: String?
+    /// Set when a recording attempt was refused because location access — and so
+    /// the nearby-species filter — is unavailable. Drives an alert offering to
+    /// open Settings. The view clears it on dismiss (hence not `private(set)`).
+    var showLocationPermissionAlert = false
     /// IDs (scientific names) of detections whose confidence was just upgraded;
     /// the UI flashes their row yellow while they're in this set.
     private(set) var flashIDs: Set<String> = []
@@ -347,6 +351,14 @@ final class RecordingManager {
 
         errorMessage = nil
 
+        // The nearby-species filter — and thus recording — needs location access.
+        // Prompt if undetermined; if it's denied, surface the Settings alert and
+        // don't start.
+        guard await isLocationAuthorized(prompt: true) else {
+            showLocationPermissionAlert = true
+            return
+        }
+
         guard await requestMicrophonePermission() else {
             errorMessage = "Microphone permission denied."
             return
@@ -453,6 +465,15 @@ final class RecordingManager {
         // If a phone-driven recording is already running, don't clobber it.
         if isRecording && !watchRecording { return }
         guard !watchRecording else { return }
+
+        // The watch can't grant the phone's location access, so don't prompt here
+        // — just check it. Without it there's no species filter, so refuse and
+        // tell the watch to roll back its optimistic start and point the user at
+        // the iPhone.
+        guard await isLocationAuthorized(prompt: false) else {
+            sendToWatch(["cmd": "recordingRefused", "reason": "location"])
+            return
+        }
 
         errorMessage = nil
         detections = []
@@ -742,44 +763,44 @@ final class RecordingManager {
         store.remove(scientificName: scientificName)
     }
 
-#if DEBUG
-    /// Scientific names injected by the debug tool. Drives the pure-red highlight
-    /// on both the phone rows and the watch screen so simulated birds are obvious.
-    private(set) var debugDetectionNames: Set<String> = []
-
-    /// Debug-only: inject a synthetic detection as if BirdNET had just heard
-    /// `scientificName`, with no audio involved. Runs the exact same `merge`
-    /// path as a real inference window, so it updates the results list, fires
-    /// haptics/notifications, and pushes the bird to the watch's "now hearing"
-    /// screen — which is what makes it a hands-off way to test the watch.
-    ///
-    /// Refreshes the life-list snapshot first so the new/starred highlight is
-    /// accurate even when not actively recording.
-    func debugSimulateDetection(scientificName: String, commonName: String, confidence: Float = 0.9) {
-        refreshLifeListFromStore()
-        debugDetectionNames.insert(scientificName)
-        merge([
-            Detection(
-                scientificName: scientificName,
-                commonName: commonName,
-                confidence: confidence,
-                lastSeen: Date()
-            )
-        ])
-    }
-
-    /// Debug-only: pick a random species from the catalog and simulate hearing
-    /// it. Returns the common name so the caller can surface what it fired.
-    @discardableResult
-    func debugSimulateRandomDetection() -> String? {
-        guard let species = SpeciesCatalog.shared.all.randomElement() else { return nil }
-        debugSimulateDetection(
-            scientificName: species.scientificName,
-            commonName: species.commonName
-        )
-        return species.commonName
-    }
-#endif
+//#if DEBUG
+//    /// Scientific names injected by the debug tool. Drives the pure-red highlight
+//    /// on both the phone rows and the watch screen so simulated birds are obvious.
+//    private(set) var debugDetectionNames: Set<String> = []
+//
+//    /// Debug-only: inject a synthetic detection as if BirdNET had just heard
+//    /// `scientificName`, with no audio involved. Runs the exact same `merge`
+//    /// path as a real inference window, so it updates the results list, fires
+//    /// haptics/notifications, and pushes the bird to the watch's "now hearing"
+//    /// screen — which is what makes it a hands-off way to test the watch.
+//    ///
+//    /// Refreshes the life-list snapshot first so the new/starred highlight is
+//    /// accurate even when not actively recording.
+//    func debugSimulateDetection(scientificName: String, commonName: String, confidence: Float = 0.9) {
+//        refreshLifeListFromStore()
+//        debugDetectionNames.insert(scientificName)
+//        merge([
+//            Detection(
+//                scientificName: scientificName,
+//                commonName: commonName,
+//                confidence: confidence,
+//                lastSeen: Date()
+//            )
+//        ])
+//    }
+//
+//    /// Debug-only: pick a random species from the catalog and simulate hearing
+//    /// it. Returns the common name so the caller can surface what it fired.
+//    @discardableResult
+//    func debugSimulateRandomDetection() -> String? {
+//        guard let species = SpeciesCatalog.shared.all.randomElement() else { return nil }
+//        debugSimulateDetection(
+//            scientificName: species.scientificName,
+//            commonName: species.commonName
+//        )
+//        return species.commonName
+//    }
+//#endif
 
     private func merge(_ results: [Detection]) {
         // Flash any repeat match (regardless of confidence change), but
@@ -883,10 +904,10 @@ final class RecordingManager {
             } else {
                 highlight = "normal"
             }
-#if DEBUG
-            // Debug-injected birds override to pure red on the watch.
-            if debugDetectionNames.contains(top.scientificName) { highlight = "debug" }
-#endif
+//#if DEBUG
+//            // Debug-injected birds override to pure red on the watch.
+//            if debugDetectionNames.contains(top.scientificName) { highlight = "debug" }
+//#endif
             sendBirdDisplayToWatch(
                 commonName: top.commonName,
                 scientificName: top.scientificName,
@@ -913,6 +934,24 @@ final class RecordingManager {
     }
 
     // MARK: - Location + species filter
+
+    /// Whether recording may proceed: the nearby-species filter requires location
+    /// access, so we refuse to record without it. When `prompt` is set (the phone
+    /// user is interacting), an undetermined status prompts once and awaits the
+    /// choice; otherwise (the watch path — the phone owns location, not the watch)
+    /// the current status is read without surfacing a system dialog. Returns
+    /// whether access was granted.
+    private func isLocationAuthorized(prompt: Bool) async -> Bool {
+        let status = prompt
+            ? await locationProvider.requestAuthorization()
+            : locationProvider.authorizationStatus
+        switch status {
+        case .authorizedWhenInUse, .authorizedAlways:
+            return true
+        default:
+            return false
+        }
+    }
 
     private func refreshSpeciesFilter() async {
         guard let rangeFilter = await getRangeFilter() else {

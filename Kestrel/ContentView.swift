@@ -99,26 +99,26 @@ struct ContentView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
         }
-#if DEBUG
-        // Debug-only: simulate hearing a random bird (no audio), driving the
-        // full detection pipeline through to the watch. Handy for testing the
-        // watch's "now hearing" screen without playing sound.
-        .overlay(alignment: .topTrailing) {
-            Button {
-                manager.debugSimulateRandomDetection()
-            } label: {
-                Image(systemName: "ladybug.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 34, height: 34)
-                    .background(.purple.opacity(0.85), in: Circle())
-            }
-            .buttonStyle(.plain)
-            .padding(.trailing, 12)
-            .padding(.top, 8)
-            .accessibilityLabel("Simulate detection")
-        }
-#endif
+//#if DEBUG
+//        // Debug-only: simulate hearing a random bird (no audio), driving the
+//        // full detection pipeline through to the watch. Handy for testing the
+//        // watch's "now hearing" screen without playing sound.
+//        .overlay(alignment: .topTrailing) {
+//            Button {
+//                manager.debugSimulateRandomDetection()
+//            } label: {
+//                Image(systemName: "ladybug.fill")
+//                    .font(.system(size: 16, weight: .semibold))
+//                    .foregroundStyle(.white)
+//                    .frame(width: 34, height: 34)
+//                    .background(.purple.opacity(0.85), in: Circle())
+//            }
+//            .buttonStyle(.plain)
+//            .padding(.trailing, 12)
+//            .padding(.top, 8)
+//            .accessibilityLabel("Simulate detection")
+//        }
+//#endif
         .onChange(of: manager.isRecording) { wasRecording, isNowRecording in
             if !wasRecording && isNowRecording {
                 // New session — push the current life-list IDs into the
@@ -133,6 +133,24 @@ struct ContentView: View {
         // spectrogram's blue band reflect mid-session star toggles.
         .onChange(of: lifeListStore.starredNames, initial: true) { _, new in
             manager.updateStarred(new)
+        }
+        // Recording needs location access for the nearby-species filter; when a
+        // start is refused for lack of it, offer a jump to Settings.
+        .alert(
+            "Location Access Needed",
+            isPresented: Binding(
+                get: { manager.showLocationPermissionAlert },
+                set: { manager.showLocationPermissionAlert = $0 }
+            )
+        ) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Not Now", role: .cancel) { }
+        } message: {
+            Text("Kestrel cannot identify birds without location access, because it needs to filter birds to only those found near you. You can turn on location access for Kestrel in Settings.")
         }
     }
 
@@ -327,12 +345,12 @@ struct ContentView: View {
                         flashing ? nil : .easeOut(duration: 0.5),
                         value: flashing
                     )
-#if DEBUG
-                // Debug-injected birds: pure red, full opacity, over everything.
-                if manager.debugDetectionNames.contains(detection.scientificName) {
-                    Color.red
-                }
-#endif
+//#if DEBUG
+//                // Debug-injected birds: pure red, full opacity, over everything.
+//                if manager.debugDetectionNames.contains(detection.scientificName) {
+//                    Color.red
+//                }
+//#endif
             }
         )
     }

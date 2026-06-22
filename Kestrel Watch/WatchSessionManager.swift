@@ -22,6 +22,12 @@ final class WatchSessionManager: NSObject {
     /// appearing dead.
     private(set) var isStarting = false
 
+    /// A short message shown when the phone refuses a start the watch already
+    /// announced optimistically — currently when the iPhone lacks location access
+    /// and so can't build the nearby-species filter. Auto-clears after a few
+    /// seconds. Settable so the view can dismiss it.
+    var recordingError: String?
+
     /// How a heard bird is highlighted — picks the watch's background color.
     /// The raw values match the strings the phone sends in the `highlight` key.
     enum BirdHighlight: String, Equatable {
@@ -196,6 +202,30 @@ final class WatchSessionManager: NSObject {
     func handlePhoneRecordingStopped() {
         guard mirroringPhone else { return }
         endMirrorDisplay()
+    }
+
+    /// The phone refused a start the watch announced optimistically (it can't
+    /// record — currently because the iPhone lacks location access for the
+    /// nearby-species filter). Roll the watch's recording state back and show a
+    /// short message pointing the user at the iPhone, since only it owns location.
+    func handleRecordingRefused(reason: String) {
+        isStarting = false
+        if isRecording {
+            // Tears down anything that may have come up and tells the phone we
+            // stopped (a harmless no-op there — it already refused).
+            stop()
+        } else {
+            mirroringPhone = false
+        }
+        recordingError = reason == "location"
+            ? "Turn on Location for Kestrel on your iPhone to identify birds nearby."
+            : "Couldn't start recording. Open Kestrel on your iPhone."
+        // Auto-dismiss so the idle screen isn't left showing a stale error.
+        let message = recordingError
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            if self?.recordingError == message { self?.recordingError = nil }
+        }
     }
 
     /// Tells the phone to stop its mic recording, then drops the mirror locally.
@@ -497,6 +527,10 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                 case "remoteStop":  WatchSessionManager.shared.handleRemoteStop()
                 case "phoneStart":  WatchSessionManager.shared.handlePhoneRecordingStarted()
                 case "phoneStop":   WatchSessionManager.shared.handlePhoneRecordingStopped()
+                case "recordingRefused":
+                    WatchSessionManager.shared.handleRecordingRefused(
+                        reason: payload["reason"] as? String ?? ""
+                    )
                 default: break
                 }
             }

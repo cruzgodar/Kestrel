@@ -39,15 +39,16 @@ struct AboutView: View {
             Text("About Me")
                 .font(.title2.bold())
 
+            Text(.init(Self.aboutMe))
+                .tint(.accentColor)
+                .fixedSize(horizontal: false, vertical: true)
+
             Image("Cruz")
                 .resizable()
                 .scaledToFill()
                 .frame(width: 72, height: 72)
                 .clipShape(Circle())
-
-            Text(.init(Self.aboutMe))
-                .tint(.accentColor)
-                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
     }
 
@@ -96,7 +97,7 @@ struct AboutView: View {
     )
 
     private static let aboutMe =
-        "I'm a web developer and college math teacher, and most of my work focuses on mathematical art and illustration, as well as thoughtful and high-quality teaching. I've found myself hopelessly into birding on the side, though, and Kestrel is my idea of an ideal companion app that can be used independently or in conjunction with eBird and Merlin. You can see more of my work at [cruzgodar.com](https://cruzgodar.com) or reach me at [me@cruzgodar.com](mailto:me@cruzgodar.com) with bug reports or feature suggestions."
+        "I'm a web developer and college math teacher, and most of my work focuses on mathematical art and illustration, as well as thoughtful and high-quality teaching. I've found myself hopelessly into birding on the side, though, and Kestrel is my idea of an ideal companion app that can be used independently or in conjunction with eBird and Merlin. You can see more of my work at [cruzgodar.com](https://cruzgodar.com) or reach me at [me@cruzgodar.com](mailto:me@cruzgodar.com) with bug reports or feature suggestions. Thank you for using Kestrel! –Cruz"
 }
 
 #Preview {

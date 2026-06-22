@@ -849,11 +849,36 @@ private struct MapCardSheet: View {
     /// here because `onDismiss` can't read the (already-cleared) `photo` item.
     @State private var closeCardOnPhotoDismiss = false
 
-    private let columns = [GridItem(.adaptive(minimum: 104, maximum: 130), spacing: 12)]
+    /// Spacing between thumbnails, both between columns and rows.
+    private static let gridSpacing: CGFloat = 12
+    /// Target thumbnail width. The column count is chosen so each thumbnail is at
+    /// least this wide; the flexible columns then divide the row evenly.
+    private static let minThumbWidth: CGFloat = 104
     /// Equal inset of each thumbnail from the card's top and side edges (applied
     /// as `clusterGrid`'s padding). Equal on top and sides so the corner-radius
     /// math below yields *concentric* corners, not just matching ones.
     private static let thumbInset: CGFloat = 12
+
+    /// Builds the grid's columns to fill `width` exactly, leaving no centered
+    /// slack at the row's edges. An `.adaptive` grid with a `maximum` item width
+    /// can't grow its columns past that cap, so on wider screens the leftover
+    /// space is split and centered — which pushes the edge thumbnails inward past
+    /// `thumbInset`, making the side gap larger than the top gap (it looked fine
+    /// on a 16 Pro, where 3 columns happened to fill the row, but not on a 17 Pro
+    /// Max). Flexible columns instead divide the full width evenly, so the edge
+    /// thumbnails always sit flush at `thumbInset` — equal to the top inset — and
+    /// the corners stay concentric on every iOS 26 phone. The count is the most
+    /// columns that keep each thumbnail at least `minThumbWidth` wide.
+    private static func columns(forWidth width: CGFloat) -> [GridItem] {
+        guard width > 0 else {
+            return [GridItem(.flexible(), spacing: gridSpacing)]
+        }
+        let count = max(1, Int((width + gridSpacing) / (minThumbWidth + gridSpacing)))
+        return Array(
+            repeating: GridItem(.flexible(), spacing: gridSpacing),
+            count: count
+        )
+    }
     /// The presenting sheet's actual top corner radius, measured at runtime (see
     /// `SheetTopCornerRadiusReader`). iOS rounds a non-full sheet's top corners to
     /// a fixed, device-independent system value — its bottom corners are square
@@ -941,24 +966,35 @@ private struct MapCardSheet: View {
     }
 
     private func clusterGrid(_ cluster: BirdCluster) -> some View {
-        ScrollView {
-            LazyVGrid(columns: columns, alignment: .center, spacing: 12) {
-                ForEach(cluster.uniqueByMostRecent) { point in
-                    ClusterGridItem(
-                        point: point,
-                        cornerRadius: thumbCornerRadius
-                    )
-                    .onTapGesture {
-                        photo = .pinpoint(point)
+        // Read the card's width so the grid can size its columns to fill the row
+        // exactly (no centered slack), keeping the edge thumbnails flush at
+        // `thumbInset`. The available content width is the card width minus the
+        // equal horizontal inset on each side.
+        GeometryReader { geo in
+            let available = geo.size.width - 2 * Self.thumbInset
+            ScrollView {
+                LazyVGrid(
+                    columns: Self.columns(forWidth: available),
+                    alignment: .center,
+                    spacing: Self.gridSpacing
+                ) {
+                    ForEach(cluster.uniqueByMostRecent) { point in
+                        ClusterGridItem(
+                            point: point,
+                            cornerRadius: thumbCornerRadius
+                        )
+                        .onTapGesture {
+                            photo = .pinpoint(point)
+                        }
                     }
                 }
+                // Symmetric inset (shared with the thumbnail concentricity math);
+                // a bit more at the bottom so the last row clears the home
+                // indicator at the large detent.
+                .padding(.horizontal, Self.thumbInset)
+                .padding(.top, Self.thumbInset)
+                .padding(.bottom, 24)
             }
-            // Symmetric inset (shared with the thumbnail concentricity math); a
-            // bit more at the bottom so the last row clears the home indicator at
-            // the large detent.
-            .padding(.horizontal, Self.thumbInset)
-            .padding(.top, Self.thumbInset)
-            .padding(.bottom, 24)
         }
     }
 }
@@ -1042,16 +1078,34 @@ private struct ClusterGridItem: View {
     let point: MapPoint
     let cornerRadius: CGFloat
 
-    private static let thumbSize = CGSize(width: 116, height: 87)
+    /// The thumbnail's width:height ratio (was a fixed 116×87). The image now
+    /// *fills* the grid cell's full width rather than sitting at a fixed width;
+    /// a fixed-width thumbnail centered inside a wider flexible cell is what left
+    /// the edge thumbnails floating with extra side gap on larger screens (e.g.
+    /// 17 Pro Max), breaking the equal top/side inset the concentric corners need.
+    /// Filling the cell makes the edge thumbnails flush at the grid's inset.
+    private static let aspectRatio: CGFloat = 116.0 / 87.0
 
     var body: some View {
         VStack(alignment: .center, spacing: 6) {
-            BirdMapThumbnail(
-                scientificName: point.scientificName,
-                size: Self.thumbSize,
-                cornerRadius: cornerRadius,
-                showBorder: false
-            )
+            // Aspect-ratio box that fills the cell width; the photo scales to fill
+            // it and is clipped to the concentric corner radius.
+            Color.clear
+                .aspectRatio(Self.aspectRatio, contentMode: .fit)
+                .overlay {
+                    SpeciesPhoto(
+                        scientificName: point.scientificName,
+                        showsCredit: false,
+                        tappable: false
+                    ) {
+                        Color.gray
+                            .overlay {
+                                Image(systemName: "bird")
+                                    .foregroundStyle(.white)
+                            }
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             Text(point.commonName)
                 .font(.caption)
                 .multilineTextAlignment(.center)
@@ -1149,7 +1203,7 @@ private struct MapSettingsContent: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 Toggle(
-                    "Show Repeat Observations on Map",
+                    "Show Repeat Observations",
                     isOn: $settings.showRepeatObservationsOnMap
                 )
                 .font(.body.weight(.semibold))
