@@ -835,48 +835,60 @@ private struct MapCardSheet: View {
     private static var thumbCornerRadius: CGFloat {
         cardTopCornerRadius - thumbInset
     }
+    /// The card's shape: tight top corners, phone-concentric bottom corners.
+    private static var cardShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: cardTopCornerRadius,
+            bottomLeadingRadius: cardBottomCornerRadius,
+            bottomTrailingRadius: cardBottomCornerRadius,
+            topTrailingRadius: cardTopCornerRadius,
+            style: .continuous
+        )
+    }
 
     var body: some View {
         ZStack {
-            switch card {
-            case .cluster(let cluster):
-                clusterGrid(cluster)
-                    .id("cluster-" + cluster.id)
-                    .transition(.opacity)
-            case .settings:
-                MapSettingsContent()
-                    .id("settings")
-                    .transition(.opacity)
-            case .none:
-                Color.clear
+            // The frosted card surface, drawn ourselves so the top corners can be
+            // tight while the bottom corners trace the phone's screen corners. It
+            // ignores the safe area so it reaches the screen's bottom edge and the
+            // bottom corners sit exactly in the device corner.
+            Self.cardShape
+                .fill(.thinMaterial)
+                .ignoresSafeArea()
+
+            ZStack {
+                switch card {
+                case .cluster(let cluster):
+                    clusterGrid(cluster)
+                        .id("cluster-" + cluster.id)
+                        .transition(.opacity)
+                case .settings:
+                    MapSettingsContent()
+                        .id("settings")
+                        .transition(.opacity)
+                case .none:
+                    Color.clear
+                }
             }
+            // Crossfade whenever the card identity changes (cluster→cluster,
+            // cluster→settings, …). The sheet host is unaffected; only the contents
+            // animate, so the swap reads as a smooth dissolve rather than a snap.
+            .animation(.easeInOut(duration: 0.14), value: card?.id)
         }
-        // Crossfade whenever the card identity changes (cluster→cluster,
-        // cluster→settings, …). The sheet host is unaffected; only the contents
-        // animate, so the swap reads as a smooth dissolve rather than a snap.
-        .animation(.easeInOut(duration: 0.14), value: card?.id)
         .presentationDetents([.medium, .large], selection: $detent)
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card at the medium
         // detent — this is what lets you open other things from either card and
         // tap the map to dismiss. At .large the sheet is modal, as expected.
         .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-        // Draw the card shape ourselves so the top corners can be tight while the
-        // bottom corners trace the phone's screen corners (concentric). The system
-        // corner radius is set to 0 (square clip) so it doesn't re-round our shape
-        // to a uniform radius; the custom background defines what's actually visible.
-        .presentationCornerRadius(0)
-        .presentationBackground {
-            UnevenRoundedRectangle(
-                topLeadingRadius: Self.cardTopCornerRadius,
-                bottomLeadingRadius: Self.cardBottomCornerRadius,
-                bottomTrailingRadius: Self.cardBottomCornerRadius,
-                topTrailingRadius: Self.cardTopCornerRadius,
-                style: .continuous
-            )
-            .fill(.thinMaterial)
-            .ignoresSafeArea()
-        }
+        // We draw the card surface ourselves (above) on a cleared system
+        // background. The sheet still clips its content + draws its shadow at the
+        // presentation corner radius, so this must be rounded (not 0, which gives a
+        // sharp rectangle below the card) and at least as large as our bottom
+        // radius (so it never cuts the custom shape). Our in-content surface, being
+        // tighter at the top, is what's actually visible.
+        .presentationCornerRadius(Self.cardBottomCornerRadius)
+        .presentationBackground(.clear)
         // Remember (before the item clears) whether to close the card on exit.
         .onChange(of: photo) { _, newValue in
             switch newValue {
