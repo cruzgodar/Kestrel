@@ -889,12 +889,12 @@ private struct MapCardSheet: View {
     /// Points added to the strictly-concentric thumbnail radius. The concentric
     /// value (top radius − inset) reads a hair too tight, so nudge it up by this
     /// much. Tune to taste; 0 restores exact concentricity.
-    private static let thumbCornerRadiusBoost: CGFloat = 2
+    private static let thumbCornerRadiusAdjust: CGFloat = 4
     /// Thumbnail corner radius, concentric with the card's top corners (the outer
-    /// radius minus the equal inset between them) plus `thumbCornerRadiusBoost`.
+    /// radius minus the equal inset between them) plus `thumbCornerRadiusAdjust`.
     /// Tracks the measured top radius, so it holds on every device.
     private var thumbCornerRadius: CGFloat {
-        max(0, sheetTopCornerRadius - Self.thumbInset + Self.thumbCornerRadiusBoost)
+        max(0, sheetTopCornerRadius - Self.thumbInset + Self.thumbCornerRadiusAdjust)
     }
 
     var body: some View {
