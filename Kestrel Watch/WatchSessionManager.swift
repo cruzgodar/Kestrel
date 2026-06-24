@@ -131,8 +131,11 @@ final class WatchSessionManager: NSObject {
     /// We accumulate ~1 s of audio here and ship it via `transferUserInfo`,
     /// which queues + delivers in background. The phone ingests it via a
     /// separate delegate callback. Access is serialized by `bgLock`.
-    nonisolated(unsafe) private let bgLock = NSLock()
-    nonisolated(unsafe) private var bgBuffer = Data()
+    nonisolated private let bgLock = NSLock()
+    // `@ObservationIgnored` so the `@Observable` macro leaves this a plain
+    // stored property — `nonisolated(unsafe)` can then apply directly, giving
+    // the background audio queue mutable access without observation tracking.
+    @ObservationIgnored nonisolated(unsafe) private var bgBuffer = Data()
     /// 32 KB ≈ 1 s of 16 kHz Int16 mono. Comfortably under the ~64 KB
     /// per-message limit transferUserInfo enforces.
     nonisolated private let bgFlushBytes = 32_000

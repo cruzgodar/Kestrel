@@ -9,7 +9,7 @@ import UIKit
 ///
 /// `@unchecked Sendable` + nonisolated: callers hit it from view bodies,
 /// background prefetch tasks, and the full-screen viewer.
-final class RemoteSpeciesImageStore: @unchecked Sendable {
+nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     static let shared = RemoteSpeciesImageStore()
 
     private let memory = NSCache<NSString, UIImage>()

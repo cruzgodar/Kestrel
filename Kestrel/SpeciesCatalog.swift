@@ -7,7 +7,11 @@ import Foundation
 /// `Sendable` + non-isolated so the suggestion-scoring loop can run on a
 /// detached task without bouncing through the main actor per species.
 final class SpeciesCatalog: @unchecked Sendable {
-    static let shared = SpeciesCatalog()
+    // `nonisolated` so the shared catalog can be read from the nonisolated
+    // suggestion-scoring loop (`LifeListView.computeSuggestions`) without an
+    // actor hop — under the project's MainActor default isolation a plain
+    // `static let` would otherwise be inferred main-actor isolated.
+    nonisolated static let shared = SpeciesCatalog()
 
     struct Species: Hashable, Sendable {
         let scientificName: String

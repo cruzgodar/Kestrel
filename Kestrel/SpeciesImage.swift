@@ -4,7 +4,7 @@ import Foundation
 /// embed store's on-disk cache and the watch image transfer. The slugging
 /// algorithm is identical to the one in `scripts/fetch_species_images.py`
 /// (`slug_for`) so the two stay in sync.
-enum SpeciesImage {
+nonisolated enum SpeciesImage {
     /// Converts a scientific name into the filename slug used by the
     /// ingestion script. Lowercased, ASCII-only, runs of non-alphanumerics
     /// collapsed to `_`. Must mirror `slug_for` in fetch_species_images.py.

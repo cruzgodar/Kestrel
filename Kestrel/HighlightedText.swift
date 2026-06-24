@@ -133,7 +133,7 @@ struct HighlightedText: View {
 
 /// Per-subview flag: does a word-space precede this atom? Punctuation glued to a
 /// preceding pill sets this false so the two render flush.
-private struct LeadingSpaceKey: LayoutValueKey {
+private nonisolated struct LeadingSpaceKey: LayoutValueKey {
     static let defaultValue = true
 }
 

@@ -1,7 +1,7 @@
 import Foundation
 import onnxruntime_objc
 
-private struct CachedFilter: Codable {
+private nonisolated struct CachedFilter: Codable {
     let latitude: Double
     let longitude: Double
     let week: Int
@@ -40,7 +40,7 @@ actor SpeciesRangeFilter {
 
     /// Runs the geo model for the given location and persists the result.
     func computeAndCache(lat: Double, lon: Double, week: Int) throws -> Set<Int> {
-        var samples: [Float] = [Float(lat), Float(lon), Float(week)]
+        let samples: [Float] = [Float(lat), Float(lon), Float(week)]
         let byteCount = samples.count * MemoryLayout<Float>.stride
         let data = NSMutableData(length: byteCount)!
         samples.withUnsafeBufferPointer { src in

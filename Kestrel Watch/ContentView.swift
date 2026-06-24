@@ -95,7 +95,7 @@ struct ContentView: View {
                 // Idle-screen caption sitting just below the centered play
                 // button. Fades out (with the button's morph to the corner) as
                 // recording starts, so the now-hearing screen has the space.
-                Text("Start a Birding Walk")
+                Text("Start Birding")
                     .font(.system(size: 16, weight: .medium))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white)

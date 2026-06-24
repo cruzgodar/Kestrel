@@ -69,7 +69,7 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
             self.manager.requestLocation()
             self.timeoutTask = Task { [weak self] in
                 try? await Task.sleep(for: timeout)
-                await self?.finish(with: nil)
+                self?.finish(with: nil)
             }
         }
     }

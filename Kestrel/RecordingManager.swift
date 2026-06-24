@@ -101,7 +101,7 @@ final class RecordingManager {
     /// Tracks the deferred audio engine start/stop task so rapid taps can
     /// cancel a pending transition before its sleep elapses.
     private var pendingTransitionTask: Task<Void, Never>?
-    private nonisolated(unsafe) var interruptionObserver: NSObjectProtocol?
+    @ObservationIgnored private nonisolated(unsafe) var interruptionObserver: NSObjectProtocol?
     /// Lazily-created Core Haptics engine for the new-lifer tap+buzz pattern.
     /// Rebuilt on demand if the system stops it (e.g. after an interruption).
     private var hapticEngine: CHHapticEngine?
@@ -397,11 +397,11 @@ final class RecordingManager {
             } catch {
                 return
             }
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, let self else { return }
             do {
                 try pipeline.start(
-                    onWindow: { window in
-                        Task { @MainActor [weak self] in
+                    onWindow: { [weak self] window in
+                        Task { @MainActor in
                             await self?.process(window: window)
                         }
                     },
@@ -410,8 +410,9 @@ final class RecordingManager {
                     }
                 )
             } catch {
-                await MainActor.run {
-                    self?.errorMessage = "Failed to start audio: \(error.localizedDescription)"
+                let message = "Failed to start audio: \(error.localizedDescription)"
+                await MainActor.run { [weak self] in
+                    self?.errorMessage = message
                     self?.isRecording = false
                 }
                 print("Kestrel: failed to start pipeline — \(error)")
@@ -541,7 +542,7 @@ final class RecordingManager {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled, let self else { return }
-                let shouldStop = await self.checkIdleAndMaybeStop()
+                let shouldStop = self.checkIdleAndMaybeStop()
                 if shouldStop { return }
             }
         }
@@ -580,7 +581,7 @@ final class RecordingManager {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(15))
                 guard !Task.isCancelled, let self else { return }
-                let stillAlive = await self.checkWatchHeartbeat()
+                let stillAlive = self.checkWatchHeartbeat()
                 if !stillAlive { return }
             }
         }
@@ -1021,20 +1022,20 @@ final class RecordingManager {
             object: nil,
             queue: .main
         ) { [weak self] notification in
-            guard let self else { return }
-            Task { @MainActor in
-                self.handleInterruption(notification)
+            // The notification is delivered on the main queue; decode the
+            // interruption type here and hop to the actor with a Sendable enum
+            // rather than capturing the non-Sendable `Notification` itself.
+            guard
+                let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                let type = AVAudioSession.InterruptionType(rawValue: typeValue)
+            else { return }
+            Task { @MainActor [weak self] in
+                self?.handleInterruption(type)
             }
         }
     }
 
-    private func handleInterruption(_ notification: Notification) {
-        guard
-            let info = notification.userInfo,
-            let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
-            let type = AVAudioSession.InterruptionType(rawValue: typeValue)
-        else { return }
-
+    private func handleInterruption(_ type: AVAudioSession.InterruptionType) {
         switch type {
         case .began:
             if isRecording { pipeline.stop(); isRecording = false }

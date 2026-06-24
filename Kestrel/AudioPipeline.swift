@@ -1,13 +1,24 @@
-import AVFoundation
+@preconcurrency import AVFoundation
 import Foundation
 import os
 
 /// Captures microphone audio, resamples to 48 kHz mono Float32, and emits
 /// non-overlapping 3-second windows (144,000 samples) suitable for BirdNET.
-final class AudioPipeline {
-    static let targetSampleRate: Double = 48_000
-    static let windowSamples: Int = 144_000      // 3 s @ 48 kHz — BirdNET's input length
-    static let hopSamples: Int = 72_000          // 1.5 s — 50% overlap so songs aren't bisected
+///
+/// `@unchecked Sendable` (and thus nonisolated under the project's MainActor
+/// default isolation): `start()`/`stop()` are documented as never running
+/// concurrently, the shared sample buffer is guarded by `bufferLock`, and the
+/// prewarm task is guarded by `prewarmLock`. Being nonisolated is what lets
+/// `RecordingManager` spin the audio engine up from a detached task so the
+/// record-button morph can animate while the (main-thread-taxing) engine
+/// bring-up runs off the main actor.
+nonisolated final class AudioPipeline: @unchecked Sendable {
+    // `nonisolated` so these compile-time constants can be read from the
+    // nonisolated audio-tap closure (and the detached start task) without the
+    // main-actor hop the project's default isolation would otherwise impose.
+    nonisolated static let targetSampleRate: Double = 48_000
+    nonisolated static let windowSamples: Int = 144_000      // 3 s @ 48 kHz — BirdNET's input length
+    nonisolated static let hopSamples: Int = 72_000          // 1.5 s — 50% overlap so songs aren't bisected
 
     private let engine = AVAudioEngine()
     private let targetFormat: AVAudioFormat = {
@@ -49,9 +60,7 @@ final class AudioPipeline {
     /// Awaits any in-flight prewarm so start can run without contending for
     /// the audio session.
     func awaitPrewarm() async {
-        prewarmLock.lock()
-        let task = prewarmTask
-        prewarmLock.unlock()
+        let task = prewarmLock.withLock { prewarmTask }
         await task?.value
     }
 
@@ -61,7 +70,7 @@ final class AudioPipeline {
             try session.setCategory(
                 .playAndRecord,
                 mode: .measurement,
-                options: [.allowBluetooth, .defaultToSpeaker]
+                options: [.allowBluetoothHFP, .defaultToSpeaker]
             )
         } catch {
             print("Kestrel: prewarm error \(error)")
@@ -76,7 +85,7 @@ final class AudioPipeline {
         self.onChunk = onChunk
 
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetooth, .defaultToSpeaker])
+        try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetoothHFP, .defaultToSpeaker])
         // A `.playAndRecord` session silences the Taptic Engine by default, so
         // the phone's new-species haptics wouldn't fire while its own mic is
         // recording. Opt back in so `UINotificationFeedbackGenerator` works.
@@ -149,14 +158,14 @@ final class AudioPipeline {
         // Append, slice off complete windows, deliver each. We advance by `hopSamples`
         // rather than `windowSamples` so consecutive windows overlap (50%) — a song
         // that lands across a window boundary still gets one window centered on it.
-        var completed: [[Float]] = []
-        bufferLock.withLock { storage in
+        let completed: [[Float]] = bufferLock.withLock { storage in
             storage.append(contentsOf: newSamples)
+            var windows: [[Float]] = []
             while storage.count >= AudioPipeline.windowSamples {
-                let window = Array(storage.prefix(AudioPipeline.windowSamples))
+                windows.append(Array(storage.prefix(AudioPipeline.windowSamples)))
                 storage.removeFirst(AudioPipeline.hopSamples)
-                completed.append(window)
             }
+            return windows
         }
 
         if let onWindow {

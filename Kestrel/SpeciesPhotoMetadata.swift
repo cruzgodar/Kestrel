@@ -33,8 +33,8 @@ struct SpeciesPhotoInfo: Decodable {
 /// Loads + caches the bundled `species_photos.json` once. Absent file (e.g. the
 /// fetch script hasn't been re-run to emit it yet) yields an empty map, so the
 /// `.embed` source simply falls back to the placeholder.
-final class SpeciesPhotoMetadata: @unchecked Sendable {
-    static let shared = SpeciesPhotoMetadata()
+nonisolated final class SpeciesPhotoMetadata: @unchecked Sendable {
+    nonisolated static let shared = SpeciesPhotoMetadata()
 
     private let bySlug: [String: SpeciesPhotoInfo]
 

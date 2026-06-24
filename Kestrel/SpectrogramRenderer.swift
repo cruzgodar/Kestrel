@@ -10,7 +10,7 @@ import Foundation
 /// column written per FFT, no shifting). The snapshot copies the ring into a
 /// linear buffer in display order — that's the only place we touch the full
 /// pixel buffer.
-final class SpectrogramRenderer: @unchecked Sendable {
+nonisolated final class SpectrogramRenderer: @unchecked Sendable {
     // MARK: Tuning
 
     static let fftSize: Int = 1024
