@@ -28,8 +28,8 @@ struct HighlightedText: View {
     /// Identify-tab row tints, reused at the same 0.25 opacity the rows use.
     /// Blue marks starred ("alert me") birds; purple marks birds you can add to
     /// your life list.
-    static let starHighlight = Color(hue: 215.0 / 360.0, saturation: 0.5, brightness: 1.0).opacity(0.25)
-    static let addHighlight = Color(hue: 252.0 / 360.0, saturation: 0.5, brightness: 1.0).opacity(0.25)
+    static let starHighlight = Color(hue: 215.0 / 360.0, saturation: 0.5, brightness: 1.0).opacity(0.35)
+    static let addHighlight = Color(hue: 252.0 / 360.0, saturation: 0.5, brightness: 1.0).opacity(0.35)
 
     private var uiFont: UIFont { UIFont.preferredFont(forTextStyle: textStyle) }
     private var font: Font { Font(uiFont) }
