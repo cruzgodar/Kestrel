@@ -36,7 +36,15 @@ struct SpeciesPhotoFullScreen: View {
     var mapButtonTitle: String? = nil
     /// Action for the map button: switch to / focus the Map tab on this bird.
     var onShowOnMap: (() -> Void)? = nil
+    /// Place name of the sighting this photo was opened from — the Life List
+    /// location (earliest sighting) or the tapped map point's location. `nil`
+    /// for non-lifers (no recorded sighting) or when no location was logged.
+    var placeName: String? = nil
+    /// Date of the sighting this photo was opened from. `nil` for non-lifers,
+    /// which suppresses the whole observation section.
+    var dateFound: Date? = nil
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var image: UIImage?
     @State private var loadFailed = false
@@ -50,9 +58,15 @@ struct SpeciesPhotoFullScreen: View {
 
     // Swipe-to-dismiss (applied to the whole content).
     @State private var dragOffset: CGSize = .zero
+    /// Full height of the viewer, measured so a programmatic dismiss can slide
+    /// the whole card clear off the bottom regardless of device size.
+    @State private var viewHeight: CGFloat = 1000
 
     /// Past this much downward travel, release dismisses.
     private let dismissThreshold: CGFloat = 120
+    /// Maximum pinch-zoom. Zooming past this rubberbands with resistance and
+    /// snaps back (with a haptic) on release.
+    private let maxScale: CGFloat = 4
 
     private var commonName: String {
         SpeciesCatalog.shared.commonName(for: scientificName) ?? scientificName
@@ -82,6 +96,9 @@ struct SpeciesPhotoFullScreen: View {
         // Clear presentation background so the fade reveals the app behind.
         .presentationBackground(.clear)
         .gesture(magnify.simultaneously(with: drag))
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height
+        } action: { viewHeight = $0 }
         .task(id: scientificName) { await load() }
     }
 
@@ -89,10 +106,10 @@ struct SpeciesPhotoFullScreen: View {
         ZStack {
             imageLayer.ignoresSafeArea()
 
-            VStack {
+            VStack(spacing: 0) {
                 HStack {
                     Spacer()
-                    Button { dismiss() } label: {
+                    Button { slideOffAndDismiss() } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(.white)
@@ -103,6 +120,10 @@ struct SpeciesPhotoFullScreen: View {
                     .padding(.top, 8)
                 }
                 Spacer()
+                // Bottom stack: the species caption (name / attribution / eBird)
+                // and the sighting's place + date sit together in the frosted
+                // text panel, with the map button below it.
+                caption
                 if let mapButtonTitle, let onShowOnMap {
                     Button(action: onShowOnMap) {
                         Label(mapButtonTitle, systemImage: "mappin.and.ellipse")
@@ -116,9 +137,9 @@ struct SpeciesPhotoFullScreen: View {
                             .background(Color(.systemGray2).opacity(0.5), in: Capsule())
                     }
                     .buttonStyle(.plain)
+                    .padding(.top, 14)
                     .padding(.bottom, 10)
                 }
-                caption
             }
         }
     }
@@ -145,26 +166,49 @@ struct SpeciesPhotoFullScreen: View {
     private var caption: some View {
         // Only the institutional/photographer credit applies to Macaulay
         // photos; manual fallback species (no remote info) show just the name.
-        VStack(spacing: 3) {
-            Text(commonName)
-                .font(.headline)
-                .foregroundStyle(.white)
-            if let info {
-                Text(info.attribution)
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.75))
-                    .multilineTextAlignment(.center)
-                if let ebirdURL = info.ebirdURL {
-                    Link("View on eBird", destination: ebirdURL)
-                        .font(.caption2.weight(.semibold))
-                        .tint(.white)
+        VStack(spacing: 10) {
+            VStack(spacing: 3) {
+                Text(commonName)
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                if let info {
+                    Text(info.attribution)
+                        .font(.caption2)
+                        .foregroundStyle(.white.opacity(0.75))
+                        .multilineTextAlignment(.center)
+                    if let ebirdURL = info.ebirdURL {
+                        Link("View on eBird", destination: ebirdURL)
+                            .font(.caption2.weight(.semibold))
+                            .tint(.white)
+                    }
+                }
+            }
+
+            // Sighting section: where/when this bird was found. Only present
+            // for lifers (a date is always recorded for them); non-lifers have
+            // no sighting, so the whole block is omitted.
+            if let dateFound {
+                VStack(spacing: 2) {
+                    if let placeName, !placeName.isEmpty {
+                        Label(placeName, systemImage: "mappin")
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                    }
+                    Text(dateFound, format: .dateTime.year().month(.abbreviated).day())
+                        .font(.caption2)
+                        .monospacedDigit()
+                        .foregroundStyle(.white.opacity(0.75))
                 }
             }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 14)
         .padding(.horizontal, 20)
-        .background(.black.opacity(0.35))
+        // The frosted text panel reads darker in dark mode (50%) than light
+        // (35%) so the white text stays legible against a light photo. The ID
+        // rows in the Identify tab keep their own 35% tint regardless of mode.
+        .background(.black.opacity(colorScheme == .dark ? 0.5 : 0.35))
     }
 
     // MARK: - Gestures
@@ -175,10 +219,28 @@ struct SpeciesPhotoFullScreen: View {
                 // Anchor the zoom on the midpoint between the fingers rather
                 // than always the view center.
                 zoomAnchor = value.startAnchor
-                scale = min(max(lastScale * value.magnification, 1), 4)
+                let raw = lastScale * value.magnification
+                if raw > maxScale {
+                    // Past the max, apply diminishing rubberband resistance so
+                    // the image keeps tracking the fingers but increasingly
+                    // resists — the standard iOS overscroll feel.
+                    scale = maxScale + (raw - maxScale) * 0.3
+                } else {
+                    scale = max(raw, 1)
+                }
             }
             .onEnded { _ in
-                lastScale = scale
+                if scale > maxScale {
+                    // Snap back to the limit with a spring and a crisp tap, the
+                    // way a scroll view bounces off its content edge.
+                    UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                        scale = maxScale
+                    }
+                    lastScale = maxScale
+                } else {
+                    lastScale = scale
+                }
                 if scale <= 1 {
                     withAnimation(.easeOut(duration: 0.2)) { panOffset = .zero }
                     lastPan = .zero
@@ -206,13 +268,34 @@ struct SpeciesPhotoFullScreen: View {
                 if scale > 1 {
                     lastPan = panOffset
                 } else if value.translation.height > dismissThreshold {
-                    dismiss()
+                    slideOffAndDismiss()
                 } else {
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                         dragOffset = .zero
                     }
                 }
             }
+    }
+
+    /// Drives the dismissal ourselves so the card visibly slides clear off the
+    /// bottom before the cover is removed. The system's own `fullScreenCover`
+    /// dismissal cut the slide short — most visible when closing while zoomed in,
+    /// where the card appeared to vanish partway down. Instead we animate the
+    /// whole card (resetting any zoom so it travels as one piece) past the bottom
+    /// edge, then remove the cover *without* animation, so the only motion the
+    /// user sees is the smooth slide.
+    private func slideOffAndDismiss() {
+        withAnimation(.easeIn(duration: 0.3)) {
+            scale = 1
+            panOffset = .zero
+            // Travel a full view height plus slack so even a tall image clears.
+            dragOffset = CGSize(width: 0, height: viewHeight + 200)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { dismiss() }
+        }
     }
 
     private func toggleZoom() {

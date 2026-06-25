@@ -336,9 +336,9 @@ struct ContentView: View {
         .background(
             ZStack {
                 Self.recordHighlight
-                    .opacity(needsLifeListAdd ? 0.25 : 0)
+                    .opacity(needsLifeListAdd ? 0.35 : 0)
                 Self.starredTint
-                    .opacity(!needsLifeListAdd && isStarred ? 0.25 : 0)
+                    .opacity(!needsLifeListAdd && isStarred ? 0.35 : 0)
                 flashColor
                     .opacity(flashing ? 0.25 : 0)
                     .animation(

@@ -125,6 +125,10 @@ struct KestrelApp: App {
                 set: { photoPresenter.presented = $0 }
             )) { species in
                 let coordinate = lifeListStore.firstObservationCoordinate(for: species.scientificName)
+                // The Life List tab always shows the earliest sighting, so the
+                // observation section mirrors that row's place + date. `nil` for
+                // non-lifers (not on the list), which hides the section.
+                let observation = lifeListStore.firstObservation(for: species.scientificName)
                 SpeciesPhotoFullScreen(
                     scientificName: species.scientificName,
                     mapButtonTitle: coordinate != nil ? "Show on Map" : nil,
@@ -134,7 +138,9 @@ struct KestrelApp: App {
                             selectedTab = .map
                             mapNavigator.focus(latitude: coord.latitude, longitude: coord.longitude)
                         }
-                    }
+                    },
+                    placeName: observation?.location,
+                    dateFound: observation?.date
                 )
             }
             // Push "is the spectrogram visible?" into the recording manager

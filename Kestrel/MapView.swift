@@ -13,6 +13,10 @@ struct MapPoint: Identifiable, Hashable {
     let scientificName: String
     let commonName: String
     let date: Date
+    /// Human-readable place name for this sighting (the CSV's Location column),
+    /// shown in the full-screen photo viewer alongside the date. `nil` when the
+    /// observation was logged without a location.
+    let location: String?
     let latitude: Double
     let longitude: Double
 
@@ -118,7 +122,7 @@ struct MapView: View {
     /// A lone (non-clustered) pin tapped on the map *while no card is open*.
     /// Presented full-screen from the root without a map button — there's nowhere
     /// new to take the user.
-    @State private var presentedSinglePoint: PresentedSpecies?
+    @State private var presentedSinglePoint: MapPoint?
     /// A full-screen photo presented from *inside* the open card's sheet (so it
     /// appears instantly, with no wait for the sheet to dismiss): either a bird
     /// tapped in a cluster grid (`.pinpoint`, keeps the card) or a lone pin
@@ -198,6 +202,7 @@ struct MapView: View {
                     scientificName: entry.scientificName,
                     commonName: entry.commonName,
                     date: entry.firstSeen,
+                    location: entry.firstLocation,
                     latitude: lat,
                     longitude: lon
                 ))
@@ -210,6 +215,7 @@ struct MapView: View {
                     scientificName: entry.scientificName,
                     commonName: entry.commonName,
                     date: obs.date,
+                    location: obs.location,
                     latitude: lat,
                     longitude: lon
                 ))
@@ -261,9 +267,7 @@ struct MapView: View {
                                     } else {
                                         // No card open: present full-screen from the
                                         // root (nothing to wait on).
-                                        presentedSinglePoint = PresentedSpecies(
-                                            scientificName: tappedInfo.representative.scientificName
-                                        )
+                                        presentedSinglePoint = tappedInfo.representative
                                     }
                                 }
                             )
@@ -407,8 +411,12 @@ struct MapView: View {
                 }
             )
         }
-        .fullScreenCover(item: $presentedSinglePoint) { species in
-            SpeciesPhotoFullScreen(scientificName: species.scientificName)
+        .fullScreenCover(item: $presentedSinglePoint) { point in
+            SpeciesPhotoFullScreen(
+                scientificName: point.scientificName,
+                placeName: point.location,
+                dateFound: point.date
+            )
         }
     }
 
@@ -957,10 +965,16 @@ private struct MapCardSheet: View {
                 SpeciesPhotoFullScreen(
                     scientificName: point.scientificName,
                     mapButtonTitle: "Pinpoint on Map",
-                    onShowOnMap: { onPinpoint(point) }
+                    onShowOnMap: { onPinpoint(point) },
+                    placeName: point.location,
+                    dateFound: point.date
                 )
             case .lone(let point):
-                SpeciesPhotoFullScreen(scientificName: point.scientificName)
+                SpeciesPhotoFullScreen(
+                    scientificName: point.scientificName,
+                    placeName: point.location,
+                    dateFound: point.date
+                )
             }
         }
     }

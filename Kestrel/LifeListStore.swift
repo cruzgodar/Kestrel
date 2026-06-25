@@ -91,6 +91,18 @@ final class LifeListStore {
         return (lat, lon)
     }
 
+    /// The displayed place name + date of the earliest recorded sighting of a
+    /// species, if it's on the life list. Drives the full-screen photo viewer's
+    /// observation section when a photo is opened from the Life List tab (which
+    /// always shows the earliest sighting). `nil` for species not on the list
+    /// (non-lifers), which have no recorded sighting to show.
+    func firstObservation(for scientificName: String) -> (location: String?, date: Date)? {
+        guard let entry = entries.first(where: { $0.scientificName == scientificName }) else {
+            return nil
+        }
+        return (entry.firstLocation, entry.firstSeen)
+    }
+
     /// Back-fills the first-seen coordinate on an existing entry. Used by
     /// the manual-add flows when the device hadn't yet resolved a location
     /// at the moment of the tap; the resolved fix arrives shortly after via

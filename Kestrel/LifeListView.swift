@@ -711,7 +711,8 @@ private struct ImportInfoSheet: View {
         }
         .padding(.top, 32)
         .presentationDetents([.medium])
-        .presentationDragIndicator(.visible)
+        // Hidden grab handle to match the map's settings card (MapCardSheet).
+        .presentationDragIndicator(.hidden)
     }
 }
 
