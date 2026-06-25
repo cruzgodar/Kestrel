@@ -118,10 +118,12 @@ struct SpeciesPhotoFullScreen: View {
         // value that was changing, so the photo holds dead still as the card
         // slides. (Measured and confirmed: outer proxy steady, inner geo ramped.)
         GeometryReader { proxy in
-        let fullSize = CGSize(
-            width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
-            height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
-        )
+        // Width is the real screen width (portrait has no side insets, so this is
+        // just `proxy.size.width`); height is the full screen, the safe-area rect
+        // grown back by the top+bottom insets. Both are CONSTANTS off the stable
+        // outer proxy.
+        let screenWidth = proxy.size.width
+        let fullHeight = proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
         ZStack {
             // The black backdrop + the paged photos slide together with the
             // dismiss drag, revealing the app behind through the clear
@@ -137,9 +139,11 @@ struct SpeciesPhotoFullScreen: View {
             // TabView left by `pageSpacing/2` so the current photo still fills
             // the screen edge-to-edge. The black gutter only shows mid-swipe.
             //
-            // Sized off the constant `fullSize.width` (not an inner GeometryReader
-            // measuring this same wider subtree, which would feed back, and not
-            // the churning ignoresSafeArea height) so the page width is stable.
+            // Sized off the constant `screenWidth`/`fullHeight` (not an inner
+            // GeometryReader inside `.ignoresSafeArea()`, whose height ramped
+            // 874→778 every drag frame and jittered the centered photo). Pinning
+            // the TabView to the constant `fullHeight` keeps the photo's viewport
+            // — and so its centering — rock-steady as the card slides.
             TabView(selection: $index) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
                     ZoomablePhotoPage(
@@ -149,7 +153,7 @@ struct SpeciesPhotoFullScreen: View {
                         mapButtonTitle: mapButtonTitle,
                         onShowOnMap: onShowOnMap.map { action in { action(item) } }
                     )
-                    .frame(width: fullSize.width)
+                    .frame(width: screenWidth)
                     .frame(maxWidth: .infinity)
                     .tag(offset)
                 }
@@ -157,7 +161,7 @@ struct SpeciesPhotoFullScreen: View {
             .tabViewStyle(.page(indexDisplayMode: .never))
             // No paging while zoomed — the scroll view's pan owns the drag.
             .scrollDisabled(isZoomed)
-            .frame(width: fullSize.width + pageSpacing)
+            .frame(width: screenWidth + pageSpacing, height: fullHeight)
             .offset(x: -pageSpacing / 2)
 
             // Top inset comes from the outer proxy because the ZStack ignores the
@@ -169,15 +173,16 @@ struct SpeciesPhotoFullScreen: View {
         // covers the screen edge-to-edge. Because the frame is an explicit
         // constant (not an ignoresSafeArea-expanded proposal), it does NOT churn
         // when the body re-evaluates during the drag.
-        .frame(width: fullSize.width, height: fullSize.height)
+        .frame(width: screenWidth, height: fullHeight)
         .ignoresSafeArea()
         // Keep the dismiss slide-off target in sync with the (stable) card size.
-        .onChange(of: fullSize, initial: true) { _, size in viewSize = size }
-        // Translate the card for the swipe-to-dismiss as a *render-only* effect,
-        // so it never re-proposes layout to the photo below.
-        .visualEffect { content, _ in
-            content.offset(x: dragOffset.width, y: dragOffset.height)
-        }
+        .onChange(of: fullHeight, initial: true) { _, h in viewSize = CGSize(width: screenWidth, height: h) }
+        // Translate the whole card for the swipe-to-dismiss. A plain `.offset`
+        // (not `visualEffect`, which leaves the hosted photo UIScrollView behind)
+        // moves the photo with everything else; and because the frame above is a
+        // constant, the offset only translates — it doesn't re-resolve the safe
+        // area, so no relayout churn.
+        .offset(dragOffset)
         .opacity(contentOpacity)
         // Clear presentation background so the slide reveals the app behind.
         .presentationBackground(.clear)
@@ -325,11 +330,12 @@ private struct ZoomablePhotoPage: View {
 
     var body: some View {
         ZStack {
-            // No `.ignoresSafeArea()` here: the page already fills the container's
-            // constant full-screen frame, so the image fills edge-to-edge without
-            // it — and a descendant ignoresSafeArea re-resolves on every drag-frame
-            // re-eval, which is exactly the churn we removed upstream.
-            imageLayer
+            // Fill edge-to-edge: the paging TabView reserves the safe area for its
+            // pages (so a page is only the inset height), and this pushes the photo
+            // back out to the full screen. It's stable under the dismiss drag now
+            // that the container is a constant-height frame translated by a plain
+            // `.offset` — the offset no longer re-resolves this safe area.
+            imageLayer.ignoresSafeArea()
 
             VStack {
                 Spacer()
