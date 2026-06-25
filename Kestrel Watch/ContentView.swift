@@ -218,6 +218,15 @@ struct ContentView: View {
     /// display is dimmed, and when not recording.
     private func flash() {
         guard session.isRecording, !isLuminanceReduced else { return }
+        // Only the highlighted birds pulse — a plain/normal bird updates the
+        // screen without the yellow flash. New species + starred still flash
+        // their brighter purple/blue (and a debug injection still flashes red).
+        switch session.lastBird?.highlight {
+        case .newSpecies, .starred, .debug:
+            break
+        default:
+            return
+        }
         flashOpacity = 1
         withAnimation(.easeOut(duration: 0.6)) {
             flashOpacity = 0
@@ -269,7 +278,10 @@ struct ContentView: View {
             }
             .foregroundStyle(.white)
             .frame(width: Self.buttonBaseSize, height: Self.buttonBaseSize)
-            .background(Circle().fill(Self.recordTint))
+            // Purple while idle, red once recording (matching the phone's stop
+            // button). The fill interpolates with the morph, which runs under
+            // the session manager's `withAnimation(isRecording)`.
+            .background(Circle().fill(recording ? .red : Self.recordTint))
             .scaleEffect(scale)
         }
         .buttonStyle(.plain)

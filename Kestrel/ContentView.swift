@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -8,6 +9,14 @@ struct ContentView: View {
     /// Measured width of the record-button row, used to compute how far the
     /// stop button must slide left from center to reach the leading edge.
     @State private var bottomBarWidth: CGFloat = 0
+
+    /// Clock re-sampled on a timer so detection rows visibly migrate below the
+    /// "More Than a Minute Ago" header as they age past one minute, even when no
+    /// new detection arrives to re-sort the list.
+    @State private var now = Date()
+    private let ageTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
+    /// A detection older than this (since last heard) drops below the header.
+    private static let agingThreshold: TimeInterval = 60
 
     /// Diameter of the circular stop button.
     private static let stopButtonDiameter: CGFloat = 56
@@ -134,6 +143,11 @@ struct ContentView: View {
         .onChange(of: lifeListStore.starredNames, initial: true) { _, new in
             manager.updateStarred(new)
         }
+        // Re-sample the clock so rows slide below the "More Than a Minute Ago"
+        // header as they age, animating the migration.
+        .onReceive(ageTimer) { date in
+            withAnimation(.easeInOut(duration: 0.3)) { now = date }
+        }
         // Recording needs location access for the nearby-species filter; when a
         // start is refused for lack of it, offer a jump to Settings.
         .alert(
@@ -184,22 +198,56 @@ struct ContentView: View {
             )
             .padding(.horizontal, manager.isRecording ? 0 : 28)
         }
-        .buttonStyle(RecordButtonStyle(tint: Self.recordTint))
+        // Purple while idle, red once recording (matching the Delete All
+        // Entries button). The color interpolates with the morph because the
+        // animation below scopes `isRecording`.
+        .buttonStyle(RecordButtonStyle(tint: manager.isRecording ? Self.stopTint : Self.recordTint))
         .animation(.easeOut(duration: 0.16), value: manager.isRecording)
     }
 
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
+    /// Red for the stop state, matching the life-list Delete All Entries button.
+    private static let stopTint = Color.red
     /// Highlight purple — soft tint blended into the row background.
     private static let recordHighlight = Color(hue: 252.0 / 360.0, saturation: 0.5, brightness: 1.0)
 
     @ViewBuilder
     private var resultsView: some View {
         if !manager.detections.isEmpty {
-            List(manager.detections) { detection in
-                detectionRow(for: detection)
-                    .listRowInsets(EdgeInsets())
-                    .listRowSeparator(.hidden)
-                    .listRowBackground(Color.clear)
+            // `manager.detections` is already sorted by `lastSeen` descending, so
+            // each partition keeps that order; we just split it at the one-minute
+            // mark and slip a header between the two groups.
+            let recent = manager.detections.filter {
+                now.timeIntervalSince($0.lastSeen) <= Self.agingThreshold
+            }
+            let aged = manager.detections.filter {
+                now.timeIntervalSince($0.lastSeen) > Self.agingThreshold
+            }
+            List {
+                ForEach(recent) { detection in
+                    detectionRow(for: detection)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+                if !aged.isEmpty {
+                    Text("Over a minute ago")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 14)
+                        .padding(.bottom, 2)
+                        .listRowInsets(EdgeInsets())
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                    ForEach(aged) { detection in
+                        detectionRow(for: detection)
+                            .listRowInsets(EdgeInsets())
+                            .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
+                    }
+                }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)

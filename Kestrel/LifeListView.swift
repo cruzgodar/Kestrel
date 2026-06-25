@@ -710,6 +710,10 @@ private struct ImportInfoSheet: View {
             .padding(.bottom, 12)
         }
         .padding(.top, 32)
+        // Pin to fill the sheet from the first layout pass so the card slides
+        // straight up on present instead of resolving its width mid-transition
+        // (which reads as coming up from the leading edge).
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .presentationDetents([.medium])
         // Hidden grab handle to match the map's settings card (MapCardSheet).
         .presentationDragIndicator(.hidden)
@@ -722,6 +726,10 @@ private struct BottomSearchField: View {
     @Binding var text: String
     let prompt: String
     @FocusState private var focused: Bool
+    /// Drives the full-screen photo viewer. When a species photo opens (e.g. the
+    /// user taps a row's thumbnail while searching), we drop focus so the
+    /// keyboard doesn't pop back up when the viewer is dismissed.
+    @Environment(SpeciesPhotoPresenter.self) private var photoPresenter: SpeciesPhotoPresenter?
 
     private var showCancel: Bool { focused || !text.isEmpty }
 
@@ -805,6 +813,11 @@ private struct BottomSearchField: View {
         .padding(.horizontal, 10)
         .padding(.bottom, 8)
         .animation(.spring(response: 0.28, dampingFraction: 0.85), value: showCancel)
+        // Opening a species photo resigns focus permanently — without this the
+        // keyboard slides back up when the full-screen viewer is dismissed.
+        .onChange(of: photoPresenter?.presented) { _, presented in
+            if presented != nil { focused = false }
+        }
     }
 }
 

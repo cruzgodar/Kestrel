@@ -49,6 +49,12 @@ final class WatchSessionManager: NSObject {
     /// is heard, and reset at the start of each session).
     private(set) var lastBird: HeardBird?
 
+    /// Clears the "now hearing" display back to the placeholder once a bird has
+    /// gone unheard for `idleDisplayReset`. Restarted on every detection;
+    /// cancelled when the session ends.
+    private var idleDisplayResetTask: Task<Void, Never>?
+    private let idleDisplayReset: TimeInterval = 60
+
     /// Bumped every time the phone reports a heard bird, so the UI can flash the
     /// background on each detection — including a `.normal` bird, which doesn't
     /// change `lastBird`'s tint and so couldn't be caught by observing `lastBird`
@@ -256,6 +262,8 @@ final class WatchSessionManager: NSObject {
     /// Drops the last-heard species + its photo so a hidden now-hearing screen
     /// holds no stale content into the next session.
     private func clearHeardBird() {
+        idleDisplayResetTask?.cancel()
+        idleDisplayResetTask = nil
         lastBird = nil
         lastBirdImage = nil
         addedThisSession = []
@@ -291,6 +299,24 @@ final class WatchSessionManager: NSObject {
         } else {
             lastBirdImage = nil
             requestImage(scientificName: scientificName)
+        }
+        scheduleIdleDisplayReset()
+    }
+
+    /// (Re)arms the idle-display timer so the now-hearing screen falls back to
+    /// the placeholder once a bird has gone unheard for a minute, rather than
+    /// holding the last bird indefinitely. Re-heard birds cancel + re-arm it.
+    private func scheduleIdleDisplayReset() {
+        idleDisplayResetTask?.cancel()
+        idleDisplayResetTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(self?.idleDisplayReset ?? 60))
+            guard !Task.isCancelled, let self, self.isRecording else { return }
+            // Fade back to "Listening…" + the placeholder image, matching the
+            // view's `lastBird` cross-fade. The add-button state hides with it.
+            withAnimation(.easeInOut(duration: 0.3)) {
+                self.lastBird = nil
+            }
+            self.lastBirdImage = nil
         }
     }
 

@@ -852,7 +852,6 @@ private struct MapCardSheet: View {
     /// The lone-bird photo (opened over a card) was dismissed.
     let onLoneDismissed: () -> Void
 
-    @State private var detent: PresentationDetent = .medium
     /// Whether dismissing the current photo should also close the card. Tracked
     /// here because `onDismiss` can't read the (already-cleared) `photo` item.
     @State private var closeCardOnPhotoDismiss = false
@@ -924,6 +923,11 @@ private struct MapCardSheet: View {
                 Color.clear
             }
         }
+        // Pin the content to fill the sheet from the first layout pass. Without
+        // an explicit full-size frame the sheet resolves the content's width
+        // *during* the present transition, which reads as the card sliding up
+        // from the leading edge instead of straight up. (See also ImportInfoSheet.)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Read the real top corner radius off the live presentation so the
         // thumbnails can be made concentric with it on any device.
         .background(
@@ -937,11 +941,13 @@ private struct MapCardSheet: View {
         // cluster→settings, …). The sheet host is unaffected; only the contents
         // animate, so the swap reads as a smooth dissolve rather than a snap.
         .animation(.easeInOut(duration: 0.14), value: card?.id)
-        .presentationDetents([.medium, .large], selection: $detent)
+        // Capped at the medium detent (no .large) so the card can't be pulled up
+        // to expand, matching the life-list import card. The cluster grid scrolls
+        // within the medium card when it has more birds than fit.
+        .presentationDetents([.medium])
         .presentationDragIndicator(.hidden)
-        // Keep the map interactive (and undimmed) behind the card at the medium
-        // detent — this is what lets you open other things from either card and
-        // tap the map to dismiss. At .large the sheet is modal, as expected.
+        // Keep the map interactive (and undimmed) behind the card — this is what
+        // lets you open other things from either card and tap the map to dismiss.
         .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         // Remember (before the item clears) whether to close the card on exit.
         .onChange(of: photo) { _, newValue in

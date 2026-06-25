@@ -25,11 +25,17 @@ struct HighlightedText: View {
     var textColor: Color = .primary
     var alignment: HorizontalAlignment = .leading
 
-    /// Identify-tab row tints, reused at the same 0.25 opacity the rows use.
-    /// Blue marks starred ("alert me") birds; purple marks birds you can add to
-    /// your life list.
-    static let starHighlight = Color(hue: 215.0 / 360.0, saturation: 0.5, brightness: 1.0).opacity(0.35)
-    static let addHighlight = Color(hue: 252.0 / 360.0, saturation: 0.5, brightness: 1.0).opacity(0.35)
+    @Environment(\.colorScheme) private var colorScheme
+
+    /// Identify-tab row tints, at full saturation; the scheme-dependent opacity
+    /// is applied at render time (see `atomView`). Blue marks starred ("alert
+    /// me") birds; purple marks birds you can add to your life list.
+    static let starHighlight = Color(hue: 215.0 / 360.0, saturation: 0.5, brightness: 1.0)
+    static let addHighlight = Color(hue: 252.0 / 360.0, saturation: 0.5, brightness: 1.0)
+
+    /// Pill opacity: 0.35 in light mode, 0.5 in dark, so the tint stays legible
+    /// against the darker background. Mirrors the photo-info panel's treatment.
+    private var pillOpacity: Double { colorScheme == .dark ? 0.5 : 0.35 }
 
     private var uiFont: UIFont { UIFont.preferredFont(forTextStyle: textStyle) }
     private var font: Font { Font(uiFont) }
@@ -54,7 +60,7 @@ struct HighlightedText: View {
                 .foregroundStyle(textColor)
                 .padding(.horizontal, 4)
                 .padding(.vertical, 1)
-                .background(background, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .background(background.opacity(pillOpacity), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
                 .layoutValue(key: LeadingSpaceKey.self, value: atom.leadingSpace)
         } else {
             Text(atom.text)
