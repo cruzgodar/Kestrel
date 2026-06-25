@@ -412,10 +412,13 @@ struct MapView: View {
             )
         }
         .fullScreenCover(item: $presentedSinglePoint) { point in
+            // A lone pin — nothing to swipe to, no map button.
             SpeciesPhotoFullScreen(
-                scientificName: point.scientificName,
-                placeName: point.location,
-                dateFound: point.date
+                items: [SpeciesPhotoItem(
+                    scientificName: point.scientificName,
+                    placeName: point.location,
+                    dateFound: point.date
+                )]
             )
         }
     }
@@ -855,6 +858,19 @@ private struct MapCardSheet: View {
     /// Whether dismissing the current photo should also close the card. Tracked
     /// here because `onDismiss` can't read the (already-cleared) `photo` item.
     @State private var closeCardOnPhotoDismiss = false
+    /// Current detent. A multi-bird cluster can be pulled up to `.large` to see
+    /// every bird; the settings card is medium-only. Reset to `.medium` whenever
+    /// the card swaps so settings never inherits a stranded `.large`.
+    @State private var detent: PresentationDetent = .medium
+
+    /// The detents allowed for the current card: clusters get medium + large,
+    /// the settings card stays at medium (matching the import card).
+    private var detents: Set<PresentationDetent> {
+        switch card {
+        case .cluster: return [.medium, .large]
+        default:       return [.medium]
+        }
+    }
 
     /// Spacing between thumbnails, both between columns and rows.
     private static let gridSpacing: CGFloat = 12
@@ -923,11 +939,6 @@ private struct MapCardSheet: View {
                 Color.clear
             }
         }
-        // Pin the content to fill the sheet from the first layout pass. Without
-        // an explicit full-size frame the sheet resolves the content's width
-        // *during* the present transition, which reads as the card sliding up
-        // from the leading edge instead of straight up. (See also ImportInfoSheet.)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         // Read the real top corner radius off the live presentation so the
         // thumbnails can be made concentric with it on any device.
         .background(
@@ -941,10 +952,12 @@ private struct MapCardSheet: View {
         // cluster→settings, …). The sheet host is unaffected; only the contents
         // animate, so the swap reads as a smooth dissolve rather than a snap.
         .animation(.easeInOut(duration: 0.14), value: card?.id)
-        // Capped at the medium detent (no .large) so the card can't be pulled up
-        // to expand, matching the life-list import card. The cluster grid scrolls
-        // within the medium card when it has more birds than fit.
-        .presentationDetents([.medium])
+        // A cluster can expand to .large; settings stays medium. Snap back to
+        // medium on a swap so the settings card never opens stranded at large.
+        .onChange(of: card?.id) { _, _ in
+            if case .settings = card { detent = .medium }
+        }
+        .presentationDetents(detents, selection: $detent)
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card — this is what
         // lets you open other things from either card and tap the map to dismiss.
@@ -967,19 +980,35 @@ private struct MapCardSheet: View {
             }
         ) { photo in
             switch photo {
-            case .pinpoint(let point):
+            case .pinpoint(let points, let startIndex):
+                // Swipe between the birds in this card; the place-name tap
+                // pinpoints whichever bird is showing.
                 SpeciesPhotoFullScreen(
-                    scientificName: point.scientificName,
+                    items: points.map {
+                        SpeciesPhotoItem(
+                            scientificName: $0.scientificName,
+                            placeName: $0.location,
+                            dateFound: $0.date
+                        )
+                    },
+                    initialIndex: startIndex,
                     mapButtonTitle: "Pinpoint on Map",
-                    onShowOnMap: { onPinpoint(point) },
-                    placeName: point.location,
-                    dateFound: point.date
+                    onShowOnMap: { item in
+                        if let point = points.first(where: {
+                            $0.scientificName == item.scientificName
+                        }) {
+                            onPinpoint(point)
+                        }
+                    }
                 )
             case .lone(let point):
+                // A lone pin tapped while a card was open — nothing to swipe to.
                 SpeciesPhotoFullScreen(
-                    scientificName: point.scientificName,
-                    placeName: point.location,
-                    dateFound: point.date
+                    items: [SpeciesPhotoItem(
+                        scientificName: point.scientificName,
+                        placeName: point.location,
+                        dateFound: point.date
+                    )]
                 )
             }
         }
@@ -1004,7 +1033,11 @@ private struct MapCardSheet: View {
                             cornerRadius: thumbCornerRadius
                         )
                         .onTapGesture {
-                            photo = .pinpoint(point)
+                            // Open the viewer over every bird in the card so the
+                            // photo can be swiped between them, starting here.
+                            let points = cluster.uniqueByMostRecent
+                            let idx = points.firstIndex(of: point) ?? 0
+                            photo = .pinpoint(points: points, index: idx)
                         }
                     }
                 }
@@ -1072,22 +1105,19 @@ private struct SheetTopCornerRadiusReader: UIViewRepresentable {
 
 /// A full-screen photo presented from within an open map card's sheet.
 private enum MapSheetPhoto: Identifiable, Equatable {
-    /// A bird tapped in a cluster grid — shows "Pinpoint on Map", keeps the card.
-    case pinpoint(MapPoint)
+    /// Birds in a cluster grid — opens the viewer over all of them (swipeable),
+    /// starting on `index`. Shows "Pinpoint on Map"; keeps the card.
+    case pinpoint(points: [MapPoint], index: Int)
     /// A lone pin tapped on the map while a card was open — no button; closes
     /// the card when dismissed.
     case lone(MapPoint)
 
-    var point: MapPoint {
-        switch self {
-        case .pinpoint(let p), .lone(let p): return p
-        }
-    }
-
     var id: String {
         switch self {
-        case .pinpoint(let p): return "pinpoint-" + p.id
-        case .lone(let p):     return "lone-" + p.id
+        case .pinpoint(let points, _):
+            return "pinpoint-" + (points.first?.id ?? "") + "-\(points.count)"
+        case .lone(let p):
+            return "lone-" + p.id
         }
     }
 }

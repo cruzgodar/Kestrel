@@ -123,24 +123,30 @@ struct KestrelApp: App {
             .fullScreenCover(item: Binding(
                 get: { photoPresenter.presented },
                 set: { photoPresenter.presented = $0 }
-            )) { species in
-                let coordinate = lifeListStore.firstObservationCoordinate(for: species.scientificName)
-                // The Life List tab always shows the earliest sighting, so the
-                // observation section mirrors that row's place + date. `nil` for
-                // non-lifers (not on the list), which hides the section.
-                let observation = lifeListStore.firstObservation(for: species.scientificName)
+            )) { presentation in
+                // Each bird's place + date comes from its life-list entry (the
+                // earliest sighting shown in the Life List tab). Non-lifers have
+                // no entry, so both are nil and the sighting section is hidden.
+                let items = presentation.names.map { name in
+                    let observation = lifeListStore.firstObservation(for: name)
+                    return SpeciesPhotoItem(
+                        scientificName: name,
+                        placeName: observation?.location,
+                        dateFound: observation?.date
+                    )
+                }
                 SpeciesPhotoFullScreen(
-                    scientificName: species.scientificName,
-                    mapButtonTitle: coordinate != nil ? "Show on Map" : nil,
-                    onShowOnMap: coordinate.map { coord in
-                        {
-                            photoPresenter.presented = nil
-                            selectedTab = .map
-                            mapNavigator.focus(latitude: coord.latitude, longitude: coord.longitude)
-                        }
-                    },
-                    placeName: observation?.location,
-                    dateFound: observation?.date
+                    items: items,
+                    initialIndex: presentation.index,
+                    mapButtonTitle: "Show on Map",
+                    onShowOnMap: { item in
+                        guard let coord = lifeListStore.firstObservationCoordinate(
+                            for: item.scientificName
+                        ) else { return }
+                        photoPresenter.presented = nil
+                        selectedTab = .map
+                        mapNavigator.focus(latitude: coord.latitude, longitude: coord.longitude)
+                    }
                 )
             }
             // Push "is the spectrogram visible?" into the recording manager

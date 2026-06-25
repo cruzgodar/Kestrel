@@ -4,6 +4,9 @@ import UniformTypeIdentifiers
 
 struct LifeListView: View {
     @Environment(LifeListStore.self) private var store
+    /// Drives the full-screen viewer. Life-list rows open it over the whole
+    /// ordered list so the user can swipe between birds.
+    @Environment(SpeciesPhotoPresenter.self) private var photoPresenter: SpeciesPhotoPresenter?
 
     @State private var isImporting = false
     /// Drives the explanatory import modal opened from the toolbar button. The
@@ -508,7 +511,13 @@ struct LifeListView: View {
                     ? "Turn off alerts for \(entry.commonName)"
                     : "Alert me when \(entry.commonName) is heard"
             )
-            SpeciesThumbnail(scientificName: entry.scientificName)
+            SpeciesThumbnail(scientificName: entry.scientificName, onTap: {
+                // Open the viewer over the whole life list (canonical order) so
+                // the photo can be swiped left/right between birds.
+                let names = store.entries.map(\.scientificName)
+                let idx = names.firstIndex(of: entry.scientificName) ?? 0
+                photoPresenter?.present(names: names, index: idx)
+            })
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
@@ -710,10 +719,6 @@ private struct ImportInfoSheet: View {
             .padding(.bottom, 12)
         }
         .padding(.top, 32)
-        // Pin to fill the sheet from the first layout pass so the card slides
-        // straight up on present instead of resolving its width mid-transition
-        // (which reads as coming up from the leading edge).
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .presentationDetents([.medium])
         // Hidden grab handle to match the map's settings card (MapCardSheet).
         .presentationDragIndicator(.hidden)

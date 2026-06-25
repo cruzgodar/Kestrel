@@ -1,142 +1,261 @@
 import SwiftUI
 
-/// Identifies the species whose photo is shown full-screen.
-struct PresentedSpecies: Identifiable, Hashable {
+/// One bird shown in the full-screen viewer, plus the sighting metadata its
+/// caption needs. A viewer is opened over an *ordered* array of these (life-list
+/// order, or the birds within a map card) so the user can swipe between them.
+struct SpeciesPhotoItem: Identifiable, Equatable {
     let scientificName: String
+    var placeName: String? = nil
+    var dateFound: Date? = nil
     var id: String { scientificName }
 }
 
 /// App-wide driver for the full-screen photo viewer. Injected into the
-/// environment at the root; any `SpeciesPhoto` (or the map's annotation tap
-/// handlers) calls `present(_:)` to open the viewer. Optional in the
-/// environment so previews without it simply don't present.
+/// environment at the root; any `SpeciesPhoto` calls `present(_:)` (singleton)
+/// while the Life List passes an ordered sibling list via `present(names:index:)`
+/// so the viewer can page between birds. Optional in the environment so previews
+/// without it simply don't present.
 @MainActor
 @Observable
 final class SpeciesPhotoPresenter {
-    var presented: PresentedSpecies?
+    /// A request to open the viewer over `names`, starting on `index`. `id` is
+    /// fresh per request so re-presenting the same bird still fires the cover;
+    /// the viewer owns its own page selection after that, so internal paging
+    /// doesn't rebuild the cover.
+    struct Presentation: Identifiable, Equatable {
+        let id = UUID()
+        var names: [String]
+        var index: Int
+    }
 
+    var presented: Presentation?
+
+    /// Opens the viewer on a single bird with nothing to swipe to.
     func present(_ scientificName: String) {
-        presented = PresentedSpecies(scientificName: scientificName)
+        presented = Presentation(names: [scientificName], index: 0)
+    }
+
+    /// Opens the viewer over an ordered list of birds, starting on `index`.
+    func present(names: [String], index: Int) {
+        guard !names.isEmpty else { return }
+        presented = Presentation(names: names, index: min(max(index, 0), names.count - 1))
     }
 }
 
-/// Full-screen, zoomable view of a single species photo with its Macaulay
-/// attribution. Loads the image from the remote store (memory → disk →
-/// network); species with no remote photo show the placeholder.
-///
-/// Gestures (zoom, pan, swipe-to-dismiss) live here at the top level: the
-/// dismiss drag moves the *entire* view — image, caption, and close button —
-/// and fades the background to reveal the app behind, while pinch zoom anchors
-/// on the midpoint between the fingers.
+/// Full-screen, swipeable, zoomable viewer over an ordered set of species
+/// photos. Horizontal swipes page between birds (with the system's page-style
+/// inertia + end rubberbanding); a single-item viewer has nothing to page to. A
+/// downward drag (only when not zoomed) slides the whole card off to dismiss.
 struct SpeciesPhotoFullScreen: View {
-    let scientificName: String
-    /// Title for the optional map button at the bottom ("Show on Map" from the
-    /// Life List / Identify tabs, "Pinpoint on Map" from a map cluster card).
-    /// When `nil` — or when `onShowOnMap` is `nil` — no button is shown.
+    let items: [SpeciesPhotoItem]
+    /// Title used as the accessibility label on the tappable place name
+    /// ("Show on Map" / "Pinpoint on Map").
     var mapButtonTitle: String? = nil
-    /// Action for the map button: switch to / focus the Map tab on this bird.
-    var onShowOnMap: (() -> Void)? = nil
-    /// Place name of the sighting this photo was opened from — the Life List
-    /// location (earliest sighting) or the tapped map point's location. `nil`
-    /// for non-lifers (no recorded sighting) or when no location was logged.
-    var placeName: String? = nil
-    /// Date of the sighting this photo was opened from. `nil` for non-lifers,
-    /// which suppresses the whole observation section.
-    var dateFound: Date? = nil
+    /// Action for the place-name tap: focus / pinpoint the *current* bird on the
+    /// map. `nil` makes the place name non-interactive (and is the case for the
+    /// Identify tab / lone map pins).
+    var onShowOnMap: ((SpeciesPhotoItem) -> Void)? = nil
+
     @Environment(\.dismiss) private var dismiss
 
-    @State private var image: UIImage?
-    @State private var loadFailed = false
+    /// The page currently shown. Seeded from `initialIndex` in `init`.
+    @State private var index: Int
+    /// True while the current page is zoomed in — disables horizontal paging and
+    /// the swipe-down dismiss so a pan inside the photo doesn't trigger either.
+    @State private var isZoomed = false
 
-    // Zoom + pan. The image is scaled about its center and translated by
-    // `panOffset` (screen points); each pinch compensates `panOffset` so the
-    // point between the fingers stays put, instead of the scale-anchor jumping
-    // between gestures.
-    @State private var scale: CGFloat = 1
-    @State private var lastScale: CGFloat = 1
-    @State private var panOffset: CGSize = .zero
-    @State private var lastPan: CGSize = .zero
-    /// Center-relative focal point of the in-progress pinch, kept so the
-    /// bounce-back at max zoom can compensate `panOffset` around the same point.
-    @State private var lastFocal: CGSize = .zero
-
-    // Swipe-to-dismiss (applied to the whole content).
+    // Swipe-to-dismiss (applied to the whole card).
     @State private var dragOffset: CGSize = .zero
-    /// Measured size of the viewer, used to turn the pinch's unit-point anchor
-    /// into a center-relative focal point for the zoom compensation.
-    @State private var viewSize: CGSize = CGSize(width: 400, height: 800)
-    /// Faded to 0 as the viewer is dismissed, so the stock cover slide is
-    /// accompanied by a cross-fade to the app behind it.
     @State private var contentOpacity: Double = 1
+    /// Measured viewer size, used to slide the card fully off on dismiss.
+    @State private var viewSize: CGSize = CGSize(width: 400, height: 800)
 
     /// Past this much downward travel, release dismisses.
     private let dismissThreshold: CGFloat = 120
-    /// Maximum pinch-zoom. Zooming past this rubberbands with resistance and
-    /// snaps back (with a haptic) on release.
-    private let maxScale: CGFloat = 4
 
-    private var commonName: String {
-        SpeciesCatalog.shared.commonName(for: scientificName) ?? scientificName
-    }
-    private var info: SpeciesPhotoInfo? {
-        SpeciesPhotoMetadata.shared.info(for: scientificName)
+    init(
+        items: [SpeciesPhotoItem],
+        initialIndex: Int = 0,
+        mapButtonTitle: String? = nil,
+        onShowOnMap: ((SpeciesPhotoItem) -> Void)? = nil
+    ) {
+        self.items = items
+        self.mapButtonTitle = mapButtonTitle
+        self.onShowOnMap = onShowOnMap
+        _index = State(initialValue: min(max(initialIndex, 0), max(items.count - 1, 0)))
     }
 
     var body: some View {
         ZStack {
-            // The viewer behaves like a card: the black backdrop and the photo
-            // move together with the finger, so dragging down slides the whole
-            // thing off and reveals the app behind it in real time (rather than
-            // waiting for the touch to release). The viewer is presented over a
-            // clear background, so the gap above the card shows what's beneath.
-            //
-            // The backdrop ignores the safe area *before* it's offset (rather
-            // than offsetting a parent of the safe-area-ignoring color) so its
-            // status-bar and home-indicator extensions slide with the card
-            // instead of snapping to the revealed app the moment the drag starts.
-            Color.black
-                .ignoresSafeArea()
-                .offset(dragOffset)
-            content
-                .offset(dragOffset)
+            // The black backdrop + the paged photos slide together with the
+            // dismiss drag, revealing the app behind through the clear
+            // presentation background.
+            Color.black.ignoresSafeArea()
+
+            TabView(selection: $index) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
+                    ZoomablePhotoPage(
+                        item: item,
+                        isCurrent: offset == index,
+                        isZoomed: $isZoomed,
+                        mapButtonTitle: mapButtonTitle,
+                        onShowOnMap: onShowOnMap.map { action in { action(item) } }
+                    )
+                    .tag(offset)
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            // No paging while zoomed — the pan inside the photo owns the drag.
+            .scrollDisabled(isZoomed)
+
+            closeButton
         }
+        .offset(dragOffset)
         .opacity(contentOpacity)
-        // Clear presentation background so the fade reveals the app behind.
+        // Clear presentation background so the slide reveals the app behind.
         .presentationBackground(.clear)
-        .gesture(magnify.simultaneously(with: drag))
-        .onGeometryChange(for: CGSize.self) { proxy in
-            proxy.size
-        } action: { viewSize = $0 }
-        .task(id: scientificName) { await load() }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { viewSize = $0 }
+        // Vertical-down dismiss, alongside (not blocking) the TabView's
+        // horizontal paging. Disabled while zoomed so a downward pan of the
+        // photo doesn't dismiss.
+        .simultaneousGesture(dismissDrag)
     }
 
-    private var content: some View {
+    private var closeButton: some View {
+        VStack {
+            HStack {
+                Spacer()
+                // Liquid-glass close button, matching the life-list search
+                // field's cancel button.
+                Button { dismissViewer() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 22, weight: .regular))
+                        .foregroundStyle(.primary)
+                        .frame(width: 22, height: 22)
+                        .padding(13)
+                        .glassEffect(.regular.interactive(), in: .circle)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(NoDimButtonStyle())
+                .padding(.trailing, 16)
+                .padding(.top, 8)
+            }
+            Spacer()
+        }
+    }
+
+    // MARK: - Dismiss
+
+    private var dismissDrag: some Gesture {
+        DragGesture(minimumDistance: 10)
+            .onChanged { value in
+                guard !isZoomed else { return }
+                // Downward, vertical-dominant only — horizontal goes to paging,
+                // and the upward "lift off the bottom" is disallowed.
+                guard value.translation.height > 0,
+                      abs(value.translation.height) > abs(value.translation.width) else { return }
+                dragOffset = CGSize(width: 0, height: value.translation.height)
+            }
+            .onEnded { value in
+                guard !isZoomed else { return }
+                if value.translation.height > dismissThreshold,
+                   abs(value.translation.height) > abs(value.translation.width) {
+                    dismissViewer()
+                } else {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                        dragOffset = .zero
+                    }
+                }
+            }
+    }
+
+    /// Slides the whole card off the bottom — preserving the swipe-down feel —
+    /// and only cross-fades in the final beat of the slide (rather than fading
+    /// throughout). The cover is then removed without its own animation so the
+    /// slide is the only motion seen.
+    private func dismissViewer() {
+        withAnimation(.easeIn(duration: 0.28)) {
+            dragOffset = CGSize(width: 0, height: viewSize.height + 300)
+        }
+        withAnimation(.easeIn(duration: 0.12).delay(0.16)) {
+            contentOpacity = 0
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) {
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) { dismiss() }
+        }
+    }
+}
+
+/// A single zoomable page within the viewer: the photo (pinch + pan + double-tap
+/// zoom) and its caption. Reports its zoom state up so the container can disable
+/// paging while zoomed, and resets zoom when it scrolls off-screen.
+private struct ZoomablePhotoPage: View {
+    let item: SpeciesPhotoItem
+    let isCurrent: Bool
+    @Binding var isZoomed: Bool
+    var mapButtonTitle: String?
+    /// Pre-bound to this page's bird (the container curries the item in).
+    var onShowOnMap: (() -> Void)?
+
+    @State private var image: UIImage?
+    @State private var loadFailed = false
+
+    // Zoom + pan. Anchored zoom (about the pinch midpoint) keeps panning and
+    // zooming on separate state — `scale`/`zoomAnchor` for the pinch,
+    // `panOffset` for the drag — so the two gestures never fight over the same
+    // value, which is what keeps the interaction smooth.
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var zoomAnchor: UnitPoint = .center
+    @State private var panOffset: CGSize = .zero
+    @State private var lastPan: CGSize = .zero
+    /// True for the duration of a pinch, so its one-time anchor compensation
+    /// runs only on the first change event.
+    @State private var magnifying = false
+    /// This page's measured size, used to compensate the offset when the pinch
+    /// anchor changes between gestures (so the image doesn't snap around).
+    @State private var pageSize: CGSize = CGSize(width: 400, height: 800)
+
+    /// Maximum pinch-zoom; zooming past it rubberbands and eases back.
+    private let maxScale: CGFloat = 4
+
+    private var commonName: String {
+        SpeciesCatalog.shared.commonName(for: item.scientificName) ?? item.scientificName
+    }
+    private var info: SpeciesPhotoInfo? {
+        SpeciesPhotoMetadata.shared.info(for: item.scientificName)
+    }
+
+    var body: some View {
         ZStack {
             imageLayer.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                HStack {
-                    Spacer()
-                    // Liquid-glass close button, matching the life-list search
-                    // field's cancel button.
-                    Button { dismissViewer() } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 22, weight: .regular))
-                            .foregroundStyle(.primary)
-                            .frame(width: 22, height: 22)
-                            .padding(13)
-                            .glassEffect(.regular.interactive(), in: .circle)
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(NoDimButtonStyle())
-                    .padding(.trailing, 16)
-                    .padding(.top, 8)
-                }
+            VStack {
                 Spacer()
-                // The species caption (name / attribution / eBird) plus the
-                // sighting's place + date, in the frosted text panel pinned to
-                // the bottom edge. Tapping the place name shows it on the map.
                 caption
+            }
+        }
+        .onGeometryChange(for: CGSize.self) { $0.size } action: { pageSize = $0 }
+        .contentShape(Rectangle())
+        .simultaneousGesture(magnify)
+        .simultaneousGesture(panWhenZoomed)
+        .onTapGesture(count: 2) { toggleZoom() }
+        .task(id: item.scientificName) { await load() }
+        // Keep the container's paging/dismiss gate in sync with this page, and
+        // reset zoom when the page scrolls away so it isn't left zoomed. The
+        // guard avoids rewriting the binding on every frame of a pinch.
+        .onChange(of: scale) { _, _ in
+            guard isCurrent else { return }
+            let zoomed = scale > 1.01
+            if zoomed != isZoomed { isZoomed = zoomed }
+        }
+        .onChange(of: isCurrent) { _, current in
+            if current {
+                isZoomed = scale > 1.01
+            } else {
+                resetZoom()
             }
         }
     }
@@ -147,9 +266,8 @@ struct SpeciesPhotoFullScreen: View {
             Image(uiImage: image)
                 .resizable()
                 .scaledToFit()
-                .scaleEffect(scale)
+                .scaleEffect(scale, anchor: zoomAnchor)
                 .offset(panOffset)
-                .onTapGesture(count: 2) { toggleZoom() }
         } else if loadFailed {
             Image(systemName: "bird")
                 .font(.system(size: 56))
@@ -161,49 +279,51 @@ struct SpeciesPhotoFullScreen: View {
 
     @ViewBuilder
     private var caption: some View {
-        // Only the institutional/photographer credit applies to Macaulay
-        // photos; manual fallback species (no remote info) show just the name.
-        VStack(spacing: 10) {
-            VStack(spacing: 3) {
-                Text(commonName)
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                if let info {
-                    Text(info.attribution)
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.75))
-                        .multilineTextAlignment(.center)
-                    if let ebirdURL = info.ebirdURL {
-                        Link("View on eBird", destination: ebirdURL)
-                            .font(.caption2.weight(.semibold))
-                            .tint(.white)
-                    }
-                }
-            }
+        VStack(spacing: 8) {
+            // Species name — a touch larger than the metadata below it.
+            Text(commonName)
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
 
-            // Sighting section: where/when this bird was found. Only present
-            // for lifers (a date is always recorded for them); non-lifers have
-            // no sighting, so the whole block is omitted. The place name is the
-            // tap target that shows / pinpoints the bird on the map.
-            if let dateFound {
-                VStack(spacing: 4) {
-                    if let placeName, !placeName.isEmpty {
-                        let label = Label(placeName, systemImage: "mappin")
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                            .multilineTextAlignment(.center)
+            // Sighting: where + when, directly under the name. Only for lifers
+            // (a date is always recorded); the place name is the map tap target,
+            // with the pin-in-circle glyph to its right.
+            if let dateFound = item.dateFound {
+                VStack(spacing: 2) {
+                    if let place = item.placeName, !place.isEmpty {
+                        let row = HStack(spacing: 6) {
+                            Text(place)
+                            Image(systemName: "mappin.circle")
+                        }
+                        .font(.headline)
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.center)
                         if let onShowOnMap {
-                            Button(action: onShowOnMap) { label }
+                            Button(action: onShowOnMap) { row }
                                 .buttonStyle(NoDimButtonStyle())
                                 .accessibilityLabel(mapButtonTitle ?? "Show on Map")
                         } else {
-                            label
+                            row
                         }
                     }
                     Text(dateFound, format: .dateTime.year().month(.abbreviated).day())
-                        .font(.headline)
+                        .font(.subheadline)
                         .monospacedDigit()
                         .foregroundStyle(.white.opacity(0.8))
+                }
+            }
+
+            // Attribution + eBird link, below the sighting info.
+            if let info {
+                Text(info.attribution)
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.75))
+                    .multilineTextAlignment(.center)
+                if let ebirdURL = info.ebirdURL {
+                    Link("View on eBird", destination: ebirdURL)
+                        .font(.caption2.weight(.semibold))
+                        .tint(.white)
                 }
             }
         }
@@ -224,50 +344,37 @@ struct SpeciesPhotoFullScreen: View {
     private var magnify: some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                let raw = lastScale * value.magnification
-                let newScale: CGFloat
-                if raw > maxScale {
-                    // Past the max, apply diminishing rubberband resistance so
-                    // the image keeps tracking the fingers but increasingly
-                    // resists — the standard iOS overscroll feel.
-                    newScale = maxScale + (raw - maxScale) * 0.3
-                } else {
-                    newScale = max(raw, 1)
+                if !magnifying {
+                    magnifying = true
+                    // Switching the scale anchor between gestures would visibly
+                    // jump the image; compensate the offset so it stays put.
+                    let a0 = CGPoint(x: zoomAnchor.x * pageSize.width,
+                                     y: zoomAnchor.y * pageSize.height)
+                    let a1 = CGPoint(x: value.startAnchor.x * pageSize.width,
+                                     y: value.startAnchor.y * pageSize.height)
+                    let f = 1 - scale
+                    panOffset = CGSize(
+                        width: panOffset.width + (a0.x - a1.x) * f,
+                        height: panOffset.height + (a0.y - a1.y) * f
+                    )
+                    lastPan = panOffset
+                    zoomAnchor = value.startAnchor
                 }
-                // Compensate the translation so the point between the fingers
-                // stays fixed as the scale changes — this is what stops the
-                // image from snapping around when a new pinch starts somewhere
-                // different from the last one. Focal point is measured relative
-                // to the view center (the scale's anchor).
-                let focal = CGSize(
-                    width: (value.startAnchor.x - 0.5) * viewSize.width,
-                    height: (value.startAnchor.y - 0.5) * viewSize.height
-                )
-                lastFocal = focal
-                let ratio = newScale / lastScale
-                panOffset = CGSize(
-                    width: focal.width * (1 - ratio) + lastPan.width * ratio,
-                    height: focal.height * (1 - ratio) + lastPan.height * ratio
-                )
-                scale = newScale
+                let raw = lastScale * value.magnification
+                if raw > maxScale {
+                    // Diminishing resistance past the max — the standard
+                    // overscroll feel.
+                    scale = maxScale + (raw - maxScale) * 0.3
+                } else {
+                    scale = max(raw, 1)
+                }
             }
             .onEnded { _ in
+                magnifying = false
                 if scale > maxScale {
-                    // Snap back to the limit with a spring and a crisp tap, the
-                    // way a scroll view bounces off its content edge — keeping
-                    // the same focal point fixed through the bounce.
-                    UIImpactFeedbackGenerator(style: .rigid).impactOccurred()
-                    let ratio = maxScale / scale
-                    let targetPan = CGSize(
-                        width: lastFocal.width * (1 - ratio) + panOffset.width * ratio,
-                        height: lastFocal.height * (1 - ratio) + panOffset.height * ratio
-                    )
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                        scale = maxScale
-                        panOffset = targetPan
-                    }
+                    // Ease straight back to the limit — no spring overshoot.
+                    withAnimation(.easeOut(duration: 0.25)) { scale = maxScale }
                     lastScale = maxScale
-                    lastPan = targetPan
                 } else if scale <= 1 {
                     withAnimation(.easeOut(duration: 0.2)) {
                         scale = 1
@@ -277,48 +384,25 @@ struct SpeciesPhotoFullScreen: View {
                     lastPan = .zero
                 } else {
                     lastScale = scale
-                    lastPan = panOffset
                 }
             }
     }
 
-    private var drag: some Gesture {
+    /// Pans the zoomed image. A no-op (and so doesn't capture) at rest, leaving
+    /// the drag for the container's paging / dismiss.
+    private var panWhenZoomed: some Gesture {
         DragGesture()
             .onChanged { value in
-                if scale > 1 {
-                    // Pan the zoomed image.
-                    panOffset = CGSize(
-                        width: lastPan.width + value.translation.width,
-                        height: lastPan.height + value.translation.height
-                    )
-                } else {
-                    // Move the whole card with the finger, vertically only —
-                    // horizontal drift is locked out so the dismiss reads as a
-                    // clean downward card slide.
-                    dragOffset = CGSize(width: 0, height: value.translation.height)
-                }
+                guard scale > 1 else { return }
+                panOffset = CGSize(
+                    width: lastPan.width + value.translation.width,
+                    height: lastPan.height + value.translation.height
+                )
             }
-            .onEnded { value in
-                if scale > 1 {
-                    lastPan = panOffset
-                } else if value.translation.height > dismissThreshold {
-                    dismissViewer()
-                } else {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                        dragOffset = .zero
-                    }
-                }
+            .onEnded { _ in
+                guard scale > 1 else { return }
+                lastPan = panOffset
             }
-    }
-
-    /// Closes the viewer with the stock cover slide, fading the content to 0 at
-    /// the same time so it cross-dissolves into the app behind rather than just
-    /// dropping away.
-    private func dismissViewer() {
-        withAnimation(.easeOut(duration: 0.3)) {
-            contentOpacity = 0
-        }
-        dismiss()
     }
 
     private func toggleZoom() {
@@ -327,6 +411,7 @@ struct SpeciesPhotoFullScreen: View {
                 scale = 1
                 panOffset = .zero
             } else {
+                zoomAnchor = .center
                 scale = 2
                 panOffset = .zero
             }
@@ -335,12 +420,20 @@ struct SpeciesPhotoFullScreen: View {
         }
     }
 
+    private func resetZoom() {
+        scale = 1
+        lastScale = 1
+        panOffset = .zero
+        lastPan = .zero
+        zoomAnchor = .center
+    }
+
     // MARK: - Loading
 
     private func load() async {
         image = nil
         loadFailed = false
-        let name = scientificName
+        let name = item.scientificName
         if let mem = RemoteSpeciesImageStore.shared.memoryImage(for: name) {
             image = mem
             return

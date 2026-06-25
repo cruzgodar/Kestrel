@@ -9,6 +9,8 @@ import SwiftUI
 struct SpeciesThumbnail: View {
     let scientificName: String
     var height: CGFloat = 60
+    /// Optional override for the photo tap (see `SpeciesPhoto.onTap`).
+    var onTap: (() -> Void)? = nil
 
     /// 4:3 — matches the dominant species-photo aspect ratio.
     private var width: CGFloat { height * 4.0 / 3.0 }
@@ -16,7 +18,7 @@ struct SpeciesThumbnail: View {
     var body: some View {
         // Credit caption omitted at this size — it's unreadable behind a 60pt
         // box. The hero image and map card carry the attribution instead.
-        SpeciesPhoto(scientificName: scientificName) {
+        SpeciesPhoto(scientificName: scientificName, onTap: onTap) {
             Image(systemName: "bird")
                 .foregroundStyle(.secondary)
                 .frame(width: width, height: height)

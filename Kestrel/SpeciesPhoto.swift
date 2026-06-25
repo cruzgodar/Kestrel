@@ -18,6 +18,10 @@ struct SpeciesPhoto<Placeholder: View>: View {
     let scientificName: String
     var showsCredit: Bool = false
     var tappable: Bool = true
+    /// Overrides the default tap action (which opens a singleton viewer). The
+    /// Life List passes one that opens the viewer over the whole ordered list so
+    /// the user can swipe between birds.
+    var onTap: (() -> Void)? = nil
     @ViewBuilder var placeholder: () -> Placeholder
 
     var body: some View {
@@ -25,7 +29,8 @@ struct SpeciesPhoto<Placeholder: View>: View {
             .modifier(PresentPhotoOnTap(
                 scientificName: scientificName,
                 enabled: tappable && hasImage,
-                presenter: presenter
+                presenter: presenter,
+                onTap: onTap
             ))
     }
 
@@ -91,12 +96,19 @@ private struct PresentPhotoOnTap: ViewModifier {
     let scientificName: String
     let enabled: Bool
     let presenter: SpeciesPhotoPresenter?
+    let onTap: (() -> Void)?
 
     func body(content: Content) -> some View {
-        if enabled, let presenter {
+        if enabled, presenter != nil || onTap != nil {
             content
                 .contentShape(Rectangle())
-                .onTapGesture { presenter.present(scientificName) }
+                .onTapGesture {
+                    if let onTap {
+                        onTap()
+                    } else {
+                        presenter?.present(scientificName)
+                    }
+                }
         } else {
             content
         }

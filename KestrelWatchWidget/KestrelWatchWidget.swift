@@ -20,13 +20,10 @@ struct StartRecordingProvider: TimelineProvider {
     }
 }
 
-/// Watch complication: a bird-glyph button that opens the watch app via a
-/// deep link (`widgetURL`) and starts a session (a no-op if one is already
-/// running). A `widgetURL` is used rather than `Button(intent:)` because the
-/// intent's `perform()` runs in the widget extension's process — its in-app
-/// notification and `UserDefaults` flag never reach the app, so the tap only
-/// foregrounded the app without starting a recording. The URL is delivered to
-/// the app's `onOpenURL` in-process, which fires the request reliably.
+/// Watch complication: a bird-glyph button that simply opens the watch app.
+/// Tapping a complication launches its host app by default, so no `widgetURL`
+/// or intent is attached — the user starts the session from the app's own
+/// record button rather than the tap kicking off a walk immediately.
 struct StartRecordingComplicationView: View {
     @Environment(\.widgetFamily) private var family
 
@@ -38,7 +35,6 @@ struct StartRecordingComplicationView: View {
     var body: some View {
         label
             .containerBackground(for: .widget) { Color.clear }
-            .widgetURL(RecordingIntentRequest.startRecordingURL)
     }
 
     @ViewBuilder
@@ -71,8 +67,8 @@ struct StartRecordingComplication: Widget {
         ) { _ in
             StartRecordingComplicationView()
         }
-        .configurationDisplayName("Start Recording")
-        .description("Start listening for birds.")
+        .configurationDisplayName("Open Kestrel")
+        .description("Open Kestrel to listen for birds.")
         .supportedFamilies([.accessoryCircular, .accessoryCorner, .accessoryInline, .accessoryRectangular])
     }
 }
