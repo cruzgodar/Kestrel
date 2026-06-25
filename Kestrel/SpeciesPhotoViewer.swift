@@ -162,6 +162,13 @@ struct SpeciesPhotoFullScreen: View {
             // No paging while zoomed — the scroll view's pan owns the drag.
             .scrollDisabled(isZoomed)
             .frame(width: screenWidth + pageSpacing, height: fullHeight)
+            // Pin the (deliberately over-wide) TabView to the leading edge before
+            // shifting it left by `pageSpacing/2`. Without this the ZStack centers
+            // the over-wide TabView, so the `-pageSpacing/2` shift lands the photo
+            // `pageSpacing/2` too far left with a black gap on the right. (The old
+            // inner GeometryReader placed it top-leading for free; the ZStack does
+            // not.)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .offset(x: -pageSpacing / 2)
 
             // Top inset comes from the outer proxy because the ZStack ignores the
@@ -169,20 +176,23 @@ struct SpeciesPhotoFullScreen: View {
             closeButton
                 .padding(.top, proxy.safeAreaInsets.top)
         }
-        // Pin to the constant full-screen size, then ignore the safe area so it
-        // covers the screen edge-to-edge. Because the frame is an explicit
+        // Pin to the constant full-screen size. Because the frame is an explicit
         // constant (not an ignoresSafeArea-expanded proposal), it does NOT churn
         // when the body re-evaluates during the drag.
         .frame(width: screenWidth, height: fullHeight)
-        .ignoresSafeArea()
         // Keep the dismiss slide-off target in sync with the (stable) card size.
         .onChange(of: fullHeight, initial: true) { _, h in viewSize = CGSize(width: screenWidth, height: h) }
-        // Translate the whole card for the swipe-to-dismiss. A plain `.offset`
-        // (not `visualEffect`, which leaves the hosted photo UIScrollView behind)
-        // moves the photo with everything else; and because the frame above is a
-        // constant, the offset only translates — it doesn't re-resolve the safe
-        // area, so no relayout churn.
+        // Translate the whole card for the swipe-to-dismiss, THEN ignore the safe
+        // area. Order matters: with `.ignoresSafeArea().offset()` a nonzero offset
+        // makes SwiftUI treat the card as no longer touching the top edge, so it
+        // drops the safe-area extension and the black top snaps down 62pt (the top
+        // inset) on the first drag pixel. Applying `.offset` *inside*
+        // `.ignoresSafeArea()` makes the extension a constant shift independent of
+        // the offset, so the card stays full-bleed and the top reveals smoothly.
+        // A plain `.offset` (not `visualEffect`, which leaves the hosted photo
+        // UIScrollView behind) moves the photo with everything else.
         .offset(dragOffset)
+        .ignoresSafeArea()
         .opacity(contentOpacity)
         // Clear presentation background so the slide reveals the app behind.
         .presentationBackground(.clear)
