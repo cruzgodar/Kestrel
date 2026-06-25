@@ -975,10 +975,8 @@ private struct MapCardSheet: View {
         .onChange(of: card?.id) { _, _ in
             if case .settings = card { detent = .medium }
         }
-        // Rise straight up on present rather than sliding in from the leading
-        // edge (a TabView-rooted sheet quirk). Re-enables animations after the
-        // present window so the card crossfade above still plays on swaps.
-        .suppressSheetPresentSlide()
+        // Diagnostics for the present-time horizontal slide (see modifier).
+        .logSheetPresentGeometry("MapCard")
         .presentationDetents(detents, selection: $detent)
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card — this is what

@@ -673,37 +673,88 @@ struct NoDimButtonStyle: ButtonStyle {
 }
 
 extension View {
-    /// Suppresses the implicit horizontal "settle" animation SwiftUI plays on a
-    /// sheet's content the first time it presents from within the root TabView —
-    /// the content slides from leading-aligned to centered while the sheet rises.
-    /// That slide is a SwiftUI animation of the content laid out inside the
-    /// sheet's hosting controller; the sheet's *vertical* rise is driven by the
-    /// UIKit presentation controller, not a SwiftUI transaction, so disabling
-    /// SwiftUI animations for just the first-appearance window kills the slide
-    /// and leaves the rise — and any later in-sheet animations — intact.
-    func suppressSheetPresentSlide() -> some View {
-        modifier(SuppressSheetPresentSlide())
+    /// Diagnostic instrumentation for the sheet-present "settle" slide: while a
+    /// sheet rises, its content reportedly starts leading-aligned (left margin 0,
+    /// right margin ~2× correct) and slides right into the centered position.
+    /// This logs, every display-link frame for a short window after the content
+    /// enters the window, where the content actually sits on screen — and where
+    /// each of its UIKit ancestors sits — so we can see exactly which layer is
+    /// moving horizontally and pin the fix on it.
+    func logSheetPresentGeometry(_ label: String) -> some View {
+        background(SheetPresentGeometryLogger(label: label))
     }
 }
 
-private struct SuppressSheetPresentSlide: ViewModifier {
-    /// Cleared until the present transition has had time to finish; while clear,
-    /// the content's own updates run without animation.
-    @State private var settled = false
+/// Transparent probe placed behind a sheet's content. On entering the window it
+/// starts a `CADisplayLink` and logs, per frame, the on-screen (window-space)
+/// frame of itself and each UIKit ancestor up to the window, for ~0.8 s — long
+/// enough to capture the whole present transition. Purely diagnostic.
+private struct SheetPresentGeometryLogger: UIViewRepresentable {
+    let label: String
 
-    func body(content: Content) -> some View {
-        content
-            .transaction { txn in
-                if !settled { txn.disablesAnimations = true }
+    func makeUIView(context: Context) -> ProbeView {
+        let view = ProbeView()
+        view.label = label
+        view.backgroundColor = .clear
+        view.isUserInteractionEnabled = false
+        return view
+    }
+
+    func updateUIView(_ uiView: ProbeView, context: Context) {}
+
+    final class ProbeView: UIView {
+        var label = ""
+        private var link: CADisplayLink?
+        private var startTime: CFTimeInterval = 0
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if window != nil {
+                startLogging()
+            } else {
+                stopLogging()
             }
-            .onAppear {
-                // Re-enable animations after the present transition window so
-                // legitimate in-sheet animations (e.g. the map card crossfade)
-                // still play on later interactions.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                    settled = true
-                }
-            }
+        }
+
+        private func startLogging() {
+            stopLogging()
+            startTime = CACurrentMediaTime()
+            let link = CADisplayLink(target: self, selector: #selector(tick))
+            link.add(to: .main, forMode: .common)
+            self.link = link
+        }
+
+        private func stopLogging() {
+            link?.invalidate()
+            link = nil
+        }
+
+        @objc private func tick() {
+            let t = CACurrentMediaTime() - startTime
+            let screenW = window?.bounds.width ?? UIScreen.main.bounds.width
+
+            // The content's own left/right edges in window space — this is what
+            // the user actually sees slide. If `selfL` starts at 0 and `selfR`
+            // overshoots, then both settle to equal margins, the content really
+            // is re-centering (not the layer translating).
+            let selfWin = (layer.presentation() ?? layer).convert(bounds, to: nil)
+            print(String(
+                format: "[SheetSlide:%@] t=%.3f screenW=%.1f | selfL=%.1f selfR=%.1f w=%.1f",
+                label, t, screenW, selfWin.minX, selfWin.maxX, selfWin.width
+            ))
+
+            // Probes established: no layer in the chain translates/scales/animates
+            // position/bounds/transform in x (every tx=0, sx=1, pos/size static).
+            // So there is no horizontal layer animation to neutralize — the
+            // settled layout is correct from the first frame. The `selfL` summary
+            // line above is all that's needed to confirm whether any slide remains.
+
+            if t > 0.8 { stopLogging() }
+        }
+
+        deinit {
+            link?.invalidate()
+        }
     }
 }
 
@@ -754,9 +805,14 @@ private struct ImportInfoSheet: View {
             .padding(.bottom, 12)
         }
         .padding(.top, 32)
-        // Rise straight up on present rather than sliding in from the leading
-        // edge (a TabView-rooted sheet quirk).
-        .suppressSheetPresentSlide()
+        // Fill the full sheet width at the outermost level. The content is
+        // otherwise intrinsically narrower than the sheet, so the sheet centers
+        // it — and that centering resolves from leading→center *during* the
+        // present, which is the horizontal "slide-in". Pinning it to full width
+        // here (outside all padding) removes the alignment ambiguity.
+        .frame(maxWidth: .infinity)
+        // Diagnostics for the present-time horizontal slide (see modifier).
+        .logSheetPresentGeometry("Import")
         .presentationDetents([.medium])
         // Hidden grab handle to match the map's settings card (MapCardSheet).
         .presentationDragIndicator(.hidden)

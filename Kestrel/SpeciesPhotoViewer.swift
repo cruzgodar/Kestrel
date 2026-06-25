@@ -69,8 +69,18 @@ struct SpeciesPhotoFullScreen: View {
     // Swipe-to-dismiss (applied to the whole card).
     @State private var dragOffset: CGSize = .zero
     @State private var contentOpacity: Double = 1
+    /// Latched true once a drag has been recognized as a downward dismiss, so we
+    /// keep following the finger's vertical travel without re-testing horizontal
+    /// dominance every frame — that re-test made a *slow* drag stutter near the
+    /// top, where tiny horizontal finger noise rivaled the small vertical travel
+    /// and toggled the gesture on and off. Reset when the drag ends.
+    @State private var dismissEngaged = false
     /// Measured viewer size, used to slide the card fully off on dismiss.
     @State private var viewSize: CGSize = CGSize(width: 400, height: 800)
+
+    /// Blank gutter (in points) shown between birds while paging horizontally,
+    /// matching the iOS Photos app. Bump this to widen or tighten the gap.
+    private let pageSpacing: CGFloat = 24
 
     /// Past this much downward travel (or a fast enough downward flick),
     /// release dismisses.
@@ -92,12 +102,44 @@ struct SpeciesPhotoFullScreen: View {
     }
 
     var body: some View {
+        // Sizing is driven entirely off this *outer* GeometryReader's proxy,
+        // which sits OUTSIDE `.ignoresSafeArea()` and is therefore rock-steady:
+        // its `size` is the safe-area-inset rect (≈402×778) and its insets are
+        // constant (top 62, bottom 34). The full-screen size we want is just that
+        // rect grown by the insets, computed once as a CONSTANT.
+        //
+        // Why not let `.ignoresSafeArea()` + an inner GeometryReader report the
+        // full height instead? Because during the swipe-to-dismiss drag the body
+        // re-evaluates every frame, and the `.ignoresSafeArea()` *expansion* (the
+        // +96pt that turns 778 into 874) destabilizes under that churn: the inner
+        // GeometryReader's height ramps 874→778 and back, which centered the photo
+        // against a moving height and jittered it vertically. Pinning an explicit
+        // constant frame derived from the stable outer proxy removes the only
+        // value that was changing, so the photo holds dead still as the card
+        // slides. (Measured and confirmed: outer proxy steady, inner geo ramped.)
+        GeometryReader { proxy in
+        let fullSize = CGSize(
+            width: proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing,
+            height: proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+        )
         ZStack {
             // The black backdrop + the paged photos slide together with the
             // dismiss drag, revealing the app behind through the clear
             // presentation background.
-            Color.black.ignoresSafeArea()
+            Color.black
 
+            // Each bird gets a `pageSpacing` blank gutter between it and the
+            // next, like the iOS Photos app. Implemented by making the paging
+            // TabView `pageSpacing` wider than the screen (so each page carries
+            // an extra `pageSpacing` of width), constraining each photo to the
+            // true screen width and centering it within its page (leaving
+            // `pageSpacing/2` of black on each side), then shifting the whole
+            // TabView left by `pageSpacing/2` so the current photo still fills
+            // the screen edge-to-edge. The black gutter only shows mid-swipe.
+            //
+            // Sized off the constant `fullSize.width` (not an inner GeometryReader
+            // measuring this same wider subtree, which would feed back, and not
+            // the churning ignoresSafeArea height) so the page width is stable.
             TabView(selection: $index) {
                 ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
                     ZoomablePhotoPage(
@@ -107,28 +149,43 @@ struct SpeciesPhotoFullScreen: View {
                         mapButtonTitle: mapButtonTitle,
                         onShowOnMap: onShowOnMap.map { action in { action(item) } }
                     )
+                    .frame(width: fullSize.width)
+                    .frame(maxWidth: .infinity)
                     .tag(offset)
                 }
             }
             .tabViewStyle(.page(indexDisplayMode: .never))
             // No paging while zoomed — the scroll view's pan owns the drag.
             .scrollDisabled(isZoomed)
-            // Fill the whole screen: a paging TabView otherwise insets its pages
-            // by the safe area, which left black bars top and bottom under the
-            // root tab view.
-            .ignoresSafeArea()
+            .frame(width: fullSize.width + pageSpacing)
+            .offset(x: -pageSpacing / 2)
 
+            // Top inset comes from the outer proxy because the ZStack ignores the
+            // safe area below.
             closeButton
+                .padding(.top, proxy.safeAreaInsets.top)
         }
-        .offset(dragOffset)
+        // Pin to the constant full-screen size, then ignore the safe area so it
+        // covers the screen edge-to-edge. Because the frame is an explicit
+        // constant (not an ignoresSafeArea-expanded proposal), it does NOT churn
+        // when the body re-evaluates during the drag.
+        .frame(width: fullSize.width, height: fullSize.height)
+        .ignoresSafeArea()
+        // Keep the dismiss slide-off target in sync with the (stable) card size.
+        .onChange(of: fullSize, initial: true) { _, size in viewSize = size }
+        // Translate the card for the swipe-to-dismiss as a *render-only* effect,
+        // so it never re-proposes layout to the photo below.
+        .visualEffect { content, _ in
+            content.offset(x: dragOffset.width, y: dragOffset.height)
+        }
         .opacity(contentOpacity)
         // Clear presentation background so the slide reveals the app behind.
         .presentationBackground(.clear)
-        .onGeometryChange(for: CGSize.self) { $0.size } action: { viewSize = $0 }
         // Vertical-down dismiss, alongside (not blocking) the TabView's
         // horizontal paging. Disabled while zoomed so a downward pan of the
         // photo doesn't dismiss.
         .simultaneousGesture(dismissDrag)
+        }
     }
 
     private var closeButton: some View {
@@ -157,16 +214,34 @@ struct SpeciesPhotoFullScreen: View {
     // MARK: - Dismiss
 
     private var dismissDrag: some Gesture {
-        DragGesture(minimumDistance: 10)
+        // Measured in `.global` space, *not* the default `.local`: this gesture
+        // lives on the same view that carries `.offset(dragOffset)`, so in local
+        // space the coordinate system slides with the card as we offset it, and
+        // the measured translation feeds back into the offset — a loop that
+        // oscillates frame-to-frame and reads as a jitter during a slow drag.
+        // Global space is fixed to the window, so translation tracks the finger
+        // alone and the loop is broken.
+        DragGesture(minimumDistance: 10, coordinateSpace: .global)
             .onChanged { value in
                 guard !isZoomed else { return }
-                // Downward, vertical-dominant only — horizontal goes to paging,
-                // and the upward "lift off the bottom" is disallowed.
-                guard value.translation.height > 0,
-                      abs(value.translation.height) > abs(value.translation.width) else { return }
-                dragOffset = CGSize(width: 0, height: value.translation.height)
+                if !dismissEngaged {
+                    // Decide once, on the first qualifying frame: a downward,
+                    // vertical-dominant drag engages dismiss. Horizontal goes to
+                    // paging, and the upward "lift off the bottom" is disallowed.
+                    guard value.translation.height > 0,
+                          abs(value.translation.height) > abs(value.translation.width) else { return }
+                    dismissEngaged = true
+                }
+                // Once engaged, track the finger's vertical travel directly
+                // (clamped to downward) without re-checking dominance each frame.
+                dragOffset = CGSize(width: 0, height: max(value.translation.height, 0))
             }
             .onEnded { value in
+                print(String(
+                    format: "[ViewerDrag] ENDED ty=%.1f vy=%.1f offY=%.1f",
+                    value.translation.height, value.velocity.height, dragOffset.height
+                ))
+                defer { dismissEngaged = false }
                 guard !isZoomed else { return }
                 let verticalDominant = abs(value.translation.height) > abs(value.translation.width)
                 let pastThreshold = value.translation.height > dismissThreshold
@@ -202,9 +277,7 @@ struct SpeciesPhotoFullScreen: View {
             // out so it decelerates into place rather than stopping dead.
             duration = min(max(Double(remaining / velocity), 0.16), 0.32)
         } else {
-            // Button / threshold-without-flick dismiss: brisk, matching the
-            // default cover present speed (faster than the old 0.28).
-            duration = 0.25
+            duration = 0.32
         }
 
         withAnimation(.easeOut(duration: duration)) {
@@ -252,7 +325,11 @@ private struct ZoomablePhotoPage: View {
 
     var body: some View {
         ZStack {
-            imageLayer.ignoresSafeArea()
+            // No `.ignoresSafeArea()` here: the page already fills the container's
+            // constant full-screen frame, so the image fills edge-to-edge without
+            // it — and a descendant ignoresSafeArea re-resolves on every drag-frame
+            // re-eval, which is exactly the churn we removed upstream.
+            imageLayer
 
             VStack {
                 Spacer()
@@ -532,7 +609,22 @@ final class CenteringScrollView: UIScrollView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        if bounds.size != fittedForBounds {
+        print(String(
+            format: "[ScrollLayout] bounds=%.0fx%.0f content=%.0fx%.0f zoom=%.2f insetTop=%.1f",
+            bounds.width, bounds.height, contentSize.width, contentSize.height,
+            zoomScale, contentInset.top
+        ))
+        // Refit on width changes (first layout, rotation, image swap), but NOT on
+        // a height-only change while at minimum zoom. During the swipe-to-dismiss
+        // drag the live bounds height wobbles between the full-screen and
+        // safe-area-inset values (`.offset` re-resolving `.ignoresSafeArea`), and
+        // refitting/recentering on that wobble jitters the centered photo every
+        // frame. Holding the last fit keeps it rock-steady as the card slides.
+        let zoomed = zoomScale > minimumZoomScale + 0.001
+        let needsRefit = fittedForBounds == .zero
+            || abs(bounds.width - fittedForBounds.width) > 0.5
+            || (zoomed && abs(bounds.height - fittedForBounds.height) > 0.5)
+        if needsRefit {
             refit()
         }
         centerContent()
@@ -555,10 +647,18 @@ final class CenteringScrollView: UIScrollView {
 
     /// Inset the content so it stays centered when it's smaller than the
     /// viewport in either axis (e.g. a landscape photo letterboxed at zoom 1).
+    ///
+    /// Centers against the size we last *fit* to (`fittedForBounds`), not the
+    /// live `bounds`: during the dismiss drag the live height wobbles, and
+    /// centering off it would bounce the photo. The fitted size is stable between
+    /// refits, so the photo holds its position and simply slides with the card.
+    /// (When zoomed the content is larger than either, so both clamp to 0 — no
+    /// difference there.)
     func centerContent() {
+        let reference = fittedForBounds == .zero ? bounds.size : fittedForBounds
         let cs = contentSize
-        let x = max((bounds.width - cs.width) / 2, 0)
-        let y = max((bounds.height - cs.height) / 2, 0)
+        let x = max((reference.width - cs.width) / 2, 0)
+        let y = max((reference.height - cs.height) / 2, 0)
         contentInset = UIEdgeInsets(top: y, left: x, bottom: y, right: x)
     }
 
