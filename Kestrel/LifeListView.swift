@@ -672,6 +672,41 @@ struct NoDimButtonStyle: ButtonStyle {
     }
 }
 
+extension View {
+    /// Suppresses the implicit horizontal "settle" animation SwiftUI plays on a
+    /// sheet's content the first time it presents from within the root TabView —
+    /// the content slides from leading-aligned to centered while the sheet rises.
+    /// That slide is a SwiftUI animation of the content laid out inside the
+    /// sheet's hosting controller; the sheet's *vertical* rise is driven by the
+    /// UIKit presentation controller, not a SwiftUI transaction, so disabling
+    /// SwiftUI animations for just the first-appearance window kills the slide
+    /// and leaves the rise — and any later in-sheet animations — intact.
+    func suppressSheetPresentSlide() -> some View {
+        modifier(SuppressSheetPresentSlide())
+    }
+}
+
+private struct SuppressSheetPresentSlide: ViewModifier {
+    /// Cleared until the present transition has had time to finish; while clear,
+    /// the content's own updates run without animation.
+    @State private var settled = false
+
+    func body(content: Content) -> some View {
+        content
+            .transaction { txn in
+                if !settled { txn.disablesAnimations = true }
+            }
+            .onAppear {
+                // Re-enable animations after the present transition window so
+                // legitimate in-sheet animations (e.g. the map card crossfade)
+                // still play on later interactions.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                    settled = true
+                }
+            }
+    }
+}
+
 /// Explanatory modal shown before importing. Describes the eBird/Merlin
 /// workflow (with an inline link to download the data) and offers an import
 /// button at the bottom that hands off to the system file picker via `onImport`.
@@ -719,6 +754,9 @@ private struct ImportInfoSheet: View {
             .padding(.bottom, 12)
         }
         .padding(.top, 32)
+        // Rise straight up on present rather than sliding in from the leading
+        // edge (a TabView-rooted sheet quirk).
+        .suppressSheetPresentSlide()
         .presentationDetents([.medium])
         // Hidden grab handle to match the map's settings card (MapCardSheet).
         .presentationDragIndicator(.hidden)

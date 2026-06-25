@@ -625,7 +625,10 @@ struct MapView: View {
         let cosLat = max(cos(centerLatitude * .pi / 180), 0.05)
         let thresholdLon = (degPerPoint * Double(footprint.width + gutter)) / cosLat
 
-        let sorted = points.sorted { $0.date > $1.date }
+        // Deterministic order (date desc, then stable tiebreakers) so the
+        // representative each stack folds onto — and therefore the stack's
+        // identity — doesn't depend on the input array's incidental order.
+        let sorted = points.sorted(by: BirdCluster.ordersBefore)
 
         struct WIP {
             let point: MapPoint
@@ -807,16 +810,31 @@ struct BirdCluster: Identifiable, Hashable {
     /// With repeat observations enabled a cluster can hold several sightings of
     /// the same bird; the card shows a single, latest thumbnail for each instead
     /// of duplicates.
+    ///
+    /// The sort carries a stable tiebreaker (scientific name, then point id)
+    /// after the date, so birds sharing an exact timestamp — several species
+    /// logged in one checklist at the same location — always land in the same
+    /// order. Without it, `Dictionary.values` is unordered and `sorted(by:)`
+    /// isn't guaranteed stable on equal keys, so the card could shuffle its
+    /// birds between recomputations (e.g. when opening the full-screen viewer).
     var uniqueByMostRecent: [MapPoint] {
         var latest: [String: MapPoint] = [:]
         for point in all {
             if let existing = latest[point.scientificName] {
-                if point.date > existing.date { latest[point.scientificName] = point }
+                if Self.ordersBefore(point, existing) { latest[point.scientificName] = point }
             } else {
                 latest[point.scientificName] = point
             }
         }
-        return latest.values.sorted { $0.date > $1.date }
+        return latest.values.sorted(by: Self.ordersBefore)
+    }
+
+    /// Deterministic "newest first" ordering with stable tiebreakers, so equal
+    /// dates never reorder. Also used to pick the kept point per species above.
+    static func ordersBefore(_ a: MapPoint, _ b: MapPoint) -> Bool {
+        if a.date != b.date { return a.date > b.date }
+        if a.scientificName != b.scientificName { return a.scientificName < b.scientificName }
+        return a.id < b.id
     }
 
     static func == (lhs: BirdCluster, rhs: BirdCluster) -> Bool {
@@ -957,6 +975,10 @@ private struct MapCardSheet: View {
         .onChange(of: card?.id) { _, _ in
             if case .settings = card { detent = .medium }
         }
+        // Rise straight up on present rather than sliding in from the leading
+        // edge (a TabView-rooted sheet quirk). Re-enables animations after the
+        // present window so the card crossfade above still plays on swaps.
+        .suppressSheetPresentSlide()
         .presentationDetents(detents, selection: $detent)
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card — this is what

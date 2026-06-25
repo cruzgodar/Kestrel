@@ -167,6 +167,19 @@ struct ContentView: View {
         }
         // Flash the background each time a bird is heard.
         .onChange(of: session.heardTick) { _, _ in flash() }
+        // Surfaced when the phone's heartbeat repeatedly stalls during a session
+        // (audio likely isn't reaching the phone) — the heartbeat watchdog.
+        .alert(
+            "iPhone Connection",
+            isPresented: Binding(
+                get: { session.connectionAlert != nil },
+                set: { if !$0 { session.connectionAlert = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text(session.connectionAlert ?? "")
+        }
     }
 
     private func startRecordingIfRequested() {

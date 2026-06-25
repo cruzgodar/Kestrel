@@ -122,6 +122,24 @@ final class WatchSessionManager: NSObject {
     private let delegate = SessionDelegate()
     private var activated = false
 
+    // Phone-liveness watchdog. While the watch is capturing, the phone sends a
+    // periodic `phoneHeartbeat` (only while it considers the session active). If
+    // one stops arriving for `phoneHeartbeatStallThreshold`, the watch tears down
+    // and restarts its own capture (logged, no UI side effects); after
+    // `stallAlertThreshold` such strikes it raises a modal alert, and a generous
+    // ceiling finally stops the session so the workout/battery aren't left
+    // running against a phone that's clearly gone.
+    private var phoneHeartbeatWatchdog: Task<Void, Never>?
+    private var lastPhoneHeartbeatAt: Date?
+    private var missingHeartbeatCount = 0
+    private let phoneHeartbeatStallThreshold: TimeInterval = 10
+    private let watchdogInterval: TimeInterval = 3
+    private let stallAlertThreshold = 3
+    private let stallGiveUpThreshold = 6
+    /// Set when the phone link repeatedly stalls; drives a modal alert on the
+    /// watch (the device that noticed). Observable; the view clears it.
+    var connectionAlert: String?
+
     private override init() {
         super.init()
     }
@@ -437,6 +455,9 @@ final class WatchSessionManager: NSObject {
         // The phone was already told we're recording (optimistically, in
         // `start()`), so audio it receives lines up with its UI state.
         await WatchWorkoutManager.shared.start()
+
+        // Capture is truly live now — start watching for the phone's heartbeat.
+        startHeartbeatWatchdog()
     }
 
     /// Starts the audio engine on a background queue. `AVAudioSession.setActive`
@@ -461,6 +482,9 @@ final class WatchSessionManager: NSObject {
 
     private func stop() {
         guard isRecording else { return }
+
+        // End the phone-liveness watchdog before tearing down.
+        cancelHeartbeatWatchdog()
 
         // Tell the phone right away (both cheap + non-blocking) so it tears
         // down too, after flushing any background-queued audio.
@@ -529,6 +553,85 @@ final class WatchSessionManager: NSObject {
         guard !payload.isEmpty else { return }
         WCSession.default.transferUserInfo(["audio": payload])
     }
+
+    // MARK: - Phone-liveness watchdog
+
+    /// Phone reported it's alive and still considers the session active.
+    func handlePhoneHeartbeat() {
+        lastPhoneHeartbeatAt = Date()
+    }
+
+    /// Phone (its own audio-liveness watchdog) asked us to restart capture.
+    func handleRestartCapture() {
+        restartCaptureForStall(reason: "phone requested capture restart")
+    }
+
+    /// Begins (or restarts) the watchdog that confirms the phone's heartbeat is
+    /// still arriving. Called once real capture is underway.
+    private func startHeartbeatWatchdog() {
+        missingHeartbeatCount = 0
+        connectionAlert = nil
+        lastPhoneHeartbeatAt = Date()
+        phoneHeartbeatWatchdog?.cancel()
+        phoneHeartbeatWatchdog = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(self?.watchdogInterval ?? 3))
+                guard !Task.isCancelled, let self else { return }
+                let keepGoing = self.checkPhoneHeartbeat()
+                if !keepGoing { return }
+            }
+        }
+    }
+
+    private func cancelHeartbeatWatchdog() {
+        phoneHeartbeatWatchdog?.cancel()
+        phoneHeartbeatWatchdog = nil
+        lastPhoneHeartbeatAt = nil
+        missingHeartbeatCount = 0
+    }
+
+    /// Returns false once it stops the session so the polling loop exits.
+    private func checkPhoneHeartbeat() -> Bool {
+        guard isRecording, !mirroringPhone, let last = lastPhoneHeartbeatAt else { return false }
+        let gap = Date().timeIntervalSince(last)
+        guard gap >= phoneHeartbeatStallThreshold else { return true }
+
+        missingHeartbeatCount += 1
+        restartCaptureForStall(
+            reason: "no phone heartbeat for \(Int(gap))s (strike \(missingHeartbeatCount))"
+        )
+
+        if missingHeartbeatCount == stallAlertThreshold {
+            connectionAlert = "Lost the connection to your iPhone. "
+                + "Keep both apps open and, if it's on, turn off Low Power Mode."
+        }
+        if missingHeartbeatCount >= stallGiveUpThreshold {
+            // The phone is effectively gone — restarting capture won't reach it.
+            // Stop so the workout (and battery) aren't left running.
+            stop()
+            return false
+        }
+        return true
+    }
+
+    /// Tears the audio engine down and brings it straight back up, without
+    /// touching `isRecording`/the UI — the remedy when audio has stalled. Logged
+    /// per spec; resets the heartbeat clock so the restart gets a fresh window.
+    private func restartCaptureForStall(reason: String) {
+        guard isRecording, !mirroringPhone else { return }
+        print("Kestrel Watch: \(reason) — restarting capture")
+        lastPhoneHeartbeatAt = Date()
+        let streamer = self.streamer
+        let audioQueue = self.audioQueue
+        audioQueue.async {
+            streamer.stop()
+            do {
+                try streamer.start { [weak self] data in self?.deliver(data) }
+            } catch {
+                print("Kestrel Watch: capture restart error \(error)")
+            }
+        }
+    }
 }
 
 /// Routes incoming WCSession callbacks (which fire on a background queue)
@@ -556,6 +659,8 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                 case "remoteStop":  WatchSessionManager.shared.handleRemoteStop()
                 case "phoneStart":  WatchSessionManager.shared.handlePhoneRecordingStarted()
                 case "phoneStop":   WatchSessionManager.shared.handlePhoneRecordingStopped()
+                case "phoneHeartbeat":  WatchSessionManager.shared.handlePhoneHeartbeat()
+                case "restartCapture":  WatchSessionManager.shared.handleRestartCapture()
                 case "recordingRefused":
                     WatchSessionManager.shared.handleRecordingRefused(
                         reason: payload["reason"] as? String ?? ""
