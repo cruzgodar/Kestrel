@@ -317,8 +317,15 @@ struct LifeListView: View {
                     proxy.frame(in: .global).minY
                 } action: { searchFieldTop = $0 }
         }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
+        // The filter + import controls live in a top-trailing *overlay* of glass
+        // buttons rather than native `.toolbar` items. As toolbar items their
+        // liquid-glass backgrounds were snapshotted by the navigation bar across
+        // tab transitions — flickering on the way out and loading their shadow too
+        // dark (then snapping back) on the way in. The map tab's controls are
+        // plain `.glassEffect` overlays and have neither problem, so these mirror
+        // that approach. (`.compositingGroup()` on the toolbar items did nothing.)
+        .overlay(alignment: .topTrailing) {
+            HStack(spacing: 12) {
                 Button {
                     // Re-snapshot the currently-starred species each time the
                     // filter is switched on. This frozen set drives which rows
@@ -331,31 +338,22 @@ struct LifeListView: View {
                     }
                     showStarredOnly.toggle()
                 } label: {
-                    Image(systemName: "line.3.horizontal.decrease")
-                        .foregroundStyle(showStarredOnly ? .white : .primary)
-                        .frame(width: 28, height: 28)
-                        .background {
-                            Circle()
-                                .fill(Color.accentColor)
-                                .frame(
-                                    width: showStarredOnly ? 36 : 28,
-                                    height: showStarredOnly ? 36 : 28
-                                )
-                                .opacity(showStarredOnly ? 1 : 0)
-                        }
-                        .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
+                    glassIcon("line.3.horizontal.decrease", active: showStarredOnly)
                 }
+                .buttonStyle(NoDimButtonStyle())
                 .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
-            }
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
-            ToolbarItem(placement: .topBarTrailing) {
+                .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
+
                 Button {
                     showImportInfo = true
                 } label: {
-                    Image(systemName: "square.and.arrow.down")
+                    glassIcon("square.and.arrow.down", active: false)
                 }
+                .buttonStyle(NoDimButtonStyle())
                 .accessibilityLabel("Import eBird CSV")
             }
+            .padding(.top, 8)
+            .padding(.trailing, 12)
         }
         // Recompute catalog suggestions whenever the query changes, but
         // wait out a short debounce so mid-typing keystrokes don't each
@@ -459,6 +457,22 @@ struct LifeListView: View {
     /// -list circle on detection rows. Matched here so catalog suggestions
     /// feel like a continuation of that "you can add me" affordance.
     private static let addButtonTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
+
+    /// A liquid-glass circular icon button, mirroring the map tab's
+    /// `GlassMapButton`. When `active`, the glass takes an accent tint and the
+    /// icon goes white (the filter button's "on" state).
+    private func glassIcon(_ systemImage: String, active: Bool) -> some View {
+        Image(systemName: systemImage)
+            .font(.system(size: 20, weight: .medium))
+            .foregroundStyle(active ? .white : .primary)
+            .frame(width: 22, height: 22)
+            .padding(11)
+            .glassEffect(
+                active ? .regular.tint(.accentColor).interactive() : .regular.interactive(),
+                in: .circle
+            )
+            .contentShape(Circle())
+    }
 
     @ViewBuilder
     private func existingRow(entry: LifeListEntry) -> some View {

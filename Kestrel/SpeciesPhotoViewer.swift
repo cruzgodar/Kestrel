@@ -77,6 +77,9 @@ struct SpeciesPhotoFullScreen: View {
     @State private var dismissEngaged = false
     /// Measured viewer size, used to slide the card fully off on dismiss.
     @State private var viewSize: CGSize = CGSize(width: 400, height: 800)
+    /// Whether the floating chrome (name capsule, close button, bottom details)
+    /// is shown. A single tap on the photo toggles it.
+    @State private var uiVisible = true
     /// True once the open slide has carried the card up over the status bar.
     /// Gates the white (light-content) status bar so it flips *as the card covers
     /// the status bar* — not prematurely at present, while the card is still
@@ -94,6 +97,14 @@ struct SpeciesPhotoFullScreen: View {
     /// Downward velocity (pt/s) past which a short drag still dismisses, so a
     /// quick flick throws the card off even before it has traveled far.
     private let dismissVelocity: CGFloat = 700
+    /// Duration of the dismiss slide-off (and the upper bound on the
+    /// velocity-derived slide). Bump to slow the dismiss, lower to quicken it.
+    ///
+    /// Note: there is deliberately no matching *opening* duration constant. The
+    /// cover's open animation is `fullScreenCover`'s built-in system slide, whose
+    /// duration can't be changed without replacing it with a custom transition —
+    /// which isn't wanted here.
+    private let dismissDuration: Double = 0.32
 
     init(
         items: [SpeciesPhotoItem],
@@ -130,6 +141,15 @@ struct SpeciesPhotoFullScreen: View {
         // outer proxy.
         let screenWidth = proxy.size.width
         let fullHeight = proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+        // Half the top safe area: the card-top travel at which the white status
+        // bar flips, so it switches when the card is *halfway* through the safe
+        // area rather than only once it has fully cleared it.
+        let statusBarFlipPoint = proxy.safeAreaInsets.top / 2
+        // Outer container: ignores the safe area but is NEVER offset. The inner
+        // card is what the dismiss drag translates, so the whole card — its top
+        // edge over the status bar included — moves in lockstep with the finger,
+        // instead of the safe-area extension staying pinned while the rest slides.
+        ZStack {
         ZStack {
             // The black backdrop + the paged photos slide together with the
             // dismiss drag, revealing the app behind through the clear
@@ -160,9 +180,14 @@ struct SpeciesPhotoFullScreen: View {
                             item: item,
                             isCurrent: offset == index,
                             isZoomed: $isZoomed,
+                            uiVisible: uiVisible,
+                            topInset: proxy.safeAreaInsets.top,
+                            bottomInset: proxy.safeAreaInsets.bottom,
                             mapButtonTitle: mapButtonTitle,
                             onShowOnMap: onShowOnMap.map { action in { action(item) } },
-                            fullScreenSize: CGSize(width: screenWidth, height: fullHeight)
+                            onToggleUI: {
+                                withAnimation(.easeInOut(duration: 0.25)) { uiVisible.toggle() }
+                            }
                         )
                         .frame(width: geo.size.width)
                         .frame(maxWidth: .infinity)
@@ -170,8 +195,11 @@ struct SpeciesPhotoFullScreen: View {
                     }
                 }
                 .tabViewStyle(.page(indexDisplayMode: .never))
-                // No paging while zoomed — the scroll view's pan owns the drag.
-                .scrollDisabled(isZoomed)
+                // No paging while zoomed — the scroll view's pan owns the drag —
+                // and none once a downward dismiss drag has engaged, so a diagonal
+                // swipe can't page to another bird mid-dismiss; down strictly
+                // dismisses.
+                .scrollDisabled(isZoomed || dismissEngaged)
                 .frame(width: geo.size.width + pageSpacing, height: geo.size.height)
                 .offset(x: -pageSpacing / 2)
             }
@@ -181,35 +209,41 @@ struct SpeciesPhotoFullScreen: View {
             // safe area below.
             closeButton
                 .padding(.top, proxy.safeAreaInsets.top)
+                // Part of the toggleable chrome — fades with a single tap.
+                .opacity(uiVisible ? 1 : 0)
+                .allowsHitTesting(uiVisible)
         }
-        // Pin to the constant full-screen size. Because the frame is an explicit
-        // constant (not an ignoresSafeArea-expanded proposal), it does NOT churn
-        // when the body re-evaluates during the drag.
+        // Pin the inner card to the constant full-screen size. Because the frame
+        // is an explicit constant (not an ignoresSafeArea-expanded proposal), it
+        // does NOT churn when the body re-evaluates during the drag.
         .frame(width: screenWidth, height: fullHeight)
-        // Keep the dismiss slide-off target in sync with the (stable) card size.
-        .onChange(of: fullHeight, initial: true) { _, h in viewSize = CGSize(width: screenWidth, height: h) }
-        // Translate the whole card for the swipe-to-dismiss, THEN ignore the safe
-        // area. Order matters: with `.ignoresSafeArea().offset()` a nonzero offset
-        // makes SwiftUI treat the card as no longer touching the top edge, so it
-        // drops the safe-area extension and the black top snaps down 62pt (the top
-        // inset) on the first drag pixel. Applying `.offset` *inside*
-        // `.ignoresSafeArea()` makes the extension a constant shift independent of
-        // the offset, so the card stays full-bleed and the top reveals smoothly.
+        // Translate the inner card for the swipe-to-dismiss. The parent ZStack
+        // below already ignores the safe area and is itself never offset, so this
+        // moves the ENTIRE card — its top edge over the status bar included — in
+        // lockstep with the finger. (Offsetting the `.ignoresSafeArea()` view
+        // directly made SwiftUI drop the top extension the instant the offset went
+        // nonzero, pinning the top while the rest slid — the lag we're fixing.)
         // A plain `.offset` (not `visualEffect`, which leaves the hosted photo
         // UIScrollView behind) moves the photo with everything else.
         .offset(dragOffset)
+        }
+        // Pin the (un-offset) outer container to the same constant size and let it
+        // ignore the safe area, so the inner card is always full-bleed.
+        .frame(width: screenWidth, height: fullHeight)
         .ignoresSafeArea()
+        // Keep the dismiss slide-off target in sync with the (stable) card size.
+        .onChange(of: fullHeight, initial: true) { _, h in viewSize = CGSize(width: screenWidth, height: h) }
         .opacity(contentOpacity)
         // Light-content (white) status bar exactly while the dark card is over the
         // status bar: only after the open slide settles it there, and only while
-        // the dismiss drag hasn't pulled the card top back below the bar
-        // (`dragOffset.height` past the top inset). Driven through a UIKit
+        // the dismiss drag hasn't pulled the card top past the halfway-through-the
+        // -safe-area point (`statusBarFlipPoint`). Driven through a UIKit
         // controller with `.none` update animation so the flip is INSTANT —
         // tracking the card's edge as it covers/uncovers the bar (like Music),
         // rather than `.preferredColorScheme`'s unavoidable ~0.25s crossfade.
         .background(
             StatusBarStyleController(
-                lightContent: cardCoveredStatusBar && dragOffset.height < proxy.safeAreaInsets.top
+                lightContent: cardCoveredStatusBar && dragOffset.height < statusBarFlipPoint
             )
         )
         // Flip the gate on once the present slide has brought the card up over the
@@ -312,9 +346,9 @@ struct SpeciesPhotoFullScreen: View {
         if let velocity, velocity > 0 {
             // Time to cover the remaining distance at the release speed, eased
             // out so it decelerates into place rather than stopping dead.
-            duration = min(max(Double(remaining / velocity), 0.16), 0.32)
+            duration = min(max(Double(remaining / velocity), 0.16), dismissDuration)
         } else {
-            duration = 0.32
+            duration = dismissDuration
         }
 
         withAnimation(.easeOut(duration: duration)) {
@@ -381,13 +415,18 @@ private struct ZoomablePhotoPage: View {
     let item: SpeciesPhotoItem
     let isCurrent: Bool
     @Binding var isZoomed: Bool
+    /// Whether the floating chrome (name capsule, bottom details) is shown.
+    var uiVisible: Bool
+    /// Top / bottom safe-area insets (constants from the viewer's stable outer
+    /// proxy). The chrome is positioned off these rather than the live safe area,
+    /// which is consumed by the container's `.ignoresSafeArea()`.
+    var topInset: CGFloat
+    var bottomInset: CGFloat
     var mapButtonTitle: String?
     /// Pre-bound to this page's bird (the container curries the item in).
     var onShowOnMap: (() -> Void)?
-    /// The full-screen size (width × full height, safe area included) the photo
-    /// is fitted into. Used to find the empty band above the aspect-fit image so
-    /// the species name can sit centered in it.
-    var fullScreenSize: CGSize
+    /// Toggles the chrome's visibility; fired by a single tap on the photo.
+    var onToggleUI: () -> Void
 
     @State private var image: UIImage?
     @State private var loadFailed = false
@@ -415,14 +454,18 @@ private struct ZoomablePhotoPage: View {
             // `.offset` — the offset no longer re-resolves this safe area.
             imageLayer
                 .ignoresSafeArea()
-                // The name lives in the same full-screen (safe-area-ignoring)
-                // space as the photo, so it tracks the dismiss-drag offset 1:1
-                // with the card instead of lagging behind the inset content.
-                .overlay(alignment: .top) { speciesNameHeader }
+                // Name capsule, pinned top-leading at the same height/Y as the
+                // close button (which floats top-trailing). Part of the toggleable
+                // chrome.
+                .overlay(alignment: .topLeading) {
+                    speciesNameCapsule
+                        .opacity(uiVisible ? 1 : 0)
+                }
 
             VStack {
                 Spacer()
                 caption
+                    .opacity(uiVisible ? 1 : 0)
             }
         }
         .contentShape(Rectangle())
@@ -447,7 +490,8 @@ private struct ZoomablePhotoPage: View {
             ZoomableImageView(
                 image: image,
                 isZoomed: $pageZoomed,
-                resetToken: resetToken
+                resetToken: resetToken,
+                onSingleTap: onToggleUI
             )
         } else if loadFailed {
             Image(systemName: "bird")
@@ -458,40 +502,23 @@ private struct ZoomablePhotoPage: View {
         }
     }
 
-    /// Vertical band between the top of the screen and the top of the aspect-fit
-    /// image — the empty space the name is centered within. Falls back to a
-    /// minimum so a near-full-height image still gives the name a usable spot.
-    private var emptyBandAboveImage: CGFloat {
-        guard let image, image.size.width > 0, image.size.height > 0,
-              fullScreenSize.width > 0, fullScreenSize.height > 0 else {
-            return Self.minNameBand
-        }
-        let scale = min(
-            fullScreenSize.width / image.size.width,
-            fullScreenSize.height / image.size.height
-        )
-        let fittedHeight = image.size.height * scale
-        let band = (fullScreenSize.height - fittedHeight) / 2
-        return max(band, Self.minNameBand)
-    }
+    /// The close button is a 22pt glyph with 13pt padding (a 48pt tap target),
+    /// offset `topInset + 8` from the screen top. The name capsule matches that
+    /// height and Y so the two sit on the same line.
+    private static let chromeHeight: CGFloat = 48
 
-    /// Minimum height of the name band, so the name never collapses against the
-    /// very top edge when the image fills (or nearly fills) the screen height.
-    private static let minNameBand: CGFloat = 96
-
-    /// Species name, centered in the empty band above the photo. A drop shadow
-    /// keeps it legible over a bright image without a full panel (the close
-    /// button floats at the trailing edge, so the name is padded clear of it).
-    private var speciesNameHeader: some View {
+    /// Species name in a liquid-glass capsule, pinned top-leading level with the
+    /// close button. Single-line so the capsule stays the close button's height.
+    private var speciesNameCapsule: some View {
         Text(commonName)
-            .font(.title3.weight(.semibold))
-            .foregroundStyle(.white)
-            .multilineTextAlignment(.center)
-            .shadow(color: .black.opacity(0.6), radius: 6, y: 1)
-            .padding(.horizontal, 56)
-            .frame(maxWidth: .infinity)
-            // Center the name vertically within the empty band above the image.
-            .frame(height: emptyBandAboveImage)
+            .font(.headline)
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            .padding(.horizontal, 18)
+            .frame(height: Self.chromeHeight)
+            .glassEffect(.regular, in: .capsule)
+            .padding(.top, topInset + 8)
+            .padding(.leading, 16)
     }
 
     /// True when the bottom panel has anything to show. With the name now at the
@@ -514,12 +541,13 @@ private struct ZoomablePhotoPage: View {
                 VStack(spacing: 3) {
                     if let place = item.placeName, !place.isEmpty {
                         // Location shrunk to subheadline to match the date below.
-                        let row = HStack(spacing: 6) {
+                        // Tight spacing keeps the pin close to the place name.
+                        let row = HStack(spacing: 4) {
                             Text(place)
                             Image(systemName: "mappin.circle")
                         }
                         .font(.subheadline)
-                        .foregroundStyle(.white)
+                        .foregroundStyle(.primary)
                         .multilineTextAlignment(.center)
                         if let onShowOnMap {
                             Button(action: onShowOnMap) { row }
@@ -532,7 +560,7 @@ private struct ZoomablePhotoPage: View {
                     Text(dateFound, format: .dateTime.year().month(.abbreviated).day())
                         .font(.subheadline)
                         .monospacedDigit()
-                        .foregroundStyle(.white.opacity(0.8))
+                        .foregroundStyle(.secondary)
                 }
             }
 
@@ -541,26 +569,23 @@ private struct ZoomablePhotoPage: View {
                 VStack(spacing: 4) {
                     Text(info.attribution)
                         .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.75))
+                        .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                     if let ebirdURL = info.ebirdURL {
                         Link("View on eBird", destination: ebirdURL)
                             .font(.caption2.weight(.semibold))
-                            .tint(.white)
+                            .tint(.accentColor)
                     }
                 }
             }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.top, 14)
-        .padding(.horizontal, 20)
-        .padding(.bottom, 14)
-        // The frosted panel bleeds to the very bottom of the screen (its fill
-        // ignores the bottom safe area) while the text stays above the home
-        // indicator.
-        .background {
-            Color.black.opacity(0.75).ignoresSafeArea(edges: .bottom)
-        }
+        .padding(.vertical, 14)
+        .padding(.horizontal, 24)
+        // Liquid-glass capsule hugging the details, floating above the home
+        // indicator (positioned off the constant bottom inset since the
+        // container consumes the live safe area).
+        .glassEffect(.regular, in: .capsule)
+        .padding(.bottom, bottomInset + 8)
         }
     }
 
@@ -594,6 +619,10 @@ private struct ZoomableImageView: UIViewRepresentable {
     @Binding var isZoomed: Bool
     /// Changing this asks the scroll view to ease back to fit (page scrolled off).
     var resetToken: Int
+    /// Fired by a single tap on the photo (toggles the viewer's chrome). Requires
+    /// the double-tap-to-zoom to fail first, so a zoom double-tap doesn't also
+    /// toggle the chrome.
+    var onSingleTap: () -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -633,6 +662,16 @@ private struct ZoomableImageView: UIViewRepresentable {
         )
         doubleTap.numberOfTapsRequired = 2
         scroll.addGestureRecognizer(doubleTap)
+
+        let singleTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleSingleTap(_:))
+        )
+        singleTap.numberOfTapsRequired = 1
+        // Don't toggle the chrome when the tap is really the first half of a
+        // double-tap zoom.
+        singleTap.require(toFail: doubleTap)
+        scroll.addGestureRecognizer(singleTap)
 
         return scroll
     }
@@ -721,6 +760,10 @@ private struct ZoomableImageView: UIViewRepresentable {
                     if self.parent.isZoomed != zoomed { self.parent.isZoomed = zoomed }
                 }
             }
+        }
+
+        @objc func handleSingleTap(_ gesture: UITapGestureRecognizer) {
+            parent.onSingleTap()
         }
 
         @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {

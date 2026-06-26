@@ -87,15 +87,27 @@ struct AboutView: View {
 
     // MARK: - Body copy
 
-    private static let intro = AttributedString(
+    /// Parses inline markdown (so links like `[text](url)` render), preserving
+    /// the original whitespace. The plain `AttributedString(_:)` initializer does
+    /// NOT parse markdown, which left the source-code link below as literal text.
+    private static func markdown(_ string: String) -> AttributedString {
+        (try? AttributedString(
+            markdown: string,
+            options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace
+            )
+        )) ?? AttributedString(string)
+    }
+
+    private static let intro = markdown(
         "Kestrel listens for birds in the background so you can focus on the nature around you. It uses Cornell Lab's BirdNET model to identify birds by their songs and calls, and when it hears one that you have starred in your life list or have never seen before, it notifies you. That lets you keep your focus off of your phone, with confidence that you'll know when a bird you care about is nearby. All processing happens on-device, all audio is deleted immediately after (i.e. within a few seconds of being recorded), and [the source code is freely available](https://github.com/cruzgodar/Kestrel)."
     )
 
-    private static let watch = AttributedString(
+    private static let watch = markdown(
         "On Apple Watch, Kestrel can log your birding walk as a workout. That uses the watch's microphone, and so your phone can stay in your pocket. Since audio is processed on your phone, you must keep it with you to use Kestrel."
     )
 
-    private static let importing = AttributedString(
+    private static let importing = markdown(
         "If you use eBird or Merlin to track your observations, it's a good idea to periodically import your eBird life list into Kestrel to keep its life list and map up-to-date."
     )
 
