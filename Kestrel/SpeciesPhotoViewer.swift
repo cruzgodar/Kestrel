@@ -145,37 +145,36 @@ struct SpeciesPhotoFullScreen: View {
             // TabView left by `pageSpacing/2` so the current photo still fills
             // the screen edge-to-edge. The black gutter only shows mid-swipe.
             //
-            // Sized off the constant `screenWidth`/`fullHeight` (not an inner
-            // GeometryReader inside `.ignoresSafeArea()`, whose height ramped
-            // 874→778 every drag frame and jittered the centered photo). Pinning
-            // the TabView to the constant `fullHeight` keeps the photo's viewport
-            // — and so its centering — rock-steady as the card slides.
-            TabView(selection: $index) {
-                ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
-                    ZoomablePhotoPage(
-                        item: item,
-                        isCurrent: offset == index,
-                        isZoomed: $isZoomed,
-                        mapButtonTitle: mapButtonTitle,
-                        onShowOnMap: onShowOnMap.map { action in { action(item) } }
-                    )
-                    .frame(width: screenWidth)
-                    .frame(maxWidth: .infinity)
-                    .tag(offset)
+            // Wrapped in a GeometryReader that places the deliberately over-wide
+            // (screen + pageSpacing) TabView at its top-LEADING corner. A bare
+            // ZStack instead CENTERS the over-wide TabView, so the `-pageSpacing/2`
+            // shift then lands the photo `pageSpacing/2` too far left with a black
+            // gap on the right (measured scrollX=-12). The GeometryReader is pinned
+            // to the constant `fullHeight`, so `geo.size` never churns under the
+            // drag — keeping the photo's viewport (and centering) rock-steady,
+            // which is what removed the vertical jitter.
+            GeometryReader { geo in
+                TabView(selection: $index) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
+                        ZoomablePhotoPage(
+                            item: item,
+                            isCurrent: offset == index,
+                            isZoomed: $isZoomed,
+                            mapButtonTitle: mapButtonTitle,
+                            onShowOnMap: onShowOnMap.map { action in { action(item) } }
+                        )
+                        .frame(width: geo.size.width)
+                        .frame(maxWidth: .infinity)
+                        .tag(offset)
+                    }
                 }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+                // No paging while zoomed — the scroll view's pan owns the drag.
+                .scrollDisabled(isZoomed)
+                .frame(width: geo.size.width + pageSpacing, height: geo.size.height)
+                .offset(x: -pageSpacing / 2)
             }
-            .tabViewStyle(.page(indexDisplayMode: .never))
-            // No paging while zoomed — the scroll view's pan owns the drag.
-            .scrollDisabled(isZoomed)
-            .frame(width: screenWidth + pageSpacing, height: fullHeight)
-            // Pin the (deliberately over-wide) TabView to the leading edge before
-            // shifting it left by `pageSpacing/2`. Without this the ZStack centers
-            // the over-wide TabView, so the `-pageSpacing/2` shift lands the photo
-            // `pageSpacing/2` too far left with a black gap on the right. (The old
-            // inner GeometryReader placed it top-leading for free; the ZStack does
-            // not.)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .offset(x: -pageSpacing / 2)
+            .frame(width: screenWidth, height: fullHeight)
 
             // Top inset comes from the outer proxy because the ZStack ignores the
             // safe area below.
@@ -200,18 +199,21 @@ struct SpeciesPhotoFullScreen: View {
         .offset(dragOffset)
         .ignoresSafeArea()
         .opacity(contentOpacity)
-        // White (light-content) status bar exactly while the dark card is over
-        // the status bar: only after the open slide settles it there, and only
-        // while the dismiss drag hasn't pulled the card top back below the bar
-        // (`dragOffset.height` past the top inset). Forcing `.dark` here drives
-        // the cover's status bar to light content; `nil` lets it fall back to the
-        // app's scheme (dark content in light mode) as the bar is uncovered.
-        .preferredColorScheme(
-            cardCoveredStatusBar && dragOffset.height < proxy.safeAreaInsets.top ? .dark : nil
+        // Light-content (white) status bar exactly while the dark card is over the
+        // status bar: only after the open slide settles it there, and only while
+        // the dismiss drag hasn't pulled the card top back below the bar
+        // (`dragOffset.height` past the top inset). Driven through a UIKit
+        // controller with `.none` update animation so the flip is INSTANT —
+        // tracking the card's edge as it covers/uncovers the bar (like Music),
+        // rather than `.preferredColorScheme`'s unavoidable ~0.25s crossfade.
+        .background(
+            StatusBarStyleController(
+                lightContent: cardCoveredStatusBar && dragOffset.height < proxy.safeAreaInsets.top
+            )
         )
-        // Flip on once the present slide has brought the card up over the bar, so
-        // the status bar crossfades in sync with the card covering it rather than
-        // at present. Tuned to the default fullScreenCover slide.
+        // Flip the gate on once the present slide has brought the card up over the
+        // bar, so opening doesn't whiten the status bar prematurely while the card
+        // is still sliding up. Tuned to the default fullScreenCover slide.
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 cardCoveredStatusBar = true
@@ -324,6 +326,43 @@ struct SpeciesPhotoFullScreen: View {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) { dismiss() }
+        }
+    }
+}
+
+/// Drives the presented cover's status bar style with no animation, so the bar
+/// flips instantly as the card covers/uncovers it (rather than the system's
+/// ~0.25s crossfade that `.preferredColorScheme` forces). Lives as a hidden
+/// background inside the cover; SwiftUI forwards the cover hosting controller's
+/// status-bar query down to this child controller.
+///
+/// `lightContent == true` → `.lightContent` (white, for the dark card over the
+/// bar). Otherwise `.default`, which adapts to the interface style (dark content
+/// in light mode, light in dark) so the uncovered app behind reads correctly.
+private struct StatusBarStyleController: UIViewControllerRepresentable {
+    var lightContent: Bool
+
+    func makeUIViewController(context: Context) -> Host { Host() }
+
+    func updateUIViewController(_ host: Host, context: Context) {
+        host.lightContent = lightContent
+    }
+
+    final class Host: UIViewController {
+        var lightContent = false {
+            didSet {
+                guard lightContent != oldValue else { return }
+                setNeedsStatusBarAppearanceUpdate()
+            }
+        }
+        override var preferredStatusBarStyle: UIStatusBarStyle {
+            lightContent ? .lightContent : .default
+        }
+        override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .none }
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.backgroundColor = .clear
+            view.isUserInteractionEnabled = false
         }
     }
 }
