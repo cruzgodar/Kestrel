@@ -77,6 +77,12 @@ struct SpeciesPhotoFullScreen: View {
     @State private var dismissEngaged = false
     /// Measured viewer size, used to slide the card fully off on dismiss.
     @State private var viewSize: CGSize = CGSize(width: 400, height: 800)
+    /// True once the open slide has carried the card up over the status bar.
+    /// Gates the white (light-content) status bar so it flips *as the card covers
+    /// the status bar* — not prematurely at present, while the card is still
+    /// sliding up and the light app shows behind the bar (which read as the slow,
+    /// mistimed black→white crossfade). Matches the stock Music app's now-playing.
+    @State private var cardCoveredStatusBar = false
 
     /// Blank gutter (in points) shown between birds while paging horizontally,
     /// matching the iOS Photos app. Bump this to widen or tighten the gap.
@@ -194,6 +200,23 @@ struct SpeciesPhotoFullScreen: View {
         .offset(dragOffset)
         .ignoresSafeArea()
         .opacity(contentOpacity)
+        // White (light-content) status bar exactly while the dark card is over
+        // the status bar: only after the open slide settles it there, and only
+        // while the dismiss drag hasn't pulled the card top back below the bar
+        // (`dragOffset.height` past the top inset). Forcing `.dark` here drives
+        // the cover's status bar to light content; `nil` lets it fall back to the
+        // app's scheme (dark content in light mode) as the bar is uncovered.
+        .preferredColorScheme(
+            cardCoveredStatusBar && dragOffset.height < proxy.safeAreaInsets.top ? .dark : nil
+        )
+        // Flip on once the present slide has brought the card up over the bar, so
+        // the status bar crossfades in sync with the card covering it rather than
+        // at present. Tuned to the default fullScreenCover slide.
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                cardCoveredStatusBar = true
+            }
+        }
         // Clear presentation background so the slide reveals the app behind.
         .presentationBackground(.clear)
         // Vertical-down dismiss, alongside (not blocking) the TabView's
@@ -252,10 +275,6 @@ struct SpeciesPhotoFullScreen: View {
                 dragOffset = CGSize(width: 0, height: max(value.translation.height, 0))
             }
             .onEnded { value in
-                print(String(
-                    format: "[ViewerDrag] ENDED ty=%.1f vy=%.1f offY=%.1f",
-                    value.translation.height, value.velocity.height, dragOffset.height
-                ))
                 defer { dismissEngaged = false }
                 guard !isZoomed else { return }
                 let verticalDominant = abs(value.translation.height) > abs(value.translation.width)
@@ -625,11 +644,19 @@ final class CenteringScrollView: UIScrollView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        print(String(
-            format: "[ScrollLayout] bounds=%.0fx%.0f content=%.0fx%.0f zoom=%.2f insetTop=%.1f",
-            bounds.width, bounds.height, contentSize.width, contentSize.height,
-            zoomScale, contentInset.top
-        ))
+        // Targeted probe for the residual horizontal offset: where does this
+        // scroll view (and the image it holds) actually sit in window space, and
+        // how wide is it? If originX != 0 or width != screen width, the shift is
+        // upstream in the page/TabView layout; if both are correct the shift is
+        // inside the image fit/centering.
+        if let win = window {
+            let f = convert(bounds, to: win)
+            let ivf = imageView.map { $0.convert($0.bounds, to: win) } ?? .zero
+            print(String(
+                format: "[ImageFrame] scrollX=%.1f scrollW=%.1f imgX=%.1f imgW=%.1f",
+                f.origin.x, f.width, ivf.origin.x, ivf.width
+            ))
+        }
         // Refit on width changes (first layout, rotation, image swap), but NOT on
         // a height-only change while at minimum zoom. During the swipe-to-dismiss
         // drag the live bounds height wobbles between the full-screen and

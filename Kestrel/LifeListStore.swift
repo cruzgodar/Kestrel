@@ -12,6 +12,17 @@ final class LifeListStore {
 
     private(set) var entries: [LifeListEntry] = []
 
+    /// Deterministic "newest first" ordering with a stable tiebreaker, mirroring
+    /// the map's `BirdCluster.ordersBefore`: most-recent `firstSeen` first, then
+    /// scientific name ascending so entries sharing an exact timestamp (e.g. a
+    /// batch import that stamps them all at once) always land in the same order.
+    /// `Array.sort` isn't guaranteed stable on equal keys, so without the
+    /// tiebreaker same-date rows could shuffle between recomputations.
+    nonisolated static func ordersBefore(_ a: LifeListEntry, _ b: LifeListEntry) -> Bool {
+        if a.firstSeen != b.firstSeen { return a.firstSeen > b.firstSeen }
+        return a.scientificName < b.scientificName
+    }
+
     /// Authoritative set of starred ("alert me") scientific names, persisted
     /// *separately* from the life list (see `starsURL`). Keeping it independent
     /// of `entries` is what lets stars survive a wipe-and-reimport: clearing the
@@ -68,7 +79,7 @@ final class LifeListStore {
             firstLongitude: longitude
         )
         entries.append(entry)
-        entries.sort { $0.firstSeen > $1.firstSeen }
+        entries.sort(by: Self.ordersBefore)
         save()
         return true
     }
@@ -248,7 +259,7 @@ final class LifeListStore {
         // eBird name like "Astur cooperii" (Cooper's Hawk) or "Spilopelia
         // chinensis" (Spotted Dove) would slug to a missing image and show the
         // placeholder until the next launch.
-        entries = Self.canonicalize(prelim).sorted { $0.firstSeen > $1.firstSeen }
+        entries = Self.canonicalize(prelim).sorted(by: Self.ordersBefore)
         // Re-stamp stars from the persistent set so a wipe-and-reimport (or any
         // import) restores the user's "alert me" choices even though the cleared
         // entries no longer carried them.
@@ -317,7 +328,7 @@ final class LifeListStore {
             decoder.dateDecodingStrategy = .iso8601
             let decoded = try decoder.decode([LifeListEntry].self, from: data)
             let collapsed = Self.canonicalize(decoded)
-            entries = collapsed.sorted { $0.firstSeen > $1.firstSeen }
+            entries = collapsed.sorted(by: Self.ordersBefore)
             // Persist if anything actually changed — either rows merged or a
             // scientific name was rewritten to its catalog-canonical form.
             let mutated = collapsed.count != decoded.count
