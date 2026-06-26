@@ -9,10 +9,6 @@ struct KestrelApp: App {
     @State private var selectedTab: AppTab = .identify
     @State private var photoPresenter = SpeciesPhotoPresenter()
     @State private var mapNavigator = MapNavigator()
-    /// TEMP diagnostic: drives a throwaway sheet presented from the app root
-    /// (outside the TabView) to test whether root presentation avoids the
-    /// horizontal slide-in that tab-presented sheets show. Remove once resolved.
-    @State private var showRootSheetTest = false
     @Environment(\.scenePhase) private var scenePhase
 
     /// Held for lifetime; activates a WCSession and routes watch audio +
@@ -112,35 +108,6 @@ struct KestrelApp: App {
                         AboutView()
                     }
                 }
-            }
-            // TEMP diagnostic: a root-level trigger + sheet, presented from
-            // OUTSIDE the TabView (unlike the import/map sheets, which present
-            // from inside a tab). If this one rises straight up while the
-            // tab-presented ones slide, root presentation is the fix. Remove
-            // both the overlay and the sheet once resolved.
-            .overlay(alignment: .top) {
-                Button("Root Sheet Test") { showRootSheetTest = true }
-                    .font(.caption.weight(.bold))
-                    .padding(8)
-                    .background(.yellow, in: .capsule)
-                    .padding(.top, 4)
-            }
-            .sheet(isPresented: $showRootSheetTest) {
-                VStack(spacing: 16) {
-                    Image(systemName: "square.and.arrow.down")
-                        .font(.system(size: 44))
-                        .foregroundStyle(Color.accentColor)
-                    Text("Root Sheet Test")
-                        .font(.title2.weight(.bold))
-                    Text("Intrinsically-narrow content, matching the import sheet, presented from the app root to test the slide-in.")
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 28)
-                }
-                .padding(.top, 32)
-                .logSheetPresentGeometry("RootTest")
-                .presentationDetents([.medium])
-                .presentationDragIndicator(.hidden)
             }
             // Both tabs need both stores.
             .environment(recordingManager)

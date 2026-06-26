@@ -472,9 +472,10 @@ struct LifeListView: View {
                     // an entry has no recorded location (e.g. manually added
                     // before a fix resolved).
                     if let location = entry.firstLocation, !location.isEmpty {
+                        // Show the full place name, wrapping to as many lines as
+                        // it needs rather than truncating with an ellipsis.
                         Text(location)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
+                            .fixedSize(horizontal: false, vertical: true)
                         Text("•")
                     }
                     Text(entry.firstSeen, format: .dateTime.year().month(.abbreviated).day())

@@ -76,9 +76,18 @@ struct ContentView: View {
                         textColor: .secondary,
                         alignment: .center
                     )
+                    // The watch-installed state isn't known at launch, so this
+                    // text starts on the non-watch copy and resolves a beat
+                    // later. Keying the identity to that flag + an opacity
+                    // transition crossfades between the two strings instead of
+                    // snapping. (No animation on first appear: the value only
+                    // changes once the watch state arrives.)
+                    .id(manager.isWatchAppInstalled)
+                    .transition(.opacity)
                 }
                 .opacity(manager.isRecording ? 0 : 1)
                 .animation(.easeInOut(duration: 0.25), value: manager.isRecording)
+                .animation(.easeInOut(duration: 0.3), value: manager.isWatchAppInstalled)
                 .allowsHitTesting(false)
             }
         }
@@ -284,7 +293,7 @@ struct ContentView: View {
     /// backgrounds those two kinds of detection get.
     private static func placeholderSegments(watchInstalled: Bool) -> [HighlightedText.Segment] {
         let lead = watchInstalled
-            ? "Start recording here or on your Apple Watch to listen for birds in the background. You will be notified about "
+            ? "Start recording here or on Apple Watch to listen for birds in the background. You will be notified about "
             : "Start recording to listen for birds in the background. You will be notified about "
         return [
             .init(lead),

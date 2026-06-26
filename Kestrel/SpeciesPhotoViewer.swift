@@ -161,7 +161,8 @@ struct SpeciesPhotoFullScreen: View {
                             isCurrent: offset == index,
                             isZoomed: $isZoomed,
                             mapButtonTitle: mapButtonTitle,
-                            onShowOnMap: onShowOnMap.map { action in { action(item) } }
+                            onShowOnMap: onShowOnMap.map { action in { action(item) } },
+                            fullScreenSize: CGSize(width: screenWidth, height: fullHeight)
                         )
                         .frame(width: geo.size.width)
                         .frame(maxWidth: .infinity)
@@ -330,11 +331,11 @@ struct SpeciesPhotoFullScreen: View {
     }
 }
 
-/// Drives the presented cover's status bar style with no animation, so the bar
-/// flips instantly as the card covers/uncovers it (rather than the system's
-/// ~0.25s crossfade that `.preferredColorScheme` forces). Lives as a hidden
-/// background inside the cover; SwiftUI forwards the cover hosting controller's
-/// status-bar query down to this child controller.
+/// Drives the presented cover's status bar style with a short (~0.1s) fade as
+/// the card covers/uncovers it — quicker than the system's ~0.25s crossfade that
+/// `.preferredColorScheme` forces, but no longer an instant flip. Lives as a
+/// hidden background inside the cover; SwiftUI forwards the cover hosting
+/// controller's status-bar query down to this child controller.
 ///
 /// `lightContent == true` → `.lightContent` (white, for the dark card over the
 /// bar). Otherwise `.default`, which adapts to the interface style (dark content
@@ -352,13 +353,18 @@ private struct StatusBarStyleController: UIViewControllerRepresentable {
         var lightContent = false {
             didSet {
                 guard lightContent != oldValue else { return }
-                setNeedsStatusBarAppearanceUpdate()
+                // A short crossfade rather than an instant flip: driving the
+                // appearance update inside a 0.1s UIView animation makes the
+                // bar fade over that duration (paired with `.fade` below).
+                UIView.animate(withDuration: 0.15) {
+                    self.setNeedsStatusBarAppearanceUpdate()
+                }
             }
         }
         override var preferredStatusBarStyle: UIStatusBarStyle {
             lightContent ? .lightContent : .default
         }
-        override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .none }
+        override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
         override func viewDidLoad() {
             super.viewDidLoad()
             view.backgroundColor = .clear
@@ -378,6 +384,10 @@ private struct ZoomablePhotoPage: View {
     var mapButtonTitle: String?
     /// Pre-bound to this page's bird (the container curries the item in).
     var onShowOnMap: (() -> Void)?
+    /// The full-screen size (width × full height, safe area included) the photo
+    /// is fitted into. Used to find the empty band above the aspect-fit image so
+    /// the species name can sit centered in it.
+    var fullScreenSize: CGSize
 
     @State private var image: UIImage?
     @State private var loadFailed = false
@@ -403,7 +413,12 @@ private struct ZoomablePhotoPage: View {
             // back out to the full screen. It's stable under the dismiss drag now
             // that the container is a constant-height frame translated by a plain
             // `.offset` — the offset no longer re-resolves this safe area.
-            imageLayer.ignoresSafeArea()
+            imageLayer
+                .ignoresSafeArea()
+                // The name lives in the same full-screen (safe-area-ignoring)
+                // space as the photo, so it tracks the dismiss-drag offset 1:1
+                // with the card instead of lagging behind the inset content.
+                .overlay(alignment: .top) { speciesNameHeader }
 
             VStack {
                 Spacer()
@@ -443,19 +458,56 @@ private struct ZoomablePhotoPage: View {
         }
     }
 
+    /// Vertical band between the top of the screen and the top of the aspect-fit
+    /// image — the empty space the name is centered within. Falls back to a
+    /// minimum so a near-full-height image still gives the name a usable spot.
+    private var emptyBandAboveImage: CGFloat {
+        guard let image, image.size.width > 0, image.size.height > 0,
+              fullScreenSize.width > 0, fullScreenSize.height > 0 else {
+            return Self.minNameBand
+        }
+        let scale = min(
+            fullScreenSize.width / image.size.width,
+            fullScreenSize.height / image.size.height
+        )
+        let fittedHeight = image.size.height * scale
+        let band = (fullScreenSize.height - fittedHeight) / 2
+        return max(band, Self.minNameBand)
+    }
+
+    /// Minimum height of the name band, so the name never collapses against the
+    /// very top edge when the image fills (or nearly fills) the screen height.
+    private static let minNameBand: CGFloat = 96
+
+    /// Species name, centered in the empty band above the photo. A drop shadow
+    /// keeps it legible over a bright image without a full panel (the close
+    /// button floats at the trailing edge, so the name is padded clear of it).
+    private var speciesNameHeader: some View {
+        Text(commonName)
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(.white)
+            .multilineTextAlignment(.center)
+            .shadow(color: .black.opacity(0.6), radius: 6, y: 1)
+            .padding(.horizontal, 56)
+            .frame(maxWidth: .infinity)
+            // Center the name vertically within the empty band above the image.
+            .frame(height: emptyBandAboveImage)
+    }
+
+    /// True when the bottom panel has anything to show. With the name now at the
+    /// top, a non-lifer with no metadata has an empty caption — render nothing
+    /// so no blank black bar appears.
+    private var hasCaptionContent: Bool {
+        item.dateFound != nil || info != nil
+    }
+
     @ViewBuilder
     private var caption: some View {
-        // Spacing of 12 widens the two gaps the user asked for — name → location
-        // and date → attribution — while the place/date pair below stays tight
-        // (its own VStack spacing).
+        if hasCaptionContent {
+        // Spacing of 12 widens the gap the user asked for — date → attribution —
+        // while the place/date pair stays tight (its own VStack spacing).
         VStack(spacing: 12) {
-            // Species name — a touch larger than the metadata below it.
-            Text(commonName)
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.white)
-                .multilineTextAlignment(.center)
-
-            // Sighting: where + when, directly under the name. Only for lifers
+            // Sighting: where + when. Only for lifers
             // (a date is always recorded); the place name is the map tap target,
             // with the pin-in-circle glyph to its right.
             if let dateFound = item.dateFound {
@@ -508,6 +560,7 @@ private struct ZoomablePhotoPage: View {
         // indicator.
         .background {
             Color.black.opacity(0.75).ignoresSafeArea(edges: .bottom)
+        }
         }
     }
 
@@ -567,6 +620,13 @@ private struct ZoomableImageView: UIViewRepresentable {
         scroll.addSubview(imageView)
         context.coordinator.scrollView = scroll
 
+        // Watch the scroll view's pinch recognizer directly so the boundary
+        // haptic can fire at finger-lift rather than after the bounce settles.
+        scroll.pinchGestureRecognizer?.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.handlePinch(_:))
+        )
+
         let doubleTap = UITapGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleDoubleTap(_:))
@@ -596,8 +656,10 @@ private struct ZoomableImageView: UIViewRepresentable {
         var parent: ZoomableImageView
         weak var scrollView: CenteringScrollView?
         var lastResetToken: Int
-        private var didHapticMax = false
-        private var didHapticMin = false
+        /// Set true if a pinch pushed the scale past the max or below the min at
+        /// any point during the gesture; the boundary haptic then fires once when
+        /// the pinch *ends*, not at the instant the threshold is crossed.
+        private var didExceedLimit = false
         private let haptic = UIImpactFeedbackGenerator(style: .rigid)
 
         init(_ parent: ZoomableImageView) {
@@ -612,30 +674,42 @@ private struct ZoomableImageView: UIViewRepresentable {
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
             (scrollView as? CenteringScrollView)?.centerContent()
 
-            // Boundary haptics: only while a pinch is actively driving the
-            // scale past a limit, and only once per excursion.
+            // Boundary detection: while a pinch is actively driving the scale
+            // past a limit, just remember that it happened. The haptic is held
+            // back until the pinch ends so it fires on release, not at the
+            // moment the threshold is crossed.
             let state = scrollView.pinchGestureRecognizer?.state
             let pinching = state == .began || state == .changed
-            if pinching {
-                if scrollView.zoomScale > scrollView.maximumZoomScale + 0.001 {
-                    if !didHapticMax { haptic.impactOccurred(); didHapticMax = true }
-                } else {
-                    didHapticMax = false
-                }
-                if scrollView.zoomScale < scrollView.minimumZoomScale - 0.001 {
-                    if !didHapticMin { haptic.impactOccurred(); didHapticMin = true }
-                } else {
-                    didHapticMin = false
-                }
+            if pinching,
+               scrollView.zoomScale > scrollView.maximumZoomScale + 0.001
+                || scrollView.zoomScale < scrollView.minimumZoomScale - 0.001 {
+                didExceedLimit = true
             }
             pushZoomed(scrollView)
         }
 
         func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
-            didHapticMax = false
-            didHapticMin = false
+            // Fires after the rubber-band settle, not at finger lift, so the
+            // boundary haptic is NOT triggered here — it's driven off the pinch
+            // recognizer's `.ended` state instead (see `handlePinch`).
             (scrollView as? CenteringScrollView)?.centerContent()
             pushZoomed(scrollView)
+        }
+
+        /// Observes the scroll view's own pinch recognizer so the boundary haptic
+        /// fires the instant the fingers lift — not when the over/under-zoom
+        /// rubber-bands back to the limit (which `scrollViewDidEndZooming`
+        /// reports a beat later).
+        @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            switch gesture.state {
+            case .began:
+                didExceedLimit = false
+            case .ended, .cancelled:
+                if didExceedLimit { haptic.impactOccurred() }
+                didExceedLimit = false
+            default:
+                break
+            }
         }
 
         private func pushZoomed(_ scrollView: UIScrollView) {
@@ -683,19 +757,6 @@ final class CenteringScrollView: UIScrollView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // Targeted probe for the residual horizontal offset: where does this
-        // scroll view (and the image it holds) actually sit in window space, and
-        // how wide is it? If originX != 0 or width != screen width, the shift is
-        // upstream in the page/TabView layout; if both are correct the shift is
-        // inside the image fit/centering.
-        if let win = window {
-            let f = convert(bounds, to: win)
-            let ivf = imageView.map { $0.convert($0.bounds, to: win) } ?? .zero
-            print(String(
-                format: "[ImageFrame] scrollX=%.1f scrollW=%.1f imgX=%.1f imgW=%.1f",
-                f.origin.x, f.width, ivf.origin.x, ivf.width
-            ))
-        }
         // Refit on width changes (first layout, rotation, image swap), but NOT on
         // a height-only change while at minimum zoom. During the swipe-to-dismiss
         // drag the live bounds height wobbles between the full-screen and

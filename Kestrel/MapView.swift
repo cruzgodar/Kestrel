@@ -65,6 +65,15 @@ struct MapView: View {
     )
     @State private var lastSpan: MKCoordinateSpan?
     @State private var lastCenter: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+    /// Drives the recenter button glyph: filled (`location.fill`) right after a
+    /// recenter tap, outline (`location`) otherwise. Set true on tap and cleared
+    /// by the next user-driven camera move — there is no re-fill logic; only a
+    /// tap fills it again.
+    @State private var centeredOnUser = false
+    /// Camera changes before this time are ignored when clearing
+    /// `centeredOnUser`, so the recenter animation's own camera callbacks don't
+    /// immediately flip the freshly-filled button back to an outline.
+    @State private var recenterGraceUntil: Date = .distantPast
     /// Discrete zoom level — `floor(log2(camera.distance) * 4)`. Each unit
     /// is roughly a quarter-octave. We only rebuild clusters when this
     /// crosses a step, which keeps the cluster set stable between fine
@@ -351,9 +360,16 @@ struct MapView: View {
             // recenter button on the left and the map-settings button on the
             // right (replacing the stock MapUserLocationButton).
             HStack(spacing: 12) {
-                GlassMapButton(systemImage: "location.fill", accessibility: "Center on current location") {
+                GlassMapButton(
+                    systemImage: centeredOnUser ? "location.fill" : "location",
+                    accessibility: "Center on current location"
+                ) {
                     Task {
                         guard let coord = await LocationCache.shared.current() else { return }
+                        // Fill the icon on recenter; skip clearing it for the
+                        // duration of the recenter animation (the grace window).
+                        withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = true }
+                        recenterGraceUntil = Date.now + 0.7
                         withAnimation(.easeInOut(duration: 0.45)) {
                             position = .region(MKCoordinateRegion(
                                 center: CLLocationCoordinate2D(
@@ -450,6 +466,11 @@ struct MapView: View {
 
         lastSpan = span
         lastCenter = center
+        // Any user-driven camera move after the recenter grace window clears the
+        // filled state; only a recenter tap fills it again.
+        if centeredOnUser, Date.now > recenterGraceUntil {
+            withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = false }
+        }
 
         // Rebuild clusters (which fills `visibleReps`, the annotation *content*)
         // before culling `visiblePoints` (which mounts the annotation *hosts*),
@@ -1241,6 +1262,7 @@ private struct GlassMapButton: View {
             Image(systemName: systemImage)
                 .font(.system(size: 20, weight: .medium))
                 .foregroundStyle(.primary)
+                .contentTransition(.symbolEffect(.replace))
                 .frame(width: 22, height: 22)
                 .padding(11)
                 .glassEffect(.regular.interactive(), in: .circle)
