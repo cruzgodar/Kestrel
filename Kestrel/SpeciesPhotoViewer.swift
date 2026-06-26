@@ -183,8 +183,15 @@ struct SpeciesPhotoFullScreen: View {
                             uiVisible: uiVisible,
                             topInset: proxy.safeAreaInsets.top,
                             bottomInset: proxy.safeAreaInsets.bottom,
+                            // While the dismiss drag is active the whole card
+                            // (photo + chrome) slides as one, so the glass never
+                            // moves relative to what's behind it — swap it for a
+                            // cheap static fill to avoid re-rendering glass every
+                            // frame (the slide was janky otherwise).
+                            staticChrome: dragOffset.height > 0,
                             mapButtonTitle: mapButtonTitle,
                             onShowOnMap: onShowOnMap.map { action in { action(item) } },
+                            onClose: { dismissViewer() },
                             onToggleUI: {
                                 withAnimation(.easeInOut(duration: 0.25)) { uiVisible.toggle() }
                             }
@@ -204,14 +211,9 @@ struct SpeciesPhotoFullScreen: View {
                 .offset(x: -pageSpacing / 2)
             }
             .frame(width: screenWidth, height: fullHeight)
-
-            // Top inset comes from the outer proxy because the ZStack ignores the
-            // safe area below.
-            closeButton
-                .padding(.top, proxy.safeAreaInsets.top)
-                // Part of the toggleable chrome — fades with a single tap.
-                .opacity(uiVisible ? 1 : 0)
-                .allowsHitTesting(uiVisible)
+            // NB: the close button now lives *inside* each page (top-trailing of
+            // `ZoomablePhotoPage`) so it pages left/right with the bird, level
+            // with that bird's name capsule.
         }
         // Pin the inner card to the constant full-screen size. Because the frame
         // is an explicit constant (not an ignoresSafeArea-expanded proposal), it
@@ -263,29 +265,6 @@ struct SpeciesPhotoFullScreen: View {
         }
     }
 
-    private var closeButton: some View {
-        VStack {
-            HStack {
-                Spacer()
-                // Liquid-glass close button, matching the life-list search
-                // field's cancel button.
-                Button { dismissViewer() } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 22, weight: .regular))
-                        .foregroundStyle(.primary)
-                        .frame(width: 22, height: 22)
-                        .padding(13)
-                        .glassEffect(.regular.interactive(), in: .circle)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(NoDimButtonStyle())
-                .padding(.trailing, 16)
-                .padding(.top, 8)
-            }
-            Spacer()
-        }
-    }
-
     // MARK: - Dismiss
 
     private var dismissDrag: some Gesture {
@@ -296,7 +275,13 @@ struct SpeciesPhotoFullScreen: View {
         // oscillates frame-to-frame and reads as a jitter during a slow drag.
         // Global space is fixed to the window, so translation tracks the finger
         // alone and the loop is broken.
-        DragGesture(minimumDistance: 10, coordinateSpace: .global)
+        //
+        // Small `minimumDistance` so a downward drag engages — and thereby
+        // disables the TabView's paging (`scrollDisabled(... || dismissEngaged)`)
+        // — before the TabView's own pan threshold is crossed. Otherwise a
+        // diagonal close let the bird slide sideways for the first few points
+        // before paging was locked out.
+        DragGesture(minimumDistance: 4, coordinateSpace: .global)
             .onChanged { value in
                 guard !isZoomed else { return }
                 if !dismissEngaged {
@@ -422,9 +407,16 @@ private struct ZoomablePhotoPage: View {
     /// which is consumed by the container's `.ignoresSafeArea()`.
     var topInset: CGFloat
     var bottomInset: CGFloat
+    /// True while a dismiss drag is in progress. The glass chrome is then drawn
+    /// as a cheap static fill instead of live liquid glass, since the whole card
+    /// slides as one and the glass isn't moving relative to anything behind it —
+    /// re-rendering glass every frame made the slide janky.
+    var staticChrome: Bool
     var mapButtonTitle: String?
     /// Pre-bound to this page's bird (the container curries the item in).
     var onShowOnMap: (() -> Void)?
+    /// Dismisses the viewer (the per-page close button).
+    var onClose: () -> Void
     /// Toggles the chrome's visibility; fired by a single tap on the photo.
     var onToggleUI: () -> Void
 
@@ -447,26 +439,28 @@ private struct ZoomablePhotoPage: View {
 
     var body: some View {
         ZStack {
-            // Fill edge-to-edge: the paging TabView reserves the safe area for its
-            // pages (so a page is only the inset height), and this pushes the photo
-            // back out to the full screen. It's stable under the dismiss drag now
-            // that the container is a constant-height frame translated by a plain
-            // `.offset` — the offset no longer re-resolves this safe area.
             imageLayer
                 .ignoresSafeArea()
-                // Name capsule, pinned top-leading at the same height/Y as the
-                // close button (which floats top-trailing). Part of the toggleable
-                // chrome.
-                .overlay(alignment: .topLeading) {
-                    speciesNameCapsule
-                        .opacity(uiVisible ? 1 : 0)
-                }
 
-            VStack {
-                Spacer()
+            // All floating chrome lives in this VStack — name + close button at
+            // the top, details at the bottom — so it shares the photo's layout
+            // and tracks the dismiss-drag offset 1:1 (the name no longer lagged as
+            // a separate overlay). Forced to a dark color scheme so the glass and
+            // its text read as the immersive viewer's dark chrome from the first
+            // frame, rather than flashing light before adapting.
+            VStack(spacing: 0) {
+                topChrome
+                    .opacity(uiVisible ? 1 : 0)
+                    // When hidden, don't intercept taps — they fall through to the
+                    // photo so a tap anywhere brings the chrome back. (Opacity 0
+                    // alone still hit-tests.) The Spacer is left tappable-through.
+                    .allowsHitTesting(uiVisible)
+                Spacer(minLength: 0)
                 caption
                     .opacity(uiVisible ? 1 : 0)
+                    .allowsHitTesting(uiVisible)
             }
+            .colorScheme(.dark)
         }
         .contentShape(Rectangle())
         .task(id: item.scientificName) { await load() }
@@ -502,23 +496,39 @@ private struct ZoomablePhotoPage: View {
         }
     }
 
-    /// The close button is a 22pt glyph with 13pt padding (a 48pt tap target),
-    /// offset `topInset + 8` from the screen top. The name capsule matches that
-    /// height and Y so the two sit on the same line.
+    /// Height of the top chrome controls. The close button is a 22pt glyph with
+    /// 13pt padding (a 48pt tap target); the name capsule matches it so the two
+    /// sit on the same line, and the bottom panel's corner radius is half of it.
     private static let chromeHeight: CGFloat = 48
 
-    /// Species name in a liquid-glass capsule, pinned top-leading level with the
-    /// close button. Single-line so the capsule stays the close button's height.
-    private var speciesNameCapsule: some View {
-        Text(commonName)
-            .font(.headline)
-            .foregroundStyle(.primary)
-            .lineLimit(1)
-            .padding(.horizontal, 18)
-            .frame(height: Self.chromeHeight)
-            .glassEffect(.regular, in: .capsule)
-            .padding(.top, topInset + 8)
-            .padding(.leading, 16)
+    /// Name capsule (leading) + close button (trailing), level with each other.
+    /// Lives inside each page so it pages with the bird.
+    private var topChrome: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Text(commonName)
+                .font(.headline)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .padding(.horizontal, 18)
+                .frame(height: Self.chromeHeight)
+                .modifier(ChromeGlass(shape: .capsule, isStatic: staticChrome))
+
+            Spacer(minLength: 0)
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 22, weight: .regular))
+                    .foregroundStyle(.primary)
+                    .frame(width: 22, height: 22)
+                    .padding(13)
+                    .modifier(ChromeGlass(shape: .circle, isStatic: staticChrome, interactive: true))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(NoDimButtonStyle())
+            .accessibilityLabel("Close")
+        }
+        .padding(.top, topInset + 8)
+        .padding(.horizontal, 16)
     }
 
     /// True when the bottom panel has anything to show. With the name now at the
@@ -547,7 +557,9 @@ private struct ZoomablePhotoPage: View {
                             Image(systemName: "mappin.circle")
                         }
                         .font(.subheadline)
-                        .foregroundStyle(.primary)
+                        // Blue, link-style, when it's tappable (focuses the map);
+                        // plain primary when there's nothing to tap.
+                        .foregroundStyle(onShowOnMap != nil ? AnyShapeStyle(.blue) : AnyShapeStyle(.primary))
                         .multilineTextAlignment(.center)
                         if let onShowOnMap {
                             Button(action: onShowOnMap) { row }
@@ -581,10 +593,11 @@ private struct ZoomablePhotoPage: View {
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 24)
-        // Liquid-glass capsule hugging the details, floating above the home
-        // indicator (positioned off the constant bottom inset since the
-        // container consumes the live safe area).
-        .glassEffect(.regular, in: .capsule)
+        // Liquid-glass panel hugging the details, floating above the home
+        // indicator (positioned off the constant bottom inset since the container
+        // consumes the live safe area). Corner radius is half the close button's
+        // size so the two read as the same family.
+        .modifier(ChromeGlass(shape: .rect(cornerRadius: Self.chromeHeight / 2), isStatic: staticChrome))
         .padding(.bottom, bottomInset + 8)
         }
     }
@@ -603,6 +616,26 @@ private struct ZoomablePhotoPage: View {
         guard !Task.isCancelled else { return }
         image = loaded
         loadFailed = loaded == nil
+    }
+}
+
+/// Backs the viewer's floating chrome with liquid glass — except while a dismiss
+/// drag is active (`isStatic`), when it falls back to a cheap translucent fill.
+/// During the drag the whole card slides as one, so the glass never moves
+/// relative to what's behind it; rendering live glass every frame just churned
+/// the GPU and stuttered the slide. The static fill is dark to match the glass's
+/// dark-scheme appearance, so the swap isn't visible in motion.
+private struct ChromeGlass<S: Shape>: ViewModifier {
+    let shape: S
+    let isStatic: Bool
+    var interactive: Bool = false
+
+    func body(content: Content) -> some View {
+        if isStatic {
+            content.background(Color.black.opacity(0.55), in: shape)
+        } else {
+            content.glassEffect(interactive ? .regular.interactive() : .regular, in: shape)
+        }
     }
 }
 

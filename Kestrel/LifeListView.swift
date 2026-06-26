@@ -283,9 +283,14 @@ struct LifeListView: View {
                 }
             }
         }
-        .navigationTitle("Life List")
-        .navigationSubtitle(speciesCountText)
-        .toolbarTitleDisplayMode(.inlineLarge)
+        // The title, subtitle, and the filter/import controls live in a custom
+        // pinned header (`safeAreaInset(.top)` below) instead of the navigation
+        // bar. In the nav bar's `.toolbar`, the buttons' liquid-glass backgrounds
+        // were snapshotted across tab transitions — flickering out and loading
+        // their shadow too dark, then snapping back, on the way in. A plain glass
+        // overlay (like the map tab's controls) has neither problem; a custom
+        // header keeps them visually on the title line where they belong.
+        .toolbar(.hidden, for: .navigationBar)
         // Swallow taps in the bottom strip — the glass search field plus the
         // gap up to 4pt above its top — so taps meant for the search field or
         // tab bar don't fall through to the list rows scrolling beneath the
@@ -317,44 +322,7 @@ struct LifeListView: View {
                     proxy.frame(in: .global).minY
                 } action: { searchFieldTop = $0 }
         }
-        // The filter + import controls live in a top-trailing *overlay* of glass
-        // buttons rather than native `.toolbar` items. As toolbar items their
-        // liquid-glass backgrounds were snapshotted by the navigation bar across
-        // tab transitions — flickering on the way out and loading their shadow too
-        // dark (then snapping back) on the way in. The map tab's controls are
-        // plain `.glassEffect` overlays and have neither problem, so these mirror
-        // that approach. (`.compositingGroup()` on the toolbar items did nothing.)
-        .overlay(alignment: .topTrailing) {
-            HStack(spacing: 12) {
-                Button {
-                    // Re-snapshot the currently-starred species each time the
-                    // filter is switched on. This frozen set drives which rows
-                    // show while filtering, so unstarring leaves a bird visible
-                    // until the filter is toggled off and on again.
-                    if !showStarredOnly {
-                        starredSnapshot = Set(
-                            store.entries.lazy.filter(\.isStarred).map(\.scientificName)
-                        )
-                    }
-                    showStarredOnly.toggle()
-                } label: {
-                    glassIcon("line.3.horizontal.decrease", active: showStarredOnly)
-                }
-                .buttonStyle(NoDimButtonStyle())
-                .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
-                .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
-
-                Button {
-                    showImportInfo = true
-                } label: {
-                    glassIcon("square.and.arrow.down", active: false)
-                }
-                .buttonStyle(NoDimButtonStyle())
-                .accessibilityLabel("Import eBird CSV")
-            }
-            .padding(.top, 8)
-            .padding(.trailing, 12)
-        }
+        .safeAreaInset(edge: .top, spacing: 0) { listHeader }
         // Recompute catalog suggestions whenever the query changes, but
         // wait out a short debounce so mid-typing keystrokes don't each
         // kick off a 6,500-species scan. SwiftUI cancels the previous
@@ -457,6 +425,56 @@ struct LifeListView: View {
     /// -list circle on detection rows. Matched here so catalog suggestions
     /// feel like a continuation of that "you can add me" affordance.
     private static let addButtonTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
+
+    /// Custom pinned header standing in for the navigation bar: the "Life List"
+    /// title + species count on the leading side, the filter and import glass
+    /// buttons on the trailing side, level with the title. A `.bar` material
+    /// extends up through the status bar so scrolling rows blur beneath it, the
+    /// way a navigation bar would — but without the toolbar's tab-transition
+    /// flicker.
+    private var listHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Life List")
+                    .font(.largeTitle.bold())
+                Text(speciesCountText)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 12)
+
+            Button {
+                // Re-snapshot the currently-starred species each time the filter
+                // is switched on. This frozen set drives which rows show while
+                // filtering, so unstarring leaves a bird visible until the filter
+                // is toggled off and on again.
+                if !showStarredOnly {
+                    starredSnapshot = Set(
+                        store.entries.lazy.filter(\.isStarred).map(\.scientificName)
+                    )
+                }
+                showStarredOnly.toggle()
+            } label: {
+                glassIcon("line.3.horizontal.decrease", active: showStarredOnly)
+            }
+            .buttonStyle(NoDimButtonStyle())
+            .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
+            .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
+
+            Button {
+                showImportInfo = true
+            } label: {
+                glassIcon("square.and.arrow.down", active: false)
+            }
+            .buttonStyle(NoDimButtonStyle())
+            .accessibilityLabel("Import eBird CSV")
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+        .background(.bar, ignoresSafeAreaEdges: .top)
+    }
 
     /// A liquid-glass circular icon button, mirroring the map tab's
     /// `GlassMapButton`. When `active`, the glass takes an accent tint and the

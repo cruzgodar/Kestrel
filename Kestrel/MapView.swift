@@ -63,8 +63,16 @@ struct MapView: View {
     @State private var position: MapCameraPosition = .userLocation(
         fallback: .automatic
     )
-    @State private var lastSpan: MKCoordinateSpan?
-    @State private var lastCenter: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+    /// Per-frame camera bookkeeping (latest span/center, last zoom step, last
+    /// cull center/span). Held in a plain reference type — NOT as individual
+    /// `@State` — so the `.continuous` camera callback can record the latest
+    /// values every frame without invalidating the view. As `@State`, writing
+    /// `lastSpan`/`lastCenter` on every pan frame re-evaluated the whole map body
+    /// (re-running the annotation ForEach) each frame, which is what made plain
+    /// panning lag. None of these are read in `body`; only the actual rendered
+    /// state (`visiblePoints`, `visibleReps`, clusters) is, and that's updated
+    /// only when a threshold is crossed.
+    @State private var camera = CameraTracker()
     /// Drives the recenter button glyph: filled (`location.fill`) right after a
     /// recenter tap, outline (`location`) otherwise. Set true on tap and cleared
     /// by the next user-driven camera move — there is no re-fill logic; only a
@@ -78,8 +86,7 @@ struct MapView: View {
     /// is roughly a quarter-octave. We only rebuild clusters when this
     /// crosses a step, which keeps the cluster set stable between fine
     /// camera ticks during a pinch (vs. recomputing on every frame and
-    /// flickering at boundary cases).
-    @State private var lastZoomStep: Int?
+    /// flickering at boundary cases). Lives on `camera` (see above).
     @State private var viewSize: CGSize = .zero
 
     /// Cached subset of `mapPoints` whose coords fall inside
@@ -88,8 +95,6 @@ struct MapView: View {
     /// every life-list bird. Updated only when the camera moves beyond
     /// the buffer, so panning doesn't churn the annotation list.
     @State private var visiblePoints: [MapPoint] = []
-    @State private var lastFilterCenter: CLLocationCoordinate2D?
-    @State private var lastFilterSpan: MKCoordinateSpan?
     /// Set once the post-load annotation refresh has actually run (not merely
     /// been scheduled). See `warmUpAnnotations()`.
     @State private var didWarmUpAnnotations = false
@@ -464,8 +469,8 @@ struct MapView: View {
         // legitimate zoom-level transitions without flickering mid-pinch.
         let step = Int((log2(max(distance, 1)) * 4).rounded(.down))
 
-        lastSpan = span
-        lastCenter = center
+        camera.lastSpan = span
+        camera.lastCenter = center
         // Any user-driven camera move after the recenter grace window clears the
         // filled state; only a recenter tap fills it again.
         if centeredOnUser, Date.now > recenterGraceUntil {
@@ -478,8 +483,8 @@ struct MapView: View {
         // mounted while its rep info is still missing, it renders empty and
         // MapKit caches a zero-size hit area that it never re-measures — that's
         // the root cause of fresh stacks silently swallowing the first taps.
-        if step != lastZoomStep {
-            lastZoomStep = step
+        if step != camera.lastZoomStep {
+            camera.lastZoomStep = step
             rebuildClusters(animated: true)
         }
 
@@ -492,13 +497,13 @@ struct MapView: View {
     /// skip the work if the camera hasn't moved beyond ~30% of the
     /// current span (so a gentle pan doesn't churn ForEach diffs).
     private func updateVisibleEntries(force: Bool) {
-        guard let span = lastSpan else { return }
+        guard let span = camera.lastSpan else { return }
 
         if !force,
-           let prevCenter = lastFilterCenter,
-           let prevSpan = lastFilterSpan {
-            let dLat = abs(lastCenter.latitude - prevCenter.latitude)
-            let dLon = abs(lastCenter.longitude - prevCenter.longitude)
+           let prevCenter = camera.lastFilterCenter,
+           let prevSpan = camera.lastFilterSpan {
+            let dLat = abs(camera.lastCenter.latitude - prevCenter.latitude)
+            let dLon = abs(camera.lastCenter.longitude - prevCenter.longitude)
             let zoomDelta = abs(span.latitudeDelta - prevSpan.latitudeDelta) / prevSpan.latitudeDelta
             // Move threshold: 30% of the *previous* span; once the user
             // has panned that far the buffer would start running out.
@@ -511,25 +516,25 @@ struct MapView: View {
 
         let latRange = span.latitudeDelta * (0.5 + Self.visibleBufferFactor)
         let lonRange = span.longitudeDelta * (0.5 + Self.visibleBufferFactor)
-        let centerLat = lastCenter.latitude
-        let centerLon = lastCenter.longitude
+        let centerLat = camera.lastCenter.latitude
+        let centerLon = camera.lastCenter.longitude
         let filtered = mapPoints.filter { point in
             abs(point.latitude - centerLat) <= latRange
                 && abs(point.longitude - centerLon) <= lonRange
         }
         visiblePoints = filtered
-        lastFilterCenter = lastCenter
-        lastFilterSpan = span
+        camera.lastFilterCenter = camera.lastCenter
+        camera.lastFilterSpan = span
     }
 
     private func rebuildClusters(animated: Bool) {
-        guard let span = lastSpan, viewSize.width > 0, viewSize.height > 0 else {
+        guard let span = camera.lastSpan, viewSize.width > 0, viewSize.height > 0 else {
             return
         }
         let computed = Self.computeClusters(
             points: mapPoints,
             span: span,
-            centerLatitude: lastCenter.latitude,
+            centerLatitude: camera.lastCenter.latitude,
             viewSize: viewSize,
             footprint: Self.annotationFootprint,
             gutter: Self.clusterGutter
@@ -1252,6 +1257,19 @@ private struct BirdMapThumbnail: View {
 
 /// A circular liquid-glass map control, matching the search field's glass
 /// buttons. Used for the map-settings and recenter buttons.
+/// Plain (non-`@Observable`) holder for the map's per-frame camera bookkeeping.
+/// Stored as a single `@State` reference on `MapView`; mutating its properties
+/// does not invalidate the view, so the `.continuous` camera callback can record
+/// the latest values every frame without re-rendering the map. See the field's
+/// doc comment on `MapView` for why this matters (pan-lag fix).
+private final class CameraTracker {
+    var lastSpan: MKCoordinateSpan?
+    var lastCenter = CLLocationCoordinate2D(latitude: 0, longitude: 0)
+    var lastZoomStep: Int?
+    var lastFilterCenter: CLLocationCoordinate2D?
+    var lastFilterSpan: MKCoordinateSpan?
+}
+
 private struct GlassMapButton: View {
     let systemImage: String
     let accessibility: String
