@@ -336,7 +336,12 @@ struct MapView: View {
                         }
                     }
                 )
-                .onMapCameraChange(frequency: .continuous) { context in
+                // `.onEnd`, NOT `.continuous`: do no work at all while the map is
+                // in motion. Annotations are positioned by MapKit from their
+                // coordinates, so they pan/zoom with the map natively — exactly as
+                // cheap as scrolling a map with a fixed annotation set. The cluster
+                // rebuild + viewport cull run once here, after the camera settles.
+                .onMapCameraChange(frequency: .onEnd) { context in
                     handleCameraChange(context)
                 }
                 .onAppear { viewSize = geo.size }
