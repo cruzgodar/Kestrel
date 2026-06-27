@@ -409,11 +409,14 @@ struct MapView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
         }
         .task {
-            let manager = CLLocationManager()
-            if manager.authorizationStatus == .notDetermined {
-                manager.requestWhenInUseAuthorization()
+            // Never prompt for location here — permission is only ever requested
+            // at the first Start Recording. If access is already granted, warm a
+            // fix so the recenter button and user dot work immediately; otherwise
+            // do nothing and leave the camera on its automatic fallback.
+            let status = CLLocationManager().authorizationStatus
+            if status == .authorizedWhenInUse || status == .authorizedAlways {
+                _ = await LocationCache.shared.current()
             }
-            _ = await LocationCache.shared.current()
         }
         // Focus requests can arrive while the Map tab is already on screen
         // (pinpoint from a cluster card) or just before it appears (Show on Map
@@ -797,6 +800,11 @@ private struct FadingAnnotationContent: View {
     /// Cleared in the animation's completion callback.
     @State private var rendered: MapView.RepInfo?
     @State private var opacity: Double = 0
+
+    /// Duration of the thumbnail fade-in / fade-out when the "Fade Thumbnails"
+    /// setting is on. Change this one value to make the fade faster or slower.
+    /// Kept brisk so thumbnails appear/disappear snappily rather than lingering.
+    private static let fadeDuration: Double = 0.18
     /// False until the first `info` resolution after this view mounts. Lets us
     /// distinguish a genuine first appearance (or a hit-test rehydration remount,
     /// which destroys + recreates this view) — which should settle to its final
@@ -840,13 +848,13 @@ private struct FadingAnnotationContent: View {
             rendered = newInfo
             if wasOff {
                 opacity = 0
-                withAnimation(.easeInOut(duration: 0.3)) {
+                withAnimation(.easeInOut(duration: Self.fadeDuration)) {
                     opacity = 1
                 }
             }
             // Already visible: just refresh the count, no fade needed.
         } else if rendered != nil {
-            withAnimation(.easeInOut(duration: 0.3)) {
+            withAnimation(.easeInOut(duration: Self.fadeDuration)) {
                 opacity = 0
             } completion: {
                 rendered = nil
@@ -876,12 +884,17 @@ private struct MapAnnotationContent: View {
             )
             Text(labelText)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(.white)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(.thinMaterial, in: Capsule())
+                // A solid translucent capsule, NOT `.thinMaterial`: a backdrop-blur
+                // material is re-sampled every frame as MapKit re-composites each pin
+                // while panning, which was a dominant source of the pan stutter. A
+                // flat fill composites for almost nothing and reads the same at this
+                // size against the map.
+                .background(Color.black.opacity(0.55), in: Capsule())
         }
         // MapKit hosts each annotation in a UIHostingController whose
         // frame it derives once from the content's intrinsic size. The
@@ -1316,12 +1329,10 @@ private struct BirdMapThumbnail: View {
                     .strokeBorder(Color.white, lineWidth: 1.5)
             }
         }
-        .shadow(
-            color: .black.opacity(showBorder ? 0.3 : 0),
-            radius: showBorder ? 3 : 0,
-            x: 0,
-            y: showBorder ? 1.5 : 0
-        )
+        // No drop shadow: a shadow forces an offscreen render pass for every pin on
+        // every frame MapKit re-composites them during a pan/zoom, which was a major
+        // contributor to the panning stutter. The white hairline border alone keeps
+        // the thumbnail legible against the map without the per-frame offscreen cost.
         .contentShape(Rectangle())
     }
 }

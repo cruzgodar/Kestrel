@@ -24,7 +24,11 @@ struct KestrelApp: App {
         manager.preload()
         _recordingManager = State(wrappedValue: manager)
 
-        watchBridge = WatchAudioBridge(manager: manager)
+        let bridge = WatchAudioBridge(manager: manager)
+        watchBridge = bridge
+        // Push the phone's location-authorization state to the watch whenever it
+        // changes, so the watch's record screen reflects whether access is granted.
+        manager.onLocationAuthorizationChanged = { bridge.pushLocationAuthorized() }
 
         let store = LifeListStore()
         _lifeListStore = State(wrappedValue: store)
@@ -54,11 +58,9 @@ struct KestrelApp: App {
         // bound. Life-list + nearby images are protected and never evicted.
         RemoteSpeciesImageStore.shared.setLimitOtherImages(true)
 
-        // Ask for notification permission at first launch rather than
-        // deferring to the first Start Recording tap.
-        Task { @MainActor in
-            SpeciesNotifications.shared.requestAuthorizationIfNeeded()
-        }
+        // Permission prompts (location, then notifications) are deferred to the
+        // first Start Recording tap rather than fired at launch — see
+        // `RecordingManager.startLocally`.
 
         // Warm up UIKit's keyboard subsystem off-screen. The first time a
         // text field becomes first responder anywhere in the app, the

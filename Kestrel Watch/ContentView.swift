@@ -36,6 +36,14 @@ struct ContentView: View {
     /// there to tune the bezel match on new watches.
     private static var screenCornerRadius: CGFloat { WatchMetrics.current.screenCornerRadius }
 
+    /// True when the iPhone has explicitly *not* granted location access, so the
+    /// watch can't start a recording. Shows the "Open Kestrel on iPhone" screen in
+    /// place of the record button. `nil` (status not yet received) and a live
+    /// session both keep the normal UI.
+    private var blockedForPermissions: Bool {
+        session.phoneLocationAuthorized == false && !session.isRecording
+    }
+
     var body: some View {
         let recording = session.isRecording
 
@@ -91,6 +99,10 @@ struct ContentView: View {
                         x: recording ? cornerC : geo.size.width / 2,
                         y: recording ? cornerC : geo.size.height / 2
                     )
+                    // Hidden while the iPhone hasn't granted location access — the
+                    // blocking caption (below) takes over until it has.
+                    .opacity(blockedForPermissions ? 0 : 1)
+                    .allowsHitTesting(!blockedForPermissions)
 
                 // Idle-screen caption sitting just below the centered play
                 // button. Fades out (with the button's morph to the corner) as
@@ -108,8 +120,22 @@ struct ContentView: View {
                         x: geo.size.width / 2,
                         y: geo.size.height / 2 + Self.buttonBaseSize / 2 + 24
                     )
-                    .opacity(recording ? 0 : 1)
+                    .opacity(recording || blockedForPermissions ? 0 : 1)
                     .allowsHitTesting(false)
+
+                // Shown instead of the record button when the iPhone hasn't granted
+                // location access yet — recording can't start without it, and the
+                // watch can't prompt for it, so point the user at the phone.
+                if blockedForPermissions {
+                    Text("Open Kestrel on iPhone to begin")
+                        .font(.system(size: 17, weight: .medium))
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16)
+                        .frame(width: geo.size.width)
+                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
+                        .transition(.opacity)
+                }
 
                 addButton(size: Self.cornerButtonSize)
                     // `interButtonGap` to the right of the stop button, same row.
@@ -144,6 +170,7 @@ struct ContentView: View {
             }
         }
         .animation(.easeInOut(duration: 0.25), value: session.recordingError)
+        .animation(.easeInOut(duration: 0.25), value: blockedForPermissions)
         // The record/stop morph is animated explicitly via `withAnimation` in
         // the session manager (so the audio bring-up/teardown can be deferred
         // until after it). Only the bird cross-fade is animated here.

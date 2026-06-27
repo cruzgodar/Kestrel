@@ -18,6 +18,12 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
     /// The current location authorization status, read straight off the manager.
     var authorizationStatus: CLAuthorizationStatus { manager.authorizationStatus }
 
+    /// Called on every authorization change (including the initial callback), so
+    /// observers — e.g. `RecordingManager`, which grays the record button and
+    /// tells the watch — can react to the user granting/denying access in Settings
+    /// or at the prompt without polling.
+    var onAuthorizationChange: ((CLAuthorizationStatus) -> Void)?
+
     private var authContinuation: CheckedContinuation<CLAuthorizationStatus, Never>?
 
     /// Returns the authorization status, prompting once and awaiting the user's
@@ -98,6 +104,9 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
         Task { @MainActor in
             let status = self.manager.authorizationStatus
+            // Notify observers of every transition (including the initial
+            // notDetermined callback) so UI gating stays current.
+            self.onAuthorizationChange?(status)
             // Ignore the initial callback that fires before the user has chosen;
             // resume only once the prompt resolves to a concrete status.
             guard status != .notDetermined else { return }

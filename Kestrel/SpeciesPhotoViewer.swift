@@ -67,6 +67,11 @@ struct SpeciesPhotoFullScreen: View {
     /// True while the current page is zoomed in — disables horizontal paging and
     /// the swipe-down dismiss so a pan inside the photo doesn't trigger either.
     @State private var isZoomed = false
+    /// Whether the current page's zoomed photo is at its top content edge — i.e. it
+    /// can't be panned any farther down. When it is, a downward swipe dismisses the
+    /// card even though the photo is zoomed (matching the Photos app). Meaningless
+    /// while not zoomed (the whole-card swipe-down already handles that case).
+    @State private var currentPageAtTopEdge = false
 
     // Swipe-to-dismiss (applied to the whole card).
     @State private var dragOffset: CGSize = .zero
@@ -77,6 +82,13 @@ struct SpeciesPhotoFullScreen: View {
     /// top, where tiny horizontal finger noise rivaled the small vertical travel
     /// and toggled the gesture on and off. Reset when the drag ends.
     @State private var dismissEngaged = false
+    /// The finger's vertical travel at the instant the dismiss engaged, subtracted
+    /// from subsequent travel so the card starts following from zero. For the
+    /// normal (un-zoomed) swipe this is ~0 since dismiss engages on the first
+    /// qualifying frame; it matters for the zoomed case, where the user may have
+    /// panned the photo to its top edge before the dismiss takes over — without it
+    /// the card would jump down by the already-consumed pan distance.
+    @State private var dismissEngageBaseline: CGFloat = 0
     /// Measured viewer size, used to slide the card fully off on dismiss.
     @State private var viewSize: CGSize = CGSize(width: 400, height: 800)
     /// Whether the floating chrome (name capsule, close button, bottom details)
@@ -144,6 +156,14 @@ struct SpeciesPhotoFullScreen: View {
         withAnimation(.easeInOut(duration: Self.uiToggleDuration)) { uiVisible = false }
     }
 
+    /// Shows the chrome if it's hidden — used when the photo returns to minimum
+    /// zoom, so zooming back out reveals the name capsule / info panel again
+    /// (mirroring `hideUIForZoom`).
+    private func revealUIAfterZoom() {
+        guard !uiVisible else { return }
+        withAnimation(.easeInOut(duration: Self.uiToggleDuration)) { uiVisible = true }
+    }
+
     var body: some View {
         // Sizing is driven entirely off this *outer* GeometryReader's proxy,
         // which sits OUTSIDE `.ignoresSafeArea()` and is therefore rock-steady:
@@ -207,10 +227,21 @@ struct SpeciesPhotoFullScreen: View {
                         // Only the current page's zoom gates paging.
                         if i == index {
                             if isZoomed != zoomed { isZoomed = zoomed }
-                            // Auto-hide the chrome the moment the photo is zoomed in
-                            // at all, so nothing overlaps the magnified image.
-                            if zoomed { hideUIForZoom() }
+                            if zoomed {
+                                // Auto-hide the chrome the moment the photo is zoomed
+                                // in at all, so nothing overlaps the magnified image.
+                                hideUIForZoom()
+                            } else {
+                                // Back at minimum zoom: restore the chrome if a zoom
+                                // had auto-hidden it.
+                                revealUIAfterZoom()
+                            }
                         }
+                    },
+                    onAtTopEdgeChange: { atTop in
+                        // Track only the current page's top-edge state; it gates the
+                        // zoomed swipe-to-dismiss.
+                        if i == index { currentPageAtTopEdge = atTop }
                     }
                 )
             }
@@ -370,29 +401,40 @@ struct SpeciesPhotoFullScreen: View {
     private func infoPanel(for item: SpeciesPhotoItem, screenWidth: CGFloat) -> some View {
         VStack(spacing: 12) {
             if let dateFound = item.dateFound {
-                VStack(spacing: 3) {
+                // Place (blue, the map link) + date stacked together. When the map
+                // action is available the *whole block* — place, date, and a little
+                // padding around them — is one button, so the tap target is generous
+                // rather than just the place-name text.
+                let block = VStack(spacing: 3) {
                     if let place = item.placeName, !place.isEmpty {
                         // Tight spacing keeps the pin close to the place name.
-                        let row = HStack(spacing: 4) {
+                        HStack(spacing: 4) {
                             Text(place)
                             Image(systemName: "mappin.circle")
                         }
                         .font(.subheadline)
                         .multilineTextAlignment(.center)
-                        if let onShowOnMap {
-                            Button { onShowOnMap(item) } label: {
-                                row.foregroundStyle(.blue)
-                            }
-                            .buttonStyle(NoDimButtonStyle())
-                            .accessibilityLabel(mapButtonTitle ?? "Show on Map")
-                        } else {
-                            row.foregroundStyle(.white)
-                        }
+                        .foregroundStyle(onShowOnMap != nil ? Color.blue : Color.white)
                     }
                     Text(dateFound, format: .dateTime.year().month(.abbreviated).day())
                         .font(.subheadline)
                         .monospacedDigit()
                         .foregroundStyle(.white)
+                }
+
+                if let onShowOnMap {
+                    Button { onShowOnMap(item) } label: {
+                        block
+                            // Generous hit area: padding around the whole place+date
+                            // block (plus the date text itself) so taps near it land.
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(NoDimButtonStyle())
+                    .accessibilityLabel(mapButtonTitle ?? "Show on Map")
+                } else {
+                    block
                 }
             }
 
@@ -434,7 +476,10 @@ struct SpeciesPhotoFullScreen: View {
         // before paging was locked out.
         DragGesture(minimumDistance: 4, coordinateSpace: .global)
             .onChanged { value in
-                guard !isZoomed else { return }
+                // Dismiss is available when not zoomed (the whole card swipes), or
+                // when zoomed but the photo is at its top edge so it can't be panned
+                // any farther down — at which point a downward drag closes the card.
+                guard !isZoomed || currentPageAtTopEdge else { return }
                 if !dismissEngaged {
                     // Decide once, on the first qualifying frame: a downward,
                     // vertical-dominant drag engages dismiss. Horizontal goes to
@@ -442,18 +487,26 @@ struct SpeciesPhotoFullScreen: View {
                     guard value.translation.height > 0,
                           abs(value.translation.height) > abs(value.translation.width) else { return }
                     dismissEngaged = true
+                    // Anchor the card's travel to where the dismiss took over, so it
+                    // starts from zero rather than jumping by any pan already consumed.
+                    dismissEngageBaseline = value.translation.height
                 }
                 // Once engaged, track the finger's vertical travel directly
                 // (clamped to downward) without re-checking dominance each frame.
-                dragOffset = CGSize(width: 0, height: max(value.translation.height, 0))
+                let travel = value.translation.height - dismissEngageBaseline
+                dragOffset = CGSize(width: 0, height: max(travel, 0))
             }
             .onEnded { value in
-                defer { dismissEngaged = false }
-                guard !isZoomed else { return }
+                let wasEngaged = dismissEngaged
+                dismissEngaged = false
+                // Only settle a drag we actually took over for dismiss; a zoomed pan
+                // (or a horizontal page swipe) that never engaged is left alone.
+                guard wasEngaged else { return }
+                let travel = value.translation.height - dismissEngageBaseline
                 let verticalDominant = abs(value.translation.height) > abs(value.translation.width)
-                let pastThreshold = value.translation.height > dismissThreshold
+                let pastThreshold = travel > dismissThreshold
                 let flung = value.velocity.height > dismissVelocity
-                if verticalDominant, value.translation.height > 0, pastThreshold || flung {
+                if verticalDominant, travel > 0, pastThreshold || flung {
                     // Carry the release velocity through the slide-off so the
                     // throw doesn't snap to a different speed at lift-off.
                     dismissViewer(velocity: value.velocity.height)
@@ -697,6 +750,10 @@ private struct ZoomablePhotoPage: View {
     var onToggleUI: () -> Void
     /// Reports this page's zoom state up to the container.
     var onZoomChange: (Bool) -> Void
+    /// Reports whether the zoomed photo is at its top content edge (can't be
+    /// panned farther down), which the container uses to allow a swipe-to-dismiss
+    /// while zoomed.
+    var onAtTopEdgeChange: (Bool) -> Void
 
     @State private var image: UIImage?
     @State private var loadFailed = false
@@ -717,7 +774,8 @@ private struct ZoomablePhotoPage: View {
                 image: image,
                 isZoomed: $pageZoomed,
                 resetToken: 0,
-                onSingleTap: onToggleUI
+                onSingleTap: onToggleUI,
+                onAtTopEdgeChange: onAtTopEdgeChange
             )
         } else if loadFailed {
             Image(systemName: "bird")
@@ -734,14 +792,33 @@ private struct ZoomablePhotoPage: View {
         image = nil
         loadFailed = false
         let name = item.scientificName
-        if let mem = RemoteSpeciesImageStore.shared.memoryImage(for: name) {
-            image = mem
+
+        // Already have the true full-res image resident (a previous open this
+        // session): show it straight away, no medium→full swap needed.
+        if let full = RemoteSpeciesImageStore.shared.memoryFullResolutionImage(for: name) {
+            image = full
             return
         }
-        let loaded = await RemoteSpeciesImageStore.shared.image(for: name)
-        guard !Task.isCancelled else { return }
-        image = loaded
-        loadFailed = loaded == nil
+
+        // Show the medium image first (instant from memory if cached) so the photo
+        // appears immediately while the full-res downloads.
+        if let mem = RemoteSpeciesImageStore.shared.memoryImage(for: name) {
+            image = mem
+        } else {
+            let loaded = await RemoteSpeciesImageStore.shared.image(for: name)
+            guard !Task.isCancelled else { return }
+            image = loaded
+            loadFailed = loaded == nil
+        }
+
+        // Then fetch the true full-resolution photo in the background and swap it in
+        // when it arrives. Same aspect ratio as the medium image, so the scroll
+        // view keeps any in-progress zoom/pan (see `ZoomableImageView.updateUIView`).
+        guard image != nil else { return }
+        if let full = await RemoteSpeciesImageStore.shared.fullResolutionImage(for: name) {
+            guard !Task.isCancelled else { return }
+            image = full
+        }
     }
 }
 
@@ -762,6 +839,10 @@ private struct ZoomableImageView: UIViewRepresentable {
     /// the double-tap-to-zoom to fail first, so a zoom double-tap doesn't also
     /// toggle the chrome.
     var onSingleTap: () -> Void
+    /// Reports whether the (zoomed) content is at its top edge — i.e. it can't be
+    /// panned any farther down. The container uses this to allow swipe-to-dismiss
+    /// while zoomed.
+    var onAtTopEdgeChange: (Bool) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -818,8 +899,15 @@ private struct ZoomableImageView: UIViewRepresentable {
     func updateUIView(_ scroll: CenteringScrollView, context: Context) {
         context.coordinator.parent = self
         if scroll.imageView?.image !== image {
+            let previous = scroll.imageView?.image
             scroll.imageView?.image = image
-            scroll.refit()
+            // A full-res swap of the *same* photo has an identical aspect ratio, so
+            // keep the current fitted frame (and any in-progress zoom/pan) instead of
+            // re-fitting — `refit()` resets the zoom to 1. Only re-fit when the aspect
+            // ratio actually changed, i.e. a genuinely different image.
+            if !Self.sameAspectRatio(previous, image) {
+                scroll.refit()
+            }
         }
         if context.coordinator.lastResetToken != resetToken {
             context.coordinator.lastResetToken = resetToken
@@ -828,6 +916,19 @@ private struct ZoomableImageView: UIViewRepresentable {
                 scroll.refit()
             }
         }
+    }
+
+    /// Whether two images share the same aspect ratio (within a small tolerance).
+    /// `nil` previous → false (a first set must fit). Used to decide whether a
+    /// background full-res swap can keep the current fit (same ratio) or needs a
+    /// re-fit (a different photo).
+    private static func sameAspectRatio(_ a: UIImage?, _ b: UIImage?) -> Bool {
+        guard let a, let b,
+              a.size.width > 0, a.size.height > 0,
+              b.size.width > 0, b.size.height > 0 else { return false }
+        let ra = a.size.width / a.size.height
+        let rb = b.size.width / b.size.height
+        return abs(ra - rb) < 0.01
     }
 
     final class Coordinator: NSObject, UIScrollViewDelegate {
@@ -839,6 +940,9 @@ private struct ZoomableImageView: UIViewRepresentable {
         /// the pinch *ends*, not at the instant the threshold is crossed.
         private var didExceedLimit = false
         private let haptic = UIImpactFeedbackGenerator(style: .rigid)
+        /// Last reported top-edge state, so `onAtTopEdgeChange` only fires on a
+        /// change. Starts true (a fresh, un-scrolled page sits at its top).
+        private var lastAtTopEdge = true
 
         init(_ parent: ZoomableImageView) {
             self.parent = parent
@@ -847,6 +951,10 @@ private struct ZoomableImageView: UIViewRepresentable {
 
         func viewForZooming(in scrollView: UIScrollView) -> UIView? {
             (scrollView as? CenteringScrollView)?.imageView
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            pushAtTopEdge(scrollView)
         }
 
         func scrollViewDidZoom(_ scrollView: UIScrollView) {
@@ -864,6 +972,7 @@ private struct ZoomableImageView: UIViewRepresentable {
                 didExceedLimit = true
             }
             pushZoomed(scrollView)
+            pushAtTopEdge(scrollView)
         }
 
         func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) {
@@ -872,6 +981,23 @@ private struct ZoomableImageView: UIViewRepresentable {
             // recognizer's `.ended` state instead (see `handlePinch`).
             (scrollView as? CenteringScrollView)?.centerContent()
             pushZoomed(scrollView)
+            pushAtTopEdge(scrollView)
+        }
+
+        /// Reports whether the content is at its top edge — it can't be panned any
+        /// farther down — so the container can allow a swipe-to-dismiss while
+        /// zoomed. Only meaningful while zoomed; when not zoomed the container's
+        /// own (un-zoomed) swipe-down handles dismissal regardless. Fired on a
+        /// change, off the layout pass like `pushZoomed`.
+        private func pushAtTopEdge(_ scrollView: UIScrollView) {
+            let zoomed = scrollView.zoomScale > scrollView.minimumZoomScale + 0.01
+            let atTop = scrollView.contentOffset.y <= -scrollView.contentInset.top + 0.5
+            let value = zoomed ? atTop : true
+            guard value != lastAtTopEdge else { return }
+            lastAtTopEdge = value
+            DispatchQueue.main.async { [weak self] in
+                self?.parent.onAtTopEdgeChange(value)
+            }
         }
 
         /// Observes the scroll view's own pinch recognizer so the boundary haptic

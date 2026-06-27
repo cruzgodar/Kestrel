@@ -26,6 +26,15 @@ final class RecordingManager {
     /// the nearby-species filter — is unavailable. Drives an alert offering to
     /// open Settings. The view clears it on dismiss (hence not `private(set)`).
     var showLocationPermissionAlert = false
+    /// True when location access is explicitly *denied* or *restricted* (not merely
+    /// undetermined). The Identify tab grays the record button and shows a lock
+    /// glyph in this state; undetermined keeps the normal button so the first tap
+    /// can still bring up the system prompt. Seeded at launch and kept current via
+    /// the location provider's authorization-change callback.
+    private(set) var locationAccessDenied = false
+    /// Invoked whenever the phone's location authorization changes, so the app can
+    /// push the new state to the watch (set in `KestrelApp`).
+    var onLocationAuthorizationChanged: (() -> Void)?
     /// IDs (scientific names) of detections whose confidence was just upgraded;
     /// the UI flashes their row yellow while they're in this set.
     private(set) var flashIDs: Set<String> = []
@@ -163,7 +172,30 @@ final class RecordingManager {
     /// Begins loading the BirdNET classifier and the species-range model in
     /// background tasks so the first Start Recording tap is fast. Safe to call
     /// multiple times; subsequent calls are no-ops.
+    /// Whether location access is currently granted (when-in-use or always).
+    var locationAuthorized: Bool {
+        let status = locationProvider.authorizationStatus
+        return status == .authorizedWhenInUse || status == .authorizedAlways
+    }
+
+    /// Reacts to a location authorization change: refreshes the denied flag the
+    /// record button reads, and lets the app push the new state to the watch.
+    private func handleLocationAuthorizationChange(_ status: CLAuthorizationStatus) {
+        locationAccessDenied = (status == .denied || status == .restricted)
+        onLocationAuthorizationChanged?()
+    }
+
     func preload() {
+        // Track location authorization changes (button gating + watch state), and
+        // seed the current value. Idempotent — re-assigning the callback is fine.
+        locationProvider.onAuthorizationChange = { [weak self] status in
+            self?.handleLocationAuthorizationChange(status)
+        }
+        locationAccessDenied = {
+            let status = locationProvider.authorizationStatus
+            return status == .denied || status == .restricted
+        }()
+
         if classifierTask == nil {
             classifierTask = Task.detached(priority: .userInitiated) {
                 try BirdNETClassifier()
@@ -184,8 +216,10 @@ final class RecordingManager {
         // Kick off the location/range-filter lookup at launch so the
         // "Filtered to N species" caption is ready to fade in before the
         // user taps Start Recording, instead of appearing mid-session and
-        // shoving the record button down.
-        if locationStatus == nil {
+        // shoving the record button down. Only when location is *already*
+        // authorized — a fresh install must not surface the location prompt at
+        // launch; that's deferred to the first Start Recording tap.
+        if locationStatus == nil, locationAuthorized {
             Task { await self.refreshSpeciesFilter() }
         }
     }
@@ -378,6 +412,11 @@ final class RecordingManager {
             showLocationPermissionAlert = true
             return
         }
+
+        // Now (and only now, after the location answer) ask for notification
+        // permission, so detected birds can notify in the background. One prompt at
+        // a time: this awaits the location choice above before surfacing.
+        await SpeciesNotifications.shared.requestAuthorizationIfNeeded()
 
         guard await requestMicrophonePermission() else {
             errorMessage = "Microphone permission denied."

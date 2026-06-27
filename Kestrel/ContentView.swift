@@ -204,7 +204,12 @@ struct ContentView: View {
             // label drops out, and the frame animates from a wide pill to a 56pt
             // square — which a `Capsule` renders as a perfect circle.
             HStack(spacing: 0) {
-                Image(systemName: manager.isRecording ? "stop.fill" : "mic.fill")
+                // Idle: a mic, or a lock when location access is denied (the button
+                // is grayed then and a tap opens the Settings alert rather than
+                // recording). Recording: the stop glyph.
+                Image(systemName: manager.isRecording
+                    ? "stop.fill"
+                    : (manager.locationAccessDenied ? "lock.fill" : "mic.fill"))
                     .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
                 if !manager.isRecording {
                     Text("Start Recording")
@@ -220,16 +225,26 @@ struct ContentView: View {
             )
             .padding(.horizontal, manager.isRecording ? 0 : 28)
         }
-        // Purple while idle, red once recording (matching the Delete All
-        // Entries button). The color interpolates with the morph because the
-        // animation below scopes `isRecording`.
-        .buttonStyle(RecordButtonStyle(tint: manager.isRecording ? Self.stopTint : Self.recordTint))
+        // Purple while idle, red once recording (matching the Delete All Entries
+        // button), gray while location access is denied. The color interpolates
+        // with the morph because the animation below scopes `isRecording`.
+        .buttonStyle(RecordButtonStyle(tint: recordButtonTint))
         .animation(.easeOut(duration: 0.16), value: manager.isRecording)
+        .animation(.easeInOut(duration: 0.2), value: manager.locationAccessDenied)
+    }
+
+    /// Fill color for the record button: red while recording, gray when location
+    /// access is denied (a locked, tap-to-open-Settings state), else the idle purple.
+    private var recordButtonTint: Color {
+        if manager.isRecording { return Self.stopTint }
+        return manager.locationAccessDenied ? Self.lockedTint : Self.recordTint
     }
 
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
     /// Red for the stop state, matching the life-list Delete All Entries button.
     private static let stopTint = Color.red
+    /// Gray for the locked (location-denied) idle state.
+    private static let lockedTint = Color(white: 0.45)
     /// Highlight purple — soft tint blended into the row background.
     private static let recordHighlight = Color(hue: 252.0 / 360.0, saturation: 0.5, brightness: 1.0)
 
@@ -299,8 +314,7 @@ struct ContentView: View {
             .init(lead),
             .init("starred birds", highlight: HighlightedText.starHighlight),
             .init(" and "),
-            .init("those not on your life list", highlight: HighlightedText.addHighlight),
-            .init("."),
+            .init("those not on your life list.", highlight: HighlightedText.addHighlight),
         ]
     }
 

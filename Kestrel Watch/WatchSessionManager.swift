@@ -28,6 +28,21 @@ final class WatchSessionManager: NSObject {
     /// seconds. Settable so the view can dismiss it.
     var recordingError: String?
 
+    /// Whether the iPhone currently has location access (needed for the
+    /// nearby-species filter, and so for recording at all). Pushed from the phone
+    /// via the WCSession application context. `nil` until the first context
+    /// arrives — treated as "allow" so the normal record UI isn't blocked by a
+    /// momentary unknown at launch; `false` swaps in the "Open Kestrel on iPhone"
+    /// screen.
+    private(set) var phoneLocationAuthorized: Bool?
+
+    /// Updates `phoneLocationAuthorized` (whose setter is private). Routed through
+    /// here from the WCSession application-context callbacks, mirroring how the
+    /// other delegate handlers reach main-actor state via `shared`.
+    func setPhoneLocationAuthorized(_ authorized: Bool) {
+        phoneLocationAuthorized = authorized
+    }
+
     /// How a heard bird is highlighted — picks the watch's background color.
     /// The raw values match the strings the phone sends in the `highlight` key.
     enum BirdHighlight: String, Equatable {
@@ -641,6 +656,9 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                  activationDidCompleteWith activationState: WCSessionActivationState,
                  error: Error?) {
         if let error { print("Kestrel Watch: WCSession activation error \(error)") }
+        // Seed the phone's location-auth state from the last context it pushed,
+        // delivered even if the phone is currently unreachable.
+        applyLocationContext(session.receivedApplicationContext)
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
@@ -649,6 +667,19 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         route(userInfo)
+    }
+
+    /// The phone pushes its location-authorization state through the persisted
+    /// application context; mirror it into `phoneLocationAuthorized` for the UI.
+    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        applyLocationContext(applicationContext)
+    }
+
+    private func applyLocationContext(_ context: [String: Any]) {
+        guard let authorized = context["locationAuthorized"] as? Bool else { return }
+        Task { @MainActor in
+            WatchSessionManager.shared.setPhoneLocationAuthorized(authorized)
+        }
     }
 
     private func route(_ payload: [String: Any]) {

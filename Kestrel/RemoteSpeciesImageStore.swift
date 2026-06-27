@@ -27,20 +27,38 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// Separate from `memory` so a thumbnail and its full image can both be
     /// resident without evicting each other.
     private let thumbnailMemory = NSCache<NSString, UIImage>()
+    /// In-memory-only cache of the **true full-resolution** photos (the largest
+    /// size the Macaulay CDN exposes). The full-screen viewer fetches one in the
+    /// background when a card opens and swaps it in for the medium-res image so a
+    /// pinch-zoom is crisp. Bounded by total decoded byte cost (see
+    /// `fullResImageMemory.totalCostLimit`) rather than count, and never persisted —
+    /// the medium 900px disk copy stays the protected/offline source of truth.
+    private let fullResImageMemory = NSCache<NSString, UIImage>()
     private let dir: URL
     private let session: URLSession
 
-    /// Longest edge, in pixels, of a cached thumbnail. Deliberately tiny — every
+    /// Longest edge, in pixels, of a cached thumbnail. Deliberately small — every
     /// small-photo context (list rows, map pins, cluster-grid cells) shows the
-    /// photo at a modest size, so a 100px downsample decodes and holds for almost
+    /// photo at a modest size, so a downsample decodes and holds for almost
     /// nothing. The hero (Identify) and full-screen viewer use the full-resolution
     /// tier instead, so they're unaffected by how small this is.
-    static let thumbnailMaxPixelSize: CGFloat = 100
+    static let thumbnailMaxPixelSize: CGFloat = 250
 
     /// Ceiling for cached "other" images — anything neither on the life list
     /// nor in the current nearby list — enforced only while the user's "Limit
     /// Cached Images" setting is on.
     static let otherImagesLimitBytes: Int64 = 50 * 1024 * 1024
+
+    /// In-memory budget (decoded bytes) for the full-resolution viewer tier.
+    /// `NSCache` evicts the least-recently-used full-res images once the resident
+    /// set's total cost exceeds this.
+    static let fullResMemoryLimitBytes = 50 * 1024 * 1024
+
+    /// The Macaulay CDN size component requested for the full-resolution tier.
+    /// The stored metadata URLs use `/900`; `/2400` is the largest size the asset
+    /// endpoint serves (`large`/`original` 404). Swapped into the URL's trailing
+    /// numeric path component by `fullResolutionURL(from:)`.
+    private static let fullResSizeComponent = "2400"
 
     /// Guards `protectedSlugs` + `limitOtherImages`, which are read/written from
     /// the main actor (settings, launch) and background prefetch/eviction.
@@ -63,6 +81,9 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         // Thumbnails are tiny, so we can keep far more of them resident — enough
         // to cover a full life list without churn.
         thumbnailMemory.countLimit = 2048
+        // Full-res images are large; bound the tier by total decoded bytes so it
+        // never holds more than ~50 MB regardless of how many cards are opened.
+        fullResImageMemory.totalCostLimit = Self.fullResMemoryLimitBytes
 
         let cfg = URLSessionConfiguration.default
         // We manage our own permanent disk cache, so don't double-store in
@@ -101,6 +122,15 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         return thumbnailMemory.object(forKey: slug as NSString)
     }
 
+    /// Synchronous in-memory full-resolution lookup only (no network). Lets the
+    /// viewer show an already-fetched full-res image immediately when re-opening a
+    /// card, with no medium→full swap flash.
+    func memoryFullResolutionImage(for scientificName: String) -> UIImage? {
+        let slug = SpeciesImage.slug(for: scientificName)
+        guard !slug.isEmpty else { return nil }
+        return fullResImageMemory.object(forKey: slug as NSString)
+    }
+
     /// Returns the photo, loading from memory → disk → network as needed, and
     /// promoting the result up the tiers. Returns nil when there's no metadata
     /// URL for the species or the download fails. Call off the main actor.
@@ -134,6 +164,46 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         let prepared = img.preparingForDisplay() ?? img
         memory.setObject(prepared, forKey: key)
         return prepared
+    }
+
+    /// Returns the **true full-resolution** photo for the viewer, loading from the
+    /// capped in-memory tier or, on a miss, downloading the largest CDN size and
+    /// caching it (in memory only). Returns nil when there's no metadata URL, the
+    /// URL can't be upgraded to the full size, or the download fails. Call off the
+    /// main actor. The viewer shows the medium image first and swaps this in when
+    /// it resolves.
+    func fullResolutionImage(for scientificName: String) async -> UIImage? {
+        let slug = SpeciesImage.slug(for: scientificName)
+        guard !slug.isEmpty else { return nil }
+        let key = slug as NSString
+
+        if let cached = fullResImageMemory.object(forKey: key) { return cached }
+
+        guard let info = SpeciesPhotoMetadata.shared.info(for: scientificName),
+              let url = Self.fullResolutionURL(from: info.url),
+              let data = await download(url),
+              let img = UIImage(data: data) else {
+            return nil
+        }
+        let prepared = img.preparingForDisplay() ?? img
+        fullResImageMemory.setObject(prepared, forKey: key, cost: prepared.decodedByteCost)
+        return prepared
+    }
+
+    /// Rewrites a Macaulay asset URL to request the full-resolution size by
+    /// swapping its trailing numeric path component (e.g. `…/asset/123/900`) for
+    /// `fullResSizeComponent`. Returns nil if the URL doesn't end in a numeric size
+    /// component (so we never fabricate a bad URL) or already requests it.
+    static func fullResolutionURL(from urlString: String) -> URL? {
+        guard let url = URL(string: urlString) else { return nil }
+        let last = url.lastPathComponent
+        // Only upgrade URLs whose final component is a bare size number, matching
+        // the shape of the stored metadata URLs.
+        guard !last.isEmpty, last.allSatisfy(\.isNumber) else { return nil }
+        if last == fullResSizeComponent { return url }
+        let upgraded = url.deletingLastPathComponent()
+            .appendingPathComponent(fullResSizeComponent)
+        return upgraded
     }
 
     /// Returns a small downsampled thumbnail of the species photo, loading from
@@ -420,5 +490,20 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
             memory.removeObject(forKey: entry.slug as NSString)
             total -= entry.size
         }
+    }
+}
+
+private extension UIImage {
+    /// Approximate resident memory of the decoded bitmap (4 bytes per pixel),
+    /// used as the `NSCache` cost so the full-res tier evicts by real footprint.
+    /// `nonisolated` (the project defaults to MainActor isolation) so the store's
+    /// off-main full-res loader can compute it.
+    nonisolated var decodedByteCost: Int {
+        if let cg = cgImage {
+            return cg.width * cg.height * 4
+        }
+        let pixelWidth = size.width * scale
+        let pixelHeight = size.height * scale
+        return Int(pixelWidth * pixelHeight * 4)
     }
 }

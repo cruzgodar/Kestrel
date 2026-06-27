@@ -14,18 +14,17 @@ final class SpeciesNotifications {
 
     private init() {}
 
-    /// Asks the system once for alert+sound permission. Called on first
-    /// launch so the prompt is out of the way before the user starts a
-    /// recording session.
-    func requestAuthorizationIfNeeded() {
+    /// Asks the system once for alert+sound permission, awaiting the user's
+    /// choice. Called from the first Start Recording flow, after the location
+    /// prompt has resolved, so the two prompts appear one at a time. A no-op on
+    /// every call after the first.
+    func requestAuthorizationIfNeeded() async {
         guard !didRequestAuth else { return }
         didRequestAuth = true
-        Task { [center] in
-            do {
-                _ = try await center.requestAuthorization(options: [.alert, .sound])
-            } catch {
-                print("Kestrel: notification auth error — \(error)")
-            }
+        do {
+            _ = try await center.requestAuthorization(options: [.alert, .sound])
+        } catch {
+            print("Kestrel: notification auth error — \(error)")
         }
     }
 
