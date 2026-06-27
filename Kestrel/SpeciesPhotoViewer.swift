@@ -171,34 +171,33 @@ struct SpeciesPhotoFullScreen: View {
             // presentation background.
             Color.black
 
-            // Horizontal paging via a real `ScrollView` (not `TabView`): a
-            // ScrollView honors `.scrollDisabled`, which actually CANCELS an
-            // in-progress horizontal pan the moment a downward dismiss engages —
-            // that's what finally stops a diagonal close from sliding to the next
-            // bird (TabView's page style ignored `.scrollDisabled` mid-drag). Each
-            // page is the full screen; `pageSpacing` between them shows the black
-            // backdrop as a gutter mid-swipe, like the Photos app.
-            ScrollView(.horizontal) {
-                LazyHStack(spacing: pageSpacing) {
-                    ForEach(Array(items.enumerated()), id: \.element.id) { offset, item in
-                        ZoomablePhotoPage(
-                            item: item,
-                            isCurrent: offset == index,
-                            isZoomed: $isZoomed,
-                            onToggleUI: toggleUI
-                        )
-                        .frame(width: screenWidth, height: fullHeight)
-                        .id(offset)
+            // Horizontal paging via a `UIPageViewController` (see `PhotoPager`),
+            // not a SwiftUI ScrollView/TabView, for two reasons SwiftUI can't give
+            // us: (1) its internal scroll view's `contentInsetAdjustmentBehavior`
+            // is forced to `.never`, so the photo tracks the dismiss drag from the
+            // first point instead of being pinned at the safe-area edge until the
+            // card clears it; (2) it pages one bird per swipe and queues swipes
+            // mid-animation — like the Photos app — rather than flinging across
+            // several. `pageSpacing` shows the black backdrop as a gutter mid-swipe.
+            PhotoPager(
+                count: items.count,
+                initialIndex: index,
+                // Disable paging while zoomed (the photo's own pan owns the drag)
+                // or once a downward dismiss has engaged (so a diagonal close can't
+                // slide to the next bird).
+                pagingDisabled: isZoomed || dismissEngaged,
+                interPageSpacing: pageSpacing,
+                onIndexChange: { scrolledID = $0 }
+            ) { i in
+                ZoomablePhotoPage(
+                    item: items[i],
+                    onToggleUI: toggleUI,
+                    onZoomChange: { zoomed in
+                        // Only the current page's zoom gates paging.
+                        if i == index, isZoomed != zoomed { isZoomed = zoomed }
                     }
-                }
-                .scrollTargetLayout()
+                )
             }
-            .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $scrolledID, anchor: .center)
-            .scrollIndicators(.hidden)
-            // No paging while zoomed (the photo's own pan owns the drag) or once a
-            // downward dismiss has engaged.
-            .scrollDisabled(isZoomed || dismissEngaged)
             .frame(width: screenWidth, height: fullHeight)
 
             // Single chrome layer over the *current* bird — name top-center, back
@@ -308,7 +307,10 @@ struct SpeciesPhotoFullScreen: View {
             .font(.headline)
             .foregroundStyle(.white)
             .lineLimit(1)
-            .truncationMode(.tail)
+            // Hug the name, but cap at `screenWidth - 150` (leaving room for the
+            // back button + symmetric margin). A name that would overflow that cap
+            // shrinks to fit rather than truncating.
+            .minimumScaleFactor(0.5)
             .padding(.horizontal, 18)
             .frame(height: Self.chromeHeight)
             .frame(maxWidth: screenWidth - 150)
@@ -508,45 +510,124 @@ private struct StatusBarStyleController: UIViewControllerRepresentable {
     }
 }
 
+/// Horizontal photo pager backed by `UIPageViewController` (scroll transition).
+/// Chosen over SwiftUI's ScrollView/TabView because it gives us two things they
+/// don't: the internal paging scroll view's `contentInsetAdjustmentBehavior` is
+/// pinned to `.never` (so the photo isn't shoved by the safe-area inset while the
+/// dismiss drag offsets the card), and it pages exactly one item per swipe while
+/// still accepting queued swipes mid-animation, like the Photos app. A fresh page
+/// view controller is built each time one scrolls in, so pages are never left
+/// zoomed and images come straight from the in-memory cache.
+private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
+    let count: Int
+    let initialIndex: Int
+    let pagingDisabled: Bool
+    let interPageSpacing: CGFloat
+    let onIndexChange: (Int) -> Void
+    @ViewBuilder var page: (Int) -> Page
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIViewController(context: Context) -> UIPageViewController {
+        let pvc = UIPageViewController(
+            transitionStyle: .scroll,
+            navigationOrientation: .horizontal,
+            options: [.interPageSpacing: interPageSpacing]
+        )
+        pvc.dataSource = context.coordinator
+        pvc.delegate = context.coordinator
+        pvc.view.backgroundColor = .clear
+
+        let start = min(max(initialIndex, 0), max(count - 1, 0))
+        pvc.setViewControllers([context.coordinator.makeHost(start)], direction: .forward, animated: false)
+        context.coordinator.currentIndex = start
+
+        // Stop the internal scroll view from insetting its content for the safe
+        // area — that adjustment pinned the photo at the safe-area edge until the
+        // dismiss-dragged card cleared it, then snapped it down. `.never` keeps the
+        // photo in lockstep with the card from the first point. Deferred because
+        // the scroll view isn't in the hierarchy yet during `make`.
+        DispatchQueue.main.async {
+            context.coordinator.pagingScrollView(in: pvc)?.contentInsetAdjustmentBehavior = .never
+        }
+        return pvc
+    }
+
+    func updateUIViewController(_ pvc: UIPageViewController, context: Context) {
+        context.coordinator.parent = self
+        // Cancels an in-progress paging pan the instant a dismiss engages.
+        context.coordinator.pagingScrollView(in: pvc)?.isScrollEnabled = !pagingDisabled
+    }
+
+    final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
+        var parent: PhotoPager
+        var currentIndex = 0
+
+        init(_ parent: PhotoPager) { self.parent = parent }
+
+        func makeHost(_ index: Int) -> IndexedHost<Page> {
+            let host = IndexedHost(rootView: parent.page(index))
+            host.index = index
+            host.view.backgroundColor = .clear
+            return host
+        }
+
+        func pagingScrollView(in pvc: UIPageViewController) -> UIScrollView? {
+            pvc.view.subviews.compactMap { $0 as? UIScrollView }.first
+        }
+
+        func pageViewController(_ pvc: UIPageViewController, viewControllerBefore vc: UIViewController) -> UIViewController? {
+            guard let host = vc as? IndexedHost<Page>, host.index > 0 else { return nil }
+            return makeHost(host.index - 1)
+        }
+
+        func pageViewController(_ pvc: UIPageViewController, viewControllerAfter vc: UIViewController) -> UIViewController? {
+            guard let host = vc as? IndexedHost<Page>, host.index < parent.count - 1 else { return nil }
+            return makeHost(host.index + 1)
+        }
+
+        func pageViewController(
+            _ pvc: UIPageViewController,
+            didFinishAnimating finished: Bool,
+            previousViewControllers: [UIViewController],
+            transitionCompleted completed: Bool
+        ) {
+            guard completed, let host = pvc.viewControllers?.first as? IndexedHost<Page> else { return }
+            currentIndex = host.index
+            parent.onIndexChange(host.index)
+        }
+    }
+}
+
+/// `UIHostingController` that remembers which page index it hosts, so the pager's
+/// data source can walk to the neighboring index.
+private final class IndexedHost<Content: View>: UIHostingController<Content> {
+    var index = 0
+}
+
 /// A single zoomable page within the viewer: just the photo (pinch + pan +
 /// double-tap zoom, all driven by a `UIScrollView`). All chrome (name, back
 /// button, info panel) lives once in the container over the current page. Reports
-/// its zoom state up so the container can disable paging while zoomed, and resets
-/// zoom when it scrolls off-screen.
+/// its zoom state up via `onZoomChange` so the container can disable paging while
+/// zoomed. The pager creates a fresh page each time one scrolls into view, so a
+/// page is never left zoomed.
 private struct ZoomablePhotoPage: View {
     let item: SpeciesPhotoItem
-    let isCurrent: Bool
-    @Binding var isZoomed: Bool
     /// Toggles the chrome's visibility; fired by a single tap on the photo.
     var onToggleUI: () -> Void
+    /// Reports this page's zoom state up to the container.
+    var onZoomChange: (Bool) -> Void
 
     @State private var image: UIImage?
     @State private var loadFailed = false
-    /// Per-page zoom flag. Mirrored up into the container's `isZoomed` only while
-    /// this page is the current one, so an off-screen page resetting its zoom
-    /// can't flip the container's paging gate.
     @State private var pageZoomed = false
-    /// Bumped to ask the scroll view to reset back to fit (when the page scrolls
-    /// off-screen).
-    @State private var resetToken = 0
 
     var body: some View {
         imageLayer
             .ignoresSafeArea()
             .contentShape(Rectangle())
             .task(id: item.scientificName) { await load() }
-            .onChange(of: pageZoomed) { _, zoomed in
-                guard isCurrent else { return }
-                if isZoomed != zoomed { isZoomed = zoomed }
-            }
-            .onChange(of: isCurrent) { _, current in
-                if current {
-                    if isZoomed != pageZoomed { isZoomed = pageZoomed }
-                } else {
-                    // Page scrolled away — reset its zoom so it isn't left zoomed.
-                    resetToken &+= 1
-                }
-            }
+            .onChange(of: pageZoomed) { _, zoomed in onZoomChange(zoomed) }
     }
 
     @ViewBuilder
@@ -555,7 +636,7 @@ private struct ZoomablePhotoPage: View {
             ZoomableImageView(
                 image: image,
                 isZoomed: $pageZoomed,
-                resetToken: resetToken,
+                resetToken: 0,
                 onSingleTap: onToggleUI
             )
         } else if loadFailed {

@@ -12,6 +12,15 @@ enum BirdNETError: Error {
 actor BirdNETClassifier {
     static let sampleCount = 144_000  // 3 s @ 48 kHz mono
     static let detectionThreshold: Float = 0.3
+    /// Confidence a species must clear when it is *outside* the location/week
+    /// range filter. Higher than `detectionThreshold` so an out-of-range species
+    /// is only accepted on strong acoustic evidence — a "soft" filter rather than
+    /// a hard exclude. This both rescues species the range model under-predicts
+    /// near a boundary (a clear song still gets through) and suppresses weak,
+    /// out-of-range false positives (they no longer clear the higher bar). Set
+    /// equal to `detectionThreshold` to disable the soft filter; raise toward 1.0
+    /// to make the range filter stricter.
+    static let outOfRangeThreshold: Float = 0.7
 
     private let env: ORTEnv
     private let session: ORTSession
@@ -62,7 +71,11 @@ actor BirdNETClassifier {
         print("BirdNET: loaded — input=\(inName), output=\(outName), labels=\(labels.count)")
     }
 
-    func classify(_ samples: [Float], allowedIndices: Set<Int>? = nil) throws -> [Detection] {
+    func classify(
+        _ samples: [Float],
+        allowedIndices: Set<Int>? = nil,
+        outOfRangeThreshold: Float = BirdNETClassifier.outOfRangeThreshold
+    ) throws -> [Detection] {
         guard samples.count == Self.sampleCount else {
             throw BirdNETError.wrongSampleCount(samples.count)
         }
@@ -98,11 +111,20 @@ actor BirdNETClassifier {
         var results: [Detection] = []
         results.reserveCapacity(32)
         for (index, logit) in logits.enumerated() {
-            if let allowedIndices, !allowedIndices.contains(index) { continue }
+            // Soft range filter: out-of-range species aren't dropped, they just
+            // have to clear a higher confidence bar than in-range ones. With no
+            // filter (`allowedIndices == nil`) everything uses the normal bar.
+            let inRange = allowedIndices?.contains(index) ?? true
+            let threshold = inRange ? Self.detectionThreshold : outOfRangeThreshold
             // Model emits raw logits; apply sigmoid for [0,1] confidences.
             let confidence = 1.0 / (1.0 + expf(-logit))
-            if confidence >= Self.detectionThreshold {
+            if confidence >= threshold {
                 let (sci, common) = labels[index]
+                #if DEBUG
+                if !inRange {
+                    print("BirdNET: out-of-range accept \(sci) conf=\(String(format: "%.2f", confidence)) (bar \(outOfRangeThreshold))")
+                }
+                #endif
                 results.append(Detection(
                     scientificName: sci,
                     commonName: common,

@@ -426,14 +426,13 @@ struct LifeListView: View {
     /// feel like a continuation of that "you can add me" affordance.
     private static let addButtonTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
 
-    /// Custom pinned header standing in for the navigation bar: the "Life List"
+    /// Custom pinned header standing in for the navigation bar (the nav bar's
+    /// `.toolbar` glass items flickered across tab transitions): the "Life List"
     /// title + species count on the leading side, the filter and import buttons
-    /// on the trailing side, level with the title. A thin blur material extends up
-    /// through the status bar so scrolling rows blur beneath it — but without the
-    /// navigation bar's toolbar, whose glass items flickered across tab
-    /// transitions. The buttons are plain stock `Button`s.
+    /// on the trailing side, level with the title. No background bar — the buttons
+    /// carry their own liquid-glass capsules, like the map tab's controls.
     private var listHeader: some View {
-        HStack(alignment: .center, spacing: 16) {
+        HStack(alignment: .center, spacing: 12) {
             VStack(alignment: .leading, spacing: 1) {
                 Text("Life List")
                     .font(.largeTitle.bold())
@@ -456,22 +455,25 @@ struct LifeListView: View {
                 }
                 showStarredOnly.toggle()
             } label: {
-                // Active state shows a filled blue circle *behind* the glyph that
-                // springs in, rather than recoloring the whole control.
+                // Active state springs a filled blue circle in *behind* the glyph
+                // (the original behavior), inside a liquid-glass capsule.
                 Image(systemName: "line.3.horizontal.decrease")
                     .font(.system(size: 18, weight: .medium))
                     .foregroundStyle(showStarredOnly ? .white : .primary)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 28, height: 28)
                     .background {
                         Circle()
                             .fill(Color.accentColor)
                             .frame(
-                                width: showStarredOnly ? 34 : 30,
-                                height: showStarredOnly ? 34 : 30
+                                width: showStarredOnly ? 34 : 28,
+                                height: showStarredOnly ? 34 : 28
                             )
                             .opacity(showStarredOnly ? 1 : 0)
                     }
                     .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
+                    .padding(10)
+                    .glassEffect(.regular.interactive(), in: .circle)
+                    .contentShape(Circle())
             }
             .buttonStyle(NoDimButtonStyle())
             .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
@@ -482,7 +484,10 @@ struct LifeListView: View {
                 Image(systemName: "square.and.arrow.down")
                     .font(.system(size: 18, weight: .medium))
                     .foregroundStyle(.primary)
-                    .frame(width: 30, height: 30)
+                    .frame(width: 28, height: 28)
+                    .padding(10)
+                    .glassEffect(.regular.interactive(), in: .circle)
+                    .contentShape(Circle())
             }
             .buttonStyle(NoDimButtonStyle())
             .accessibilityLabel("Import eBird CSV")
@@ -490,7 +495,6 @@ struct LifeListView: View {
         .padding(.horizontal, 20)
         .padding(.top, 4)
         .padding(.bottom, 8)
-        .background(.ultraThinMaterial, ignoresSafeAreaEdges: .top)
     }
 
     @ViewBuilder

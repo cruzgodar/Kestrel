@@ -51,15 +51,30 @@ final class OfflineSpeciesFilter: @unchecked Sendable {
     }
 
     /// Allowed species indices at `(lat, lon)` for BirdNET `week` (1–48), or
-    /// `nil` when no table is bundled. Snaps to the nearest grid sample.
+    /// `nil` when no table is bundled.
+    ///
+    /// Unions the nearest grid sample with its 8 neighbors (a 3×3 block). Snapping
+    /// to a single coarse cell drops species whose range edge falls between the
+    /// query and the nearest sample; including the ring of neighbors covers up to
+    /// one cell (`step°`) in every direction, so a location near a range boundary
+    /// picks up both sides instead of silently missing one.
     func allowedIndices(lat: Double, lon: Double, week: Int) -> Set<Int>? {
         guard let grid else { return nil }
-        let i = min(max(Int(((lat - grid.latMin) / grid.step).rounded()), 0), grid.latCells - 1)
-        let j = min(max(Int(((lon - grid.lonMin) / grid.step).rounded()), 0), grid.lonCells - 1)
+        let ci = Int(((lat - grid.latMin) / grid.step).rounded())
+        let cj = Int(((lon - grid.lonMin) / grid.step).rounded())
         let w = min(max(week - 1, 0), grid.weeks - 1)
-        let rowIndex = (i * grid.lonCells + j) * grid.weeks + w
-        guard rowOffsets.indices.contains(rowIndex) else { return nil }
-        return decodeRow(at: rowOffsets[rowIndex])
+
+        var result = Set<Int>()
+        for di in -1...1 {
+            for dj in -1...1 {
+                let i = min(max(ci + di, 0), grid.latCells - 1)
+                let j = min(max(cj + dj, 0), grid.lonCells - 1)
+                let rowIndex = (i * grid.lonCells + j) * grid.weeks + w
+                guard rowOffsets.indices.contains(rowIndex) else { continue }
+                result.formUnion(decodeRow(at: rowOffsets[rowIndex]))
+            }
+        }
+        return result.isEmpty ? nil : result
     }
 
     // MARK: - Decoding
