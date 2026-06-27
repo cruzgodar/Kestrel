@@ -254,7 +254,7 @@ struct MapView: View {
                             coordinate: point.coordinate,
                             anchor: .center
                         ) {
-                            FadingAnnotationContent(
+                            CulledAnnotationContent(
                                 point: point,
                                 info: visibleReps[point.id],
                                 thumbSize: Self.thumbSize,
@@ -336,13 +336,29 @@ struct MapView: View {
                         }
                     }
                 )
-                // `.onEnd`, NOT `.continuous`: do no work at all while the map is
-                // in motion. Annotations are positioned by MapKit from their
-                // coordinates, so they pan/zoom with the map natively — exactly as
-                // cheap as scrolling a map with a fixed annotation set. The cluster
-                // rebuild + viewport cull run once here, after the camera settles.
+                // Record the camera cheaply every frame into the non-observable
+                // `CameraTracker` (no re-render). Annotations are positioned by
+                // MapKit from their coordinates, so they pan/zoom with the map
+                // natively while we do no SwiftUI work mid-gesture.
+                .onMapCameraChange(frequency: .continuous) { context in
+                    cacheCamera(context)
+                }
+                // Commit the cull/rebuild the instant a pan/zoom touch lifts, so
+                // thumbnails appear/disappear immediately rather than waiting for
+                // the map's momentum to decay. `.onEnd` below is the backstop for
+                // programmatic camera moves and the post-fling settle.
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 8).onEnded { _ in commitVisibleEntries() }
+                )
+                .simultaneousGesture(
+                    MagnifyGesture().onEnded { _ in commitVisibleEntries() }
+                )
+                // Backstop: programmatic camera moves (recenter / focus) and the
+                // final settle after a fling aren't a finger-up, so reconcile here
+                // too. Idempotent with the gesture commits (threshold-guarded).
                 .onMapCameraChange(frequency: .onEnd) { context in
-                    handleCameraChange(context)
+                    cacheCamera(context)
+                    commitVisibleEntries()
                 }
                 .onAppear { viewSize = geo.size }
                 // Clusters before culling in every path (see handleCameraChange)
@@ -464,33 +480,37 @@ struct MapView: View {
 
     // MARK: - Camera + clustering
 
-    private func handleCameraChange(_ context: MapCameraUpdateContext) {
-        let span = context.region.span
-        let center = context.region.center
-        let distance = context.camera.distance
-
-        // Quantize zoom into discrete steps so a continuous pinch doesn't
-        // trigger a rebuild on every frame. The step boundary picks up
-        // legitimate zoom-level transitions without flickering mid-pinch.
-        let step = Int((log2(max(distance, 1)) * 4).rounded(.down))
-
-        camera.lastSpan = span
-        camera.lastCenter = center
+    /// Record the live camera every frame (continuous callback). Mutates only the
+    /// non-observable `CameraTracker`, so it never re-renders the map mid-gesture;
+    /// the actual cull/rebuild is deferred to `commitVisibleEntries` at touch-up.
+    private func cacheCamera(_ context: MapCameraUpdateContext) {
+        camera.lastSpan = context.region.span
+        camera.lastCenter = context.region.center
+        // Quantize zoom into discrete steps so a continuous pinch doesn't trigger a
+        // rebuild on every frame. The step boundary picks up legitimate zoom-level
+        // transitions without flickering mid-pinch.
+        camera.pendingZoomStep = Int((log2(max(context.camera.distance, 1)) * 4).rounded(.down))
         // Any user-driven camera move after the recenter grace window clears the
         // filled state; only a recenter tap fills it again.
         if centeredOnUser, Date.now > recenterGraceUntil {
             withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = false }
         }
+    }
 
+    /// Rebuild clusters + viewport-cull from the last cached camera, *instantly*.
+    /// Run the moment a pan/zoom touch lifts (gesture `.onEnded`), and again on the
+    /// camera's `.onEnd` as a backstop for programmatic moves (recenter / focus)
+    /// and the post-fling settle — rather than only once the map fully stops.
+    private func commitVisibleEntries() {
         // Rebuild clusters (which fills `visibleReps`, the annotation *content*)
         // before culling `visiblePoints` (which mounts the annotation *hosts*),
         // so each host is created with its content already present. If a host is
         // mounted while its rep info is still missing, it renders empty and
         // MapKit caches a zero-size hit area that it never re-measures — that's
         // the root cause of fresh stacks silently swallowing the first taps.
-        if step != camera.lastZoomStep {
+        if let step = camera.pendingZoomStep, step != camera.lastZoomStep {
             camera.lastZoomStep = step
-            rebuildClusters(animated: true)
+            rebuildClusters(animated: false)
         }
 
         // Refresh the viewport-culled set whenever pan or zoom crosses a
@@ -591,7 +611,7 @@ struct MapView: View {
     /// hit areas after the cluster set changes. Coalesces a continuous pinch
     /// into a single remount fired ~0.25 s after the last change, so it doesn't
     /// churn mid-gesture. The remount itself is visually silent — annotations
-    /// that are still reps reappear solid (see `FadingAnnotationContent`), no
+    /// that are still reps reappear solid (see `CulledAnnotationContent`), no
     /// re-fade.
     private func scheduleHitTestRehydration() {
         rehydrateToken &+= 1
@@ -697,7 +717,7 @@ struct MapView: View {
     }
 }
 
-// MARK: - Per-annotation fading wrapper
+// MARK: - Per-annotation cull wrapper
 //
 // MapKit's annotation host (a UIKit `MKAnnotationView` wrapping a
 // `UIHostingController`) does *not* honor SwiftUI's `.allowsHitTesting`
@@ -710,79 +730,29 @@ struct MapView: View {
 // The fix: when an entry isn't a current cluster rep, render *no
 // content* inside the Annotation (an empty `if let`), so MapKit's
 // hosting view collapses to zero size and can't absorb taps. When the
-// entry *is* a rep, the content renders and a local opacity state
-// drives a fade-in. When the entry leaves the rep set, we animate the
-// opacity to zero first, then clear the rendered content. The
-// animation pathway is preserved (we're tweening a state property on a
-// mounted view, not a transition), and the dead annotations have no
-// footprint.
-private struct FadingAnnotationContent: View {
+// entry *is* a rep, the content renders; when it leaves the rep set the
+// content is cleared. Show and hide are instant (no crossfade), in step
+// with the touch-up cull, and the dead annotations have no footprint.
+private struct CulledAnnotationContent: View {
     let point: MapPoint
     let info: MapView.RepInfo?
     let thumbSize: CGSize
     let onTap: (MapView.RepInfo) -> Void
 
-    /// Mirror of `info` lagged behind by the fade-out animation. While
-    /// the fade is running, `info` is already nil but `rendered` still
-    /// holds the previous value so the content stays mounted long enough
-    /// to be visible during the tween. Cleared in the animation's
-    /// completion callback.
-    @State private var rendered: MapView.RepInfo?
-    @State private var opacity: Double = 0
-    /// False until the first `info` resolution after this view mounts. Lets us
-    /// distinguish a genuine first appearance (or a hit-test rehydration
-    /// remount, which destroys + recreates this view) — which should settle to
-    /// its final opacity instantly — from a later transition while mounted,
-    /// which should animate. This keeps the post-pinch remount silent instead
-    /// of flashing every thumbnail through a fresh fade-in.
-    @State private var didResolve = false
-
+    // Render directly off `info`: content is present exactly when this entry is a
+    // current cluster rep and absent (zero-size, tap-transparent) otherwise. Show
+    // and hide are instant, in step with the touch-up cull, so no lagged-mirror or
+    // opacity state is needed.
     var body: some View {
-        Group {
-            if let rendered {
-                MapAnnotationContent(
-                    point: point,
-                    clusterCount: rendered.count,
-                    thumbSize: thumbSize
-                )
-                .contentShape(Rectangle())
-                .opacity(opacity)
-                .onTapGesture {
-                    onTap(rendered)
-                }
-            }
-        }
-        .onChange(of: info, initial: true) { _, newInfo in
-            handle(newInfo)
-        }
-    }
-
-    private func handle(_ newInfo: MapView.RepInfo?) {
-        // First resolution after mount (incl. a rehydration remount): jump
-        // straight to the final opacity with no animation, so re-creating an
-        // already-visible annotation doesn't replay its fade-in.
-        if !didResolve {
-            didResolve = true
-            rendered = newInfo
-            opacity = newInfo == nil ? 0 : 1
-            return
-        }
-        if let newInfo {
-            let wasOff = (rendered == nil)
-            rendered = newInfo
-            if wasOff {
-                opacity = 0
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    opacity = 1
-                }
-            }
-            // If we were already visible we just refresh the count;
-            // no fade needed since the user already sees this thumbnail.
-        } else if rendered != nil {
-            withAnimation(.easeInOut(duration: 0.3)) {
-                opacity = 0
-            } completion: {
-                rendered = nil
+        if let info {
+            MapAnnotationContent(
+                point: point,
+                clusterCount: info.count,
+                thumbSize: thumbSize
+            )
+            .contentShape(Rectangle())
+            .onTapGesture {
+                onTap(info)
             }
         }
     }
@@ -1197,7 +1167,8 @@ private struct ClusterGridItem: View {
                     SpeciesPhoto(
                         scientificName: point.scientificName,
                         showsCredit: false,
-                        tappable: false
+                        tappable: false,
+                        usesThumbnail: true
                     ) {
                         Color.gray
                             .overlay {
@@ -1233,7 +1204,7 @@ private struct BirdMapThumbnail: View {
         // in the full-screen viewer instead. Taps are handled by the map
         // (annotation / cluster grid), not SpeciesPhoto, so they don't fight
         // MapKit's annotation hit-testing.
-        SpeciesPhoto(scientificName: scientificName, showsCredit: false, tappable: false) {
+        SpeciesPhoto(scientificName: scientificName, showsCredit: false, tappable: false, usesThumbnail: true) {
             Color.gray
                 .overlay {
                     Image(systemName: "bird")
@@ -1271,6 +1242,9 @@ private final class CameraTracker {
     var lastSpan: MKCoordinateSpan?
     var lastCenter = CLLocationCoordinate2D(latitude: 0, longitude: 0)
     var lastZoomStep: Int?
+    /// Zoom step recorded by the continuous camera callback, applied (compared
+    /// against `lastZoomStep`) only when the cull/rebuild is committed at touch-up.
+    var pendingZoomStep: Int?
     var lastFilterCenter: CLLocationCoordinate2D?
     var lastFilterSpan: MKCoordinateSpan?
 }

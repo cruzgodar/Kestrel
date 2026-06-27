@@ -300,20 +300,37 @@ struct SpeciesPhotoFullScreen: View {
         }
     }
 
-    /// Species name in a liquid-glass capsule, top-center. Width-capped so a long
-    /// name truncates instead of sliding under the back button.
+    /// Species name in a liquid-glass capsule, top-center. The capsule hugs the
+    /// name; only a name too wide for the cap (`screenWidth - 150`, leaving room
+    /// for the back button + symmetric margin) shrinks to fit.
     private func nameCapsule(for item: SpeciesPhotoItem, screenWidth: CGFloat) -> some View {
+        let cap = screenWidth - 150
+        // `.frame(maxWidth:)` is a *flexible* frame: inside the full-width top-row
+        // ZStack it fills to its max, so the old capsule was always `cap` wide.
+        // `ViewThatFits` instead picks the natural-width label when it fits within
+        // `cap` (capsule hugs the text) and only falls back to the scaled,
+        // cap-width label when the name is genuinely too long. The outer
+        // `.frame(maxWidth: cap)` exists solely to propose `cap` as the fit budget;
+        // its transparent expansion stays centered, so the hugging capsule does too.
+        return ViewThatFits(in: .horizontal) {
+            // `fixedSize` exposes the label's true ideal width so ViewThatFits can
+            // tell whether it actually fits `cap` (a plain line-limited Text would
+            // silently truncate to the budget and always "fit").
+            nameLabel(for: item)
+                .fixedSize(horizontal: true, vertical: false)
+            nameLabel(for: item)
+                .minimumScaleFactor(0.5)
+        }
+        .frame(maxWidth: cap)
+    }
+
+    private func nameLabel(for item: SpeciesPhotoItem) -> some View {
         Text(commonName(for: item))
             .font(.headline)
             .foregroundStyle(.white)
             .lineLimit(1)
-            // Hug the name, but cap at `screenWidth - 150` (leaving room for the
-            // back button + symmetric margin). A name that would overflow that cap
-            // shrinks to fit rather than truncating.
-            .minimumScaleFactor(0.5)
             .padding(.horizontal, 18)
             .frame(height: Self.chromeHeight)
-            .frame(maxWidth: screenWidth - 150)
             .glassEffect(.regular, in: .capsule)
     }
 
@@ -541,6 +558,7 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
         let start = min(max(initialIndex, 0), max(count - 1, 0))
         pvc.setViewControllers([context.coordinator.makeHost(start)], direction: .forward, animated: false)
         context.coordinator.currentIndex = start
+        context.coordinator.lastReportedIndex = start
 
         // Stop the internal scroll view from insetting its content for the safe
         // area — that adjustment pinned the photo at the safe-area edge until the
@@ -548,7 +566,11 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
         // photo in lockstep with the card from the first point. Deferred because
         // the scroll view isn't in the hierarchy yet during `make`.
         DispatchQueue.main.async {
-            context.coordinator.pagingScrollView(in: pvc)?.contentInsetAdjustmentBehavior = .never
+            guard let scrollView = context.coordinator.pagingScrollView(in: pvc) else { return }
+            scrollView.contentInsetAdjustmentBehavior = .never
+            // Report the index switch as soon as the swipe crosses the halfway
+            // point, rather than waiting for `didFinishAnimating` (full settle).
+            context.coordinator.observeOffset(of: scrollView)
         }
         return pvc
     }
@@ -561,9 +583,45 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
         var parent: PhotoPager
+        /// The settled page (updated only by `didFinishAnimating`). The halfway
+        /// switch measures the live swipe relative to this.
         var currentIndex = 0
+        /// Last index handed up via `onIndexChange`, so a single swipe reports the
+        /// switch once (when it crosses halfway) and not on every offset tick.
+        var lastReportedIndex = 0
+        private var offsetObservation: NSKeyValueObservation?
 
         init(_ parent: PhotoPager) { self.parent = parent }
+
+        /// Watch the paging scroll view's offset and flip the reported index the
+        /// instant the swipe is more than halfway to the neighboring page. The
+        /// scroll view rests with the current page centered at `contentOffset.x ==
+        /// bounds.width`; a drag moves it within ±`bounds.width` of that, so the
+        /// signed fraction past center tells us how far toward the next/previous
+        /// page the swipe has travelled. We KVO the offset rather than become the
+        /// scroll view's delegate, which `UIPageViewController` owns internally.
+        func observeOffset(of scrollView: UIScrollView) {
+            offsetObservation = scrollView.observe(\.contentOffset, options: [.new]) { [weak self] scrollView, _ in
+                guard let self else { return }
+                let width = scrollView.bounds.width
+                guard width > 0 else { return }
+                let fraction = (scrollView.contentOffset.x - width) / width
+                let target: Int
+                if fraction >= 0.5 {
+                    target = self.currentIndex + 1
+                } else if fraction <= -0.5 {
+                    target = self.currentIndex - 1
+                } else {
+                    target = self.currentIndex
+                }
+                let clamped = min(max(target, 0), max(self.parent.count - 1, 0))
+                guard clamped != self.lastReportedIndex else { return }
+                self.lastReportedIndex = clamped
+                self.parent.onIndexChange(clamped)
+            }
+        }
+
+        deinit { offsetObservation?.invalidate() }
 
         func makeHost(_ index: Int) -> IndexedHost<Page> {
             let host = IndexedHost(rootView: parent.page(index))
@@ -594,7 +652,13 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
         ) {
             guard completed, let host = pvc.viewControllers?.first as? IndexedHost<Page> else { return }
             currentIndex = host.index
-            parent.onIndexChange(host.index)
+            // The halfway observer has usually already reported this index; keep
+            // both in sync so the next swipe measures from the settled page and
+            // an aborted swipe (snap-back) still re-reports correctly.
+            if lastReportedIndex != host.index {
+                lastReportedIndex = host.index
+                parent.onIndexChange(host.index)
+            }
         }
     }
 }

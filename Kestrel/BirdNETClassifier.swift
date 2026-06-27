@@ -20,13 +20,29 @@ actor BirdNETClassifier {
     /// out-of-range false positives (they no longer clear the higher bar). Set
     /// equal to `detectionThreshold` to disable the soft filter; raise toward 1.0
     /// to make the range filter stricter.
-    static let outOfRangeThreshold: Float = 0.7
+    static let outOfRangeThreshold: Float = 1.0
+
+    /// Non-species classes in the BirdNET 6K v2.4 label set (noise/anthropogenic
+    /// sounds). These must *never* be reported as detections — they aren't birds.
+    /// They're normally suppressed because they sit outside every range filter and
+    /// `outOfRangeThreshold` is 1.0 (unreachable), but that's a coincidental
+    /// safeguard: lowering the threshold, or a future filter that happens to allow
+    /// one of these indices, would let them through. The `nonBirdIndices` guard in
+    /// `classify` excludes them unconditionally, independent of any threshold.
+    static let nonBirdLabels: Set<String> = [
+        "Dog", "Engine", "Environmental", "Fireworks", "Gun",
+        "Human non-vocal", "Human vocal", "Human whistle",
+        "Noise", "Power tools", "Siren",
+    ]
 
     private let env: ORTEnv
     private let session: ORTSession
     private let inputName: String
     private let outputName: String
     private let labels: [(scientific: String, common: String)]
+    /// Label indices for `nonBirdLabels`, resolved once at load. Detections at
+    /// these indices are dropped unconditionally in `classify`.
+    private let nonBirdIndices: Set<Int>
 
     init() throws {
         guard let modelURL = Bundle.main.url(forResource: "birdnet", withExtension: "onnx") else {
@@ -68,7 +84,12 @@ actor BirdNETClassifier {
             if parts.count == 2 { return (parts[0], parts[1]) }
             return (String(line), String(line))
         }
-        print("BirdNET: loaded — input=\(inName), output=\(outName), labels=\(labels.count)")
+        self.nonBirdIndices = Set(
+            self.labels.enumerated()
+                .filter { Self.nonBirdLabels.contains($0.element.scientific) }
+                .map(\.offset)
+        )
+        print("BirdNET: loaded — input=\(inName), output=\(outName), labels=\(labels.count), nonBird=\(nonBirdIndices.count)")
     }
 
     func classify(
@@ -111,6 +132,9 @@ actor BirdNETClassifier {
         var results: [Detection] = []
         results.reserveCapacity(32)
         for (index, logit) in logits.enumerated() {
+            // Hard guard: never report non-species classes (human voice, dog,
+            // noise, etc.), regardless of confidence or any threshold setting.
+            if nonBirdIndices.contains(index) { continue }
             // Soft range filter: out-of-range species aren't dropped, they just
             // have to clear a higher confidence bar than in-range ones. With no
             // filter (`allowedIndices == nil`) everything uses the normal bar.

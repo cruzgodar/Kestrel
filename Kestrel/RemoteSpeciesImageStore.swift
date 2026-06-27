@@ -1,3 +1,4 @@
+import ImageIO
 import UIKit
 
 /// Persistent store for the remote ("Official embed") species photos.
@@ -7,14 +8,33 @@ import UIKit
 /// photo stays forever), and the network as the source of truth. The on-disk
 /// copy is keyed by the `SpeciesImage` filename slug.
 ///
+/// A parallel **thumbnail tier** mirrors all three: a small (`thumbnailMaxPixelSize`
+/// max dimension) downsample of each photo, cached in memory and on disk as
+/// `{slug}_thumb.jpg`. Lists, map pins, and cluster grids show *many* photos at a
+/// small size; decoding the full ~900px image for each is what made scrolling them
+/// sluggish. The thumbnail is generated with ImageIO (which decode-downsamples
+/// without ever allocating the full bitmap) the first time it's needed and when a
+/// photo is freshly downloaded, then served from the cheap caches thereafter. The
+/// full-screen viewer keeps using the full-resolution tier (`image(for:)`).
+///
 /// `@unchecked Sendable` + nonisolated: callers hit it from view bodies,
 /// background prefetch tasks, and the full-screen viewer.
 nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     static let shared = RemoteSpeciesImageStore()
 
     private let memory = NSCache<NSString, UIImage>()
+    /// In-memory cache of downsampled thumbnails (see the thumbnail tier note).
+    /// Separate from `memory` so a thumbnail and its full image can both be
+    /// resident without evicting each other.
+    private let thumbnailMemory = NSCache<NSString, UIImage>()
     private let dir: URL
     private let session: URLSession
+
+    /// Longest edge, in pixels, of a cached thumbnail. Comfortably covers the
+    /// largest small-photo context (the map cluster-grid cell on the biggest
+    /// screens, ~450px) while decoding to roughly a third of the full image's
+    /// pixels — and far less memory once resident.
+    static let thumbnailMaxPixelSize: CGFloat = 500
 
     /// Ceiling for cached "other" images — anything neither on the life list
     /// nor in the current nearby list — enforced only while the user's "Limit
@@ -39,6 +59,9 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         dir = base.appendingPathComponent("SpeciesPhotos", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         memory.countLimit = 512
+        // Thumbnails are tiny, so we can keep far more of them resident — enough
+        // to cover a full life list without churn.
+        thumbnailMemory.countLimit = 2048
 
         let cfg = URLSessionConfiguration.default
         // We manage our own permanent disk cache, so don't double-store in
@@ -53,6 +76,10 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         dir.appendingPathComponent(slug + ".jpg")
     }
 
+    private func thumbFileURL(forSlug slug: String) -> URL {
+        dir.appendingPathComponent(slug + "_thumb.jpg")
+    }
+
     // MARK: - Reads
 
     /// Synchronous in-memory lookup only (no disk, no network). Safe + instant
@@ -62,6 +89,15 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         let slug = SpeciesImage.slug(for: scientificName)
         guard !slug.isEmpty else { return nil }
         return memory.object(forKey: slug as NSString)
+    }
+
+    /// Synchronous in-memory thumbnail lookup only (no disk, no network). The
+    /// thumbnail counterpart of `memoryImage(for:)` — used by small photo contexts
+    /// to render an already-decoded thumbnail with no placeholder flash.
+    func memoryThumbnail(for scientificName: String) -> UIImage? {
+        let slug = SpeciesImage.slug(for: scientificName)
+        guard !slug.isEmpty else { return nil }
+        return thumbnailMemory.object(forKey: slug as NSString)
     }
 
     /// Returns the photo, loading from memory → disk → network as needed, and
@@ -91,9 +127,95 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         }
         try? data.write(to: fileURL(forSlug: slug), options: .atomic)
         didCacheImage(slug: slug)
+        // Generate the thumbnail off the bytes we already have in hand, so a small
+        // context that loads this species next gets it from cache.
+        _ = makeAndCacheThumbnail(slug: slug, from: data)
         let prepared = img.preparingForDisplay() ?? img
         memory.setObject(prepared, forKey: key)
         return prepared
+    }
+
+    /// Returns a small downsampled thumbnail of the species photo, loading from
+    /// memory → disk-thumbnail → (full-resolution bytes, downsampled) → network as
+    /// needed and promoting the result up the tiers. Far cheaper to decode and
+    /// hold than the full image — use it for lists, map pins, and cluster grids.
+    /// Returns nil when there's no metadata URL for the species or loading fails.
+    /// Call off the main actor.
+    func thumbnailImage(for scientificName: String) async -> UIImage? {
+        let slug = SpeciesImage.slug(for: scientificName)
+        guard !slug.isEmpty else { return nil }
+        let key = slug as NSString
+
+        if let cached = thumbnailMemory.object(forKey: key) { return cached }
+
+        // Disk thumbnail.
+        if let data = try? Data(contentsOf: thumbFileURL(forSlug: slug)),
+           let img = UIImage(data: data) {
+            let prepared = img.preparingForDisplay() ?? img
+            thumbnailMemory.setObject(prepared, forKey: key)
+            return prepared
+        }
+
+        // No thumbnail yet: downsample from the full image's bytes (cached on disk
+        // if we have it, otherwise fetched from the network — which also persists
+        // the full image and seeds its own thumbnail).
+        guard let fullData = await fullImageData(slug: slug, scientificName: scientificName) else {
+            return nil
+        }
+        return makeAndCacheThumbnail(slug: slug, from: fullData)
+    }
+
+    /// Full-resolution image bytes for a species — from the on-disk cache if
+    /// present, otherwise downloaded and persisted (so the viewer and a later
+    /// thumbnail request both benefit). Returns nil when unavailable.
+    private func fullImageData(slug: String, scientificName: String) async -> Data? {
+        if let data = try? Data(contentsOf: fileURL(forSlug: slug)) {
+            return data
+        }
+        guard let info = SpeciesPhotoMetadata.shared.info(for: scientificName),
+              let url = URL(string: info.url),
+              let data = await download(url),
+              UIImage(data: data) != nil else {
+            return nil
+        }
+        try? data.write(to: fileURL(forSlug: slug), options: .atomic)
+        didCacheImage(slug: slug)
+        return data
+    }
+
+    /// Downsamples the given image bytes to a thumbnail, writes it to disk, and
+    /// caches it in memory. Returns the decoded thumbnail (nil if downsampling
+    /// fails). Safe to call from any actor.
+    @discardableResult
+    private func makeAndCacheThumbnail(slug: String, from data: Data) -> UIImage? {
+        guard let thumb = Self.downsample(data, maxPixelSize: Self.thumbnailMaxPixelSize) else {
+            return nil
+        }
+        if let jpeg = thumb.jpegData(compressionQuality: 0.8) {
+            try? jpeg.write(to: thumbFileURL(forSlug: slug), options: .atomic)
+        }
+        thumbnailMemory.setObject(thumb, forKey: slug as NSString)
+        return thumb
+    }
+
+    /// Decode-downsamples JPEG/PNG bytes to a thumbnail whose longest edge is at
+    /// most `maxPixelSize`, using ImageIO so the full-size bitmap is never
+    /// allocated. `ShouldCacheImmediately` returns a ready-to-draw image.
+    private static func downsample(_ data: Data, maxPixelSize: CGFloat) -> UIImage? {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
+            return nil
+        }
+        let thumbOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ] as CFDictionary
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions) else {
+            return nil
+        }
+        return UIImage(cgImage: cgImage)
     }
 
     /// Ensures the species photo is on disk (downloading if needed) and returns
@@ -155,6 +277,9 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         }
         try? data.write(to: dest, options: .atomic)
         didCacheImage(slug: slug)
+        // Seed the thumbnail while we have the bytes, so the first time this
+        // species scrolls into a list/map it's served straight from cache.
+        makeAndCacheThumbnail(slug: slug, from: data)
     }
 
     private func download(_ url: URL) async -> Data? {
@@ -241,7 +366,10 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         var others: [Cached] = []
         var total: Int64 = 0
         for url in urls where url.pathExtension == "jpg" {
-            let slug = url.deletingPathExtension().lastPathComponent
+            // A thumbnail file (`{slug}_thumb.jpg`) is protected — and keyed in the
+            // memory caches — by its *base* slug, so it follows its full image.
+            let filename = url.deletingPathExtension().lastPathComponent
+            let slug = filename.hasSuffix("_thumb") ? String(filename.dropLast("_thumb".count)) : filename
             if protectedSlugs.contains(slug) { continue }
             let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let size = Int64(values?.fileSize ?? 0)
@@ -257,6 +385,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
             if total <= Self.otherImagesLimitBytes { break }
             try? fm.removeItem(at: entry.url)
             memory.removeObject(forKey: entry.slug as NSString)
+            thumbnailMemory.removeObject(forKey: entry.slug as NSString)
             total -= entry.size
         }
     }

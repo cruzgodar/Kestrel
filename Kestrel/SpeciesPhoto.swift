@@ -18,6 +18,10 @@ struct SpeciesPhoto<Placeholder: View>: View {
     let scientificName: String
     var showsCredit: Bool = false
     var tappable: Bool = true
+    /// Load the small cached thumbnail rather than the full-resolution image. Set
+    /// by the small contexts that show many photos at once (life-list rows, map
+    /// pins, cluster grids) so scrolling them doesn't decode full ~900px images.
+    var usesThumbnail: Bool = false
     /// Overrides the default tap action (which opens a singleton viewer). The
     /// Life List passes one that opens the viewer over the whole ordered list so
     /// the user can swipe between birds.
@@ -43,7 +47,11 @@ struct SpeciesPhoto<Placeholder: View>: View {
 
     @ViewBuilder
     private var content: some View {
-        RemoteSpeciesImage(scientificName: scientificName, showsCredit: showsCredit) {
+        RemoteSpeciesImage(
+            scientificName: scientificName,
+            showsCredit: showsCredit,
+            usesThumbnail: usesThumbnail
+        ) {
             placeholder()
         }
     }
@@ -54,6 +62,8 @@ struct SpeciesPhoto<Placeholder: View>: View {
 private struct RemoteSpeciesImage<Placeholder: View>: View {
     let scientificName: String
     var showsCredit: Bool
+    /// Use the small thumbnail tier instead of the full image (see `SpeciesPhoto`).
+    var usesThumbnail: Bool = false
     @ViewBuilder var placeholder: () -> Placeholder
 
     @State private var image: UIImage?
@@ -76,14 +86,21 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
             }
         }
         .task(id: scientificName) {
-            if let mem = RemoteSpeciesImageStore.shared.memoryImage(for: scientificName) {
+            let store = RemoteSpeciesImageStore.shared
+            // Synchronous memory hit first (no placeholder flash) from whichever
+            // tier this context uses.
+            if let mem = usesThumbnail
+                ? store.memoryThumbnail(for: scientificName)
+                : store.memoryImage(for: scientificName) {
                 image = mem
                 loaded = true
                 return
             }
             // Remote only — no bundled fallback. Species without remote metadata
             // (e.g. Indonesian Honeyeater) show the placeholder.
-            let img = await RemoteSpeciesImageStore.shared.image(for: scientificName)
+            let img = usesThumbnail
+                ? await store.thumbnailImage(for: scientificName)
+                : await store.image(for: scientificName)
             guard !Task.isCancelled else { return }
             image = img
             loaded = true

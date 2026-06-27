@@ -283,14 +283,11 @@ struct LifeListView: View {
                 }
             }
         }
-        // The title, subtitle, and the filter/import controls live in a custom
-        // pinned header (`safeAreaInset(.top)` below) instead of the navigation
-        // bar. In the nav bar's `.toolbar`, the buttons' liquid-glass backgrounds
-        // were snapshotted across tab transitions — flickering out and loading
-        // their shadow too dark, then snapping back, on the way in. A plain glass
-        // overlay (like the map tab's controls) has neither problem; a custom
-        // header keeps them visually on the title line where they belong.
-        .toolbar(.hidden, for: .navigationBar)
+        .navigationTitle("Life List")
+        .navigationSubtitle(speciesCountText)
+        // Keep the title big and leading-aligned on its own line (inlineLarge),
+        // sitting level with the filter/import toolbar buttons.
+        .toolbarTitleDisplayMode(.inlineLarge)
         // Swallow taps in the bottom strip — the glass search field plus the
         // gap up to 4pt above its top — so taps meant for the search field or
         // tab bar don't fall through to the list rows scrolling beneath the
@@ -322,7 +319,46 @@ struct LifeListView: View {
                     proxy.frame(in: .global).minY
                 } action: { searchFieldTop = $0 }
         }
-        .safeAreaInset(edge: .top, spacing: 0) { listHeader }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    // Re-snapshot the currently-starred species each time the
+                    // filter is switched on. This frozen set drives which rows
+                    // show while filtering, so unstarring leaves a bird visible
+                    // until the filter is toggled off and on again.
+                    if !showStarredOnly {
+                        starredSnapshot = Set(
+                            store.entries.lazy.filter(\.isStarred).map(\.scientificName)
+                        )
+                    }
+                    showStarredOnly.toggle()
+                } label: {
+                    Image(systemName: "line.3.horizontal.decrease")
+                        .foregroundStyle(showStarredOnly ? .white : .primary)
+                        .frame(width: 28, height: 28)
+                        .background {
+                            Circle()
+                                .fill(Color.accentColor)
+                                .frame(
+                                    width: showStarredOnly ? 36 : 28,
+                                    height: showStarredOnly ? 36 : 28
+                                )
+                                .opacity(showStarredOnly ? 1 : 0)
+                        }
+                        .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
+                }
+                .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
+            }
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showImportInfo = true
+                } label: {
+                    Image(systemName: "square.and.arrow.down")
+                }
+                .accessibilityLabel("Import eBird CSV")
+            }
+        }
         // Recompute catalog suggestions whenever the query changes, but
         // wait out a short debounce so mid-typing keystrokes don't each
         // kick off a 6,500-species scan. SwiftUI cancels the previous
@@ -425,77 +461,6 @@ struct LifeListView: View {
     /// -list circle on detection rows. Matched here so catalog suggestions
     /// feel like a continuation of that "you can add me" affordance.
     private static let addButtonTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
-
-    /// Custom pinned header standing in for the navigation bar (the nav bar's
-    /// `.toolbar` glass items flickered across tab transitions): the "Life List"
-    /// title + species count on the leading side, the filter and import buttons
-    /// on the trailing side, level with the title. No background bar — the buttons
-    /// carry their own liquid-glass capsules, like the map tab's controls.
-    private var listHeader: some View {
-        HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Life List")
-                    .font(.largeTitle.bold())
-                Text(speciesCountText)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-
-            Spacer(minLength: 12)
-
-            Button {
-                // Re-snapshot the currently-starred species each time the filter
-                // is switched on. This frozen set drives which rows show while
-                // filtering, so unstarring leaves a bird visible until the filter
-                // is toggled off and on again.
-                if !showStarredOnly {
-                    starredSnapshot = Set(
-                        store.entries.lazy.filter(\.isStarred).map(\.scientificName)
-                    )
-                }
-                showStarredOnly.toggle()
-            } label: {
-                // Active state springs a filled blue circle in *behind* the glyph
-                // (the original behavior), inside a liquid-glass capsule.
-                Image(systemName: "line.3.horizontal.decrease")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(showStarredOnly ? .white : .primary)
-                    .frame(width: 28, height: 28)
-                    .background {
-                        Circle()
-                            .fill(Color.accentColor)
-                            .frame(
-                                width: showStarredOnly ? 34 : 28,
-                                height: showStarredOnly ? 34 : 28
-                            )
-                            .opacity(showStarredOnly ? 1 : 0)
-                    }
-                    .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
-                    .padding(10)
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(NoDimButtonStyle())
-            .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
-
-            Button {
-                showImportInfo = true
-            } label: {
-                Image(systemName: "square.and.arrow.down")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundStyle(.primary)
-                    .frame(width: 28, height: 28)
-                    .padding(10)
-                    .glassEffect(.regular.interactive(), in: .circle)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(NoDimButtonStyle())
-            .accessibilityLabel("Import eBird CSV")
-        }
-        .padding(.horizontal, 20)
-        .padding(.top, 4)
-        .padding(.bottom, 8)
-    }
 
     @ViewBuilder
     private func existingRow(entry: LifeListEntry) -> some View {
