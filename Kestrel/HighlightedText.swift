@@ -198,23 +198,60 @@ private struct FlowLayout: Layout {
     }
 
     private func computeLines(subviews: Subviews, maxWidth: CGFloat) -> [Line] {
-        var lines: [Line] = []
-        var current = Line()
+        let sizes = subviews.indices.map { subviews[$0].sizeThatFits(.unspecified) }
+        // An atom with no leading space is "glued" to its predecessor (e.g. the
+        // final period after "…your life list"). A glued atom must never start a
+        // line on its own — that's what orphans trailing punctuation onto the next
+        // line. So on overflow we carry the whole trailing glued chain down with it.
+        func glued(_ i: Int) -> Bool { !subviews[i][LeadingSpaceKey.self] }
+        func lineWidth(_ indices: [Int]) -> CGFloat {
+            var w: CGFloat = 0
+            for (offset, i) in indices.enumerated() {
+                if offset > 0, !glued(i) { w += spacing }
+                w += sizes[i].width
+            }
+            return w
+        }
+
+        var lineGroups: [[Int]] = []
+        var current: [Int] = []
+        var currentWidth: CGFloat = 0
+
         for index in subviews.indices {
-            let size = subviews[index].sizeThatFits(.unspecified)
-            let gap = current.indices.isEmpty
-                ? 0
-                : (subviews[index][LeadingSpaceKey.self] ? spacing : 0)
-            if !current.indices.isEmpty, current.width + gap + size.width > maxWidth {
-                lines.append(current)
-                current = Line(indices: [index], width: size.width, height: size.height)
+            let gap = current.isEmpty ? 0 : (glued(index) ? 0 : spacing)
+            if !current.isEmpty, currentWidth + gap + sizes[index].width > maxWidth {
+                if glued(index) {
+                    // Walk back to the start of the trailing glued chain (the first
+                    // atom that *does* have a leading space), and move that whole run
+                    // down with the overflowing atom — unless it's the only thing on
+                    // the line, in which case there's nothing better to do.
+                    var start = current.count - 1
+                    while start > 0, glued(current[start]) { start -= 1 }
+                    if start > 0 {
+                        let chain = Array(current[start...])
+                        current.removeSubrange(start...)
+                        lineGroups.append(current)
+                        current = chain + [index]
+                        currentWidth = lineWidth(current)
+                        continue
+                    }
+                }
+                lineGroups.append(current)
+                current = [index]
+                currentWidth = sizes[index].width
             } else {
-                current.indices.append(index)
-                current.width += gap + size.width
-                current.height = max(current.height, size.height)
+                current.append(index)
+                currentWidth += gap + sizes[index].width
             }
         }
-        if !current.indices.isEmpty { lines.append(current) }
-        return lines
+        if !current.isEmpty { lineGroups.append(current) }
+
+        return lineGroups.map { indices in
+            var line = Line()
+            line.indices = indices
+            line.width = lineWidth(indices)
+            line.height = indices.map { sizes[$0].height }.max() ?? 0
+            return line
+        }
     }
 }

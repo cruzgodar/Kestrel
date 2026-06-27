@@ -1040,6 +1040,12 @@ final class RecordingManager {
     }
 
     private func refreshSpeciesFilter() async {
+        // Debug override: bypass the live geo model and the cached list and force
+        // the bundled offline species filter, timing each lookup into it.
+        if AppSettings.shared.forceOfflineSpeciesList {
+            await forceOfflineSpeciesFilter()
+            return
+        }
         guard let rangeFilter = await getRangeFilter() else {
             allowedIndices = nil
             locationStatus = "Showing all species"
@@ -1087,6 +1093,57 @@ final class RecordingManager {
         } else {
             allowedIndices = nil
             locationStatus = "Showing all species (no location yet)"
+        }
+    }
+
+    /// Forced offline-filter path (the "Force Offline Species List" debug
+    /// setting). Snaps a coordinate to the bundled offline grid and logs how long
+    /// the lookup took, so the offline table's lookup cost can be measured against
+    /// the live model.
+    private func forceOfflineSpeciesFilter() async {
+        let week = SpeciesRangeFilter.birdnetWeek()
+        let location = await locationProvider.currentLocation()
+        if let location {
+            LocationCache.shared.update(
+                latitude: location.coordinate.latitude,
+                longitude: location.coordinate.longitude
+            )
+        }
+        let lat = location?.coordinate.latitude ?? LocationCache.shared.lastLatitude
+        let lon = location?.coordinate.longitude ?? LocationCache.shared.lastLongitude
+
+        guard OfflineSpeciesFilter.shared.isAvailable else {
+            allowedIndices = nil
+            locationStatus = "Showing all species (offline list unavailable)"
+            print("OfflineSpeciesFilter[forced]: no bundled filter present")
+            return
+        }
+        guard let lat, let lon else {
+            allowedIndices = nil
+            locationStatus = "Showing all species (no location yet)"
+            print("OfflineSpeciesFilter[forced]: no location available yet")
+            return
+        }
+
+        let start = DispatchTime.now()
+        let offline = OfflineSpeciesFilter.shared.allowedIndices(lat: lat, lon: lon, week: week)
+        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+
+        if let offline {
+            allowedIndices = offline
+            prefetchRegionImages(offline)
+            locationStatus = "Using offline list (\(offline.count) species)"
+            print(String(
+                format: "OfflineSpeciesFilter[forced]: (%.4f, %.4f) week %d → %d species in %.3f ms",
+                lat, lon, week, offline.count, elapsedMs
+            ))
+        } else {
+            allowedIndices = nil
+            locationStatus = "Showing all species (no offline match)"
+            print(String(
+                format: "OfflineSpeciesFilter[forced]: (%.4f, %.4f) week %d → no match in %.3f ms",
+                lat, lon, week, elapsedMs
+            ))
         }
     }
 

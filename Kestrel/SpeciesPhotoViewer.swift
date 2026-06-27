@@ -129,8 +129,19 @@ struct SpeciesPhotoFullScreen: View {
         items.indices.contains(index) ? items[index] : nil
     }
 
+    /// Duration of the chrome show/hide fade. Short so tapping to reveal/hide the
+    /// UI feels immediate (and so the auto-hide on zoom gets out of the way fast).
+    private static let uiToggleDuration: Double = 0.12
+
     private func toggleUI() {
-        withAnimation(.easeInOut(duration: 0.25)) { uiVisible.toggle() }
+        withAnimation(.easeInOut(duration: Self.uiToggleDuration)) { uiVisible.toggle() }
+    }
+
+    /// Hides the chrome if it's showing — used when a zoom begins, so a zoomed-in
+    /// photo is never cluttered by the name capsule / info panel.
+    private func hideUIForZoom() {
+        guard uiVisible else { return }
+        withAnimation(.easeInOut(duration: Self.uiToggleDuration)) { uiVisible = false }
     }
 
     var body: some View {
@@ -194,7 +205,12 @@ struct SpeciesPhotoFullScreen: View {
                     onToggleUI: toggleUI,
                     onZoomChange: { zoomed in
                         // Only the current page's zoom gates paging.
-                        if i == index, isZoomed != zoomed { isZoomed = zoomed }
+                        if i == index {
+                            if isZoomed != zoomed { isZoomed = zoomed }
+                            // Auto-hide the chrome the moment the photo is zoomed in
+                            // at all, so nothing overlaps the magnified image.
+                            if zoomed { hideUIForZoom() }
+                        }
                     }
                 )
             }

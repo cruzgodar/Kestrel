@@ -28,7 +28,8 @@ struct AboutView: View {
             .padding(.vertical, 16)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .navigationTitle("About")
+        // Intentionally no title text — the header bar stays empty.
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
     }
 

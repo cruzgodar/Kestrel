@@ -254,37 +254,24 @@ struct MapView: View {
                             coordinate: point.coordinate,
                             anchor: .center
                         ) {
-                            CulledAnnotationContent(
-                                point: point,
-                                info: visibleReps[point.id],
-                                thumbSize: Self.thumbSize,
-                                onTap: { tappedInfo in
-                                    // Mark this as an annotation tap so the map's
-                                    // simultaneous dismiss gesture consumes it
-                                    // instead of dismissing the card.
-                                    annotationTapConsumed = true
-                                    // Multi-bird stacks open (or swap to) a card.
-                                    if tappedInfo.count > 1 {
-                                        mapCard = .cluster(BirdCluster(
-                                            representative: tappedInfo.representative,
-                                            coordinate: tappedInfo.coordinate,
-                                            others: tappedInfo.others
-                                        ))
-                                    } else if mapCard != nil {
-                                        // A card is already open. Present the photo
-                                        // from the *sheet's own* context so it
-                                        // appears instantly — a root cover would
-                                        // have to wait for the sheet to finish
-                                        // dismissing first. The card is closed when
-                                        // this photo is dismissed (see MapCardSheet).
-                                        sheetPhoto = .lone(tappedInfo.representative)
-                                    } else {
-                                        // No card open: present full-screen from the
-                                        // root (nothing to wait on).
-                                        presentedSinglePoint = tappedInfo.representative
-                                    }
-                                }
-                            )
+                            // Snap instantly (the default) or fade in/out, per the
+                            // map settings. Both collapse to zero size when not a
+                            // current cluster rep so dead annotations never eat taps.
+                            if settings.fadeMapThumbnails {
+                                FadingAnnotationContent(
+                                    point: point,
+                                    info: visibleReps[point.id],
+                                    thumbSize: Self.thumbSize,
+                                    onTap: handleAnnotationTap
+                                )
+                            } else {
+                                CulledAnnotationContent(
+                                    point: point,
+                                    info: visibleReps[point.id],
+                                    thumbSize: Self.thumbSize,
+                                    onTap: handleAnnotationTap
+                                )
+                            }
                         }
                         .annotationTitles(.hidden)
                     }
@@ -342,6 +329,12 @@ struct MapView: View {
                 // natively while we do no SwiftUI work mid-gesture.
                 .onMapCameraChange(frequency: .continuous) { context in
                     cacheCamera(context)
+                    // When "Update While Moving" is on, rebuild/cull live so
+                    // thumbnails appear and disappear (fading, if enabled) during
+                    // the pan/zoom rather than waiting for the touch to lift.
+                    if settings.updateMapDuringGesture {
+                        commitVisibleEntries()
+                    }
                 }
                 // Commit the cull/rebuild the instant a pan/zoom touch lifts, so
                 // thumbnails appear/disappear immediately rather than waiting for
@@ -483,6 +476,32 @@ struct MapView: View {
     /// Record the live camera every frame (continuous callback). Mutates only the
     /// non-observable `CameraTracker`, so it never re-renders the map mid-gesture;
     /// the actual cull/rebuild is deferred to `commitVisibleEntries` at touch-up.
+    /// Handles a tap on a map annotation: opens a multi-bird card, swaps the photo
+    /// inside an already-open card, or presents a lone bird full-screen from the
+    /// root. Shared by both the snapping and fading annotation content views.
+    private func handleAnnotationTap(_ tappedInfo: RepInfo) {
+        // Mark this as an annotation tap so the map's simultaneous dismiss gesture
+        // consumes it instead of dismissing the card.
+        annotationTapConsumed = true
+        // Multi-bird stacks open (or swap to) a card.
+        if tappedInfo.count > 1 {
+            mapCard = .cluster(BirdCluster(
+                representative: tappedInfo.representative,
+                coordinate: tappedInfo.coordinate,
+                others: tappedInfo.others
+            ))
+        } else if mapCard != nil {
+            // A card is already open. Present the photo from the *sheet's own*
+            // context so it appears instantly — a root cover would have to wait for
+            // the sheet to finish dismissing first. The card is closed when this
+            // photo is dismissed (see MapCardSheet).
+            sheetPhoto = .lone(tappedInfo.representative)
+        } else {
+            // No card open: present full-screen from the root (nothing to wait on).
+            presentedSinglePoint = tappedInfo.representative
+        }
+    }
+
     private func cacheCamera(_ context: MapCameraUpdateContext) {
         camera.lastSpan = context.region.span
         camera.lastCenter = context.region.center
@@ -753,6 +772,84 @@ private struct CulledAnnotationContent: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 onTap(info)
+            }
+        }
+    }
+}
+
+// MARK: - Per-annotation fading wrapper
+//
+// The fading counterpart of `CulledAnnotationContent`, used when the "Fade
+// Thumbnails" map setting is on. Same hit-testing contract — content is absent
+// (zero-size, tap-transparent) when this entry isn't a current cluster rep — but
+// the show/hide is animated via a local opacity state rather than instant. The
+// `rendered` mirror keeps the content mounted through the fade-out so the tween
+// is actually visible before the view collapses.
+private struct FadingAnnotationContent: View {
+    let point: MapPoint
+    let info: MapView.RepInfo?
+    let thumbSize: CGSize
+    let onTap: (MapView.RepInfo) -> Void
+
+    /// Mirror of `info` lagged behind by the fade-out animation. While the fade is
+    /// running, `info` is already nil but `rendered` still holds the previous value
+    /// so the content stays mounted long enough to be visible during the tween.
+    /// Cleared in the animation's completion callback.
+    @State private var rendered: MapView.RepInfo?
+    @State private var opacity: Double = 0
+    /// False until the first `info` resolution after this view mounts. Lets us
+    /// distinguish a genuine first appearance (or a hit-test rehydration remount,
+    /// which destroys + recreates this view) — which should settle to its final
+    /// opacity instantly — from a later transition while mounted, which should
+    /// animate. This keeps the post-pinch remount silent instead of flashing every
+    /// thumbnail through a fresh fade-in.
+    @State private var didResolve = false
+
+    var body: some View {
+        Group {
+            if let rendered {
+                MapAnnotationContent(
+                    point: point,
+                    clusterCount: rendered.count,
+                    thumbSize: thumbSize
+                )
+                .contentShape(Rectangle())
+                .opacity(opacity)
+                .onTapGesture {
+                    onTap(rendered)
+                }
+            }
+        }
+        .onChange(of: info, initial: true) { _, newInfo in
+            handle(newInfo)
+        }
+    }
+
+    private func handle(_ newInfo: MapView.RepInfo?) {
+        // First resolution after mount (incl. a rehydration remount): jump straight
+        // to the final opacity with no animation, so re-creating an already-visible
+        // annotation doesn't replay its fade-in.
+        if !didResolve {
+            didResolve = true
+            rendered = newInfo
+            opacity = newInfo == nil ? 0 : 1
+            return
+        }
+        if let newInfo {
+            let wasOff = (rendered == nil)
+            rendered = newInfo
+            if wasOff {
+                opacity = 0
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    opacity = 1
+                }
+            }
+            // Already visible: just refresh the count, no fade needed.
+        } else if rendered != nil {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                opacity = 0
+            } completion: {
+                rendered = nil
             }
         }
     }
@@ -1279,6 +1376,9 @@ private struct MapSettingsContent: View {
     @Bindable private var settings = AppSettings.shared
 
     var body: some View {
+        // Scrollable so the full set of options is reachable even at the medium
+        // detent on smaller screens.
+        ScrollView {
         VStack(spacing: 24) {
             VStack(spacing: 16) {
                 Image(systemName: "mappin.and.ellipse")
@@ -1302,9 +1402,47 @@ private struct MapSettingsContent: View {
             }
             .padding(.horizontal, 28)
 
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(
+                    "Update While Moving",
+                    isOn: $settings.updateMapDuringGesture
+                )
+                .font(.body.weight(.semibold))
+                Text("Refresh the bird thumbnails continuously while panning and zooming, rather than only when you lift your fingers.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 28)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(
+                    "Fade Thumbnails",
+                    isOn: $settings.fadeMapThumbnails
+                )
+                .font(.body.weight(.semibold))
+                Text("Fade bird thumbnails in and out as they appear and disappear, rather than snapping them instantly.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 28)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(
+                    "Force Offline Species List",
+                    isOn: $settings.forceOfflineSpeciesList
+                )
+                .font(.body.weight(.semibold))
+                Text("Debug: identify using the bundled offline species list instead of the live model, logging how long each lookup takes.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 28)
+
             Spacer(minLength: 0)
         }
         .padding(.top, 12)
+        .padding(.bottom, 24)
+        }
     }
 }
 

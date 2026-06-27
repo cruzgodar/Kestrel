@@ -44,6 +44,11 @@ struct KestrelApp: App {
         RemoteSpeciesImageStore.shared.setProtectedSpecies(targets)
         RemoteSpeciesImageStore.shared.prefetch(scientificNames: targets)
 
+        // Backfill thumbnails for every already-downloaded species image that
+        // lacks one, so opening a large multi-bird card for the first time
+        // doesn't stutter generating them on the fly while scrolling.
+        RemoteSpeciesImageStore.shared.generateMissingThumbnails()
+
         // Cap cached "other" images (anything not on the life list or in the
         // current nearby list) at 50 MB so the on-disk cache can't grow without
         // bound. Life-list + nearby images are protected and never evicted.

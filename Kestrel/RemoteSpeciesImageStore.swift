@@ -30,11 +30,12 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     private let dir: URL
     private let session: URLSession
 
-    /// Longest edge, in pixels, of a cached thumbnail. Comfortably covers the
-    /// largest small-photo context (the map cluster-grid cell on the biggest
-    /// screens, ~450px) while decoding to roughly a third of the full image's
-    /// pixels — and far less memory once resident.
-    static let thumbnailMaxPixelSize: CGFloat = 500
+    /// Longest edge, in pixels, of a cached thumbnail. Deliberately tiny — every
+    /// small-photo context (list rows, map pins, cluster-grid cells) shows the
+    /// photo at a modest size, so a 100px downsample decodes and holds for almost
+    /// nothing. The hero (Identify) and full-screen viewer use the full-resolution
+    /// tier instead, so they're unaffected by how small this is.
+    static let thumbnailMaxPixelSize: CGFloat = 100
 
     /// Ceiling for cached "other" images — anything neither on the life list
     /// nor in the current nearby list — enforced only while the user's "Limit
@@ -282,6 +283,34 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         makeAndCacheThumbnail(slug: slug, from: data)
     }
 
+    /// Scans the on-disk cache and generates a thumbnail for every full image
+    /// that doesn't already have one. Run once at launch so the first scroll
+    /// through a large multi-bird card doesn't pay the per-thumbnail downsample
+    /// cost (which is what made that first scroll sluggish). Writes straight to
+    /// disk without touching the memory cache, so seeding thousands of thumbnails
+    /// up front doesn't balloon memory — they decode cheaply from disk on demand.
+    func generateMissingThumbnails() {
+        Task.detached(priority: .utility) { [weak self] in
+            guard let self else { return }
+            let fm = FileManager.default
+            guard let urls = try? fm.contentsOfDirectory(
+                at: dir,
+                includingPropertiesForKeys: nil,
+                options: [.skipsHiddenFiles]
+            ) else { return }
+            for url in urls where url.pathExtension == "jpg" {
+                let filename = url.deletingPathExtension().lastPathComponent
+                if filename.hasSuffix("_thumb") { continue }
+                let thumbURL = thumbFileURL(forSlug: filename)
+                if fm.fileExists(atPath: thumbURL.path) { continue }
+                guard let data = try? Data(contentsOf: url),
+                      let thumb = Self.downsample(data, maxPixelSize: Self.thumbnailMaxPixelSize),
+                      let jpeg = thumb.jpegData(compressionQuality: 0.8) else { continue }
+                try? jpeg.write(to: thumbURL, options: .atomic)
+            }
+        }
+    }
+
     private func download(_ url: URL) async -> Data? {
         guard let (data, response) = try? await session.data(from: url),
               let http = response as? HTTPURLResponse,
@@ -366,10 +395,13 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         var others: [Cached] = []
         var total: Int64 = 0
         for url in urls where url.pathExtension == "jpg" {
-            // A thumbnail file (`{slug}_thumb.jpg`) is protected — and keyed in the
-            // memory caches — by its *base* slug, so it follows its full image.
             let filename = url.deletingPathExtension().lastPathComponent
-            let slug = filename.hasSuffix("_thumb") ? String(filename.dropLast("_thumb".count)) : filename
+            // Thumbnails (`{slug}_thumb.jpg`) are never evicted — they're tiny, and
+            // keeping every one on disk means a large multi-bird card never has to
+            // regenerate them while scrolling. Skip them entirely (neither counted
+            // toward the cap nor eligible for removal).
+            if filename.hasSuffix("_thumb") { continue }
+            let slug = filename
             if protectedSlugs.contains(slug) { continue }
             let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
             let size = Int64(values?.fileSize ?? 0)
@@ -379,13 +411,13 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         }
         guard total > Self.otherImagesLimitBytes else { return }
 
-        // Oldest first, evicting until back under the cap.
+        // Oldest first, evicting until back under the cap. Only the full image is
+        // removed; its thumbnail (disk + memory) is intentionally left resident.
         others.sort { $0.date < $1.date }
         for entry in others {
             if total <= Self.otherImagesLimitBytes { break }
             try? fm.removeItem(at: entry.url)
             memory.removeObject(forKey: entry.slug as NSString)
-            thumbnailMemory.removeObject(forKey: entry.slug as NSString)
             total -= entry.size
         }
     }
