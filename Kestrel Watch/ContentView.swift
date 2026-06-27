@@ -36,13 +36,32 @@ struct ContentView: View {
     /// there to tune the bezel match on new watches.
     private static var screenCornerRadius: CGFloat { WatchMetrics.current.screenCornerRadius }
 
-    /// True when the iPhone has explicitly *not* granted location access, so the
-    /// watch can't start a recording. Shows the "Open Kestrel on iPhone" screen in
-    /// place of the record button. `nil` (status not yet received) and a live
-    /// session both keep the normal UI.
-    private var blockedForPermissions: Bool {
-        session.phoneLocationAuthorized == false && !session.isRecording
+    /// True when the iPhone app has never been opened (no authorization context
+    /// has ever reached the watch), so we can't know its permission state and the
+    /// user needs to open the phone app at least once. This — and only this — is
+    /// the first-launch "Open Kestrel on iPhone to begin" screen. A returning
+    /// watch keeps `everReceivedPhoneAuth` true, so the brief `nil` window before
+    /// activation re-seeds the context doesn't trip this.
+    private var phoneNeverOpened: Bool {
+        !session.everReceivedPhoneAuth
+            && session.phoneRecordingAuthorized == nil
+            && !session.isRecording
     }
+
+    /// True when the iPhone app has been opened but hasn't granted the permissions
+    /// recording needs (microphone and/or location), so the watch can't start a
+    /// recording — it can't prompt for either. The record button becomes a gray
+    /// lock (mirroring the phone) and tapping it explains the issue.
+    private var blockedForPermissions: Bool {
+        session.phoneRecordingAuthorized == false && !session.isRecording
+    }
+
+    /// Drives the explanatory modal shown when the user taps the gray lock button.
+    @State private var showPermissionInfo = false
+
+    /// Gray fill for the locked (permission-denied) record button, matching the
+    /// phone's locked state.
+    private static let lockedTint = Color(white: 0.45)
 
     var body: some View {
         let recording = session.isRecording
@@ -99,15 +118,19 @@ struct ContentView: View {
                         x: recording ? cornerC : geo.size.width / 2,
                         y: recording ? cornerC : geo.size.height / 2
                     )
-                    // Hidden while the iPhone hasn't granted location access — the
-                    // blocking caption (below) takes over until it has.
-                    .opacity(blockedForPermissions ? 0 : 1)
-                    .allowsHitTesting(!blockedForPermissions)
+                    // Hidden only on the first-launch screen (phone never opened);
+                    // when permission is merely denied the button stays, as a gray
+                    // lock the user can tap for an explanation.
+                    .opacity(phoneNeverOpened ? 0 : 1)
+                    .allowsHitTesting(!phoneNeverOpened)
 
                 // Idle-screen caption sitting just below the centered play
                 // button. Fades out (with the button's morph to the corner) as
                 // recording starts, so the now-hearing screen has the space.
-                Text("Start Birding")
+                // Reads "Permissions Needed" under the gray lock so the caption
+                // matches the button's locked state rather than inviting a tap to
+                // record.
+                Text(blockedForPermissions ? "Permissions Needed" : "Start Birding")
                     .font(.system(size: 16, weight: .medium))
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.white)
@@ -120,13 +143,13 @@ struct ContentView: View {
                         x: geo.size.width / 2,
                         y: geo.size.height / 2 + Self.buttonBaseSize / 2 + 24
                     )
-                    .opacity(recording || blockedForPermissions ? 0 : 1)
+                    .opacity(recording || phoneNeverOpened ? 0 : 1)
                     .allowsHitTesting(false)
 
-                // Shown instead of the record button when the iPhone hasn't granted
-                // location access yet — recording can't start without it, and the
-                // watch can't prompt for it, so point the user at the phone.
-                if blockedForPermissions {
+                // First-launch only: the iPhone app has never been opened, so the
+                // watch has no permission state to act on. Point the user at the
+                // phone. (A denied permission instead shows the gray lock button.)
+                if phoneNeverOpened {
                     Text("Open Kestrel on iPhone to begin")
                         .font(.system(size: 17, weight: .medium))
                         .multilineTextAlignment(.center)
@@ -171,6 +194,13 @@ struct ContentView: View {
         }
         .animation(.easeInOut(duration: 0.25), value: session.recordingError)
         .animation(.easeInOut(duration: 0.25), value: blockedForPermissions)
+        .animation(.easeInOut(duration: 0.25), value: phoneNeverOpened)
+        // Explains why the record button is locked (iPhone hasn't granted mic /
+        // location). The watch can't open the phone's Settings, so it just tells
+        // the user to do it there — mirroring the phone's own permission alert.
+        .sheet(isPresented: $showPermissionInfo) {
+            permissionInfo
+        }
         // The record/stop morph is animated explicitly via `withAnimation` in
         // the session manager (so the audio bring-up/teardown can be deferred
         // until after it). Only the bird cross-fade is animated here.
@@ -301,31 +331,70 @@ struct ContentView: View {
     /// morph is a straight, uniform shrink in both directions.
     private func recordButton(scale: CGFloat) -> some View {
         let recording = session.isRecording
+        let blocked = blockedForPermissions
         return Button {
-            session.toggle()
+            // A denied permission turns the button into a tap-for-explanation
+            // lock rather than a recording control (matching the phone).
+            if blocked {
+                showPermissionInfo = true
+            } else {
+                session.toggle()
+            }
         } label: {
-            // Both glyphs are always present and cross-faded by opacity, so the
-            // transition is symmetric and each lands at the correct end opacity
-            // (0 or 1) — a single swapped `Image` left the outgoing glyph
+            // All three glyphs are always present and cross-faded by opacity, so
+            // the transition is symmetric and each lands at the correct end
+            // opacity (0 or 1) — a single swapped `Image` left the outgoing glyph
             // partially visible and snapped at the end.
             ZStack {
                 Image(systemName: "play.fill")
                     .font(.system(size: 44, weight: .semibold))
-                    .opacity(recording ? 0 : 1)
+                    .opacity(recording || blocked ? 0 : 1)
                 Image(systemName: "stop.fill")
                     .font(.system(size: 40, weight: .bold))
                     .opacity(recording ? 1 : 0)
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 40, weight: .bold))
+                    .opacity(blocked && !recording ? 1 : 0)
             }
             .foregroundStyle(.white)
             .frame(width: Self.buttonBaseSize, height: Self.buttonBaseSize)
             // Purple while idle, red once recording (matching the phone's stop
-            // button). The fill interpolates with the morph, which runs under
-            // the session manager's `withAnimation(isRecording)`.
-            .background(Circle().fill(recording ? .red : Self.recordTint))
+            // button), gray when locked by a denied permission. The fill
+            // interpolates with the morph, which runs under the session
+            // manager's `withAnimation(isRecording)`.
+            .background(Circle().fill(recording ? .red : (blocked ? Self.lockedTint : Self.recordTint)))
             .scaleEffect(scale)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(recording ? "Stop recording" : "Start recording")
+        .accessibilityLabel(
+            blocked
+                ? "Recording unavailable — permissions needed"
+                : (recording ? "Stop recording" : "Start recording")
+        )
+    }
+
+    /// Explanatory modal shown when the user taps the locked record button —
+    /// recording needs microphone and location access, which only the iPhone can
+    /// grant. Mirrors the phone's permission alert; tap Done (or swipe) to close.
+    private var permissionInfo: some View {
+        ScrollView {
+            VStack(spacing: 10) {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 28))
+                    .foregroundStyle(Self.recordTint)
+                Text("Permissions Needed")
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+                Text("Kestrel needs microphone and location access to identify birds. Open Kestrel on your iPhone and grant access in its settings.")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                Button("Done") { showPermissionInfo = false }
+                    .padding(.top, 4)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
     }
 
     // MARK: - Add to life list button

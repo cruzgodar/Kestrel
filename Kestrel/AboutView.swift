@@ -22,6 +22,10 @@ struct AboutView: View {
                     .padding(.vertical, 4)
 
                 creditsSection
+
+                #if DEBUG
+                clearCacheButton
+                #endif
             }
             .font(.body)
             .padding(.horizontal, 20)
@@ -55,6 +59,25 @@ struct AboutView: View {
             .frame(maxWidth: .infinity, alignment: .center)
         }
     }
+
+    // MARK: - Debug
+
+    #if DEBUG
+    /// Debug-only control at the very bottom of the About screen: drops every
+    /// cached species image (thumbnail, medium, and full-resolution tiers, on
+    /// disk and in memory) so the next view re-downloads from scratch.
+    private var clearCacheButton: some View {
+        Button(role: .destructive) {
+            RemoteSpeciesImageStore.shared.clearAllCaches()
+        } label: {
+            Text("Clear Image Cache")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.red)
+        .padding(.top, 8)
+    }
+    #endif
 
     // MARK: - Credits
 

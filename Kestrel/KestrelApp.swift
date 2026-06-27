@@ -26,9 +26,10 @@ struct KestrelApp: App {
 
         let bridge = WatchAudioBridge(manager: manager)
         watchBridge = bridge
-        // Push the phone's location-authorization state to the watch whenever it
-        // changes, so the watch's record screen reflects whether access is granted.
-        manager.onLocationAuthorizationChanged = { bridge.pushLocationAuthorized() }
+        // Push the phone's recording-authorization state (mic + location) to the
+        // watch whenever it changes, so the watch's record screen reflects whether
+        // recording is possible.
+        manager.onRecordingAuthorizationChanged = { bridge.pushRecordingAuthorized() }
 
         let store = LifeListStore()
         _lifeListStore = State(wrappedValue: store)
@@ -167,7 +168,13 @@ struct KestrelApp: App {
                 updateSpectrogramVisibility()
                 // Cold-launch / background-launch path for the Start Recording
                 // widget: drain the pending request once the scene is active.
-                if phase == .active { startRecordingIfRequested() }
+                if phase == .active {
+                    startRecordingIfRequested()
+                    // No system callback fires for mic-permission changes, so
+                    // re-read it on foreground in case the user flipped it in
+                    // Settings while away — keeps the grayed button current.
+                    recordingManager.refreshMicrophoneAuthorization()
+                }
             }
             // Warm path: the intent fired while the app was already active.
             .onReceive(NotificationCenter.default.publisher(for: RecordingIntentRequest.notification)) { _ in

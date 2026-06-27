@@ -328,6 +328,9 @@ struct MapView: View {
                 // MapKit from their coordinates, so they pan/zoom with the map
                 // natively while we do no SwiftUI work mid-gesture.
                 .onMapCameraChange(frequency: .continuous) { context in
+                    // Per-frame during a gesture — its rate (counters/sec) tells you
+                    // how often SwiftUI is being asked to do anything mid-pan.
+                    MapPerf.count("cameraFrame")
                     cacheCamera(context)
                     // When "Update While Moving" is on, rebuild/cull live so
                     // thumbnails appear and disappear (fading, if enabled) during
@@ -336,22 +339,44 @@ struct MapView: View {
                         commitVisibleEntries()
                     }
                 }
-                // Commit the cull/rebuild the instant a pan/zoom touch lifts, so
-                // thumbnails appear/disappear immediately rather than waiting for
-                // the map's momentum to decay. `.onEnd` below is the backstop for
-                // programmatic camera moves and the post-fling settle.
+                // Track the pan/pinch finger and commit the cull/rebuild the
+                // instant the touch lifts, so thumbnails appear/disappear
+                // immediately rather than waiting for the map's momentum to decay.
+                // While the finger is down, `interacting` suppresses all
+                // recomputation (including the `.onEnd` backstop below), so the
+                // group set stays frozen until the gesture truly ends — fixing the
+                // mid-pan re-clustering the user saw when groups scrolled off and
+                // back on. `minimumDistance: 0` so the flag arms from the first
+                // touch, before any intermediate camera `.onEnd` can fire.
                 .simultaneousGesture(
-                    DragGesture(minimumDistance: 8).onEnded { _ in commitVisibleEntries() }
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { _ in camera.panActive = true }
+                        .onEnded { _ in
+                            camera.panActive = false
+                            if !camera.interacting { commitVisibleEntries() }
+                        }
                 )
                 .simultaneousGesture(
-                    MagnifyGesture().onEnded { _ in commitVisibleEntries() }
+                    MagnifyGesture()
+                        .onChanged { _ in camera.zoomActive = true }
+                        .onEnded { _ in
+                            camera.zoomActive = false
+                            if !camera.interacting { commitVisibleEntries() }
+                        }
                 )
                 // Backstop: programmatic camera moves (recenter / focus) and the
                 // final settle after a fling aren't a finger-up, so reconcile here
-                // too. Idempotent with the gesture commits (threshold-guarded).
+                // too — but only when no finger is down, so an intermediate `.onEnd`
+                // fired during a sustained pan/pinch doesn't recompute mid-gesture.
+                // Idempotent with the gesture commits (threshold-guarded).
                 .onMapCameraChange(frequency: .onEnd) { context in
+                    MapPerf.count("cameraEnd")
                     cacheCamera(context)
-                    commitVisibleEntries()
+                    if !camera.interacting {
+                        commitVisibleEntries()
+                    } else {
+                        MapPerf.count("cameraEndSuppressed")
+                    }
                 }
                 .onAppear { viewSize = geo.size }
                 // Clusters before culling in every path (see handleCameraChange)
@@ -524,6 +549,7 @@ struct MapView: View {
     /// camera's `.onEnd` as a backstop for programmatic moves (recenter / focus)
     /// and the post-fling settle — rather than only once the map fully stops.
     private func commitVisibleEntries() {
+        MapPerf.count("commit")
         // Rebuild clusters (which fills `visibleReps`, the annotation *content*)
         // before culling `visiblePoints` (which mounts the annotation *hosts*),
         // so each host is created with its content already present. If a host is
@@ -561,31 +587,38 @@ struct MapView: View {
             }
         }
 
+        MapPerf.count("cullRun")
         let latRange = span.latitudeDelta * (0.5 + Self.visibleBufferFactor)
         let lonRange = span.longitudeDelta * (0.5 + Self.visibleBufferFactor)
         let centerLat = camera.lastCenter.latitude
         let centerLon = camera.lastCenter.longitude
-        let filtered = mapPoints.filter { point in
-            abs(point.latitude - centerLat) <= latRange
-                && abs(point.longitude - centerLon) <= lonRange
+        let filtered = MapPerf.measure("cull", "of \(mapPoints.count) points") {
+            mapPoints.filter { point in
+                abs(point.latitude - centerLat) <= latRange
+                    && abs(point.longitude - centerLon) <= lonRange
+            }
         }
         visiblePoints = filtered
         camera.lastFilterCenter = camera.lastCenter
         camera.lastFilterSpan = span
+        MapPerf.count("cullChanged")
     }
 
     private func rebuildClusters(animated: Bool) {
         guard let span = camera.lastSpan, viewSize.width > 0, viewSize.height > 0 else {
             return
         }
-        let computed = Self.computeClusters(
-            points: mapPoints,
-            span: span,
-            centerLatitude: camera.lastCenter.latitude,
-            viewSize: viewSize,
-            footprint: Self.annotationFootprint,
-            gutter: Self.clusterGutter
-        )
+        MapPerf.count("rebuildClusters")
+        let computed = MapPerf.measure("computeClusters", "of \(mapPoints.count) points") {
+            Self.computeClusters(
+                points: mapPoints,
+                span: span,
+                centerLatitude: camera.lastCenter.latitude,
+                viewSize: viewSize,
+                footprint: Self.annotationFootprint,
+                gutter: Self.clusterGutter
+            )
+        }
         var next: [String: RepInfo] = [:]
         next.reserveCapacity(computed.count)
         for cluster in computed {
@@ -870,6 +903,11 @@ private struct MapAnnotationContent: View {
     let clusterCount: Int
     let thumbSize: CGSize
 
+    /// Opacity of the translucent black capsule behind each thumbnail's name
+    /// label. Tunable — lower for a more subtle background, higher for more
+    /// contrast against a busy map.
+    private static let nameBackgroundOpacity: Double = 0.35
+
     private var labelText: String {
         clusterCount > 1 ? "\(clusterCount) Birds" : point.commonName
     }
@@ -894,7 +932,7 @@ private struct MapAnnotationContent: View {
                 // while panning, which was a dominant source of the pan stutter. A
                 // flat fill composites for almost nothing and reads the same at this
                 // size against the map.
-                .background(Color.black.opacity(0.55), in: Capsule())
+                .background(Color.black.opacity(Self.nameBackgroundOpacity), in: Capsule())
         }
         // MapKit hosts each annotation in a UIHostingController whose
         // frame it derives once from the content's intrinsic size. The
@@ -904,6 +942,12 @@ private struct MapAnnotationContent: View {
         // VStack to report (and keep) its full intrinsic size so the
         // label area is always reserved.
         .fixedSize()
+        // Perf instrumentation (DEBUG-only no-op in release): a dense burst of
+        // these *during* a pan means MapKit is tearing down + rebuilding
+        // annotation hosts as they leave and re-enter the viewport — the suspected
+        // source of the stutter. See `MapPerf`.
+        .onAppear { MapPerf.count("annotationAppear") }
+        .onDisappear { MapPerf.count("annotationDisappear") }
     }
 }
 
@@ -1086,8 +1130,6 @@ private struct MapCardSheet: View {
         .onChange(of: card?.id) { _, _ in
             if case .settings = card { detent = .medium }
         }
-        // Diagnostics for the present-time horizontal slide (see modifier).
-        .logSheetPresentGeometry("MapCard")
         .presentationDetents(detents, selection: $detent)
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card — this is what
@@ -1355,6 +1397,20 @@ private final class CameraTracker {
     var pendingZoomStep: Int?
     var lastFilterCenter: CLLocationCoordinate2D?
     var lastFilterSpan: MKCoordinateSpan?
+
+    /// Whether a pan or pinch finger is currently down. Tracked via the map's
+    /// simultaneous drag/magnify gestures so the `.onMapCameraChange(.onEnd)`
+    /// backstop doesn't recompute clusters mid-gesture: a sustained pan with a
+    /// brief pause (finger still on screen) makes MapKit fire an intermediate
+    /// `.onEnd`, which otherwise re-clustered/culled repeatedly — the churn the
+    /// user sees as "groups recalculating" while panning. Held as plain flags
+    /// (no `@State`) so setting them every frame never re-renders the map.
+    var panActive = false
+    var zoomActive = false
+    /// True while any pan/pinch finger is down. While this holds, all
+    /// cluster/cull work is suppressed; the single recomputation happens once
+    /// the gesture truly ends (and on the post-fling camera settle).
+    var interacting: Bool { panActive || zoomActive }
 }
 
 private struct GlassMapButton: View {

@@ -28,19 +28,35 @@ final class WatchSessionManager: NSObject {
     /// seconds. Settable so the view can dismiss it.
     var recordingError: String?
 
-    /// Whether the iPhone currently has location access (needed for the
-    /// nearby-species filter, and so for recording at all). Pushed from the phone
-    /// via the WCSession application context. `nil` until the first context
-    /// arrives — treated as "allow" so the normal record UI isn't blocked by a
-    /// momentary unknown at launch; `false` swaps in the "Open Kestrel on iPhone"
-    /// screen.
-    private(set) var phoneLocationAuthorized: Bool?
+    /// Whether the iPhone currently has the permissions recording needs —
+    /// microphone *and* location both granted. Either being denied (or
+    /// undetermined) blocks the watch, since the watch can't prompt for either.
+    /// Pushed from the phone via the WCSession application context. `nil` until the
+    /// first context arrives — treated as "allow" so the normal record UI isn't
+    /// blocked by a momentary unknown at launch; `false` swaps in the "Open Kestrel
+    /// on iPhone" screen.
+    private(set) var phoneRecordingAuthorized: Bool?
 
-    /// Updates `phoneLocationAuthorized` (whose setter is private). Routed through
+    /// Whether the watch has *ever* received an authorization context from the
+    /// phone (persisted). It only stays false until the iPhone app has been
+    /// opened once — that's the sole case for the first-launch "Open Kestrel on
+    /// iPhone to begin" screen. Once true, a denied permission shows a tappable
+    /// gray lock instead. Persisted so a returning watch (whose `phoneRecording-
+    /// Authorized` is momentarily `nil` before activation re-seeds it) doesn't
+    /// flash the first-launch screen.
+    private(set) var everReceivedPhoneAuth =
+        UserDefaults.standard.bool(forKey: WatchSessionManager.everReceivedPhoneAuthKey)
+    private static let everReceivedPhoneAuthKey = "everReceivedPhoneAuth"
+
+    /// Updates `phoneRecordingAuthorized` (whose setter is private). Routed through
     /// here from the WCSession application-context callbacks, mirroring how the
     /// other delegate handlers reach main-actor state via `shared`.
-    func setPhoneLocationAuthorized(_ authorized: Bool) {
-        phoneLocationAuthorized = authorized
+    func setPhoneRecordingAuthorized(_ authorized: Bool) {
+        phoneRecordingAuthorized = authorized
+        if !everReceivedPhoneAuth {
+            everReceivedPhoneAuth = true
+            UserDefaults.standard.set(true, forKey: Self.everReceivedPhoneAuthKey)
+        }
     }
 
     /// How a heard bird is highlighted — picks the watch's background color.
@@ -259,9 +275,14 @@ final class WatchSessionManager: NSObject {
         } else {
             mirroringPhone = false
         }
-        recordingError = reason == "location"
-            ? "Turn on Location for Kestrel on your iPhone to identify birds nearby."
-            : "Couldn't start recording. Open Kestrel on your iPhone."
+        switch reason {
+        case "location":
+            recordingError = "Turn on Location for Kestrel on your iPhone to identify birds nearby."
+        case "microphone":
+            recordingError = "Turn on Microphone for Kestrel on your iPhone to identify birds."
+        default:
+            recordingError = "Couldn't start recording. Open Kestrel on your iPhone."
+        }
         // Auto-dismiss so the idle screen isn't left showing a stale error.
         let message = recordingError
         Task { [weak self] in
@@ -656,9 +677,9 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                  activationDidCompleteWith activationState: WCSessionActivationState,
                  error: Error?) {
         if let error { print("Kestrel Watch: WCSession activation error \(error)") }
-        // Seed the phone's location-auth state from the last context it pushed,
+        // Seed the phone's recording-auth state from the last context it pushed,
         // delivered even if the phone is currently unreachable.
-        applyLocationContext(session.receivedApplicationContext)
+        applyRecordingContext(session.receivedApplicationContext)
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
@@ -669,16 +690,16 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
         route(userInfo)
     }
 
-    /// The phone pushes its location-authorization state through the persisted
-    /// application context; mirror it into `phoneLocationAuthorized` for the UI.
+    /// The phone pushes its recording-authorization state through the persisted
+    /// application context; mirror it into `phoneRecordingAuthorized` for the UI.
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
-        applyLocationContext(applicationContext)
+        applyRecordingContext(applicationContext)
     }
 
-    private func applyLocationContext(_ context: [String: Any]) {
-        guard let authorized = context["locationAuthorized"] as? Bool else { return }
+    private func applyRecordingContext(_ context: [String: Any]) {
+        guard let authorized = context["recordingAuthorized"] as? Bool else { return }
         Task { @MainActor in
-            WatchSessionManager.shared.setPhoneLocationAuthorized(authorized)
+            WatchSessionManager.shared.setPhoneRecordingAuthorized(authorized)
         }
     }
 

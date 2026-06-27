@@ -202,6 +202,17 @@ struct LifeListView: View {
         return prev[bChars.count]
     }
 
+    /// A few points of breathing room kept between the bottom search field and
+    /// the screen edge, roughly matching the trailing `ToolbarSpacer` that nudges
+    /// the heading buttons in (see the `.toolbar`). Not a pixel-perfect match —
+    /// the toolbar spacer's width isn't queryable — just enough that the field and
+    /// the buttons sit in from the edge by a similar amount.
+    private static let headingButtonNudge: CGFloat = 6
+    /// Symmetric horizontal inset of the bottom search field: the system toolbar
+    /// margin (≈16pt) plus the small nudge above so the field stays centered while
+    /// its right edge sits in from the edge like the heading buttons.
+    private static let searchFieldHorizontalInset: CGFloat = 16 + headingButtonNudge
+
     var body: some View {
         // The List is always rendered (with the empty placeholder shown as an
         // overlay) rather than swapped out via if/else. Swapping the subtree
@@ -314,7 +325,7 @@ struct LifeListView: View {
             .allowsHitTesting(searchFieldTop > 0)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            BottomSearchField(text: $searchText, prompt: "Search or add species")
+            BottomSearchField(text: $searchText, prompt: "Search or add species", horizontalInset: Self.searchFieldHorizontalInset)
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.frame(in: .global).minY
                 } action: { searchFieldTop = $0 }
@@ -358,6 +369,12 @@ struct LifeListView: View {
                 }
                 .accessibilityLabel("Import eBird CSV")
             }
+            // Trailing spacer to nudge the whole pair in from the screen edge.
+            // An `.offset` on the buttons themselves only slid the glyphs inside
+            // their fixed Liquid Glass capsules (the capsules are positioned by
+            // the toolbar, not the button content); a `ToolbarSpacer` sits
+            // outside the glass, so it moves the capsules as whole units.
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
         }
         // Recompute catalog suggestions whenever the query changes, but
         // wait out a short debounce so mid-typing keystrokes don't each
@@ -675,91 +692,6 @@ struct NoDimButtonStyle: ButtonStyle {
     }
 }
 
-extension View {
-    /// Diagnostic instrumentation for the sheet-present "settle" slide: while a
-    /// sheet rises, its content reportedly starts leading-aligned (left margin 0,
-    /// right margin ~2× correct) and slides right into the centered position.
-    /// This logs, every display-link frame for a short window after the content
-    /// enters the window, where the content actually sits on screen — and where
-    /// each of its UIKit ancestors sits — so we can see exactly which layer is
-    /// moving horizontally and pin the fix on it.
-    func logSheetPresentGeometry(_ label: String) -> some View {
-        background(SheetPresentGeometryLogger(label: label))
-    }
-}
-
-/// Transparent probe placed behind a sheet's content. On entering the window it
-/// starts a `CADisplayLink` and logs, per frame, the on-screen (window-space)
-/// frame of itself and each UIKit ancestor up to the window, for ~0.8 s — long
-/// enough to capture the whole present transition. Purely diagnostic.
-private struct SheetPresentGeometryLogger: UIViewRepresentable {
-    let label: String
-
-    func makeUIView(context: Context) -> ProbeView {
-        let view = ProbeView()
-        view.label = label
-        view.backgroundColor = .clear
-        view.isUserInteractionEnabled = false
-        return view
-    }
-
-    func updateUIView(_ uiView: ProbeView, context: Context) {}
-
-    final class ProbeView: UIView {
-        var label = ""
-        private var link: CADisplayLink?
-        private var startTime: CFTimeInterval = 0
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            if window != nil {
-                startLogging()
-            } else {
-                stopLogging()
-            }
-        }
-
-        private func startLogging() {
-            stopLogging()
-            startTime = CACurrentMediaTime()
-            let link = CADisplayLink(target: self, selector: #selector(tick))
-            link.add(to: .main, forMode: .common)
-            self.link = link
-        }
-
-        private func stopLogging() {
-            link?.invalidate()
-            link = nil
-        }
-
-        @objc private func tick() {
-            let t = CACurrentMediaTime() - startTime
-            let screenW = window?.bounds.width ?? UIScreen.main.bounds.width
-
-            // The content's own left/right edges in window space — this is what
-            // the user actually sees slide. If `selfL` starts at 0 and `selfR`
-            // overshoots, then both settle to equal margins, the content really
-            // is re-centering (not the layer translating).
-            let selfWin = (layer.presentation() ?? layer).convert(bounds, to: nil)
-            print(String(
-                format: "[SheetSlide:%@] t=%.3f screenW=%.1f | selfL=%.1f selfR=%.1f w=%.1f",
-                label, t, screenW, selfWin.minX, selfWin.maxX, selfWin.width
-            ))
-
-            // Probes established: no layer in the chain translates/scales/animates
-            // position/bounds/transform in x (every tx=0, sx=1, pos/size static).
-            // So there is no horizontal layer animation to neutralize — the
-            // settled layout is correct from the first frame. The `selfL` summary
-            // line above is all that's needed to confirm whether any slide remains.
-
-            if t > 0.8 { stopLogging() }
-        }
-
-        deinit {
-            link?.invalidate()
-        }
-    }
-}
 
 /// Explanatory modal shown before importing. Describes the eBird/Merlin
 /// workflow (with an inline link to download the data) and offers an import
@@ -814,8 +746,6 @@ private struct ImportInfoSheet: View {
         // present, which is the horizontal "slide-in". Pinning it to full width
         // here (outside all padding) removes the alignment ambiguity.
         .frame(maxWidth: .infinity)
-        // Diagnostics for the present-time horizontal slide (see modifier).
-        .logSheetPresentGeometry("Import")
         .presentationDetents([.medium])
         // Hidden grab handle to match the map's settings card (MapCardSheet).
         .presentationDragIndicator(.hidden)
@@ -827,6 +757,9 @@ private struct ImportInfoSheet: View {
 private struct BottomSearchField: View {
     @Binding var text: String
     let prompt: String
+    /// Symmetric horizontal inset, set by the parent so the field stays centered
+    /// while its right edge lines up with the rightmost heading button.
+    var horizontalInset: CGFloat = 10
     @FocusState private var focused: Bool
     /// Drives the full-screen photo viewer. When a species photo opens (e.g. the
     /// user taps a row's thumbnail while searching), we drop focus so the
@@ -912,7 +845,7 @@ private struct BottomSearchField: View {
                 .transition(.scale.combined(with: .opacity))
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, horizontalInset)
         .padding(.bottom, 8)
         .animation(.spring(response: 0.28, dampingFraction: 0.85), value: showCancel)
         // Opening a species photo resigns focus permanently — without this the

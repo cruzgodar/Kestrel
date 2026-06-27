@@ -43,6 +43,31 @@ final class SpeciesPhotoPresenter {
     }
 }
 
+/// Shared motion state for the viewer's pages. The viewer is considered "moving"
+/// both while the card is sliding in on open (`opened == false`) and while a
+/// horizontal swipe is in flight (`swipeSettled == false`); `settled` is true only
+/// once both have come to rest. Each `ZoomablePhotoPage` reads `settled` to hold
+/// *both* its full-resolution download and the swap until the motion stops, so the
+/// heavier full-res work never lands while anything is animating (which read as a
+/// hitch). A reference type so every page observes the one instance.
+@MainActor
+@Observable
+final class ViewerPaging {
+    /// False while the open slide is still carrying the card onto the screen.
+    var opened = false
+    /// False while a horizontal page swipe (finger or fling) is in motion.
+    var swipeSettled = true
+    /// True only when the card is fully open and no swipe is in motion.
+    var settled: Bool { opened && swipeSettled }
+}
+
+/// A request to programmatically turn the pager to `index`. Carries a fresh `id`
+/// per request so a repeated target still reads as a new command to act on.
+private struct PageCommand: Equatable {
+    let id = UUID()
+    let index: Int
+}
+
 /// Full-screen, swipeable, zoomable viewer over an ordered set of species
 /// photos. Horizontal swipes page between birds; a single-item viewer has
 /// nothing to page to. A downward drag (only when not zoomed) slides the whole
@@ -94,6 +119,16 @@ struct SpeciesPhotoFullScreen: View {
     /// Whether the floating chrome (name capsule, close button, bottom details)
     /// is shown. A single tap on the photo toggles it.
     @State private var uiVisible = true
+    /// Shared paging state — false while a horizontal swipe is moving, true once
+    /// it settles. Pages gate their full-resolution swap on this so the heavier
+    /// image only swaps in after the swipe has fully stopped.
+    @State private var paging = ViewerPaging()
+    /// A request to turn the page programmatically, fired when a *zoomed*
+    /// horizontal pan is dragged past the photo's content edge so the same
+    /// continuous swipe carries on to the next/previous bird (rather than halting
+    /// at the edge and needing a second drag). Fresh `id` per request so the pager
+    /// acts on each one even when the target index repeats.
+    @State private var pageCommand: PageCommand?
     /// True once the open slide has carried the card up over the status bar.
     /// Gates the white (light-content) status bar so it flips *as the card covers
     /// the status bar* — not prematurely at present, while the card is still
@@ -213,15 +248,20 @@ struct SpeciesPhotoFullScreen: View {
             PhotoPager(
                 count: items.count,
                 initialIndex: index,
-                // Disable paging while zoomed (the photo's own pan owns the drag)
-                // or once a downward dismiss has engaged (so a diagonal close can't
-                // slide to the next bird).
-                pagingDisabled: isZoomed || dismissEngaged,
+                // Paging stays enabled while zoomed so a horizontal swipe can still
+                // change birds (the zoomed page hands the swipe off to the pager at
+                // its content edge — see `CenteringScrollView.gestureRecognizerShouldBegin`).
+                // Only a downward dismiss locks paging out, so a diagonal close can't
+                // also slide to the next bird.
+                pagingDisabled: dismissEngaged,
                 interPageSpacing: pageSpacing,
-                onIndexChange: { scrolledID = $0 }
+                pageTo: pageCommand,
+                onIndexChange: { scrolledID = $0 },
+                onSettledChange: { paging.swipeSettled = $0 }
             ) { i in
                 ZoomablePhotoPage(
                     item: items[i],
+                    paging: paging,
                     onToggleUI: toggleUI,
                     onZoomChange: { zoomed in
                         // Only the current page's zoom gates paging.
@@ -242,6 +282,13 @@ struct SpeciesPhotoFullScreen: View {
                         // Track only the current page's top-edge state; it gates the
                         // zoomed swipe-to-dismiss.
                         if i == index { currentPageAtTopEdge = atTop }
+                    },
+                    onPageBeyondEdge: { direction in
+                        // Only the current page drives the carry-over page turn.
+                        guard i == index else { return }
+                        let target = min(max(index + direction, 0), max(items.count - 1, 0))
+                        guard target != index else { return }
+                        pageCommand = PageCommand(index: target)
                     }
                 )
             }
@@ -295,6 +342,12 @@ struct SpeciesPhotoFullScreen: View {
         .onAppear {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                 cardCoveredStatusBar = true
+            }
+            // Treat the card as "moving" until the open slide settles, so the
+            // first bird's full-res download + swap is deferred until the card has
+            // arrived — not run mid-animation. Tuned to the fullScreenCover slide.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                paging.opened = true
             }
         }
         // Clear presentation background so the slide reveals the app behind.
@@ -379,6 +432,11 @@ struct SpeciesPhotoFullScreen: View {
             .padding(.horizontal, 18)
             .frame(height: Self.chromeHeight)
             .glassEffect(.regular, in: .capsule)
+            // Swallow taps on the capsule so tapping the chrome doesn't also
+            // fire the photo's single-tap-to-hide. Only the hugging capsule
+            // absorbs; the transparent fit budget around it stays pass-through.
+            .contentShape(.capsule)
+            .onTapGesture { }
     }
 
     private var backButton: some View {
@@ -456,6 +514,11 @@ struct SpeciesPhotoFullScreen: View {
         .padding(.horizontal, 24)
         .frame(maxWidth: min(screenWidth - 80, 360))
         .glassEffect(.regular, in: .rect(cornerRadius: Self.chromeHeight / 2))
+        // Swallow taps on blank areas of the panel so tapping the chrome doesn't
+        // fire the photo's single-tap-to-hide. The inner map button / eBird link
+        // keep working — their own gestures take precedence over this no-op.
+        .contentShape(.rect(cornerRadius: Self.chromeHeight / 2))
+        .onTapGesture { }
     }
 
     // MARK: - Dismiss
@@ -609,7 +672,13 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
     let initialIndex: Int
     let pagingDisabled: Bool
     let interPageSpacing: CGFloat
+    /// A programmatic page-turn request (carry-over from a zoomed edge drag). Each
+    /// fresh `id` triggers one animated turn in `updateUIViewController`.
+    var pageTo: PageCommand? = nil
     let onIndexChange: (Int) -> Void
+    /// Reports whether the pager is settled (true) or mid-swipe (false). Used to
+    /// hold each page's full-resolution swap until the motion stops.
+    var onSettledChange: ((Bool) -> Void)? = nil
     @ViewBuilder var page: (Int) -> Page
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -648,6 +717,11 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
         context.coordinator.parent = self
         // Cancels an in-progress paging pan the instant a dismiss engages.
         context.coordinator.pagingScrollView(in: pvc)?.isScrollEnabled = !pagingDisabled
+        // Carry-over page turn from a zoomed edge drag: act on each fresh command.
+        if let pageTo, context.coordinator.lastHandledCommandID != pageTo.id {
+            context.coordinator.lastHandledCommandID = pageTo.id
+            context.coordinator.goTo(pageTo.index, in: pvc)
+        }
     }
 
     final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
@@ -658,9 +732,40 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
         /// Last index handed up via `onIndexChange`, so a single swipe reports the
         /// switch once (when it crosses halfway) and not on every offset tick.
         var lastReportedIndex = 0
+        /// Last settled state handed up via `onSettledChange`, so it only fires on
+        /// a transition (mid-swipe ↔ stopped) rather than every offset tick.
+        private var lastReportedSettled = true
         private var offsetObservation: NSKeyValueObservation?
+        /// The last carry-over page command acted on, so each fresh command turns
+        /// the page exactly once.
+        var lastHandledCommandID: UUID?
 
         init(_ parent: PhotoPager) { self.parent = parent }
+
+        /// Programmatically turns the pager to `index` with the standard scroll
+        /// animation. Used for the carry-over turn when a zoomed pan is dragged
+        /// past the photo's edge — `didFinishAnimating` is *not* called for
+        /// programmatic transitions, so the bookkeeping (`currentIndex`,
+        /// `lastReportedIndex`, `onIndexChange`) is updated here directly.
+        func goTo(_ index: Int, in pvc: UIPageViewController) {
+            let clamped = min(max(index, 0), max(parent.count - 1, 0))
+            guard clamped != currentIndex else { return }
+            let direction: UIPageViewController.NavigationDirection =
+                clamped > currentIndex ? .forward : .reverse
+            pvc.setViewControllers([makeHost(clamped)], direction: direction, animated: true)
+            currentIndex = clamped
+            if lastReportedIndex != clamped {
+                lastReportedIndex = clamped
+                parent.onIndexChange(clamped)
+            }
+        }
+
+        /// Reports a settled-state transition up to the viewer, de-duped.
+        private func reportSettled(_ settled: Bool) {
+            guard settled != lastReportedSettled else { return }
+            lastReportedSettled = settled
+            parent.onSettledChange?(settled)
+        }
 
         /// Watch the paging scroll view's offset and flip the reported index the
         /// instant the swipe is more than halfway to the neighboring page. The
@@ -675,6 +780,10 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
                 let width = scrollView.bounds.width
                 guard width > 0 else { return }
                 let fraction = (scrollView.contentOffset.x - width) / width
+                // Mid-swipe whenever the content is off its resting center; the
+                // pager recenters to `width` (fraction 0) at every page boundary,
+                // so this reads true again the instant the swipe comes to rest.
+                self.reportSettled(abs(fraction) < 0.001)
                 let target: Int
                 if fraction >= 0.5 {
                     target = self.currentIndex + 1
@@ -719,6 +828,9 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
             previousViewControllers: [UIViewController],
             transitionCompleted completed: Bool
         ) {
+            // The transition animation has finished (settled or snapped back),
+            // so the pager is at rest — backstop the offset-driven settled report.
+            reportSettled(true)
             guard completed, let host = pvc.viewControllers?.first as? IndexedHost<Page> else { return }
             currentIndex = host.index
             // The halfway observer has usually already reported this index; keep
@@ -746,6 +858,10 @@ private final class IndexedHost<Content: View>: UIHostingController<Content> {
 /// page is never left zoomed.
 private struct ZoomablePhotoPage: View {
     let item: SpeciesPhotoItem
+    /// Shared paging state — the page holds its full-resolution swap until this
+    /// reports the swipe has settled, so the heavier image never swaps in while
+    /// the user is still swiping between birds.
+    let paging: ViewerPaging
     /// Toggles the chrome's visibility; fired by a single tap on the photo.
     var onToggleUI: () -> Void
     /// Reports this page's zoom state up to the container.
@@ -754,10 +870,20 @@ private struct ZoomablePhotoPage: View {
     /// panned farther down), which the container uses to allow a swipe-to-dismiss
     /// while zoomed.
     var onAtTopEdgeChange: (Bool) -> Void
+    /// Fired when a zoomed horizontal pan is dragged past the photo's left/right
+    /// content edge (`-1` previous, `+1` next), so the same continuous swipe
+    /// carries on to the neighboring bird instead of halting at the edge.
+    var onPageBeyondEdge: (Int) -> Void
 
     @State private var image: UIImage?
     @State private var loadFailed = false
     @State private var pageZoomed = false
+    /// True once the full-resolution image has been shown (or was already
+    /// resident), so the deferred download isn't kicked off again.
+    @State private var fullResLoaded = false
+    /// The in-flight full-resolution download, so it can be cancelled if the page
+    /// scrolls away before it finishes.
+    @State private var fullResTask: Task<Void, Never>?
 
     var body: some View {
         imageLayer
@@ -765,6 +891,35 @@ private struct ZoomablePhotoPage: View {
             .contentShape(Rectangle())
             .task(id: item.scientificName) { await load() }
             .onChange(of: pageZoomed) { _, zoomed in onZoomChange(zoomed) }
+            // Both the full-res *download* and its swap wait for the viewer to come
+            // to a full stop (card opened + no swipe in motion), so the heavier work
+            // never lands while anything is animating. Kick it off the moment things
+            // settle.
+            .onChange(of: paging.settled) { _, settled in
+                if settled { startFullResIfNeeded() }
+            }
+            .onDisappear { fullResTask?.cancel() }
+    }
+
+    /// Starts the deferred full-resolution download — but only once the viewer has
+    /// settled (card fully open and no swipe in motion), the medium image is up, and
+    /// it hasn't already loaded. The download itself is held until then, not just
+    /// the swap, so no full-res network/decoding competes with the animation.
+    private func startFullResIfNeeded() {
+        guard paging.settled, !fullResLoaded, fullResTask == nil, image != nil else { return }
+        let name = item.scientificName
+        fullResTask = Task {
+            defer { fullResTask = nil }
+            guard let full = await RemoteSpeciesImageStore.shared.fullResolutionImage(for: name) else {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            // Settled may have changed during the download (e.g. a new swipe began);
+            // only swap while still settled, otherwise the next settle re-runs this.
+            guard paging.settled else { return }
+            image = full
+            fullResLoaded = true
+        }
     }
 
     @ViewBuilder
@@ -775,7 +930,8 @@ private struct ZoomablePhotoPage: View {
                 isZoomed: $pageZoomed,
                 resetToken: 0,
                 onSingleTap: onToggleUI,
-                onAtTopEdgeChange: onAtTopEdgeChange
+                onAtTopEdgeChange: onAtTopEdgeChange,
+                onPageBeyondEdge: onPageBeyondEdge
             )
         } else if loadFailed {
             Image(systemName: "bird")
@@ -789,19 +945,25 @@ private struct ZoomablePhotoPage: View {
     // MARK: - Loading
 
     private func load() async {
+        fullResTask?.cancel()
+        fullResTask = nil
         image = nil
         loadFailed = false
+        fullResLoaded = false
         let name = item.scientificName
 
         // Already have the true full-res image resident (a previous open this
-        // session): show it straight away, no medium→full swap needed.
+        // session): show it straight away, no download or swap needed.
         if let full = RemoteSpeciesImageStore.shared.memoryFullResolutionImage(for: name) {
             image = full
+            fullResLoaded = true
             return
         }
 
         // Show the medium image first (instant from memory if cached) so the photo
-        // appears immediately while the full-res downloads.
+        // appears immediately. The full-resolution download is deferred until the
+        // viewer settles (see `startFullResIfNeeded`), so it never competes with the
+        // open slide or a swipe.
         if let mem = RemoteSpeciesImageStore.shared.memoryImage(for: name) {
             image = mem
         } else {
@@ -811,14 +973,11 @@ private struct ZoomablePhotoPage: View {
             loadFailed = loaded == nil
         }
 
-        // Then fetch the true full-resolution photo in the background and swap it in
-        // when it arrives. Same aspect ratio as the medium image, so the scroll
-        // view keeps any in-progress zoom/pan (see `ZoomableImageView.updateUIView`).
         guard image != nil else { return }
-        if let full = await RemoteSpeciesImageStore.shared.fullResolutionImage(for: name) {
-            guard !Task.isCancelled else { return }
-            image = full
-        }
+        // If we're already settled (e.g. opening straight onto this page after the
+        // slide), start the full-res download now; otherwise `onChange(paging.settled)`
+        // will kick it off the moment motion stops.
+        startFullResIfNeeded()
     }
 }
 
@@ -843,6 +1002,10 @@ private struct ZoomableImageView: UIViewRepresentable {
     /// panned any farther down. The container uses this to allow swipe-to-dismiss
     /// while zoomed.
     var onAtTopEdgeChange: (Bool) -> Void = { _ in }
+    /// Fired when a zoomed horizontal pan has been dragged past the left/right
+    /// content edge (`-1` previous, `+1` next), so the container can carry the same
+    /// swipe on to the neighboring bird.
+    var onPageBeyondEdge: (Int) -> Void = { _ in }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -876,6 +1039,14 @@ private struct ZoomableImageView: UIViewRepresentable {
             action: #selector(Coordinator.handlePinch(_:))
         )
 
+        // Watch the scroll view's own pan recognizer so a zoomed horizontal drag
+        // that reaches the content edge can carry on to the next/previous bird
+        // within the same gesture (the carry-over page turn) instead of halting.
+        scroll.panGestureRecognizer.addTarget(
+            context.coordinator,
+            action: #selector(Coordinator.handlePan(_:))
+        )
+
         let doubleTap = UITapGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleDoubleTap(_:))
@@ -883,15 +1054,32 @@ private struct ZoomableImageView: UIViewRepresentable {
         doubleTap.numberOfTapsRequired = 2
         scroll.addGestureRecognizer(doubleTap)
 
-        let singleTap = UITapGestureRecognizer(
+        // Two single-tap recognizers, distinguished by where the tap lands (see
+        // the coordinator's `shouldReceive` delegate):
+        //  • On the photo itself — must wait for the double-tap-to-zoom to fail,
+        //    so a zoom double-tap doesn't also toggle the chrome.
+        //  • On the black letterbox background (outside the image) — fires
+        //    immediately with no double-tap dependency, so toggling the chrome by
+        //    tapping the backdrop feels instant rather than waiting out the
+        //    double-tap window.
+        let imageTap = UITapGestureRecognizer(
             target: context.coordinator,
             action: #selector(Coordinator.handleSingleTap(_:))
         )
-        singleTap.numberOfTapsRequired = 1
-        // Don't toggle the chrome when the tap is really the first half of a
-        // double-tap zoom.
-        singleTap.require(toFail: doubleTap)
-        scroll.addGestureRecognizer(singleTap)
+        imageTap.numberOfTapsRequired = 1
+        imageTap.name = Coordinator.imageTapName
+        imageTap.delegate = context.coordinator
+        imageTap.require(toFail: doubleTap)
+        scroll.addGestureRecognizer(imageTap)
+
+        let backgroundTap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleSingleTap(_:))
+        )
+        backgroundTap.numberOfTapsRequired = 1
+        backgroundTap.name = Coordinator.backgroundTapName
+        backgroundTap.delegate = context.coordinator
+        scroll.addGestureRecognizer(backgroundTap)
 
         return scroll
     }
@@ -931,7 +1119,12 @@ private struct ZoomableImageView: UIViewRepresentable {
         return abs(ra - rb) < 0.01
     }
 
-    final class Coordinator: NSObject, UIScrollViewDelegate {
+    final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
+        /// Names distinguishing the on-image vs. on-background single-tap
+        /// recognizers in the `shouldReceive` delegate.
+        static let imageTapName = "kestrel.imageTap"
+        static let backgroundTapName = "kestrel.backgroundTap"
+
         var parent: ZoomableImageView
         weak var scrollView: CenteringScrollView?
         var lastResetToken: Int
@@ -943,6 +1136,9 @@ private struct ZoomableImageView: UIViewRepresentable {
         /// Last reported top-edge state, so `onAtTopEdgeChange` only fires on a
         /// change. Starts true (a fresh, un-scrolled page sits at its top).
         private var lastAtTopEdge = true
+        /// True once a single pan gesture has already triggered a carry-over page
+        /// turn, so one continuous drag past the edge turns the page exactly once.
+        private var pageTriggeredThisGesture = false
 
         init(_ parent: ZoomableImageView) {
             self.parent = parent
@@ -1027,8 +1223,62 @@ private struct ZoomableImageView: UIViewRepresentable {
             }
         }
 
+        /// Detects a zoomed horizontal drag that has reached (and is pushing past)
+        /// the photo's left/right content edge, and fires `onPageBeyondEdge` once so
+        /// the same continuous swipe carries on to the neighboring bird. Only the
+        /// inner scroll view owns the pan while zoomed-and-not-at-edge, so without
+        /// this the drag just stops dead at the edge and a second swipe is needed.
+        @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
+            guard let scroll = scrollView else { return }
+            switch gesture.state {
+            case .began, .possible:
+                pageTriggeredThisGesture = false
+            case .changed:
+                guard !pageTriggeredThisGesture,
+                      scroll.zoomScale > scroll.minimumZoomScale + 0.001 else { return }
+                let t = gesture.translation(in: scroll)
+                // Horizontal-dominant drags only — a vertical pan is the user
+                // panning the zoomed photo up/down (or swiping down to dismiss).
+                guard abs(t.x) > abs(t.y) else { return }
+                // Past how much *overdrag* beyond the edge counts as a page turn.
+                let overdrag: CGFloat = 40
+                let atLeft = scroll.contentOffset.x <= -scroll.contentInset.left + 0.5
+                let atRight = scroll.contentOffset.x
+                    >= scroll.contentSize.width - scroll.bounds.width + scroll.contentInset.right - 0.5
+                if atLeft, t.x > overdrag {
+                    pageTriggeredThisGesture = true
+                    parent.onPageBeyondEdge(-1)
+                } else if atRight, t.x < -overdrag {
+                    pageTriggeredThisGesture = true
+                    parent.onPageBeyondEdge(1)
+                }
+            case .ended, .cancelled, .failed:
+                pageTriggeredThisGesture = false
+            default:
+                break
+            }
+        }
+
         @objc func handleSingleTap(_ gesture: UITapGestureRecognizer) {
             parent.onSingleTap()
+        }
+
+        /// Routes a single tap to the right recognizer by where it lands: the
+        /// on-image recognizer only accepts touches inside the (fitted) image, the
+        /// on-background recognizer only those in the surrounding black letterbox.
+        /// This is what lets a background tap toggle the chrome immediately while a
+        /// tap on the photo still defers to the double-tap-to-zoom.
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            guard let imageView = scrollView?.imageView else { return true }
+            let inImage = imageView.bounds.contains(touch.location(in: imageView))
+            switch gestureRecognizer.name {
+            case Self.imageTapName: return inImage
+            case Self.backgroundTapName: return !inImage
+            default: return true
+            }
         }
 
         @objc func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
@@ -1114,10 +1364,24 @@ final class CenteringScrollView: UIScrollView {
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-        // Only own the drag once zoomed; otherwise let SwiftUI page / dismiss.
-        if gestureRecognizer == panGestureRecognizer {
-            return zoomScale > minimumZoomScale + 0.001
+        guard gestureRecognizer == panGestureRecognizer else {
+            return super.gestureRecognizerShouldBegin(gestureRecognizer)
         }
-        return super.gestureRecognizerShouldBegin(gestureRecognizer)
+        // At minimum zoom the image fills the frame with nothing to pan, so let the
+        // drag fall through to SwiftUI (page between birds / swipe to dismiss).
+        guard zoomScale > minimumZoomScale + 0.001 else { return false }
+
+        // Zoomed in: own the pan so the magnified image can be panned — except a
+        // horizontal swipe that starts at the image's left/right content edge, which
+        // we let through to the pager so the user can still swipe to the next/previous
+        // bird while zoomed (matching the Photos app's edge hand-off). Vertical pans
+        // always stay with the image (and the swipe-down-at-top still dismisses).
+        let velocity = panGestureRecognizer.velocity(in: self)
+        guard abs(velocity.x) > abs(velocity.y) else { return true }
+        let atLeftEdge = contentOffset.x <= -contentInset.left + 0.5
+        let atRightEdge = contentOffset.x >= contentSize.width - bounds.width + contentInset.right - 0.5
+        if velocity.x > 0, atLeftEdge { return false }   // swipe right at left edge → previous bird
+        if velocity.x < 0, atRightEdge { return false }  // swipe left at right edge → next bird
+        return true
     }
 }

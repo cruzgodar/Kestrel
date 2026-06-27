@@ -77,7 +77,6 @@ actor SpeciesRangeFilter {
             savedAt: Date()
         )
         try? Self.write(cached)
-        print("SpeciesRangeFilter: \(allowed.count) species allowed at (\(lat), \(lon)) week \(week)")
         return allowed
     }
 

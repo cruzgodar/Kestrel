@@ -26,7 +26,7 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
                  error: Error?) {
         if let error { print("Kestrel: WCSession activation error \(error)") }
         refreshWatchAppInstalled(session)
-        pushLocationAuthorized()
+        pushRecordingAuthorized()
     }
 
     func sessionDidBecomeInactive(_ session: WCSession) {}
@@ -41,21 +41,22 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
     /// drives) in sync, and (re)push the location state to the fresh watch.
     func sessionWatchStateDidChange(_ session: WCSession) {
         refreshWatchAppInstalled(session)
-        pushLocationAuthorized()
+        pushRecordingAuthorized()
     }
 
-    /// Pushes the phone's current location-authorization state to the watch via the
-    /// persisted application context, so the watch shows its "Open Kestrel on
-    /// iPhone" screen instead of a dead record button until access is granted.
-    /// `updateApplicationContext` only re-delivers on a changed payload, so this is
-    /// cheap to call on every authorization change and session/watch-state event.
-    func pushLocationAuthorized() {
+    /// Pushes the phone's current recording-authorization state (microphone +
+    /// location both granted) to the watch via the persisted application context,
+    /// so the watch shows its "Open Kestrel on iPhone" screen instead of a dead
+    /// record button until both are granted. `updateApplicationContext` only
+    /// re-delivers on a changed payload, so this is cheap to call on every
+    /// authorization change and session/watch-state event.
+    func pushRecordingAuthorized() {
         Task { @MainActor in
             guard WCSession.isSupported() else { return }
             let session = WCSession.default
             guard session.activationState == .activated else { return }
-            let authorized = manager.locationAuthorized
-            try? session.updateApplicationContext(["locationAuthorized": authorized])
+            let authorized = manager.recordingAuthorized
+            try? session.updateApplicationContext(["recordingAuthorized": authorized])
         }
     }
 

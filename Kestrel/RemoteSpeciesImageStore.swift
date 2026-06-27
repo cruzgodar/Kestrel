@@ -491,6 +491,27 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
             total -= entry.size
         }
     }
+
+    /// Debug helper (About screen, DEBUG builds): wipes every cached species
+    /// image across all tiers — the in-memory medium, thumbnail, and
+    /// full-resolution caches, plus every on-disk JPEG (full images and
+    /// thumbnails). Protected-slug bookkeeping is left intact; images simply
+    /// re-download on next access.
+    func clearAllCaches() {
+        memory.removeAllObjects()
+        thumbnailMemory.removeAllObjects()
+        fullResImageMemory.removeAllObjects()
+        let fm = FileManager.default
+        if let urls = try? fm.contentsOfDirectory(
+            at: dir,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) {
+            for url in urls where url.pathExtension == "jpg" {
+                try? fm.removeItem(at: url)
+            }
+        }
+    }
 }
 
 private extension UIImage {

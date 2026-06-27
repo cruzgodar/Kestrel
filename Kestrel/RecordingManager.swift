@@ -26,15 +26,36 @@ final class RecordingManager {
     /// the nearby-species filter — is unavailable. Drives an alert offering to
     /// open Settings. The view clears it on dismiss (hence not `private(set)`).
     var showLocationPermissionAlert = false
+    /// Set when a recording attempt was refused because microphone access is
+    /// denied. Drives an alert offering to open Settings, mirroring the location
+    /// one. Cleared by the view on dismiss (hence not `private(set)`).
+    var showMicPermissionAlert = false
     /// True when location access is explicitly *denied* or *restricted* (not merely
     /// undetermined). The Identify tab grays the record button and shows a lock
     /// glyph in this state; undetermined keeps the normal button so the first tap
     /// can still bring up the system prompt. Seeded at launch and kept current via
     /// the location provider's authorization-change callback.
     private(set) var locationAccessDenied = false
-    /// Invoked whenever the phone's location authorization changes, so the app can
-    /// push the new state to the watch (set in `KestrelApp`).
-    var onLocationAuthorizationChanged: (() -> Void)?
+    /// True when microphone access is explicitly *denied* (not merely
+    /// undetermined). Like `locationAccessDenied`, this grays the record button —
+    /// recording can't proceed without the mic. Seeded at launch and refreshed
+    /// whenever the app returns to the foreground (there's no system callback for
+    /// mic-permission changes, so we re-read it on foreground).
+    private(set) var micAccessDenied = false
+    /// Whether recording is currently blocked by a *denied* permission (mic or
+    /// location). The record button is grayed (a locked, tap-to-open-Settings
+    /// state) on both phone and watch while this holds.
+    var recordingBlocked: Bool { locationAccessDenied || micAccessDenied }
+    /// Whether both permissions recording needs are actually granted. Pushed to
+    /// the watch (which can't prompt for either) so it knows when its own record
+    /// button is usable. `notDetermined`/`undetermined` counts as not-yet-granted,
+    /// since the phone must grant first.
+    var recordingAuthorized: Bool {
+        locationAuthorized && AVAudioApplication.shared.recordPermission == .granted
+    }
+    /// Invoked whenever the phone's recording authorization (mic or location)
+    /// changes, so the app can push the new state to the watch (set in `KestrelApp`).
+    var onRecordingAuthorizationChanged: (() -> Void)?
     /// IDs (scientific names) of detections whose confidence was just upgraded;
     /// the UI flashes their row yellow while they're in this set.
     private(set) var flashIDs: Set<String> = []
@@ -182,7 +203,19 @@ final class RecordingManager {
     /// record button reads, and lets the app push the new state to the watch.
     private func handleLocationAuthorizationChange(_ status: CLAuthorizationStatus) {
         locationAccessDenied = (status == .denied || status == .restricted)
-        onLocationAuthorizationChanged?()
+        onRecordingAuthorizationChanged?()
+    }
+
+    /// Re-reads the microphone permission and refreshes `micAccessDenied`. There's
+    /// no system callback for mic-permission changes (unlike location), so the app
+    /// calls this whenever it returns to the foreground — the user may have flipped
+    /// the toggle in Settings while away. Pushes the new state to the watch when it
+    /// actually changed.
+    func refreshMicrophoneAuthorization() {
+        let denied = AVAudioApplication.shared.recordPermission == .denied
+        guard denied != micAccessDenied else { return }
+        micAccessDenied = denied
+        onRecordingAuthorizationChanged?()
     }
 
     func preload() {
@@ -195,6 +228,9 @@ final class RecordingManager {
             let status = locationProvider.authorizationStatus
             return status == .denied || status == .restricted
         }()
+        // Seed the mic-denied flag too, so the record button is grayed at launch
+        // when mic access was previously denied.
+        micAccessDenied = AVAudioApplication.shared.recordPermission == .denied
 
         if classifierTask == nil {
             classifierTask = Task.detached(priority: .userInitiated) {
@@ -405,23 +441,26 @@ final class RecordingManager {
 
         errorMessage = nil
 
+        // Microphone first — it's the permission recording most fundamentally
+        // needs, so it leads the sequence (mic → location → notifications). Prompt
+        // if undetermined; if it's denied, surface the Settings alert and don't
+        // start. (No inline error text — the grayed button + alert convey it.)
+        guard await requestMicrophonePermission() else {
+            showMicPermissionAlert = true
+            return
+        }
+
         // The nearby-species filter — and thus recording — needs location access.
         // Prompt if undetermined; if it's denied, surface the Settings alert and
-        // don't start.
+        // don't start. One prompt at a time: this awaits the mic choice above.
         guard await isLocationAuthorized(prompt: true) else {
             showLocationPermissionAlert = true
             return
         }
 
-        // Now (and only now, after the location answer) ask for notification
-        // permission, so detected birds can notify in the background. One prompt at
-        // a time: this awaits the location choice above before surfacing.
+        // Now (and only now, after mic + location) ask for notification permission,
+        // so detected birds can notify in the background.
         await SpeciesNotifications.shared.requestAuthorizationIfNeeded()
-
-        guard await requestMicrophonePermission() else {
-            errorMessage = "Microphone permission denied."
-            return
-        }
 
         detections = []
         detectionMap = [:]
@@ -532,6 +571,14 @@ final class RecordingManager {
         // the iPhone.
         guard await isLocationAuthorized(prompt: false) else {
             sendToWatch(["cmd": "recordingRefused", "reason": "location"])
+            return
+        }
+
+        // Likewise, the watch can't grant the phone's microphone access; if it's
+        // denied, refuse and point the user at the iPhone. (The watch UI is
+        // normally already blocked in this state — this is the race backstop.)
+        guard AVAudioApplication.shared.recordPermission != .denied else {
+            sendToWatch(["cmd": "recordingRefused", "reason": "microphone"])
             return
         }
 
@@ -1205,7 +1252,16 @@ final class RecordingManager {
         case .granted: return true
         case .denied: return false
         case .undetermined:
-            return await AVAudioApplication.requestRecordPermission()
+            let granted = await AVAudioApplication.requestRecordPermission()
+            // The prompt just resolved — refresh the grayed-button flag in case the
+            // user denied it. Also push the combined authorization to the watch
+            // unconditionally: an undetermined→granted transition doesn't flip
+            // `micAccessDenied` (it was already false), so `refreshMicrophoneAuthorization`
+            // wouldn't push on its own, leaving the watch blocked until some later
+            // event. (`updateApplicationContext` de-dupes, so a redundant push is free.)
+            refreshMicrophoneAuthorization()
+            onRecordingAuthorizationChanged?()
+            return granted
         @unknown default:
             return false
         }

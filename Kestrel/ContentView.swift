@@ -71,23 +71,33 @@ struct ContentView: View {
                 ContentUnavailableView {
                     Label("Identify Birds", systemImage: "magnifyingglass")
                 } description: {
-                    HighlightedText(
-                        segments: Self.placeholderSegments(watchInstalled: manager.isWatchAppInstalled),
-                        textColor: .secondary,
-                        alignment: .center
-                    )
-                    // The watch-installed state isn't known at launch, so this
-                    // text starts on the non-watch copy and resolves a beat
-                    // later. Keying the identity to that flag + an opacity
-                    // transition crossfades between the two strings instead of
-                    // snapping. (No animation on first appear: the value only
-                    // changes once the watch state arrives.)
-                    .id(manager.isWatchAppInstalled)
-                    .transition(.opacity)
+                    // The watch-installed state isn't known at launch, so the
+                    // copy starts on the non-watch string and resolves a beat
+                    // later. Both strings are stacked and crossfaded by opacity
+                    // *in place* rather than swapped via `.id` + an insert/remove
+                    // transition: an identity swap put two differently-sized
+                    // descriptions in the same vertically-centering slot at once,
+                    // and the reflow mid-transition rode the text up over the
+                    // magnifying-glass icon. A ZStack sizes to the taller string
+                    // and holds that slot steady, so the crossfade never reflows.
+                    ZStack {
+                        HighlightedText(
+                            segments: Self.placeholderSegments(watchInstalled: false),
+                            textColor: .secondary,
+                            alignment: .center
+                        )
+                        .opacity(manager.isWatchAppInstalled ? 0 : 1)
+                        HighlightedText(
+                            segments: Self.placeholderSegments(watchInstalled: true),
+                            textColor: .secondary,
+                            alignment: .center
+                        )
+                        .opacity(manager.isWatchAppInstalled ? 1 : 0)
+                    }
+                    .animation(.easeInOut(duration: 0.3), value: manager.isWatchAppInstalled)
                 }
                 .opacity(manager.isRecording ? 0 : 1)
                 .animation(.easeInOut(duration: 0.25), value: manager.isRecording)
-                .animation(.easeInOut(duration: 0.3), value: manager.isWatchAppInstalled)
                 .allowsHitTesting(false)
             }
         }
@@ -175,6 +185,24 @@ struct ContentView: View {
         } message: {
             Text("Kestrel cannot identify birds without location access, because it needs to filter birds to only those found near you. You can turn on location access for Kestrel in Settings.")
         }
+        // Recording needs microphone access; when a start is refused for lack of
+        // it, offer a jump to Settings (mirroring the location alert above).
+        .alert(
+            "Microphone Access Needed",
+            isPresented: Binding(
+                get: { manager.showMicPermissionAlert },
+                set: { manager.showMicPermissionAlert = $0 }
+            )
+        ) {
+            Button("Open Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            Button("Not Now", role: .cancel) { }
+        } message: {
+            Text("Kestrel cannot identify birds without microphone access, because it listens for their songs and calls. You can turn on microphone access for Kestrel in Settings.")
+        }
         // Surfaced when the watch link repeatedly stalls during a session (audio
         // stops arriving despite restart attempts) — the heartbeat watchdog.
         .alert(
@@ -204,12 +232,12 @@ struct ContentView: View {
             // label drops out, and the frame animates from a wide pill to a 56pt
             // square — which a `Capsule` renders as a perfect circle.
             HStack(spacing: 0) {
-                // Idle: a mic, or a lock when location access is denied (the button
-                // is grayed then and a tap opens the Settings alert rather than
-                // recording). Recording: the stop glyph.
+                // Idle: a mic, or a lock when mic/location access is denied (the
+                // button is grayed then and a tap opens the Settings alert rather
+                // than recording). Recording: the stop glyph.
                 Image(systemName: manager.isRecording
                     ? "stop.fill"
-                    : (manager.locationAccessDenied ? "lock.fill" : "mic.fill"))
+                    : (manager.recordingBlocked ? "lock.fill" : "mic.fill"))
                     .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
                 if !manager.isRecording {
                     Text("Start Recording")
@@ -230,14 +258,15 @@ struct ContentView: View {
         // with the morph because the animation below scopes `isRecording`.
         .buttonStyle(RecordButtonStyle(tint: recordButtonTint))
         .animation(.easeOut(duration: 0.16), value: manager.isRecording)
-        .animation(.easeInOut(duration: 0.2), value: manager.locationAccessDenied)
+        .animation(.easeInOut(duration: 0.2), value: manager.recordingBlocked)
     }
 
-    /// Fill color for the record button: red while recording, gray when location
-    /// access is denied (a locked, tap-to-open-Settings state), else the idle purple.
+    /// Fill color for the record button: red while recording, gray when mic or
+    /// location access is denied (a locked, tap-to-open-Settings state), else the
+    /// idle purple.
     private var recordButtonTint: Color {
         if manager.isRecording { return Self.stopTint }
-        return manager.locationAccessDenied ? Self.lockedTint : Self.recordTint
+        return manager.recordingBlocked ? Self.lockedTint : Self.recordTint
     }
 
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)

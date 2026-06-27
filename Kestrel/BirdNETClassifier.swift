@@ -61,7 +61,6 @@ actor BirdNETClassifier {
         if ORTIsCoreMLExecutionProviderAvailable() {
             do {
                 try options.appendCoreMLExecutionProvider(withOptionsV2: ["MLComputeUnits": "ALL"])
-                print("BirdNET: CoreML EP enabled")
             } catch {
                 print("BirdNET: CoreML EP unavailable (\(error)), falling back to CPU")
             }
@@ -89,7 +88,6 @@ actor BirdNETClassifier {
                 .filter { Self.nonBirdLabels.contains($0.element.scientific) }
                 .map(\.offset)
         )
-        print("BirdNET: loaded — input=\(inName), output=\(outName), labels=\(labels.count), nonBird=\(nonBirdIndices.count)")
     }
 
     func classify(
