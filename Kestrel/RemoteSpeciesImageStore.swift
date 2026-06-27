@@ -42,7 +42,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// photo at a modest size, so a downsample decodes and holds for almost
     /// nothing. The hero (Identify) and full-screen viewer use the full-resolution
     /// tier instead, so they're unaffected by how small this is.
-    static let thumbnailMaxPixelSize: CGFloat = 250
+    static let thumbnailMaxPixelSize: CGFloat = 300
 
     /// Ceiling for cached "other" images — anything neither on the life list
     /// nor in the current nearby list — enforced only while the user's "Limit

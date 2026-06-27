@@ -804,7 +804,7 @@ private struct FadingAnnotationContent: View {
     /// Duration of the thumbnail fade-in / fade-out when the "Fade Thumbnails"
     /// setting is on. Change this one value to make the fade faster or slower.
     /// Kept brisk so thumbnails appear/disappear snappily rather than lingering.
-    private static let fadeDuration: Double = 0.18
+    private static let fadeDuration: Double = 0.12
     /// False until the first `info` resolution after this view mounts. Lets us
     /// distinguish a genuine first appearance (or a hit-test rehydration remount,
     /// which destroys + recreates this view) — which should settle to its final
