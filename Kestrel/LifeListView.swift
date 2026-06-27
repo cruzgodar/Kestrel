@@ -203,10 +203,9 @@ struct LifeListView: View {
     }
 
     /// A few points of breathing room kept between the bottom search field and
-    /// the screen edge, roughly matching the trailing `ToolbarSpacer` that nudges
-    /// the heading buttons in (see the `.toolbar`). Not a pixel-perfect match —
-    /// the toolbar spacer's width isn't queryable — just enough that the field and
-    /// the buttons sit in from the edge by a similar amount.
+    /// the screen edge, matching the trailing padding on the heading buttons' shared
+    /// toolbar item (see the `.toolbar`), so the field's right edge and the buttons
+    /// sit in from the edge by the same amount.
     private static let headingButtonNudge: CGFloat = 6
     /// Symmetric horizontal inset of the bottom search field: the system toolbar
     /// margin (≈16pt) plus the small nudge above so the field stays centered while
@@ -331,50 +330,53 @@ struct LifeListView: View {
                 } action: { searchFieldTop = $0 }
         }
         .toolbar {
+            // Both heading buttons live in a SINGLE toolbar item so a trailing
+            // padding actually insets them from the screen edge. A trailing
+            // `ToolbarSpacer` doesn't: the toolbar pins the trailing group to the
+            // safe-area margin and collapses an edge spacer (nothing follows it to
+            // push against). Padding inside one right-anchored item, by contrast,
+            // grows the item's frame leftward into the margin, sliding both buttons
+            // in by `headingButtonNudge`. The trade-off is the two buttons now share
+            // one glass group instead of getting separate capsules.
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    // Re-snapshot the currently-starred species each time the
-                    // filter is switched on. This frozen set drives which rows
-                    // show while filtering, so unstarring leaves a bird visible
-                    // until the filter is toggled off and on again.
-                    if !showStarredOnly {
-                        starredSnapshot = Set(
-                            store.entries.lazy.filter(\.isStarred).map(\.scientificName)
-                        )
-                    }
-                    showStarredOnly.toggle()
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease")
-                        .foregroundStyle(showStarredOnly ? .white : .primary)
-                        .frame(width: 28, height: 28)
-                        .background {
-                            Circle()
-                                .fill(Color.accentColor)
-                                .frame(
-                                    width: showStarredOnly ? 36 : 28,
-                                    height: showStarredOnly ? 36 : 28
-                                )
-                                .opacity(showStarredOnly ? 1 : 0)
+                HStack(spacing: 16) {
+                    Button {
+                        // Re-snapshot the currently-starred species each time the
+                        // filter is switched on. This frozen set drives which rows
+                        // show while filtering, so unstarring leaves a bird visible
+                        // until the filter is toggled off and on again.
+                        if !showStarredOnly {
+                            starredSnapshot = Set(
+                                store.entries.lazy.filter(\.isStarred).map(\.scientificName)
+                            )
                         }
-                        .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
+                        showStarredOnly.toggle()
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease")
+                            .foregroundStyle(showStarredOnly ? .white : .primary)
+                            .frame(width: 28, height: 28)
+                            .background {
+                                Circle()
+                                    .fill(Color.accentColor)
+                                    .frame(
+                                        width: showStarredOnly ? 36 : 28,
+                                        height: showStarredOnly ? 36 : 28
+                                    )
+                                    .opacity(showStarredOnly ? 1 : 0)
+                            }
+                            .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
+                    }
+                    .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
+
+                    Button {
+                        showImportInfo = true
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
+                    }
+                    .accessibilityLabel("Import eBird CSV")
                 }
-                .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
+                .padding(.trailing, Self.headingButtonNudge)
             }
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showImportInfo = true
-                } label: {
-                    Image(systemName: "square.and.arrow.down")
-                }
-                .accessibilityLabel("Import eBird CSV")
-            }
-            // Trailing spacer to nudge the whole pair in from the screen edge.
-            // An `.offset` on the buttons themselves only slid the glyphs inside
-            // their fixed Liquid Glass capsules (the capsules are positioned by
-            // the toolbar, not the button content); a `ToolbarSpacer` sits
-            // outside the glass, so it moves the capsules as whole units.
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
         }
         // Recompute catalog suggestions whenever the query changes, but
         // wait out a short debounce so mid-typing keystrokes don't each

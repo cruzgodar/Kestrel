@@ -323,6 +323,19 @@ struct SpeciesPhotoFullScreen: View {
         .ignoresSafeArea()
         // Keep the dismiss slide-off target in sync with the (stable) card size.
         .onChange(of: fullHeight, initial: true) { _, h in viewSize = CGSize(width: screenWidth, height: h) }
+        // Swiping to a new bird starts it fresh: the incoming page is always built
+        // at minimum zoom (the pager recreates pages, see `PhotoPager`), so clear
+        // any lingering zoom state from the bird we left, and bring the chrome back
+        // if a zoom on the previous bird had auto-hidden it (`hideUIForZoom`). Without
+        // this the container's `isZoomed`/`uiVisible` stay stuck on the previous
+        // page's values — the new, un-zoomed bird would otherwise show with its name
+        // capsule and info panel still hidden.
+        .onChange(of: index) { _, _ in
+            if isZoomed { isZoomed = false }
+            // A fresh page sits at its top content edge.
+            currentPageAtTopEdge = true
+            revealUIAfterZoom()
+        }
         .opacity(contentOpacity)
         // Light-content (white) status bar exactly while the dark card is over the
         // status bar: only after the open slide settles it there, and only while

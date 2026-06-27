@@ -171,28 +171,13 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
 
-            // Shown when the phone refuses a start (e.g. no location access for
-            // the species filter). Covers the screen with the reason and points
-            // the user at the iPhone; tap to dismiss.
-            if let error = session.recordingError {
-                ZStack {
-                    Color.black.opacity(0.85).ignoresSafeArea()
-                    VStack(spacing: 10) {
-                        Image(systemName: "location.slash.fill")
-                            .font(.system(size: 30))
-                            .foregroundStyle(.yellow)
-                        Text(error)
-                            .font(.system(size: 15, weight: .medium))
-                            .multilineTextAlignment(.center)
-                            .foregroundStyle(.white)
-                    }
-                    .padding(.horizontal, 16)
-                }
-                .transition(.opacity)
-                .onTapGesture { session.recordingError = nil }
-            }
+            // A denied phone permission is surfaced entirely through the gray lock
+            // button (see `blockedForPermissions` / `recordButton`) — tapping it
+            // opens the explanatory sheet. We deliberately show *no* full-screen
+            // yellow error overlay when a start is refused: the gray button already
+            // communicates the blocked state from the outset, so the refusal just
+            // rolls the optimistic recording state back silently.
         }
-        .animation(.easeInOut(duration: 0.25), value: session.recordingError)
         .animation(.easeInOut(duration: 0.25), value: blockedForPermissions)
         .animation(.easeInOut(duration: 0.25), value: phoneNeverOpened)
         // Explains why the record button is locked (iPhone hasn't granted mic /
