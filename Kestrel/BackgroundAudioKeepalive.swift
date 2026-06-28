@@ -26,7 +26,7 @@ final class BackgroundAudioKeepalive {
             try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
             try session.setActive(true, options: [])
         } catch {
-            print("Kestrel: keepalive audio session error \(error)")
+            Log.error("Keepalive audio session error: \(error)")
             return
         }
 
@@ -45,7 +45,7 @@ final class BackgroundAudioKeepalive {
             player.play()
             isActive = true
         } catch {
-            print("Kestrel: keepalive engine error \(error)")
+            Log.error("Keepalive engine error: \(error)")
             try? session.setActive(false, options: [.notifyOthersOnDeactivation])
         }
     }

@@ -92,7 +92,7 @@ actor SpeciesRangeFilter {
             let cached = try decoder.decode(CachedFilter.self, from: data)
             return Set(cached.allowedIndices)
         } catch {
-            print("SpeciesRangeFilter: failed to load cache — \(error)")
+            Log.error("SpeciesRangeFilter: failed to load cache — \(error)")
             return nil
         }
     }

@@ -51,7 +51,7 @@ final class WatchWorkoutManager {
         do {
             try await healthStore.requestAuthorization(toShare: share, read: read)
         } catch {
-            print("Kestrel Watch: HealthKit authorization error \(error)")
+            Log.error("HealthKit authorization error: \(error)")
         }
     }
 
@@ -93,7 +93,7 @@ final class WatchWorkoutManager {
             // Fitness app instead of the generic "Outdoor Walk".
             try await builder.addMetadata([HKMetadataKeyWorkoutBrandName: "Birding"])
         } catch {
-            print("Kestrel Watch: workout start error \(error)")
+            Log.error("Workout start error: \(error)")
             session = nil
             builder = nil
             startDate = nil
@@ -122,7 +122,7 @@ final class WatchWorkoutManager {
                 try await builder.endCollection(at: end)
                 builder.discardWorkout()
             } catch {
-                print("Kestrel Watch: workout discard error \(error)")
+                Log.error("Workout discard error: \(error)")
             }
             return
         }
@@ -131,7 +131,7 @@ final class WatchWorkoutManager {
             try await builder.endCollection(at: end)
             _ = try await builder.finishWorkout()
         } catch {
-            print("Kestrel Watch: workout finish error \(error)")
+            Log.error("Workout finish error: \(error)")
         }
     }
 }

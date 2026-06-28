@@ -70,7 +70,6 @@ final class WatchSessionManager: NSObject {
         case newSpecies  // not yet on the life list (purple)
         case starred     // on the user's alert list (blue)
         case normal      // already known + not starred (no tint)
-        case debug       // injected from the phone's debug tool (pure red)
     }
 
     /// The most recent bird the phone reported hearing. Drives the "now
@@ -460,7 +459,7 @@ final class WatchSessionManager: NSObject {
         guard isRecording else { return }  // stopped during the morph
 
         guard await Self.ensureMicrophonePermission() else {
-            print("Kestrel Watch: microphone permission denied")
+            Log.warning("Microphone permission denied")
             isRecording = false  // undo the optimistic flip
             notifyPhoneStopped()  // roll back the optimistic start on the phone
             return
@@ -473,7 +472,7 @@ final class WatchSessionManager: NSObject {
         do {
             try await startStreamerOffMain()
         } catch {
-            print("Kestrel Watch: streamer start error \(error)")
+            Log.error("Streamer start error: \(error)")
             isRecording = false
             notifyPhoneStopped()  // roll back the optimistic start on the phone
             return
@@ -660,7 +659,7 @@ final class WatchSessionManager: NSObject {
     /// per spec; resets the heartbeat clock so the restart gets a fresh window.
     private func restartCaptureForStall(reason: String) {
         guard isRecording, !mirroringPhone else { return }
-        print("Kestrel Watch: \(reason) — restarting capture")
+        Log.warning("\(reason) — restarting capture")
         lastPhoneHeartbeatAt = Date()
         let streamer = self.streamer
         let audioQueue = self.audioQueue
@@ -669,7 +668,7 @@ final class WatchSessionManager: NSObject {
             do {
                 try streamer.start { [weak self] data in self?.deliver(data) }
             } catch {
-                print("Kestrel Watch: capture restart error \(error)")
+                Log.error("Capture restart error: \(error)")
             }
         }
     }
@@ -681,7 +680,7 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
     func session(_ session: WCSession,
                  activationDidCompleteWith activationState: WCSessionActivationState,
                  error: Error?) {
-        if let error { print("Kestrel Watch: WCSession activation error \(error)") }
+        if let error { Log.error("WCSession activation error: \(error)") }
         // Seed the phone's recording-auth state from the last context it pushed,
         // delivered even if the phone is currently unreachable.
         applyRecordingContext(session.receivedApplicationContext)

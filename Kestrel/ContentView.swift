@@ -127,26 +127,6 @@ struct ContentView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
         }
-//#if DEBUG
-//        // Debug-only: simulate hearing a random bird (no audio), driving the
-//        // full detection pipeline through to the watch. Handy for testing the
-//        // watch's "now hearing" screen without playing sound.
-//        .overlay(alignment: .topTrailing) {
-//            Button {
-//                manager.debugSimulateRandomDetection()
-//            } label: {
-//                Image(systemName: "ladybug.fill")
-//                    .font(.system(size: 16, weight: .semibold))
-//                    .foregroundStyle(.white)
-//                    .frame(width: 34, height: 34)
-//                    .background(.purple.opacity(0.85), in: Circle())
-//            }
-//            .buttonStyle(.plain)
-//            .padding(.trailing, 12)
-//            .padding(.top, 8)
-//            .accessibilityLabel("Simulate detection")
-//        }
-//#endif
         .onChange(of: manager.isRecording) { wasRecording, isNowRecording in
             if !wasRecording && isNowRecording {
                 // New session — push the current life-list IDs into the
@@ -289,9 +269,14 @@ struct ContentView: View {
             let aged = manager.detections.filter {
                 now.timeIntervalSince($0.lastSeen) > Self.agingThreshold
             }
+            // Membership set built once per render so each row's "already added?"
+            // check is O(1) instead of a linear scan of the whole life list per row
+            // (which, across many rows × a large list × every merge-driven
+            // re-render, added up).
+            let lifeListNames = Set(lifeListStore.entries.map(\.scientificName))
             List {
                 ForEach(recent) { detection in
-                    detectionRow(for: detection)
+                    detectionRow(for: detection, lifeListNames: lifeListNames)
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
@@ -308,7 +293,7 @@ struct ContentView: View {
                         .listRowSeparator(.hidden)
                         .listRowBackground(Color.clear)
                     ForEach(aged) { detection in
-                        detectionRow(for: detection)
+                        detectionRow(for: detection, lifeListNames: lifeListNames)
                             .listRowInsets(EdgeInsets())
                             .listRowSeparator(.hidden)
                             .listRowBackground(Color.clear)
@@ -347,7 +332,7 @@ struct ContentView: View {
         ]
     }
 
-    private func detectionRow(for detection: Detection) -> some View {
+    private func detectionRow(for detection: Detection, lifeListNames: Set<String>) -> some View {
         let flashing = manager.flashIDs.contains(detection.id)
         // "Not in life list at session start" — frozen for the duration of
         // the recording, so the tint doesn't vanish the instant the user
@@ -355,9 +340,12 @@ struct ContentView: View {
         let needsLifeListAdd = !manager.lifeListSnapshot.contains(detection.scientificName)
         // Once the user taps the plus, the species is in the live store
         // even though the session snapshot still says it wasn't. That flip
-        // is how we know to swap plus → checkmark.
-        let alreadyAdded = lifeListStore.entries.contains { $0.scientificName == detection.scientificName }
-        let isStarred = lifeListStore.entries.first(where: { $0.scientificName == detection.scientificName })?.isStarred ?? false
+        // is how we know to swap plus → checkmark. O(1) against the set built
+        // once per render in `resultsView`.
+        let alreadyAdded = lifeListNames.contains(detection.scientificName)
+        // `starredNames` is the store's source-of-truth Set, so this is an O(1)
+        // lookup (and tracks the right @Observable dependency for star toggles).
+        let isStarred = lifeListStore.starredNames.contains(detection.scientificName)
         // Flash color picks the same hue family as the persistent tint:
         // purple for needs-add, blue for starred, yellow otherwise.
         let flashColor: Color = needsLifeListAdd
@@ -458,12 +446,6 @@ struct ContentView: View {
                         flashing ? nil : .easeOut(duration: 0.5),
                         value: flashing
                     )
-//#if DEBUG
-//                // Debug-injected birds: pure red, full opacity, over everything.
-//                if manager.debugDetectionNames.contains(detection.scientificName) {
-//                    Color.red
-//                }
-//#endif
             }
         )
     }

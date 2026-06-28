@@ -97,7 +97,7 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
     }
 
     nonisolated func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        print("LocationProvider: error \(error)")
+        Log.error("LocationProvider: \(error)")
         Task { @MainActor in self.finish(with: nil) }
     }
 

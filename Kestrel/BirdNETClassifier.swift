@@ -62,7 +62,7 @@ actor BirdNETClassifier {
             do {
                 try options.appendCoreMLExecutionProvider(withOptionsV2: ["MLComputeUnits": "ALL"])
             } catch {
-                print("BirdNET: CoreML EP unavailable (\(error)), falling back to CPU")
+                Log.warning("BirdNET: CoreML EP unavailable (\(error)), falling back to CPU")
             }
         }
 

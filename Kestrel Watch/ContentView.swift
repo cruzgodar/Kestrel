@@ -245,20 +245,12 @@ struct ContentView: View {
         case .newSpecies: return Self.newSpeciesBackground
         case .starred:    return Self.starredBackground
         case .normal:     return .black
-        case .debug:      return .red
         }
     }
 
     /// Standing background before any bird has been heard (idle, or recording but
-    /// nothing identified yet). Normally black; in a debug build it's red so the
-    /// build flavor is obvious at a glance, with no input needed from the phone.
-    private static var idleBackground: Color {
-//        #if DEBUG
-//        return .red
-//        #else
-        return .black
-//        #endif
-    }
+    /// nothing identified yet).
+    private static let idleBackground: Color = .black
 
     /// The color flashed over the standing background when a bird is heard — a
     /// brighter beat of the same hue (yellow over black for a normal bird),
@@ -267,7 +259,6 @@ struct ContentView: View {
         switch session.lastBird?.highlight {
         case .newSpecies:    return Self.newSpeciesFlash
         case .starred:       return Self.starredFlash
-        case .debug:         return .red
         case .normal, .none: return Self.normalFlash
         }
     }
@@ -279,9 +270,9 @@ struct ContentView: View {
         guard session.isRecording, !isLuminanceReduced else { return }
         // Only the highlighted birds pulse — a plain/normal bird updates the
         // screen without the yellow flash. New species + starred still flash
-        // their brighter purple/blue (and a debug injection still flashes red).
+        // their brighter purple/blue.
         switch session.lastBird?.highlight {
-        case .newSpecies, .starred, .debug:
+        case .newSpecies, .starred:
             break
         default:
             return

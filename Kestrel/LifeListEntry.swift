@@ -1,6 +1,6 @@
 import Foundation
 
-struct LifeListEntry: Codable, Identifiable, Hashable {
+nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
     let scientificName: String
     var commonName: String
     var firstSeen: Date
@@ -28,7 +28,7 @@ struct LifeListEntry: Codable, Identifiable, Hashable {
 
     /// A single recorded sighting — date plus where it happened. Mirrors the
     /// per-row fields of an eBird CSV export.
-    struct Observation: Codable, Hashable {
+    nonisolated struct Observation: Codable, Hashable {
         var date: Date
         var location: String?
         var latitude: Double?

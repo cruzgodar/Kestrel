@@ -4,7 +4,7 @@ import Observation
 @Observable
 @MainActor
 final class LifeListStore {
-    struct ImportSummary {
+    nonisolated struct ImportSummary {
         let added: Int
         let updated: Int
         let skipped: Int
@@ -52,8 +52,23 @@ final class LifeListStore {
     /// Caller is responsible for `startAccessingSecurityScopedResource()` if needed.
     func importEBird(from url: URL) async throws -> ImportSummary {
         let data = try Data(contentsOf: url)
-        let rows = try EBirdCSVParser.parse(data)
-        let summary = merge(rows: rows)
+        // Parse + merge are CPU-heavy — a character-by-character CSV scan followed
+        // by a full canonicalization pass against the ~6.5k-species catalog — so a
+        // large eBird export would visibly freeze the UI if run inline on the main
+        // actor (`async` alone doesn't move work off it). Snapshot the current
+        // entries, do the heavy work on a detached task, and apply only the cheap
+        // result back on main.
+        let existing = entries
+        let result = try await Task.detached(priority: .userInitiated) {
+            let rows = try EBirdCSVParser.parse(data)
+            return Self.computeMergedEntries(rows: rows, existing: existing)
+        }.value
+        entries = result.entries
+        // Re-stamp stars from the persistent set so a wipe-and-reimport (or any
+        // import) restores the user's "alert me" choices even though the cleared
+        // entries no longer carried them.
+        applyStarsToEntries()
+        save()
 
         // Eagerly warm every imported species' photo right away rather than waiting
         // for its row to scroll into view. `entries` is already in display order, and
@@ -68,7 +83,7 @@ final class LifeListStore {
         )
         RemoteSpeciesImageStore.shared.prefetch(scientificNames: names)
 
-        return summary
+        return result.summary
     }
 
     /// Adds a single species to the life list with `now` as the first-seen
@@ -190,7 +205,15 @@ final class LifeListStore {
         save()
     }
 
-    private func merge(rows: [EBirdRawRow]) -> ImportSummary {
+    /// Pure merge: folds `rows` into `existing` and returns the canonicalized,
+    /// sorted entry set plus the import tally. `nonisolated static` so the heavy
+    /// work (full canonicalization against the ~6.5k-species catalog) can run off
+    /// the main actor from `importEBird`. It does not touch instance state — the
+    /// caller assigns the result, re-stamps stars, and saves on the main actor.
+    private nonisolated static func computeMergedEntries(
+        rows: [EBirdRawRow],
+        existing: [LifeListEntry]
+    ) -> (entries: [LifeListEntry], summary: ImportSummary) {
         // Accumulate the *full* observation set per species — every CSV row is
         // kept, not just the earliest. Seeded from the existing entries' own
         // observations so a re-import folds new sightings in alongside the old.
@@ -200,7 +223,7 @@ final class LifeListStore {
         // behavior.
         var commonBySci: [String: (name: String, date: Date)] = [:]
         var starredBySci: [String: Bool] = [:]
-        for e in entries {
+        for e in existing {
             observationsBySci[e.scientificName] = e.allObservations
             commonBySci[e.scientificName] = (e.commonName, e.firstSeen)
             starredBySci[e.scientificName] = e.isStarred
@@ -211,9 +234,9 @@ final class LifeListStore {
         // ones the import actually changed (= "updated") vs. merely re-stated
         // (= "already known"). Keyed by scientific name; multiple CSV rows for
         // one species collapse into a single tally.
-        let originalKeys = Set(entries.map(\.scientificName))
+        let originalKeys = Set(existing.map(\.scientificName))
         let originalBySci: [String: LifeListEntry] = Dictionary(
-            uniqueKeysWithValues: entries.map { ($0.scientificName, $0) }
+            uniqueKeysWithValues: existing.map { ($0.scientificName, $0) }
         )
         var knownKeys: Set<String> = []
 
@@ -274,13 +297,8 @@ final class LifeListStore {
         // eBird name like "Astur cooperii" (Cooper's Hawk) or "Spilopelia
         // chinensis" (Spotted Dove) would slug to a missing image and show the
         // placeholder until the next launch.
-        entries = Self.canonicalize(prelim).sorted(by: Self.ordersBefore)
-        // Re-stamp stars from the persistent set so a wipe-and-reimport (or any
-        // import) restores the user's "alert me" choices even though the cleared
-        // entries no longer carried them.
-        applyStarsToEntries()
-        save()
-        return ImportSummary(added: added, updated: updated, skipped: skipped)
+        let merged = Self.canonicalize(prelim).sorted(by: Self.ordersBefore)
+        return (merged, ImportSummary(added: added, updated: updated, skipped: skipped))
     }
 
     // MARK: Persistence
@@ -317,7 +335,7 @@ final class LifeListStore {
             let data = try Data(contentsOf: url)
             return try JSONDecoder().decode(Set<String>.self, from: data)
         } catch {
-            print("LifeListStore: stars load failed — \(error)")
+            Log.error("LifeListStore: stars load failed — \(error)")
             return nil
         }
     }
@@ -341,7 +359,7 @@ final class LifeListStore {
                 let data = try encoder.encode(snapshot)
                 try data.write(to: url, options: .atomic)
             } catch {
-                print("LifeListStore: stars save failed — \(error)")
+                Log.error("LifeListStore: stars save failed — \(error)")
             }
         }
     }
@@ -367,7 +385,7 @@ final class LifeListStore {
                 save()
             }
         } catch {
-            print("LifeListStore: load failed — \(error)")
+            Log.error("LifeListStore: load failed — \(error)")
         }
     }
 
@@ -376,7 +394,7 @@ final class LifeListStore {
     /// collapse trinomial subspecies into their binomial, then collapse
     /// same-common-name synonyms onto the BirdNET-canonical scientific name so
     /// image-slug and detection lookups resolve to the bundled assets.
-    private static func canonicalize(_ entries: [LifeListEntry]) -> [LifeListEntry] {
+    private nonisolated static func canonicalize(_ entries: [LifeListEntry]) -> [LifeListEntry] {
         collapseByCommonName(collapseToSpecies(applyAliases(entries)))
     }
 
@@ -385,7 +403,7 @@ final class LifeListStore {
     /// "Dryobates villosus"). Keeps the earliest first-seen date, OR-merges the
     /// star flag, and prefers a parenthetical-free common name when picking which
     /// row's display fields to keep.
-    private static func collapseToSpecies(_ entries: [LifeListEntry]) -> [LifeListEntry] {
+    private nonisolated static func collapseToSpecies(_ entries: [LifeListEntry]) -> [LifeListEntry] {
         var byBinomial: [String: LifeListEntry] = [:]
         for entry in entries {
             let key = speciesBinomial(entry.scientificName)
@@ -421,7 +439,7 @@ final class LifeListStore {
     /// a species moved genera (e.g. "Leuconotopicus villosus" → "Dryobates villosus"
     /// for Hairy Woodpecker). Prefers the scientific name that matches BirdNET's
     /// catalog so detection-driven lookups resolve to the canonical entry.
-    private static func collapseByCommonName(_ entries: [LifeListEntry]) -> [LifeListEntry] {
+    private nonisolated static func collapseByCommonName(_ entries: [LifeListEntry]) -> [LifeListEntry] {
         let catalogNames: Set<String> = Set(SpeciesCatalog.shared.all.map(\.scientificName))
         // Lowercased common name → catalog scientific name. Used to rewrite
         // singleton entries whose stored scientific name is a stale synonym
@@ -479,7 +497,7 @@ final class LifeListStore {
     /// post-split Northern Yellow Warbler) → "Setophaga petechia" (BirdNET's
     /// Yellow Warbler) where neither the sci nor common name matches the
     /// catalog directly.
-    private static func applyAliases(_ entries: [LifeListEntry]) -> [LifeListEntry] {
+    private nonisolated static func applyAliases(_ entries: [LifeListEntry]) -> [LifeListEntry] {
         entries.map { entry in
             let canonical = TaxonomyAliases.canonical(entry.scientificName)
             guard canonical != entry.scientificName else { return entry }
@@ -492,7 +510,7 @@ final class LifeListStore {
         }
     }
 
-    private static func speciesBinomial(_ s: String) -> String {
+    private nonisolated static func speciesBinomial(_ s: String) -> String {
         let parts = s.split(whereSeparator: { $0.isWhitespace })
         guard parts.count >= 2 else { return s }
         return "\(parts[0]) \(parts[1])"
@@ -512,7 +530,7 @@ final class LifeListStore {
                 let data = try encoder.encode(snapshot)
                 try data.write(to: url, options: .atomic)
             } catch {
-                print("LifeListStore: save failed — \(error)")
+                Log.error("LifeListStore: save failed — \(error)")
             }
         }
     }

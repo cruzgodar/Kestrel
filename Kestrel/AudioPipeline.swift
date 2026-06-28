@@ -73,7 +73,7 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
                 options: [.allowBluetoothHFP, .defaultToSpeaker]
             )
         } catch {
-            print("Kestrel: prewarm error \(error)")
+            Log.error("Audio prewarm error: \(error)")
         }
     }
 
@@ -117,8 +117,13 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
             engine.stop()
         }
         engine.inputNode.removeTap(onBus: 0)
-        onWindow = nil
-        onChunk = nil
+        // `onWindow`/`onChunk` are deliberately NOT cleared here. Niling them from
+        // this thread while the audio render thread could still be inside
+        // `handleTap` (a tap block can be in flight when `removeTap` returns) is a
+        // data race on the closure references. They're always reassigned at the top
+        // of `start()` before the engine is restarted, so leaving the stale closures
+        // in place until then is harmless — the engine is stopped above, so no
+        // further taps fire, and `onWindow` captures `self` weakly so nothing leaks.
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
@@ -143,7 +148,7 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
         }
 
         if status == .error {
-            if let convError { print("AudioPipeline: convert error \(convError)") }
+            if let convError { Log.error("AudioPipeline: convert error \(convError)") }
             return
         }
 

@@ -24,7 +24,7 @@ final class SpeciesNotifications {
         do {
             _ = try await center.requestAuthorization(options: [.alert, .sound])
         } catch {
-            print("Kestrel: notification auth error — \(error)")
+            Log.error("Notification auth error — \(error)")
         }
     }
 
@@ -63,7 +63,7 @@ final class SpeciesNotifications {
         do {
             try await center.add(request)
         } catch {
-            print("Kestrel: notification deliver error — \(error)")
+            Log.error("Notification deliver error — \(error)")
         }
     }
 
@@ -89,7 +89,7 @@ final class SpeciesNotifications {
         do {
             try await center.add(request)
         } catch {
-            print("Kestrel: lifecycle notification error — \(error)")
+            Log.error("Lifecycle notification error — \(error)")
         }
     }
 
@@ -107,7 +107,7 @@ final class SpeciesNotifications {
             try FileManager.default.copyItem(at: fileURL, to: tmpURL)
             return try UNNotificationAttachment(identifier: scientificName, url: tmpURL)
         } catch {
-            print("Kestrel: notification attachment error — \(error)")
+            Log.error("Notification attachment error — \(error)")
             return nil
         }
     }

@@ -13,7 +13,7 @@ import Foundation
 /// canonicalization pass, so a hit here short-circuits both lookups.
 ///
 /// Add new entries as users report missing images for common species.
-enum TaxonomyAliases {
+nonisolated enum TaxonomyAliases {
     static let ebirdToBirdNET: [String: String] = [
         // 2024 split of Yellow Warbler. eBird's "Northern Yellow Warbler"
         // (Setophaga aestiva) is what BirdNET trained on as plain

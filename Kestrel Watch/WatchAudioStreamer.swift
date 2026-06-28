@@ -86,7 +86,7 @@ final class WatchAudioStreamer: @unchecked Sendable {
             return inBuf
         }
         if status == .error {
-            if let convError { print("WatchAudioStreamer: convert error \(convError)") }
+            if let convError { Log.error("WatchAudioStreamer: convert error \(convError)") }
             return
         }
 

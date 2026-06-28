@@ -534,7 +534,7 @@ final class RecordingManager {
                     self?.errorMessage = message
                     self?.isRecording = false
                 }
-                print("Kestrel: failed to start pipeline — \(error)")
+                Log.error("Failed to start pipeline — \(error)")
             }
         }
 
@@ -781,7 +781,7 @@ final class RecordingManager {
 
         // No audio for a full window while we believe the watch is recording.
         watchAudioStallCount += 1
-        print("Kestrel: watch audio stalled \(Int(gap))s during active session "
+        Log.warning("Watch audio stalled \(Int(gap))s during active session "
             + "(strike \(watchAudioStallCount)) — requesting watch capture restart")
         requestWatchCaptureRestart()
         // Reset the clock so the next strike needs another full window, not an
@@ -852,7 +852,7 @@ final class RecordingManager {
             return try await classifierTask?.value
         } catch {
             errorMessage = "Failed to load BirdNET: \(error.localizedDescription)"
-            print("Kestrel: classifier load — \(error)")
+            Log.error("Classifier load — \(error)")
             return nil
         }
     }
@@ -862,7 +862,7 @@ final class RecordingManager {
         do {
             return try await rangeFilterTask?.value
         } catch {
-            print("Kestrel: range filter unavailable — \(error)")
+            Log.error("Range filter unavailable — \(error)")
             return nil
         }
     }
@@ -889,7 +889,7 @@ final class RecordingManager {
             }
             await MainActor.run { self.merge(results) }
         } catch {
-            print("Kestrel: inference error — \(error)")
+            Log.error("Inference error — \(error)")
         }
     }
 
@@ -958,45 +958,6 @@ final class RecordingManager {
         watchAddedThisSession.remove(scientificName)
         store.remove(scientificName: scientificName)
     }
-
-//#if DEBUG
-//    /// Scientific names injected by the debug tool. Drives the pure-red highlight
-//    /// on both the phone rows and the watch screen so simulated birds are obvious.
-//    private(set) var debugDetectionNames: Set<String> = []
-//
-//    /// Debug-only: inject a synthetic detection as if BirdNET had just heard
-//    /// `scientificName`, with no audio involved. Runs the exact same `merge`
-//    /// path as a real inference window, so it updates the results list, fires
-//    /// haptics/notifications, and pushes the bird to the watch's "now hearing"
-//    /// screen — which is what makes it a hands-off way to test the watch.
-//    ///
-//    /// Refreshes the life-list snapshot first so the new/starred highlight is
-//    /// accurate even when not actively recording.
-//    func debugSimulateDetection(scientificName: String, commonName: String, confidence: Float = 0.9) {
-//        refreshLifeListFromStore()
-//        debugDetectionNames.insert(scientificName)
-//        merge([
-//            Detection(
-//                scientificName: scientificName,
-//                commonName: commonName,
-//                confidence: confidence,
-//                lastSeen: Date()
-//            )
-//        ])
-//    }
-//
-//    /// Debug-only: pick a random species from the catalog and simulate hearing
-//    /// it. Returns the common name so the caller can surface what it fired.
-//    @discardableResult
-//    func debugSimulateRandomDetection() -> String? {
-//        guard let species = SpeciesCatalog.shared.all.randomElement() else { return nil }
-//        debugSimulateDetection(
-//            scientificName: species.scientificName,
-//            commonName: species.commonName
-//        )
-//        return species.commonName
-//    }
-//#endif
 
     private func merge(_ results: [Detection]) {
         // Flash any repeat match (regardless of confidence change), but
@@ -1100,10 +1061,6 @@ final class RecordingManager {
             } else {
                 highlight = "normal"
             }
-//#if DEBUG
-//            // Debug-injected birds override to pure red on the watch.
-//            if debugDetectionNames.contains(top.scientificName) { highlight = "debug" }
-//#endif
             sendBirdDisplayToWatch(
                 commonName: top.commonName,
                 scientificName: top.scientificName,
@@ -1173,7 +1130,7 @@ final class RecordingManager {
                 locationStatus = "Filtered to \(allowed.count) nearby species"
                 return
             } catch {
-                print("Kestrel: geo inference failed — \(error)")
+                Log.error("Geo inference failed — \(error)")
             }
         }
         if let cached = await rangeFilter.loadCached() {
@@ -1256,7 +1213,27 @@ final class RecordingManager {
     private func handleInterruption(_ type: AVAudioSession.InterruptionType) {
         switch type {
         case .began:
-            if isRecording { pipeline.stop(); isRecording = false }
+            // Only a phone-mic session is driven by our own capture session. A
+            // watch-sourced session has the watch as the audio source — the phone
+            // only runs a silent keepalive — and is governed by the heartbeat
+            // watchdog, so tearing it down here would wrongly deactivate the
+            // keepalive session and leave `isRecording`/`watchRecording` desynced.
+            // Leave that case to the watchdog.
+            guard isRecording, !watchRecording else { return }
+            // Route through the normal stop so the watch mirror is told, the idle
+            // watchdog + any pending transition task are cancelled, and teardown
+            // is deferred cleanly — rather than the partial `pipeline.stop()` that
+            // left those running.
+            stop()
+            // The interruption (call, alarm, Siri, another app taking audio) ends
+            // the session; we don't auto-resume, so tell the user it stopped the
+            // same way a watch-session lifecycle event does.
+            Task {
+                await SpeciesNotifications.shared.notifySessionLifecycle(
+                    title: "Kestrel",
+                    body: "Recording stopped after an interruption. Open Kestrel to start listening again."
+                )
+            }
         case .ended:
             break
         @unknown default:

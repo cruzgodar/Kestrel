@@ -1,6 +1,6 @@
 import Foundation
 
-enum EBirdCSVError: LocalizedError {
+nonisolated enum EBirdCSVError: LocalizedError {
     case missingColumns([String])
     case unreadable
 
@@ -14,7 +14,7 @@ enum EBirdCSVError: LocalizedError {
     }
 }
 
-struct EBirdRawRow {
+nonisolated struct EBirdRawRow {
     let scientificName: String
     let commonName: String
     let date: Date
@@ -23,7 +23,7 @@ struct EBirdRawRow {
     let longitude: Double?
 }
 
-enum EBirdCSVParser {
+nonisolated enum EBirdCSVParser {
     /// Parses an eBird "My eBird Data" CSV. Skips rows with unparseable dates,
     /// empty scientific names, or scientific names that look like spuhs / hybrids
     /// / domestic forms (those are filtered out here so the store doesn't have to).
