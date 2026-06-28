@@ -28,14 +28,19 @@ final class WatchSessionManager: NSObject {
     /// seconds. Settable so the view can dismiss it.
     var recordingError: String?
 
-    /// Whether the iPhone currently has the permissions recording needs —
-    /// microphone *and* location both granted. Either being denied (or
-    /// undetermined) blocks the watch, since the watch can't prompt for either.
-    /// Pushed from the phone via the WCSession application context. `nil` until the
-    /// first context arrives — treated as "allow" so the normal record UI isn't
-    /// blocked by a momentary unknown at launch; `false` swaps in the "Open Kestrel
-    /// on iPhone" screen.
-    private(set) var phoneRecordingAuthorized: Bool?
+    /// The iPhone's recording-authorization state, pushed from the phone via the
+    /// WCSession application context. Tri-state so the watch can tell a genuine
+    /// *denial* (gray lock — the user must fix it in the phone's Settings) apart
+    /// from permissions that simply haven't been requested yet on the phone
+    /// (deferred to its first Start Recording), where the watch keeps a normal
+    /// record button rather than a confusing lock. `nil` until the first context
+    /// arrives. Raw values match the strings the phone sends.
+    enum PhoneAuthState: String {
+        case authorized
+        case denied
+        case undetermined
+    }
+    private(set) var phoneAuthState: PhoneAuthState?
 
     /// Whether the watch has *ever* received an authorization context from the
     /// phone (persisted). It only stays false until the iPhone app has been
@@ -48,11 +53,11 @@ final class WatchSessionManager: NSObject {
         UserDefaults.standard.bool(forKey: WatchSessionManager.everReceivedPhoneAuthKey)
     private static let everReceivedPhoneAuthKey = "everReceivedPhoneAuth"
 
-    /// Updates `phoneRecordingAuthorized` (whose setter is private). Routed through
-    /// here from the WCSession application-context callbacks, mirroring how the
-    /// other delegate handlers reach main-actor state via `shared`.
-    func setPhoneRecordingAuthorized(_ authorized: Bool) {
-        phoneRecordingAuthorized = authorized
+    /// Updates `phoneAuthState` (whose setter is private). Routed through here from
+    /// the WCSession application-context callbacks, mirroring how the other delegate
+    /// handlers reach main-actor state via `shared`.
+    func setPhoneAuthState(_ state: PhoneAuthState) {
+        phoneAuthState = state
         if !everReceivedPhoneAuth {
             everReceivedPhoneAuth = true
             UserDefaults.standard.set(true, forKey: Self.everReceivedPhoneAuthKey)
@@ -691,15 +696,16 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
     }
 
     /// The phone pushes its recording-authorization state through the persisted
-    /// application context; mirror it into `phoneRecordingAuthorized` for the UI.
+    /// application context; mirror it into `phoneAuthState` for the UI.
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
         applyRecordingContext(applicationContext)
     }
 
     private func applyRecordingContext(_ context: [String: Any]) {
-        guard let authorized = context["recordingAuthorized"] as? Bool else { return }
+        guard let raw = context["recordingAuthState"] as? String,
+              let state = WatchSessionManager.PhoneAuthState(rawValue: raw) else { return }
         Task { @MainActor in
-            WatchSessionManager.shared.setPhoneRecordingAuthorized(authorized)
+            WatchSessionManager.shared.setPhoneAuthState(state)
         }
     }
 

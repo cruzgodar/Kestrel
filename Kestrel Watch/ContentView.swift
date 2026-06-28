@@ -44,16 +44,19 @@ struct ContentView: View {
     /// activation re-seeds the context doesn't trip this.
     private var phoneNeverOpened: Bool {
         !session.everReceivedPhoneAuth
-            && session.phoneRecordingAuthorized == nil
+            && session.phoneAuthState == nil
             && !session.isRecording
     }
 
-    /// True when the iPhone app has been opened but hasn't granted the permissions
-    /// recording needs (microphone and/or location), so the watch can't start a
-    /// recording — it can't prompt for either. The record button becomes a gray
-    /// lock (mirroring the phone) and tapping it explains the issue.
+    /// True only when the iPhone has *explicitly denied* a permission recording
+    /// needs (microphone and/or location) — the watch can't prompt for either, so
+    /// the record button becomes a gray lock (mirroring the phone) and tapping it
+    /// explains the issue. Permissions that are merely undetermined on the phone
+    /// (not yet requested) deliberately do NOT block here: the watch keeps a normal
+    /// record button, and the first start lets the phone prompt (if it's in hand)
+    /// or falls back to the "open Kestrel on your iPhone" message.
     private var blockedForPermissions: Bool {
-        session.phoneRecordingAuthorized == false && !session.isRecording
+        session.phoneAuthState == .denied && !session.isRecording
     }
 
     /// Drives the explanatory modal shown when the user taps the gray lock button.
@@ -193,9 +196,10 @@ struct ContentView: View {
         .task {
             WatchSessionManager.shared.activate()
             Self.prewarmText()
-            // Prompt for HealthKit access (once) so the birding walk can be
-            // saved as an outdoor workout when the user stops.
-            await WatchWorkoutManager.shared.requestAuthorization()
+            // HealthKit access is no longer requested here at launch — it's
+            // deferred to the first time the user actually starts a session (see
+            // `WatchWorkoutManager.start`), so a brand-new user isn't met with a
+            // health-permission sheet before they've done anything.
         }
         // Start Recording complication: drain a pending request when the app
         // becomes active (cold/background launch) and immediately when it fires
@@ -512,7 +516,10 @@ struct ContentView: View {
                 .minimumScaleFactor(0.5)
                 .foregroundStyle(.white)
         } else {
-            Text("Listening…")
+            // While the phone is the audio source the watch is only mirroring its
+            // now-hearing screen, so make the placeholder say so rather than implying
+            // the watch itself is listening.
+            Text(session.mirroringPhone ? "Listening on iPhone…" : "Listening…")
                 .font(.headline)
                 .foregroundStyle(.white.opacity(0.85))
         }

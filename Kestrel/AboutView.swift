@@ -124,7 +124,7 @@ struct AboutView: View {
     }
 
     private static let intro = markdown(
-        "Kestrel listens for birds in the background so you can focus on the nature around you. It uses Cornell Lab's BirdNET model to identify birds by their songs and calls, and when it hears one that you have starred in your life list or have never seen before, it notifies you. That lets you keep your focus off of your phone, with confidence that you'll know when a bird you care about is nearby. All processing happens on-device, all audio is deleted immediately after (i.e. within a few seconds of being recorded), and [the source code is freely available](https://github.com/cruzgodar/Kestrel)."
+        "Kestrel listens for birds in the background so you can focus on the nature around you. It uses Cornell Lab's BirdNET model to identify birds by their songs and calls, and when it hears one that you have starred in your life list or have never seen before, it notifies you. That lets you keep your focus off of your phone, with confidence that you'll know when a bird you care about is nearby. All processing happens on-device, all audio is deleted immediately after (i.e. within a few seconds of being recorded), and [the source code is freely available.](https://github.com/cruzgodar/Kestrel)"
     )
 
     private static let watch = markdown(

@@ -53,6 +53,27 @@ final class RecordingManager {
     var recordingAuthorized: Bool {
         locationAuthorized && AVAudioApplication.shared.recordPermission == .granted
     }
+    /// Tri-state recording authorization pushed to the watch. The watch can't
+    /// prompt for the phone's permissions, so it needs to tell a genuine *denial*
+    /// (a gray lock — the user must fix it in the phone's Settings) apart from
+    /// permissions that simply haven't been requested yet (they're deferred to the
+    /// first Start Recording). In the undetermined case the watch keeps a normal
+    /// record button rather than a confusing lock — tapping it lets the phone
+    /// prompt (if it's in hand) or falls back to the "open Kestrel on iPhone"
+    /// message. Raw values are the strings sent over the WCSession context.
+    enum WatchAuthState: String {
+        case authorized
+        case denied
+        case undetermined
+    }
+    /// Resolves the tri-state for the watch from the phone's current permissions:
+    /// a *denied* permission (mic or location) wins, then fully-granted, else
+    /// undetermined (nothing denied but not yet granted).
+    var recordingAuthorizationStateForWatch: WatchAuthState {
+        if recordingBlocked { return .denied }
+        if recordingAuthorized { return .authorized }
+        return .undetermined
+    }
     /// Invoked whenever the phone's recording authorization (mic or location)
     /// changes, so the app can push the new state to the watch (set in `KestrelApp`).
     var onRecordingAuthorizationChanged: (() -> Void)?
@@ -565,11 +586,14 @@ final class RecordingManager {
         if isRecording && !watchRecording { return }
         guard !watchRecording else { return }
 
-        // The watch can't grant the phone's location access, so don't prompt here
-        // — just check it. Without it there's no species filter, so refuse and
-        // tell the watch to roll back its optimistic start and point the user at
-        // the iPhone.
-        guard await isLocationAuthorized(prompt: false) else {
+        // The watch can't grant the phone's location access. If the phone is in
+        // the user's hand (foregrounded) we can still surface the system prompt so
+        // a first start from the watch can grant location there; if it's pocketed
+        // (backgrounded) a prompt wouldn't be seen, so we only read the current
+        // status. Without location there's no species filter, so refuse and tell
+        // the watch to roll back its optimistic start and point the user at the
+        // iPhone.
+        guard await isLocationAuthorized(prompt: appForegrounded) else {
             sendToWatch(["cmd": "recordingRefused", "reason": "location"])
             return
         }

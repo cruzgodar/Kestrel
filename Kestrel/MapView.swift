@@ -338,17 +338,17 @@ struct MapView: View {
                 // so annotation hosts always mount with their content present.
                 .onChange(of: geo.size) { _, new in
                     viewSize = new
-                    rebuildClusters(animated: false)
+                    rebuildClusters(animated: false, rehydrate: false)
                     updateVisibleEntries(force: true)
                 }
                 .onChange(of: store.entries) { _, _ in
-                    rebuildClusters(animated: true)
+                    rebuildClusters(animated: true, rehydrate: false)
                     updateVisibleEntries(force: true)
                 }
                 // Flipping the repeat-observations setting changes the point
                 // set, so rebuild the culled annotations and clusters.
                 .onChange(of: settings.showRepeatObservationsOnMap) { _, _ in
-                    rebuildClusters(animated: true)
+                    rebuildClusters(animated: true, rehydrate: false)
                     updateVisibleEntries(force: true)
                 }
             }
@@ -557,7 +557,16 @@ struct MapView: View {
         camera.lastFilterSpan = span
     }
 
-    private func rebuildClusters(animated: Bool) {
+    /// `rehydrate` controls whether a cluster-set change triggers the post-change
+    /// annotation remount (`scheduleHitTestRehydration`). That remount briefly
+    /// clears every annotation and restores it, which reads as all the groups
+    /// flickering off and back on. It's only actually needed for the pinch-zoom
+    /// path, where a host stays mounted (same id) but its content's footprint
+    /// changes and MapKit keeps the stale hit area. The life-list / settings / size
+    /// paths instead force a fresh `updateVisibleEntries`, which mounts any changed
+    /// host with its content already present (correct hit area) — so they pass
+    /// `rehydrate: false` and don't flicker.
+    private func rebuildClusters(animated: Bool, rehydrate: Bool = true) {
         guard let span = camera.lastSpan, viewSize.width > 0, viewSize.height > 0 else {
             return
         }
@@ -600,7 +609,7 @@ struct MapView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 warmUpAnnotations()
             }
-        } else if didWarmUpAnnotations {
+        } else if didWarmUpAnnotations, rehydrate {
             // After the initial load, every *subsequent* cluster change (most
             // commonly a pinch that merges/splits stacks) re-mounts the
             // annotations once the camera settles, so MapKit re-measures the
@@ -608,6 +617,11 @@ struct MapView: View {
             // stack renders but keeps the stale (often zero-size) hit area
             // MapKit cached for the host's previous content — taps fall
             // straight through to the map until the next interaction.
+            //
+            // Skipped (`rehydrate == false`) for non-zoom rebuilds (life-list,
+            // settings, size): those are paired with a forced `updateVisibleEntries`
+            // that already remounts changed hosts with content present, so the
+            // remount here would only add a visible all-annotations flicker.
             scheduleHitTestRehydration()
         }
     }

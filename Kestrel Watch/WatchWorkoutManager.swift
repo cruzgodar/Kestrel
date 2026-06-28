@@ -60,6 +60,11 @@ final class WatchWorkoutManager {
     func start() async {
         guard HKHealthStore.isHealthDataAvailable(), session == nil else { return }
 
+        // Ask for HealthKit access lazily, the first time a session is actually
+        // started, rather than at app launch. Idempotent — HealthKit only shows
+        // its sheet the first time, so later starts pass straight through.
+        await requestAuthorization()
+
         let config = HKWorkoutConfiguration()
         config.activityType = .walking
         config.locationType = .outdoor

@@ -322,15 +322,27 @@ final class LifeListStore {
         }
     }
 
+    /// Serial queue for persistence. Encoding the pretty-printed JSON and writing
+    /// it to disk are both done here, off the main actor, so a star toggle or a
+    /// life-list edit doesn't hitch the UI — the synchronous encode + atomic write
+    /// of the whole list on the main thread was a visible lag (e.g. the full-screen
+    /// viewer's star button stalling on tap). A serial queue keeps writes ordered
+    /// so a later save can't land before an earlier one.
+    private static let ioQueue = DispatchQueue(label: "com.kestrel.lifelist.io", qos: .utility)
+
     private func saveStars() {
-        do {
-            let url = try Self.starsURL()
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(starredNames.sorted())
-            try data.write(to: url, options: .atomic)
-        } catch {
-            print("LifeListStore: stars save failed — \(error)")
+        // Snapshot on the main actor (cheap value copy), then encode + write off it.
+        let snapshot = starredNames.sorted()
+        Self.ioQueue.async {
+            do {
+                let url = try Self.starsURL()
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let data = try encoder.encode(snapshot)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                print("LifeListStore: stars save failed — \(error)")
+            }
         }
     }
 
@@ -487,15 +499,21 @@ final class LifeListStore {
     }
 
     private func save() {
-        do {
-            let url = try Self.storeURL()
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            let data = try encoder.encode(entries)
-            try data.write(to: url, options: .atomic)
-        } catch {
-            print("LifeListStore: save failed — \(error)")
+        // Snapshot the entries on the main actor (value-type copy), then encode +
+        // write on the IO queue so the whole-list JSON encode and atomic disk write
+        // never block the main thread (the source of the star-tap / edit hitch).
+        let snapshot = entries
+        Self.ioQueue.async {
+            do {
+                let url = try Self.storeURL()
+                let encoder = JSONEncoder()
+                encoder.dateEncodingStrategy = .iso8601
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let data = try encoder.encode(snapshot)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                print("LifeListStore: save failed — \(error)")
+            }
         }
     }
 }

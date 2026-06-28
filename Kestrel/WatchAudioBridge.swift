@@ -44,19 +44,21 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
         pushRecordingAuthorized()
     }
 
-    /// Pushes the phone's current recording-authorization state (microphone +
-    /// location both granted) to the watch via the persisted application context,
-    /// so the watch shows its "Open Kestrel on iPhone" screen instead of a dead
-    /// record button until both are granted. `updateApplicationContext` only
-    /// re-delivers on a changed payload, so this is cheap to call on every
-    /// authorization change and session/watch-state event.
+    /// Pushes the phone's current recording-authorization state to the watch via
+    /// the persisted application context. Sent as a tri-state (authorized / denied
+    /// / undetermined) so the watch can tell a genuine denial — which it shows as a
+    /// gray lock the user must fix on the phone — apart from permissions that simply
+    /// haven't been requested yet, where it keeps a normal record button rather than
+    /// a confusing lock. `updateApplicationContext` only re-delivers on a changed
+    /// payload, so this is cheap to call on every authorization change and
+    /// session/watch-state event.
     func pushRecordingAuthorized() {
         Task { @MainActor in
             guard WCSession.isSupported() else { return }
             let session = WCSession.default
             guard session.activationState == .activated else { return }
-            let authorized = manager.recordingAuthorized
-            try? session.updateApplicationContext(["recordingAuthorized": authorized])
+            let state = manager.recordingAuthorizationStateForWatch
+            try? session.updateApplicationContext(["recordingAuthState": state.rawValue])
         }
     }
 
