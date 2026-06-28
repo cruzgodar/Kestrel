@@ -156,6 +156,11 @@ struct KestrelApp: App {
                         mapNavigator.focus(latitude: coord.latitude, longitude: coord.longitude)
                     }
                 )
+                // Re-inject the store: with the Observation framework, `.environment`
+                // objects don't reliably cross a fullScreenCover boundary, so the
+                // viewer's star toggle (which reads `LifeListStore` from the
+                // environment) would otherwise find it nil and do nothing.
+                .environment(lifeListStore)
             }
             // Push "is the spectrogram visible?" into the recording manager
             // — true only when the Identify tab is selected AND the scene

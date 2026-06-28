@@ -6,10 +6,6 @@ import Observation
 /// reference them without an actor hop.
 private nonisolated enum SettingsKeys {
     static let showRepeatObservations = "settings.showRepeatObservationsOnMap"
-    static let updateMapDuringGesture = "settings.updateMapDuringGesture"
-    static let fadeMapThumbnails = "settings.fadeMapThumbnails"
-    static let forceOfflineSpeciesList = "settings.forceOfflineSpeciesList"
-    static let debugFlatMapPins = "settings.debugFlatMapPins"
 }
 
 /// App-wide user settings, persisted to `UserDefaults`. A single shared
@@ -32,53 +28,10 @@ final class AppSettings {
         }
     }
 
-    /// When on, the map's annotation set is rebuilt/culled live during a pan or
-    /// pinch (thumbnails appear/disappear continuously while the gesture is in
-    /// progress). When off (the default), the rebuild is deferred to the instant
-    /// the touch lifts, so thumbnails snap into place once rather than churning
-    /// mid-gesture.
-    var updateMapDuringGesture: Bool {
-        didSet {
-            defaults.set(updateMapDuringGesture, forKey: SettingsKeys.updateMapDuringGesture)
-        }
-    }
-
-    /// When on, map thumbnails fade in/out as they enter and leave the visible
-    /// cluster set; when off (the default), they snap instantly.
-    var fadeMapThumbnails: Bool {
-        didSet {
-            defaults.set(fadeMapThumbnails, forKey: SettingsKeys.fadeMapThumbnails)
-        }
-    }
-
-    /// Debug: when on, identification skips the live geo model and the cached
-    /// list and forces the bundled offline species filter, logging how long each
-    /// lookup into it takes. Off by default.
-    var forceOfflineSpeciesList: Bool {
-        didSet {
-            defaults.set(forceOfflineSpeciesList, forKey: SettingsKeys.forceOfflineSpeciesList)
-        }
-    }
-
-    /// Debug A/B for the pan stutter: when on, each map annotation renders as a
-    /// flat filled circle instead of the full bird thumbnail (image + white border
-    /// + name capsule). Lets us isolate whether the per-frame compositing of the
-    /// thumbnail content is what drops frames during a pan. Off by default.
-    var debugFlatMapPins: Bool {
-        didSet {
-            defaults.set(debugFlatMapPins, forKey: SettingsKeys.debugFlatMapPins)
-        }
-    }
-
     private let defaults = UserDefaults.standard
 
     private init() {
         // Defaults to on.
         showRepeatObservationsOnMap = defaults.object(forKey: SettingsKeys.showRepeatObservations) as? Bool ?? true
-        // The rest default to off.
-        updateMapDuringGesture = defaults.bool(forKey: SettingsKeys.updateMapDuringGesture)
-        fadeMapThumbnails = defaults.bool(forKey: SettingsKeys.fadeMapThumbnails)
-        forceOfflineSpeciesList = defaults.bool(forKey: SettingsKeys.forceOfflineSpeciesList)
-        debugFlatMapPins = defaults.bool(forKey: SettingsKeys.debugFlatMapPins)
     }
 }

@@ -254,24 +254,15 @@ struct MapView: View {
                             coordinate: point.coordinate,
                             anchor: .center
                         ) {
-                            // Snap instantly (the default) or fade in/out, per the
-                            // map settings. Both collapse to zero size when not a
+                            // Fades in/out as it enters and leaves the visible
+                            // cluster set, and collapses to zero size when not a
                             // current cluster rep so dead annotations never eat taps.
-                            if settings.fadeMapThumbnails {
-                                FadingAnnotationContent(
-                                    point: point,
-                                    info: visibleReps[point.id],
-                                    thumbSize: Self.thumbSize,
-                                    onTap: handleAnnotationTap
-                                )
-                            } else {
-                                CulledAnnotationContent(
-                                    point: point,
-                                    info: visibleReps[point.id],
-                                    thumbSize: Self.thumbSize,
-                                    onTap: handleAnnotationTap
-                                )
-                            }
+                            FadingAnnotationContent(
+                                point: point,
+                                info: visibleReps[point.id],
+                                thumbSize: Self.thumbSize,
+                                onTap: handleAnnotationTap
+                            )
                         }
                         .annotationTitles(.hidden)
                     }
@@ -326,57 +317,21 @@ struct MapView: View {
                 // Record the camera cheaply every frame into the non-observable
                 // `CameraTracker` (no re-render). Annotations are positioned by
                 // MapKit from their coordinates, so they pan/zoom with the map
-                // natively while we do no SwiftUI work mid-gesture.
+                // natively while we do no SwiftUI work mid-gesture; the cull/rebuild
+                // is deferred entirely to the complete-stop callback below.
                 .onMapCameraChange(frequency: .continuous) { context in
-                    // Per-frame during a gesture — its rate (counters/sec) tells you
-                    // how often SwiftUI is being asked to do anything mid-pan.
-                    MapPerf.count("cameraFrame")
                     cacheCamera(context)
-                    // When "Update While Moving" is on, rebuild/cull live so
-                    // thumbnails appear and disappear (fading, if enabled) during
-                    // the pan/zoom rather than waiting for the touch to lift.
-                    if settings.updateMapDuringGesture {
-                        commitVisibleEntries()
-                    }
                 }
-                // Track the pan/pinch finger and commit the cull/rebuild the
-                // instant the touch lifts, so thumbnails appear/disappear
-                // immediately rather than waiting for the map's momentum to decay.
-                // While the finger is down, `interacting` suppresses all
-                // recomputation (including the `.onEnd` backstop below), so the
-                // group set stays frozen until the gesture truly ends — fixing the
-                // mid-pan re-clustering the user saw when groups scrolled off and
-                // back on. `minimumDistance: 0` so the flag arms from the first
-                // touch, before any intermediate camera `.onEnd` can fire.
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { _ in camera.panActive = true }
-                        .onEnded { _ in
-                            camera.panActive = false
-                            if !camera.interacting { commitVisibleEntries() }
-                        }
-                )
-                .simultaneousGesture(
-                    MagnifyGesture()
-                        .onChanged { _ in camera.zoomActive = true }
-                        .onEnded { _ in
-                            camera.zoomActive = false
-                            if !camera.interacting { commitVisibleEntries() }
-                        }
-                )
-                // Backstop: programmatic camera moves (recenter / focus) and the
-                // final settle after a fling aren't a finger-up, so reconcile here
-                // too — but only when no finger is down, so an intermediate `.onEnd`
-                // fired during a sustained pan/pinch doesn't recompute mid-gesture.
-                // Idempotent with the gesture commits (threshold-guarded).
+                // Rebuild/cull the thumbnails ONLY when the map comes to a complete
+                // stop — `.onEnd` fires once the camera stops changing (after any
+                // fling has fully decelerated), not at finger-up. Driving the update
+                // solely from here means a pure pinch-to-zoom (which doesn't emit a
+                // SwiftUI drag/magnify end) still updates on its settle, and a pan's
+                // momentum plays out before the thumbnails change. Programmatic moves
+                // (recenter / focus) land here too.
                 .onMapCameraChange(frequency: .onEnd) { context in
-                    MapPerf.count("cameraEnd")
                     cacheCamera(context)
-                    if !camera.interacting {
-                        commitVisibleEntries()
-                    } else {
-                        MapPerf.count("cameraEndSuppressed")
-                    }
+                    commitVisibleEntries()
                 }
                 .onAppear { viewSize = geo.size }
                 // Clusters before culling in every path (see handleCameraChange)
@@ -457,6 +412,7 @@ struct MapView: View {
         )) {
             MapCardSheet(
                 card: mapCard,
+                store: store,
                 photo: $sheetPhoto,
                 onPinpoint: { point in
                     // "Pinpoint on Map" from a bird inside a cluster card. Clear
@@ -483,6 +439,9 @@ struct MapView: View {
                     dateFound: point.date
                 )]
             )
+            // Re-inject the store so the viewer's star toggle resolves it — see the
+            // note at the presenter cover in KestrelApp.
+            .environment(store)
         }
     }
 
@@ -544,12 +503,10 @@ struct MapView: View {
         }
     }
 
-    /// Rebuild clusters + viewport-cull from the last cached camera, *instantly*.
-    /// Run the moment a pan/zoom touch lifts (gesture `.onEnded`), and again on the
-    /// camera's `.onEnd` as a backstop for programmatic moves (recenter / focus)
-    /// and the post-fling settle — rather than only once the map fully stops.
+    /// Rebuild clusters + viewport-cull from the last cached camera. Run once the
+    /// map has come to a complete stop (the camera's `.onEnd`), which also covers
+    /// programmatic moves (recenter / focus) and the post-fling settle.
     private func commitVisibleEntries() {
-        MapPerf.count("commit")
         // Rebuild clusters (which fills `visibleReps`, the annotation *content*)
         // before culling `visiblePoints` (which mounts the annotation *hosts*),
         // so each host is created with its content already present. If a host is
@@ -587,38 +544,31 @@ struct MapView: View {
             }
         }
 
-        MapPerf.count("cullRun")
         let latRange = span.latitudeDelta * (0.5 + Self.visibleBufferFactor)
         let lonRange = span.longitudeDelta * (0.5 + Self.visibleBufferFactor)
         let centerLat = camera.lastCenter.latitude
         let centerLon = camera.lastCenter.longitude
-        let filtered = MapPerf.measure("cull", "of \(mapPoints.count) points") {
-            mapPoints.filter { point in
-                abs(point.latitude - centerLat) <= latRange
-                    && abs(point.longitude - centerLon) <= lonRange
-            }
+        let filtered = mapPoints.filter { point in
+            abs(point.latitude - centerLat) <= latRange
+                && abs(point.longitude - centerLon) <= lonRange
         }
         visiblePoints = filtered
         camera.lastFilterCenter = camera.lastCenter
         camera.lastFilterSpan = span
-        MapPerf.count("cullChanged")
     }
 
     private func rebuildClusters(animated: Bool) {
         guard let span = camera.lastSpan, viewSize.width > 0, viewSize.height > 0 else {
             return
         }
-        MapPerf.count("rebuildClusters")
-        let computed = MapPerf.measure("computeClusters", "of \(mapPoints.count) points") {
-            Self.computeClusters(
-                points: mapPoints,
-                span: span,
-                centerLatitude: camera.lastCenter.latitude,
-                viewSize: viewSize,
-                footprint: Self.annotationFootprint,
-                gutter: Self.clusterGutter
-            )
-        }
+        let computed = Self.computeClusters(
+            points: mapPoints,
+            span: span,
+            centerLatitude: camera.lastCenter.latitude,
+            viewSize: viewSize,
+            footprint: Self.annotationFootprint,
+            gutter: Self.clusterGutter
+        )
         var next: [String: RepInfo] = [:]
         next.reserveCapacity(computed.count)
         for cluster in computed {
@@ -666,8 +616,8 @@ struct MapView: View {
     /// hit areas after the cluster set changes. Coalesces a continuous pinch
     /// into a single remount fired ~0.25 s after the last change, so it doesn't
     /// churn mid-gesture. The remount itself is visually silent — annotations
-    /// that are still reps reappear solid (see `CulledAnnotationContent`), no
-    /// re-fade.
+    /// that are still reps re-resolve straight to their final opacity (see
+    /// `FadingAnnotationContent.didResolve`), no re-fade.
     private func scheduleHitTestRehydration() {
         rehydrateToken &+= 1
         let token = rehydrateToken
@@ -772,55 +722,17 @@ struct MapView: View {
     }
 }
 
-// MARK: - Per-annotation cull wrapper
-//
-// MapKit's annotation host (a UIKit `MKAnnotationView` wrapping a
-// `UIHostingController`) does *not* honor SwiftUI's `.allowsHitTesting`
-// on its inner content. Any rendered subview — even one with opacity 0
-// — still absorbs taps at the UIKit hit-test layer. That's why the
-// previous "persistent annotation, fade via opacity" approach broke
-// taps: invisible-but-rendered annotations were eating hits before the
-// visible neighbor underneath could see them.
-//
-// The fix: when an entry isn't a current cluster rep, render *no
-// content* inside the Annotation (an empty `if let`), so MapKit's
-// hosting view collapses to zero size and can't absorb taps. When the
-// entry *is* a rep, the content renders; when it leaves the rep set the
-// content is cleared. Show and hide are instant (no crossfade), in step
-// with the touch-up cull, and the dead annotations have no footprint.
-private struct CulledAnnotationContent: View {
-    let point: MapPoint
-    let info: MapView.RepInfo?
-    let thumbSize: CGSize
-    let onTap: (MapView.RepInfo) -> Void
-
-    // Render directly off `info`: content is present exactly when this entry is a
-    // current cluster rep and absent (zero-size, tap-transparent) otherwise. Show
-    // and hide are instant, in step with the touch-up cull, so no lagged-mirror or
-    // opacity state is needed.
-    var body: some View {
-        if let info {
-            MapAnnotationContent(
-                point: point,
-                clusterCount: info.count,
-                thumbSize: thumbSize
-            )
-            .contentShape(Rectangle())
-            .onTapGesture {
-                onTap(info)
-            }
-        }
-    }
-}
-
 // MARK: - Per-annotation fading wrapper
 //
-// The fading counterpart of `CulledAnnotationContent`, used when the "Fade
-// Thumbnails" map setting is on. Same hit-testing contract — content is absent
-// (zero-size, tap-transparent) when this entry isn't a current cluster rep — but
-// the show/hide is animated via a local opacity state rather than instant. The
-// `rendered` mirror keeps the content mounted through the fade-out so the tween
-// is actually visible before the view collapses.
+// MapKit's annotation host (a UIKit `MKAnnotationView` wrapping a
+// `UIHostingController`) does *not* honor SwiftUI's `.allowsHitTesting` on its
+// inner content. Any rendered subview — even one with opacity 0 — still absorbs
+// taps at the UIKit hit-test layer. So when an entry isn't a current cluster rep
+// we render *no* content (an empty `if let`), collapsing MapKit's hosting view to
+// zero size so dead annotations can't eat taps. When the entry *is* a rep the
+// content renders, fading in/out via a local opacity state. The `rendered` mirror
+// keeps the content mounted through the fade-out so the tween is actually visible
+// before the view collapses.
 private struct FadingAnnotationContent: View {
     let point: MapPoint
     let info: MapView.RepInfo?
@@ -834,9 +746,9 @@ private struct FadingAnnotationContent: View {
     @State private var rendered: MapView.RepInfo?
     @State private var opacity: Double = 0
 
-    /// Duration of the thumbnail fade-in / fade-out when the "Fade Thumbnails"
-    /// setting is on. Change this one value to make the fade faster or slower.
-    /// Kept brisk so thumbnails appear/disappear snappily rather than lingering.
+    /// Duration of the thumbnail fade-in / fade-out. Change this one value to make
+    /// the fade faster or slower. Kept brisk so thumbnails appear/disappear snappily
+    /// rather than lingering.
     private static let fadeDuration: Double = 0.12
     /// False until the first `info` resolution after this view mounts. Lets us
     /// distinguish a genuine first appearance (or a hit-test rehydration remount,
@@ -903,53 +815,11 @@ private struct MapAnnotationContent: View {
     let clusterCount: Int
     let thumbSize: CGSize
 
-    /// Opacity of the translucent black capsule behind each thumbnail's name
-    /// label. Tunable — lower for a more subtle background, higher for more
-    /// contrast against a busy map.
-    private static let nameBackgroundOpacity: Double = 0.35
-
-    /// Debug A/B (see `AppSettings.debugFlatMapPins`): swap the full thumbnail for
-    /// a plain dot. Read directly off the shared settings so toggling it re-renders
-    /// every annotation.
-    private var flatPins: Bool { AppSettings.shared.debugFlatMapPins }
-
     private var labelText: String {
         clusterCount > 1 ? "\(clusterCount) Birds" : point.commonName
     }
 
     var body: some View {
-        Group {
-            if flatPins {
-                // Flattest possible content: a single filled circle, no image decode,
-                // no border stroke, no name capsule. If a pan is smooth with this on
-                // but stutters with it off, the cost is the thumbnail content the
-                // map re-composites per frame, not MapKit's per-annotation overhead.
-                Circle()
-                    .fill(clusterCount > 1 ? Color.orange : Color.accentColor)
-                    .frame(width: 22, height: 22)
-            } else {
-                fullContent
-            }
-        }
-        // MapKit hosts each annotation in a UIHostingController whose
-        // frame it derives once from the content's intrinsic size. The
-        // label sits below the thumbnail, so when the host under-measures
-        // the vertical extent it clips the label off entirely — which is
-        // why "some" singletons showed no name. `.fixedSize()` forces the
-        // VStack to report (and keep) its full intrinsic size so the
-        // label area is always reserved.
-        .fixedSize()
-        // Perf instrumentation (DEBUG-only no-op in release): a dense burst of
-        // these *during* a pan means MapKit is tearing down + rebuilding
-        // annotation hosts as they leave and re-enter the viewport — the suspected
-        // source of the stutter. See `MapPerf`.
-        .onAppear { MapPerf.count("annotationAppear") }
-        .onDisappear { MapPerf.count("annotationDisappear") }
-    }
-
-    /// The real annotation: bird thumbnail + name capsule. Factored out so the
-    /// debug flat-pin path can swap it for a plain dot without disturbing this.
-    private var fullContent: some View {
         VStack(spacing: 4) {
             BirdMapThumbnail(
                 scientificName: point.scientificName,
@@ -959,18 +829,21 @@ private struct MapAnnotationContent: View {
             )
             Text(labelText)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.white)
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                // A solid translucent capsule, NOT `.thinMaterial`: a backdrop-blur
-                // material is re-sampled every frame as MapKit re-composites each pin
-                // while panning, which was a dominant source of the pan stutter. A
-                // flat fill composites for almost nothing and reads the same at this
-                // size against the map.
-                .background(Color.black.opacity(Self.nameBackgroundOpacity), in: Capsule())
+                .background(.thinMaterial, in: Capsule())
         }
+        // MapKit hosts each annotation in a UIHostingController whose
+        // frame it derives once from the content's intrinsic size. The
+        // label sits below the thumbnail, so when the host under-measures
+        // the vertical extent it clips the label off entirely — which is
+        // why "some" singletons showed no name. `.fixedSize()` forces the
+        // VStack to report (and keep) its full intrinsic size so the
+        // label area is always reserved.
+        .fixedSize()
     }
 }
 
@@ -1041,6 +914,10 @@ struct BirdCluster: Identifiable, Hashable {
 /// own tap gesture in `MapView`).
 private struct MapCardSheet: View {
     let card: MapView.MapCard?
+    /// Passed explicitly (not read from the environment) so it can be re-injected
+    /// into the photo cover below — Observation `.environment` objects don't
+    /// reliably cross a presentation boundary, and the viewer's star toggle needs it.
+    let store: LifeListStore
     /// Full-screen photo presented from *this sheet's* context (not the root) so
     /// it doesn't collide with the sheet's own presentation — that's what makes
     /// it open instantly over the card. `.pinpoint` carries the map button and
@@ -1197,6 +1074,8 @@ private struct MapCardSheet: View {
                         }
                     }
                 )
+                // Re-inject the store so the viewer's star toggle resolves it.
+                .environment(store)
             case .lone(let point):
                 // A lone pin tapped while a card was open — nothing to swipe to.
                 SpeciesPhotoFullScreen(
@@ -1206,6 +1085,7 @@ private struct MapCardSheet: View {
                         dateFound: point.date
                     )]
                 )
+                .environment(store)
             }
         }
     }
@@ -1420,20 +1300,6 @@ private final class CameraTracker {
     var pendingZoomStep: Int?
     var lastFilterCenter: CLLocationCoordinate2D?
     var lastFilterSpan: MKCoordinateSpan?
-
-    /// Whether a pan or pinch finger is currently down. Tracked via the map's
-    /// simultaneous drag/magnify gestures so the `.onMapCameraChange(.onEnd)`
-    /// backstop doesn't recompute clusters mid-gesture: a sustained pan with a
-    /// brief pause (finger still on screen) makes MapKit fire an intermediate
-    /// `.onEnd`, which otherwise re-clustered/culled repeatedly — the churn the
-    /// user sees as "groups recalculating" while panning. Held as plain flags
-    /// (no `@State`) so setting them every frame never re-renders the map.
-    var panActive = false
-    var zoomActive = false
-    /// True while any pan/pinch finger is down. While this holds, all
-    /// cluster/cull work is suppressed; the single recomputation happens once
-    /// the gesture truly ends (and on the post-fling camera settle).
-    var interacting: Bool { panActive || zoomActive }
 }
 
 private struct GlassMapButton: View {
@@ -1487,54 +1353,6 @@ private struct MapSettingsContent: View {
                 )
                 .font(.body.weight(.semibold))
                 Text("Show every recorded observation of a species on the map, rather than only the earliest.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 28)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle(
-                    "Update While Moving",
-                    isOn: $settings.updateMapDuringGesture
-                )
-                .font(.body.weight(.semibold))
-                Text("Refresh the bird thumbnails continuously while panning and zooming, rather than only when you lift your fingers.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 28)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle(
-                    "Fade Thumbnails",
-                    isOn: $settings.fadeMapThumbnails
-                )
-                .font(.body.weight(.semibold))
-                Text("Fade bird thumbnails in and out as they appear and disappear, rather than snapping them instantly.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 28)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle(
-                    "Force Offline Species List",
-                    isOn: $settings.forceOfflineSpeciesList
-                )
-                .font(.body.weight(.semibold))
-                Text("Debug: identify using the bundled offline species list instead of the live model, logging how long each lookup takes.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 28)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle(
-                    "Flat Map Pins",
-                    isOn: $settings.debugFlatMapPins
-                )
-                .font(.body.weight(.semibold))
-                Text("Debug: draw each pin as a plain colored dot instead of the bird thumbnail, to test whether the thumbnails are what's stuttering during a pan.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }

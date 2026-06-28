@@ -61,6 +61,17 @@ final class ViewerPaging {
     var settled: Bool { opened && swipeSettled }
 }
 
+/// Tracks whether the current touch has moved enough to count as a drag rather
+/// than a tap. Set while the dismiss drag is in motion so the photo's
+/// single-tap-to-toggle-chrome is suppressed for that touch — a slight drag that
+/// ends in a near-tap should not hide/show the chrome; only a genuine tap should.
+/// A reference type so the toggle closure handed down to each page reads the live
+/// value instead of a stale captured snapshot.
+@MainActor
+final class ViewerTouchTracker {
+    var dragged = false
+}
+
 /// A request to programmatically turn the pager to `index`. Carries a fresh `id`
 /// per request so a repeated target still reads as a new command to act on.
 private struct PageCommand: Equatable {
@@ -126,6 +137,9 @@ struct SpeciesPhotoFullScreen: View {
     /// it settles. Pages gate their full-resolution swap on this so the heavier
     /// image only swaps in after the swipe has fully stopped.
     @State private var paging = ViewerPaging()
+    /// Whether the in-flight touch has moved (a drag), so a slight drag-and-release
+    /// doesn't toggle the chrome the way a real tap does. See `ViewerTouchTracker`.
+    @State private var touchTracker = ViewerTouchTracker()
     /// A request to turn the page programmatically, fired when a *zoomed*
     /// horizontal pan is dragged past the photo's content edge so the same
     /// continuous swipe carries on to the next/previous bird (rather than halting
@@ -184,6 +198,9 @@ struct SpeciesPhotoFullScreen: View {
     private static let uiToggleDuration: Double = 0.12
 
     private func toggleUI() {
+        // A slight drag that ends in a near-tap should not toggle the chrome — only
+        // a genuine tap (no drag) should.
+        guard !touchTracker.dragged else { return }
         withAnimation(.easeInOut(duration: Self.uiToggleDuration)) { uiVisible.toggle() }
     }
 
@@ -540,16 +557,31 @@ struct SpeciesPhotoFullScreen: View {
             }
 
             if let info = info(for: item) {
-                VStack(spacing: 4) {
+                // The whole attribution block (credit text + the "View on eBird"
+                // line) is the tap target, so taps anywhere on the credit open the
+                // eBird page — but only the "View on eBird" line is colored blue; the
+                // attribution above it stays white.
+                let attributionBlock = VStack(spacing: 4) {
                     Text(info.attribution)
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.85))
                         .multilineTextAlignment(.center)
-                    if let ebirdURL = info.ebirdURL {
-                        Link("View on eBird", destination: ebirdURL)
+                    if info.ebirdURL != nil {
+                        Text("View on eBird")
                             .font(.caption2.weight(.semibold))
-                            .tint(.blue)
+                            .foregroundStyle(.blue)
                     }
+                }
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+
+                if let ebirdURL = info.ebirdURL {
+                    Link(destination: ebirdURL) { attributionBlock }
+                        .buttonStyle(NoDimButtonStyle())
+                        .accessibilityLabel("View on eBird")
+                } else {
+                    attributionBlock
                 }
             }
         }
@@ -582,6 +614,11 @@ struct SpeciesPhotoFullScreen: View {
         // before paging was locked out.
         DragGesture(minimumDistance: 4, coordinateSpace: .global)
             .onChanged { value in
+                // Any movement past this gesture's minimumDistance marks the touch as
+                // a drag, so the photo's tap-to-toggle-chrome is suppressed for it
+                // (see `toggleUI`). A pure tap never reaches `onChanged`, so it still
+                // toggles.
+                touchTracker.dragged = true
                 // Dismiss is available when not zoomed (the whole card swipes), or
                 // when zoomed but the photo is at its top edge so it can't be panned
                 // any farther down — at which point a downward drag closes the card.
@@ -603,6 +640,10 @@ struct SpeciesPhotoFullScreen: View {
                 dragOffset = CGSize(width: 0, height: max(travel, 0))
             }
             .onEnded { value in
+                // Clear the drag mark on the next runloop so the tap fired by this
+                // same touch-up (which must see `dragged == true` to be suppressed)
+                // still does, while the following touch starts clean.
+                DispatchQueue.main.async { touchTracker.dragged = false }
                 let wasEngaged = dismissEngaged
                 dismissEngaged = false
                 // Only settle a drag we actually took over for dismiss; a zoomed pan
@@ -682,12 +723,7 @@ private struct StatusBarStyleController: UIViewControllerRepresentable {
         var lightContent = false {
             didSet {
                 guard lightContent != oldValue else { return }
-                // A short crossfade rather than an instant flip: driving the
-                // appearance update inside a 0.1s UIView animation makes the
-                // bar fade over that duration (paired with `.fade` below).
-                UIView.animate(withDuration: 0.15) {
-                    self.setNeedsStatusBarAppearanceUpdate()
-                }
+                applyStatusBarStyle()
             }
         }
         override var preferredStatusBarStyle: UIStatusBarStyle {
@@ -698,6 +734,30 @@ private struct StatusBarStyleController: UIViewControllerRepresentable {
             super.viewDidLoad()
             view.backgroundColor = .clear
             view.isUserInteractionEnabled = false
+        }
+        override func didMove(toParent parent: UIViewController?) {
+            super.didMove(toParent: parent)
+            // Re-assert once attached, in case `lightContent` was set before this
+            // controller had joined the cover's hierarchy.
+            applyStatusBarStyle()
+        }
+
+        /// Drives the status-bar appearance update with a short crossfade, then
+        /// re-asserts it a few times across the cover's present transition. A single
+        /// update issued *during* the present animation is sometimes swallowed by the
+        /// system's own status-bar handling, which left the bar stuck on its previous
+        /// (dark, invisible over the dark card) style — the intermittent "status bar
+        /// stays black" bug. The delayed re-asserts land after the transition settles
+        /// so the final resolved style is reliably ours.
+        private func applyStatusBarStyle() {
+            UIView.animate(withDuration: 0.15) {
+                self.setNeedsStatusBarAppearanceUpdate()
+            }
+            for delay in [0.1, 0.3, 0.5] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.setNeedsStatusBarAppearanceUpdate()
+                }
+            }
         }
     }
 }
@@ -1294,36 +1354,42 @@ private struct ZoomableImageView: UIViewRepresentable {
             }
         }
 
-        /// Detects a zoomed horizontal drag that has reached (and is pushing past)
-        /// the photo's left/right content edge, and fires `onPageBeyondEdge` once so
-        /// the same continuous swipe carries on to the neighboring bird. Only the
-        /// inner scroll view owns the pan while zoomed-and-not-at-edge, so without
-        /// this the drag just stops dead at the edge and a second swipe is needed.
+        /// On release of a zoomed horizontal drag that ended at the photo's
+        /// left/right content edge, fires `onPageBeyondEdge` so the swipe carries on
+        /// to the neighboring bird. Deciding at release (not mid-drag) is what keeps a
+        /// zoomed swipe from snapping to the next bird the instant it reaches the edge
+        /// — it commits only when you lift, like the pager does at minimum zoom.
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
             guard let scroll = scrollView else { return }
             switch gesture.state {
             case .began, .possible:
                 pageTriggeredThisGesture = false
-            case .changed:
+            case .ended:
+                // The carry-over page turn is decided only on release, not the
+                // instant the drag crosses the edge: dragging past the edge while
+                // zoomed should NOT force an immediate jump — the page turns when you
+                // let go, matching how the pager settles at minimum zoom.
                 guard !pageTriggeredThisGesture,
                       scroll.zoomScale > scroll.minimumZoomScale + 0.001 else { return }
                 let t = gesture.translation(in: scroll)
-                // Horizontal-dominant drags only — a vertical pan is the user
-                // panning the zoomed photo up/down (or swiping down to dismiss).
+                let v = gesture.velocity(in: scroll)
+                // Horizontal-dominant releases only — a vertical pan was panning the
+                // zoomed photo up/down (or swiping down to dismiss).
                 guard abs(t.x) > abs(t.y) else { return }
-                // Past how much *overdrag* beyond the edge counts as a page turn.
-                let overdrag: CGFloat = 40
+                // Turn the page on a far-enough drag past the edge, or a quick flick.
+                let threshold: CGFloat = 60
+                let flickVelocity: CGFloat = 250
                 let atLeft = scroll.contentOffset.x <= -scroll.contentInset.left + 0.5
                 let atRight = scroll.contentOffset.x
                     >= scroll.contentSize.width - scroll.bounds.width + scroll.contentInset.right - 0.5
-                if atLeft, t.x > overdrag {
+                if atLeft, t.x > 0, t.x > threshold || v.x > flickVelocity {
                     pageTriggeredThisGesture = true
                     parent.onPageBeyondEdge(-1)
-                } else if atRight, t.x < -overdrag {
+                } else if atRight, t.x < 0, t.x < -threshold || v.x < -flickVelocity {
                     pageTriggeredThisGesture = true
                     parent.onPageBeyondEdge(1)
                 }
-            case .ended, .cancelled, .failed:
+            case .cancelled, .failed:
                 pageTriggeredThisGesture = false
             default:
                 break
