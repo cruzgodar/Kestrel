@@ -84,6 +84,9 @@ struct SpeciesPhotoFullScreen: View {
     var onShowOnMap: ((SpeciesPhotoItem) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
+    /// Drives the top-right star toggle. Optional so previews without a store
+    /// injected still render (the button just reads as un-starred there).
+    @Environment(LifeListStore.self) private var lifeListStore: LifeListStore?
 
     /// Which page the horizontal paging `ScrollView` is settled on (the page's
     /// integer id). Seeded from `initialIndex` in `init`. `index` derives the
@@ -392,12 +395,14 @@ struct SpeciesPhotoFullScreen: View {
     private func chrome(topInset: CGFloat, bottomInset: CGFloat, screenWidth: CGFloat) -> some View {
         if let item = currentItem {
             VStack(spacing: 0) {
-                // Top row: back button pinned leading, name capsule centered.
+                // Top row: back button pinned leading, star toggle pinned trailing,
+                // name capsule centered.
                 ZStack {
                     nameCapsule(for: item, screenWidth: screenWidth)
                     HStack {
                         backButton
                         Spacer()
+                        starButton(for: item)
                     }
                 }
                 .padding(.top, topInset + 8)
@@ -464,6 +469,31 @@ struct SpeciesPhotoFullScreen: View {
         }
         .buttonStyle(NoDimButtonStyle())
         .accessibilityLabel("Back")
+    }
+
+    /// Blue used for a filled "alert me" star — matched to the Life List tab's
+    /// star tint so the same bird reads the same in both places.
+    private static let starTint = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
+
+    /// Top-right star toggle for the current bird's "alert me" state. Identical to
+    /// `backButton` apart from position and icon: a white outline star when the
+    /// species isn't starred, a filled blue star when it is. Writes through to the
+    /// life-list store's starred set (which persists even for a non-lifer).
+    private func starButton(for item: SpeciesPhotoItem) -> some View {
+        let starred = lifeListStore?.starredNames.contains(item.scientificName) ?? false
+        return Button {
+            lifeListStore?.setStarred(scientificName: item.scientificName, isStarred: !starred)
+        } label: {
+            Image(systemName: starred ? "star.fill" : "star")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(starred ? Self.starTint : .white)
+                .frame(width: 22, height: 22)
+                .padding(13)
+                .glassEffect(.regular.interactive(), in: .circle)
+                .contentShape(Circle())
+        }
+        .buttonStyle(NoDimButtonStyle())
+        .accessibilityLabel(starred ? "Remove alert star" : "Alert me when heard")
     }
 
     /// Bottom details — place (a blue, tappable link to the map), date, and photo
@@ -844,6 +874,17 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
             // The transition animation has finished (settled or snapped back),
             // so the pager is at rest — backstop the offset-driven settled report.
             reportSettled(true)
+            // Un-zoom the page we just left. UIPageViewController keeps the
+            // outgoing page alive as the new neighbor (it doesn't rebuild it), so a
+            // bird zoomed in before a swipe would otherwise still be zoomed when you
+            // swipe back to it. Resetting here — while it's offscreen — is invisible.
+            // Exclude whatever is *currently* displayed: an aborted swipe (snap-back)
+            // lists the page you stayed on in `previousViewControllers`, and resetting
+            // it would un-zoom the bird you're still looking at.
+            let current = pvc.viewControllers ?? []
+            for vc in previousViewControllers where !current.contains(vc) {
+                Self.resetZoom(in: vc)
+            }
             guard completed, let host = pvc.viewControllers?.first as? IndexedHost<Page> else { return }
             currentIndex = host.index
             // The halfway observer has usually already reported this index; keep
@@ -853,6 +894,23 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
                 lastReportedIndex = host.index
                 parent.onIndexChange(host.index)
             }
+        }
+
+        /// Walks a hosted page's view tree to its `CenteringScrollView` and resets
+        /// it to minimum zoom (re-fitting so it's centered). Used to clear the zoom
+        /// of a page the pager has scrolled away from but kept mounted.
+        static func resetZoom(in viewController: UIViewController) {
+            func findScroll(_ view: UIView) -> CenteringScrollView? {
+                if let scroll = view as? CenteringScrollView { return scroll }
+                for subview in view.subviews {
+                    if let found = findScroll(subview) { return found }
+                }
+                return nil
+            }
+            guard let scroll = findScroll(viewController.view),
+                  scroll.zoomScale != scroll.minimumZoomScale else { return }
+            scroll.setZoomScale(scroll.minimumZoomScale, animated: false)
+            scroll.refit()
         }
     }
 }

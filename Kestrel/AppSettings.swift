@@ -9,6 +9,7 @@ private nonisolated enum SettingsKeys {
     static let updateMapDuringGesture = "settings.updateMapDuringGesture"
     static let fadeMapThumbnails = "settings.fadeMapThumbnails"
     static let forceOfflineSpeciesList = "settings.forceOfflineSpeciesList"
+    static let debugFlatMapPins = "settings.debugFlatMapPins"
 }
 
 /// App-wide user settings, persisted to `UserDefaults`. A single shared
@@ -59,6 +60,16 @@ final class AppSettings {
         }
     }
 
+    /// Debug A/B for the pan stutter: when on, each map annotation renders as a
+    /// flat filled circle instead of the full bird thumbnail (image + white border
+    /// + name capsule). Lets us isolate whether the per-frame compositing of the
+    /// thumbnail content is what drops frames during a pan. Off by default.
+    var debugFlatMapPins: Bool {
+        didSet {
+            defaults.set(debugFlatMapPins, forKey: SettingsKeys.debugFlatMapPins)
+        }
+    }
+
     private let defaults = UserDefaults.standard
 
     private init() {
@@ -68,5 +79,6 @@ final class AppSettings {
         updateMapDuringGesture = defaults.bool(forKey: SettingsKeys.updateMapDuringGesture)
         fadeMapThumbnails = defaults.bool(forKey: SettingsKeys.fadeMapThumbnails)
         forceOfflineSpeciesList = defaults.bool(forKey: SettingsKeys.forceOfflineSpeciesList)
+        debugFlatMapPins = defaults.bool(forKey: SettingsKeys.debugFlatMapPins)
     }
 }

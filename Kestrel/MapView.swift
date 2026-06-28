@@ -908,11 +908,48 @@ private struct MapAnnotationContent: View {
     /// contrast against a busy map.
     private static let nameBackgroundOpacity: Double = 0.35
 
+    /// Debug A/B (see `AppSettings.debugFlatMapPins`): swap the full thumbnail for
+    /// a plain dot. Read directly off the shared settings so toggling it re-renders
+    /// every annotation.
+    private var flatPins: Bool { AppSettings.shared.debugFlatMapPins }
+
     private var labelText: String {
         clusterCount > 1 ? "\(clusterCount) Birds" : point.commonName
     }
 
     var body: some View {
+        Group {
+            if flatPins {
+                // Flattest possible content: a single filled circle, no image decode,
+                // no border stroke, no name capsule. If a pan is smooth with this on
+                // but stutters with it off, the cost is the thumbnail content the
+                // map re-composites per frame, not MapKit's per-annotation overhead.
+                Circle()
+                    .fill(clusterCount > 1 ? Color.orange : Color.accentColor)
+                    .frame(width: 22, height: 22)
+            } else {
+                fullContent
+            }
+        }
+        // MapKit hosts each annotation in a UIHostingController whose
+        // frame it derives once from the content's intrinsic size. The
+        // label sits below the thumbnail, so when the host under-measures
+        // the vertical extent it clips the label off entirely — which is
+        // why "some" singletons showed no name. `.fixedSize()` forces the
+        // VStack to report (and keep) its full intrinsic size so the
+        // label area is always reserved.
+        .fixedSize()
+        // Perf instrumentation (DEBUG-only no-op in release): a dense burst of
+        // these *during* a pan means MapKit is tearing down + rebuilding
+        // annotation hosts as they leave and re-enter the viewport — the suspected
+        // source of the stutter. See `MapPerf`.
+        .onAppear { MapPerf.count("annotationAppear") }
+        .onDisappear { MapPerf.count("annotationDisappear") }
+    }
+
+    /// The real annotation: bird thumbnail + name capsule. Factored out so the
+    /// debug flat-pin path can swap it for a plain dot without disturbing this.
+    private var fullContent: some View {
         VStack(spacing: 4) {
             BirdMapThumbnail(
                 scientificName: point.scientificName,
@@ -934,20 +971,6 @@ private struct MapAnnotationContent: View {
                 // size against the map.
                 .background(Color.black.opacity(Self.nameBackgroundOpacity), in: Capsule())
         }
-        // MapKit hosts each annotation in a UIHostingController whose
-        // frame it derives once from the content's intrinsic size. The
-        // label sits below the thumbnail, so when the host under-measures
-        // the vertical extent it clips the label off entirely — which is
-        // why "some" singletons showed no name. `.fixedSize()` forces the
-        // VStack to report (and keep) its full intrinsic size so the
-        // label area is always reserved.
-        .fixedSize()
-        // Perf instrumentation (DEBUG-only no-op in release): a dense burst of
-        // these *during* a pan means MapKit is tearing down + rebuilding
-        // annotation hosts as they leave and re-enter the viewport — the suspected
-        // source of the stutter. See `MapPerf`.
-        .onAppear { MapPerf.count("annotationAppear") }
-        .onDisappear { MapPerf.count("annotationDisappear") }
     }
 }
 
@@ -1500,6 +1523,18 @@ private struct MapSettingsContent: View {
                 )
                 .font(.body.weight(.semibold))
                 Text("Debug: identify using the bundled offline species list instead of the live model, logging how long each lookup takes.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 28)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle(
+                    "Flat Map Pins",
+                    isOn: $settings.debugFlatMapPins
+                )
+                .font(.body.weight(.semibold))
+                Text("Debug: draw each pin as a plain colored dot instead of the bird thumbnail, to test whether the thumbnails are what's stuttering during a pan.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
