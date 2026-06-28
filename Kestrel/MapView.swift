@@ -341,13 +341,15 @@ struct MapView: View {
                     rebuildClusters(animated: false, rehydrate: false)
                     updateVisibleEntries(force: true)
                 }
-                .onChange(of: store.entries) { _, _ in
+                .onChange(of: store.entries) { old, new in
+                    flickerLog("onChange store.entries \(old.count)→\(new.count)")
                     rebuildClusters(animated: true, rehydrate: false)
                     updateVisibleEntries(force: true)
                 }
                 // Flipping the repeat-observations setting changes the point
                 // set, so rebuild the culled annotations and clusters.
-                .onChange(of: settings.showRepeatObservationsOnMap) { _, _ in
+                .onChange(of: settings.showRepeatObservationsOnMap) { _, on in
+                    flickerLog("onChange showRepeatObservations=\(on)")
                     rebuildClusters(animated: true, rehydrate: false)
                     updateVisibleEntries(force: true)
                 }
@@ -507,6 +509,7 @@ struct MapView: View {
     /// map has come to a complete stop (the camera's `.onEnd`), which also covers
     /// programmatic moves (recenter / focus) and the post-fling settle.
     private func commitVisibleEntries() {
+        flickerLog("commitVisibleEntries (camera settled) zoomStep=\(String(describing: camera.pendingZoomStep)) last=\(String(describing: camera.lastZoomStep))")
         // Rebuild clusters (which fills `visibleReps`, the annotation *content*)
         // before culling `visiblePoints` (which mounts the annotation *hosts*),
         // so each host is created with its content already present. If a host is
@@ -552,9 +555,19 @@ struct MapView: View {
             abs(point.latitude - centerLat) <= latRange
                 && abs(point.longitude - centerLon) <= lonRange
         }
+        flickerLog("updateVisibleEntries: visiblePoints \(visiblePoints.count)→\(filtered.count) force=\(force)")
         visiblePoints = filtered
         camera.lastFilterCenter = camera.lastCenter
         camera.lastFilterSpan = span
+    }
+
+    /// Temporary diagnostic logging for the map "groups flicker off and back on"
+    /// report. Tagged + timestamped so a burst captured when the flicker happens
+    /// shows which annotation-mounting path fired (cluster fade, hit-test
+    /// rehydration, visible-points churn, …). Remove once the cause is pinned down.
+    private func flickerLog(_ message: @autoclosure () -> String) {
+        let t = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1000)
+        print(String(format: "🪶[%.3f] ", t) + message())
     }
 
     /// `rehydrate` controls whether a cluster-set change triggers the post-change
@@ -591,7 +604,11 @@ struct MapView: View {
                 others: cluster.others
             )
         }
-        guard next != visibleReps else { return }
+        guard next != visibleReps else {
+            flickerLog("rebuildClusters: clusters unchanged (\(next.count) reps) — no-op")
+            return
+        }
+        flickerLog("rebuildClusters: reps \(visibleReps.count)→\(next.count) animated=\(animated) rehydrate=\(rehydrate)")
         if animated {
             withAnimation(.easeInOut(duration: 0.3)) {
                 visibleReps = next
@@ -605,11 +622,13 @@ struct MapView: View {
         // produces clusters and not retried while a chain is already in flight;
         // the chain re-arms itself if it has to wait for annotations to settle.
         if !next.isEmpty, !didWarmUpAnnotations, !warmUpScheduled {
+            flickerLog("rebuildClusters: scheduling warmUpAnnotations")
             warmUpScheduled = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 warmUpAnnotations()
             }
         } else if didWarmUpAnnotations, rehydrate {
+            flickerLog("rebuildClusters: scheduling hit-test rehydration")
             // After the initial load, every *subsequent* cluster change (most
             // commonly a pinch that merges/splits stacks) re-mounts the
             // annotations once the camera settles, so MapKit re-measures the
@@ -637,6 +656,7 @@ struct MapView: View {
         let token = rehydrateToken
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             guard token == rehydrateToken, !visiblePoints.isEmpty else { return }
+            flickerLog("⚠️ REHYDRATION firing: clearing \(visiblePoints.count) points then restoring (this clears+remounts ALL annotations)")
             let saved = visiblePoints
             visiblePoints = []
             DispatchQueue.main.async { visiblePoints = saved }
@@ -670,6 +690,7 @@ struct MapView: View {
             }
             return
         }
+        flickerLog("⚠️ warmUpAnnotations firing: clearing \(visiblePoints.count) points then restoring (one-shot, clears+remounts ALL annotations)")
         didWarmUpAnnotations = true
         let saved = visiblePoints
         visiblePoints = []
@@ -792,6 +813,14 @@ private struct FadingAnnotationContent: View {
         }
     }
 
+    /// Temporary diagnostic logging for the flicker report (mirrors MapView's
+    /// `flickerLog`). Per-annotation, so a burst here shows individual thumbnails
+    /// fading rather than a whole-set remount.
+    private func flog(_ message: @autoclosure () -> String) {
+        let t = Date().timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1000)
+        print(String(format: "🪶[%.3f]   · ", t) + message())
+    }
+
     private func handle(_ newInfo: MapView.RepInfo?) {
         // First resolution after mount (incl. a rehydration remount): jump straight
         // to the final opacity with no animation, so re-creating an already-visible
@@ -800,12 +829,14 @@ private struct FadingAnnotationContent: View {
             didResolve = true
             rendered = newInfo
             opacity = newInfo == nil ? 0 : 1
+            flog("\(point.commonName): first-resolve mount opacity=\(newInfo == nil ? 0 : 1)")
             return
         }
         if let newInfo {
             let wasOff = (rendered == nil)
             rendered = newInfo
             if wasOff {
+                flog("\(point.commonName): FADE-IN (was off)")
                 opacity = 0
                 withAnimation(.easeInOut(duration: Self.fadeDuration)) {
                     opacity = 1
@@ -813,6 +844,7 @@ private struct FadingAnnotationContent: View {
             }
             // Already visible: just refresh the count, no fade needed.
         } else if rendered != nil {
+            flog("\(point.commonName): FADE-OUT")
             withAnimation(.easeInOut(duration: Self.fadeDuration)) {
                 opacity = 0
             } completion: {

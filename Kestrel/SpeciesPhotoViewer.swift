@@ -499,6 +499,9 @@ struct SpeciesPhotoFullScreen: View {
     private func starButton(for item: SpeciesPhotoItem) -> some View {
         let starred = lifeListStore?.starredNames.contains(item.scientificName) ?? false
         return Button {
+            // A single short tap to confirm the star toggled, matching the Life
+            // List tab's star button.
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
             lifeListStore?.setStarred(scientificName: item.scientificName, isStarred: !starred)
         } label: {
             Image(systemName: starred ? "star.fill" : "star")

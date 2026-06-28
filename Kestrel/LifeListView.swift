@@ -299,6 +299,13 @@ struct LifeListView: View {
         // Keep the title big and leading-aligned on its own line (inlineLarge),
         // sitting level with the filter/import toolbar buttons.
         .toolbarTitleDisplayMode(.inlineLarge)
+        // Switching away from the Life List tab clears the starred-only filter, so
+        // returning always lands on the full list rather than a stale filtered view.
+        // Fires on tab switches (the photo viewer is presented from the app root,
+        // not here, so opening a photo doesn't trip this).
+        .onDisappear {
+            if showStarredOnly { showStarredOnly = false }
+        }
         // Swallow taps in the bottom strip — the glass search field plus the
         // gap up to 4pt above its top — so taps meant for the search field or
         // tab bar don't fall through to the list rows scrolling beneath the
@@ -757,13 +764,9 @@ private struct ImportInfoSheet: View {
 private struct BottomSearchField: View {
     @Binding var text: String
     let prompt: String
-    /// Symmetric horizontal inset, used only until the live tab-bar width is
-    /// measured (the fallback width).
+    /// Symmetric horizontal inset, set by the parent so the field stays centered
+    /// while its right edge lines up with the rightmost heading button.
     var horizontalInset: CGFloat = 10
-    /// Measured width of the floating tab bar beneath the field, so the field can
-    /// be sized to match it. `0` until the probe resolves, in which case the field
-    /// falls back to the full-width-minus-`horizontalInset` layout.
-    @State private var tabBarWidth: CGFloat = 0
     @FocusState private var focused: Bool
     /// Drives the full-screen photo viewer. When a species photo opens (e.g. the
     /// user taps a row's thumbnail while searching), we drop focus so the
@@ -849,83 +852,13 @@ private struct BottomSearchField: View {
                 .transition(.scale.combined(with: .opacity))
             }
         }
-        // Match the field's width to the floating tab bar beneath it once it's
-        // measured, centered in the inset; until then fall back to the symmetric
-        // inset. The tab bar's width isn't exposed through SwiftUI, so it's read
-        // off the live UITabBar by `TabBarWidthReader`.
-        .frame(width: tabBarWidth > 0 ? tabBarWidth : nil)
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, tabBarWidth > 0 ? 0 : horizontalInset)
+        .padding(.horizontal, horizontalInset)
         .padding(.bottom, 8)
-        .background(
-            TabBarWidthReader { width in
-                if abs(width - tabBarWidth) > 0.5 { tabBarWidth = width }
-            }
-        )
         .animation(.spring(response: 0.28, dampingFraction: 0.85), value: showCancel)
         // Opening a species photo resigns focus permanently — without this the
         // keyboard slides back up when the full-screen viewer is dismissed.
         .onChange(of: photoPresenter?.presented) { _, presented in
             if presented != nil { focused = false }
-        }
-    }
-}
-
-/// Reports the live floating tab bar's width back to SwiftUI so the bottom search
-/// field can be sized to match it. The width of the iOS 26 floating tab bar isn't
-/// exposed through SwiftUI, so this walks up from a hidden probe to the window and
-/// finds the `UITabBar`, reporting its bounds width. Re-resolves when laid out
-/// (e.g. rotation) so the field tracks the bar across size changes.
-private struct TabBarWidthReader: UIViewRepresentable {
-    let onResolve: (CGFloat) -> Void
-
-    func makeUIView(context: Context) -> ProbeView { ProbeView(onResolve: onResolve) }
-    func updateUIView(_ uiView: ProbeView, context: Context) { uiView.onResolve = onResolve }
-
-    final class ProbeView: UIView {
-        var onResolve: (CGFloat) -> Void
-
-        init(onResolve: @escaping (CGFloat) -> Void) {
-            self.onResolve = onResolve
-            super.init(frame: .zero)
-            isUserInteractionEnabled = false
-            backgroundColor = .clear
-        }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-
-        override func didMoveToWindow() {
-            super.didMoveToWindow()
-            scheduleResolve()
-        }
-
-        override func layoutSubviews() {
-            super.layoutSubviews()
-            // Re-read after layout settles (rotation / size class change), so the
-            // field keeps matching the bar if its width changes.
-            scheduleResolve()
-        }
-
-        private func scheduleResolve() {
-            // Defer so the tab bar is laid out (its width is set during the
-            // presentation/layout pass, after this probe attaches).
-            DispatchQueue.main.async { [weak self] in self?.resolve() }
-        }
-
-        private func resolve() {
-            guard let window, let tabBar = Self.findTabBar(in: window) else { return }
-            let width = tabBar.bounds.width
-            guard width > 0 else { return }
-            onResolve(width)
-        }
-
-        private static func findTabBar(in view: UIView) -> UITabBar? {
-            if let bar = view as? UITabBar { return bar }
-            for subview in view.subviews {
-                if let found = findTabBar(in: subview) { return found }
-            }
-            return nil
         }
     }
 }
