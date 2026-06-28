@@ -109,6 +109,12 @@ struct MapView: View {
     /// `scheduleHitTestRehydration`). Bumped on every cluster change so only
     /// the last one in a continuous pinch actually fires the remount.
     @State private var rehydrateToken = 0
+    /// Accumulates the annotation ids that need a hit-test remount across a
+    /// continuous pinch (each zoom-step rebuild adds the reps that just gained
+    /// content). Drained by the debounced rehydration so only the hosts that
+    /// actually changed are remounted — the stable ones stay mounted and don't
+    /// flicker.
+    @State private var pendingRehydrateIDs: Set<String> = []
     /// Buffer expressed in spans — render entries within 1.5× the visible
     /// region in each direction. Big enough that gentle panning never
     /// touches the ForEach set; small enough that we're not mounting the
@@ -591,6 +597,7 @@ struct MapView: View {
             footprint: Self.annotationFootprint,
             gutter: Self.clusterGutter
         )
+        let oldReps = visibleReps
         var next: [String: RepInfo] = [:]
         next.reserveCapacity(computed.count)
         for cluster in computed {
@@ -628,37 +635,56 @@ struct MapView: View {
                 warmUpAnnotations()
             }
         } else if didWarmUpAnnotations, rehydrate {
-            flickerLog("rebuildClusters: scheduling hit-test rehydration")
             // After the initial load, every *subsequent* cluster change (most
-            // commonly a pinch that merges/splits stacks) re-mounts the
-            // annotations once the camera settles, so MapKit re-measures the
-            // hosts whose footprint changed. Without this, a freshly-formed
-            // stack renders but keeps the stale (often zero-size) hit area
-            // MapKit cached for the host's previous content — taps fall
-            // straight through to the map until the next interaction.
+            // commonly a pinch that merges/splits stacks) re-mounts the *hosts that
+            // gained content* once the camera settles, so MapKit re-measures them.
+            // Without this, a freshly-formed stack renders but keeps the stale
+            // (often zero-size) hit area MapKit cached for the host's previous
+            // *empty* content — taps fall straight through to the map until the
+            // next interaction.
+            //
+            // Only the reps that went empty → content need it (the stale-zero-size
+            // case). Remounting *all* annotations — the previous approach — made
+            // every visible thumbnail re-fade on each pinch step (the flicker), even
+            // though only a couple of stacks actually changed. So we remount just
+            // those, leaving the stable hosts untouched.
             //
             // Skipped (`rehydrate == false`) for non-zoom rebuilds (life-list,
             // settings, size): those are paired with a forced `updateVisibleEntries`
-            // that already remounts changed hosts with content present, so the
-            // remount here would only add a visible all-annotations flicker.
-            scheduleHitTestRehydration()
+            // that already mounts changed hosts with content present.
+            let changedIDs = Set(next.keys).subtracting(oldReps.keys)
+            if changedIDs.isEmpty {
+                flickerLog("rebuildClusters: no became-content reps — skipping rehydration")
+            } else {
+                flickerLog("rebuildClusters: scheduling rehydration for \(changedIDs.count) became-content host(s)")
+                scheduleHitTestRehydration(changedIDs: changedIDs)
+            }
         }
     }
 
-    /// Debounced remount of the annotation hosts to refresh MapKit's cached
-    /// hit areas after the cluster set changes. Coalesces a continuous pinch
-    /// into a single remount fired ~0.25 s after the last change, so it doesn't
-    /// churn mid-gesture. The remount itself is visually silent — annotations
-    /// that are still reps re-resolve straight to their final opacity (see
-    /// `FadingAnnotationContent.didResolve`), no re-fade.
-    private func scheduleHitTestRehydration() {
+    /// Debounced remount of *only the changed* annotation hosts to refresh
+    /// MapKit's cached hit areas after a cluster change. `changedIDs` accumulate
+    /// across a continuous pinch and are coalesced into a single remount fired
+    /// ~0.25 s after the last change, so it doesn't churn mid-gesture. Only the
+    /// changed hosts are dropped + restored (so MapKit recreates them with content
+    /// present); every other host stays mounted, so the stable annotations don't
+    /// flicker — the became-content hosts were fading in anyway, so their remount
+    /// is masked.
+    private func scheduleHitTestRehydration(changedIDs: Set<String>) {
+        pendingRehydrateIDs.formUnion(changedIDs)
         rehydrateToken &+= 1
         let token = rehydrateToken
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            guard token == rehydrateToken, !visiblePoints.isEmpty else { return }
-            flickerLog("⚠️ REHYDRATION firing: clearing \(visiblePoints.count) points then restoring (this clears+remounts ALL annotations)")
+            guard token == rehydrateToken else { return }
+            let ids = pendingRehydrateIDs
+            pendingRehydrateIDs = []
             let saved = visiblePoints
-            visiblePoints = []
+            let remaining = saved.filter { !ids.contains($0.id) }
+            // Nothing to remount (the changed hosts aren't currently visible) — or
+            // they're the whole set, in which case there's nothing to keep mounted.
+            guard remaining.count != saved.count else { return }
+            flickerLog("REHYDRATION firing: remounting \(saved.count - remaining.count) changed host(s) of \(saved.count) (others stay mounted)")
+            visiblePoints = remaining
             DispatchQueue.main.async { visiblePoints = saved }
         }
     }
