@@ -11,7 +11,7 @@ enum BirdNETError: Error {
 
 actor BirdNETClassifier {
     static let sampleCount = 144_000  // 3 s @ 48 kHz mono
-    static let detectionThreshold: Float = 0.3
+    static let detectionThreshold: Float = 0.25
     /// Confidence a species must clear when it is *outside* the location/week
     /// range filter. Higher than `detectionThreshold` so an out-of-range species
     /// is only accepted on strong acoustic evidence — a "soft" filter rather than
