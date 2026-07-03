@@ -6,6 +6,14 @@ import SwiftUI
 struct MoreView: View {
     @Bindable private var settings = AppSettings.shared
 
+    #if DEBUG
+    // Backs the debug-only cached-image readout. The life list drives one column;
+    // the cached nearby-region set drives the other.
+    @Environment(LifeListStore.self) private var lifeListStore
+    @State private var lifeCounts: RemoteSpeciesImageStore.ResolutionCounts?
+    @State private var nearbyCounts: RemoteSpeciesImageStore.ResolutionCounts?
+    #endif
+
     var body: some View {
         // A stock inset-grouped list, so the settings render as the system's own
         // Settings-app controls: the picker as a value row that drops down a
@@ -73,6 +81,9 @@ struct MoreView: View {
     private var aboutSection: some View {
         Section {
             VStack(alignment: .leading, spacing: 20) {
+                Divider()
+                    .padding(.vertical, 4)
+
                 Text("About Kestrel")
                     .font(.title2.bold())
 
@@ -91,6 +102,7 @@ struct MoreView: View {
                 creditsSection
 
                 #if DEBUG
+                cacheCountsView
                 clearCacheButton
                 #endif
             }
@@ -128,12 +140,58 @@ struct MoreView: View {
     // MARK: - Debug
 
     #if DEBUG
+    /// Debug-only readout of how many life-list and nearby-region species have an
+    /// image cached at each resolution — thumbnail (320) and medium (900) from
+    /// disk, full (2400) from the in-memory viewer tier. Each denominator is the
+    /// number of that group's species that have photo metadata at all (the
+    /// reachable maximum). Recomputed on appear and after a cache clear.
+    private var cacheCountsView: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Cached Images")
+                .font(.headline)
+
+            if let lifeCounts, let nearbyCounts {
+                countGroup("Life List", lifeCounts)
+                countGroup("Nearby", nearbyCounts)
+            } else {
+                Text("Counting…")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .onAppear(perform: refreshCacheCounts)
+    }
+
+    private func countGroup(
+        _ title: String,
+        _ counts: RemoteSpeciesImageStore.ResolutionCounts
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            countRow(title, at: 320, counts.thumb, of: counts.total)
+            countRow(title, at: 900, counts.medium, of: counts.total)
+            countRow(title, at: 2400, counts.full, of: counts.total)
+        }
+    }
+
+    private func countRow(_ title: String, at pixels: Int, _ have: Int, of total: Int) -> some View {
+        Text("\(title) @\(pixels): \(have)/\(total)")
+            .font(.system(.footnote, design: .monospaced))
+            .foregroundStyle(.secondary)
+    }
+
+    private func refreshCacheCounts() {
+        let store = RemoteSpeciesImageStore.shared
+        lifeCounts = store.cacheCounts(for: lifeListStore.entries.map(\.scientificName))
+        nearbyCounts = store.cacheCounts(for: RemoteSpeciesImageStore.nearbyNames())
+    }
+
     /// Debug-only control at the very bottom of the About screen: drops every
     /// cached species image (thumbnail, medium, and full-resolution tiers, on
     /// disk and in memory) so the next view re-downloads from scratch.
     private var clearCacheButton: some View {
         Button(role: .destructive) {
             RemoteSpeciesImageStore.shared.clearAllCaches()
+            refreshCacheCounts()
         } label: {
             Text("Clear Image Cache")
                 .frame(maxWidth: .infinity)

@@ -71,17 +71,18 @@ final class LifeListStore {
         save()
 
         // Eagerly warm every imported species' photo right away rather than waiting
-        // for its row to scroll into view. `entries` is already in display order, and
-        // `prefetch` dispatches in that order with bounded concurrency, so the birds
-        // at the top of the list download first. `ensureDownloaded` seeds each
-        // thumbnail from the same bytes, so the list's small thumbnails fill in too.
-        // Protect the freshly-grown life list from the cache cap before prefetching
-        // (mirrors the launch wiring in `KestrelApp`).
+        // for its row to scroll into view. `prefetchWake` fetches the 320px
+        // thumbnails first (so the list's small photos fill in fast), then the
+        // medium images. Protect the freshly-grown life list from the cache cap
+        // before prefetching (mirrors the launch wiring in `KestrelApp`).
         let names = entries.map(\.scientificName)
         RemoteSpeciesImageStore.shared.setProtectedSpecies(
             RemoteSpeciesImageStore.launchTargets(lifeList: names)
         )
-        RemoteSpeciesImageStore.shared.prefetch(scientificNames: names)
+        RemoteSpeciesImageStore.shared.prefetchWake(
+            lifeList: names,
+            nearby: RemoteSpeciesImageStore.nearbyNames()
+        )
 
         return result.summary
     }

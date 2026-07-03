@@ -22,6 +22,11 @@ struct SpeciesPhoto<Placeholder: View>: View {
     /// by the small contexts that show many photos at once (life-list rows, map
     /// pins, cluster grids) so scrolling them doesn't decode full ~900px images.
     var usesThumbnail: Bool = false
+    /// Paint the 320px thumbnail first, then upgrade to the 900px medium image.
+    /// Set by the Identify hero so a freshly-heard bird's large photo appears
+    /// instantly (from the thumbnail already headed to the watch) instead of
+    /// waiting on the medium download. Ignored when `usesThumbnail` is set.
+    var progressive: Bool = false
     /// Overrides the default tap action (which opens a singleton viewer). The
     /// Life List passes one that opens the viewer over the whole ordered list so
     /// the user can swipe between birds.
@@ -50,7 +55,8 @@ struct SpeciesPhoto<Placeholder: View>: View {
         RemoteSpeciesImage(
             scientificName: scientificName,
             showsCredit: showsCredit,
-            usesThumbnail: usesThumbnail
+            usesThumbnail: usesThumbnail,
+            progressive: progressive
         ) {
             placeholder()
         }
@@ -64,6 +70,8 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
     var showsCredit: Bool
     /// Use the small thumbnail tier instead of the full image (see `SpeciesPhoto`).
     var usesThumbnail: Bool = false
+    /// Thumbnail-first, then upgrade to medium (see `SpeciesPhoto`).
+    var progressive: Bool = false
     @ViewBuilder var placeholder: () -> Placeholder
 
     @State private var image: UIImage?
@@ -87,6 +95,34 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
         }
         .task(id: scientificName) {
             let store = RemoteSpeciesImageStore.shared
+
+            if progressive {
+                // Already have the medium image resident — show it straight away,
+                // no thumbnail flash.
+                if let mem = store.memoryImage(for: scientificName) {
+                    image = mem
+                    loaded = true
+                    return
+                }
+                // Paint the 320px thumbnail first (instant if it's the one just
+                // sent to the watch), then upgrade to the 900px medium.
+                var thumb = store.memoryThumbnail(for: scientificName)
+                if thumb == nil {
+                    thumb = await store.thumbnailImage(for: scientificName)
+                }
+                if let thumb {
+                    guard !Task.isCancelled else { return }
+                    image = thumb
+                    loaded = true
+                }
+                let medium = await store.image(for: scientificName)
+                guard !Task.isCancelled else { return }
+                // Keep the thumbnail showing if the medium failed to load.
+                if let medium { image = medium }
+                loaded = true
+                return
+            }
+
             // Synchronous memory hit first (no placeholder flash) from whichever
             // tier this context uses.
             if let mem = usesThumbnail

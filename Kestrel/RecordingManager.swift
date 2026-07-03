@@ -1163,7 +1163,9 @@ final class RecordingManager {
     }
 
     /// Kicks off a background download of the embed photos for the just-computed
-    /// region species so they're cached and available offline.
+    /// region species so they're cached and available offline. Thumbnails for
+    /// nearby species land first, then the rest of the life list, then the
+    /// medium images (see `prefetchWake`).
     private func prefetchRegionImages(_ allowed: Set<Int>) {
         let all = SpeciesCatalog.shared.all
         let names = allowed.compactMap { all.indices.contains($0) ? all[$0].scientificName : nil }
@@ -1171,7 +1173,7 @@ final class RecordingManager {
         // protects from eviction (life list + nearby) before prefetching.
         let lifeNames = lifeListStore?.entries.map(\.scientificName) ?? []
         RemoteSpeciesImageStore.shared.setProtectedSpecies(lifeNames + names)
-        RemoteSpeciesImageStore.shared.prefetch(scientificNames: names)
+        RemoteSpeciesImageStore.shared.prefetchWake(lifeList: lifeNames, nearby: names)
     }
 
     // MARK: - System plumbing

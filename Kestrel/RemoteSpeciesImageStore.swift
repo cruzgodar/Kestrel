@@ -3,28 +3,40 @@ import UIKit
 
 /// Persistent store for the remote ("Official embed") species photos.
 ///
-/// Three tiers: an in-memory `NSCache` of decoded images, an on-disk JPEG cache
-/// in Application Support (which the system does *not* purge — once downloaded a
-/// photo stays forever), and the network as the source of truth. The on-disk
-/// copy is keyed by the `SpeciesImage` filename slug.
+/// Three network tiers, each a distinct Macaulay CDN size, mirrored across
+/// memory + disk caches:
+///   • **thumbnail** (320 px) — `{slug}_thumb.jpg`, fetched straight from the
+///     CDN's `/320` size. Lists, map pins, cluster grids, the Identify hero's
+///     first paint, and the watch's "now hearing" screen all use it.
+///   • **medium** (900 px) — `{slug}.jpg`, the offline source of truth. The
+///     Identify hero upgrades to it, and the full-screen viewer opens on it.
+///   • **full** (2400 px) — memory-only, never persisted. Fetched only on demand
+///     when a card opens full-screen, so a pinch-zoom is crisp.
 ///
-/// A parallel **thumbnail tier** mirrors all three: a small (`thumbnailMaxPixelSize`
-/// max dimension) downsample of each photo, cached in memory and on disk as
-/// `{slug}_thumb.jpg`. Lists, map pins, and cluster grids show *many* photos at a
-/// small size; decoding the full ~900px image for each is what made scrolling them
-/// sluggish. The thumbnail is generated with ImageIO (which decode-downsamples
-/// without ever allocating the full bitmap) the first time it's needed and when a
-/// photo is freshly downloaded, then served from the cheap caches thereafter. The
-/// full-screen viewer keeps using the full-resolution tier (`image(for:)`).
+/// Downloads are ordered and coalesced by `ImageDownloadQueue`: a wake (app
+/// launch or session start) prefetches 320-nearby, then 320-life-list, then
+/// 900-nearby, then 900-life-list, while on-demand loads jump the queue. The
+/// thumbnail is fetched from the server rather than downsampled locally, so the
+/// watch and the small photo contexts get their bytes with no decode/encode on
+/// the phone.
 ///
 /// `@unchecked Sendable` + nonisolated: callers hit it from view bodies,
-/// background prefetch tasks, and the full-screen viewer.
+/// background prefetch tasks, the watch bridge, and the full-screen viewer.
 nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
-    static let shared = RemoteSpeciesImageStore()
+    /// Built once, then wired to its download queue before the instance is
+    /// handed out (the queue calls back into `downloadAndStore`, so it can't be
+    /// constructed in the initializer's property phase).
+    static let shared: RemoteSpeciesImageStore = {
+        let store = RemoteSpeciesImageStore()
+        store.queue = ImageDownloadQueue { slug, name, size in
+            await store.downloadAndStore(slug: slug, name: name, size: size)
+        }
+        return store
+    }()
 
     private let memory = NSCache<NSString, UIImage>()
-    /// In-memory cache of downsampled thumbnails (see the thumbnail tier note).
-    /// Separate from `memory` so a thumbnail and its full image can both be
+    /// In-memory cache of the small thumbnails (see the thumbnail tier note).
+    /// Separate from `memory` so a thumbnail and its medium image can both be
     /// resident without evicting each other.
     private let thumbnailMemory = NSCache<NSString, UIImage>()
     /// In-memory-only cache of the **true full-resolution** photos (the largest
@@ -37,12 +49,9 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     private let dir: URL
     private let session: URLSession
 
-    /// Longest edge, in pixels, of a cached thumbnail. Deliberately small — every
-    /// small-photo context (list rows, map pins, cluster-grid cells) shows the
-    /// photo at a modest size, so a downsample decodes and holds for almost
-    /// nothing. The hero (Identify) and full-screen viewer use the full-resolution
-    /// tier instead, so they're unaffected by how small this is.
-    static let thumbnailMaxPixelSize: CGFloat = 300
+    /// Set once by `shared` before the instance escapes; an ordered,
+    /// concurrency-bounded, coalescing download pipeline.
+    private var queue: ImageDownloadQueue!
 
     /// Ceiling for cached "other" images — anything neither on the life list
     /// nor in the current nearby list — enforced only while the user's "Limit
@@ -54,11 +63,12 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// set's total cost exceeds this.
     static let fullResMemoryLimitBytes = 50 * 1024 * 1024
 
-    /// The Macaulay CDN size component requested for the full-resolution tier.
-    /// The stored metadata URLs use `/900`; `/2400` is the largest size the asset
-    /// endpoint serves (`large`/`original` 404). Swapped into the URL's trailing
-    /// numeric path component by `fullResolutionURL(from:)`.
-    private static let fullResSizeComponent = "2400"
+    /// The Macaulay CDN size component for the full-resolution tier. The stored
+    /// metadata URLs use `/900`; `/2400` is the largest the asset endpoint serves
+    /// (`large`/`original` 404). `/320` is the smallest valid size (`/300` 404s),
+    /// so it's the thumbnail size. Swapped into a URL's trailing numeric path
+    /// component by `url(from:sizePixels:)`.
+    private static let fullResSizePixels = 2400
 
     /// Guards `protectedSlugs` + `limitOtherImages`, which are read/written from
     /// the main actor (settings, launch) and background prefetch/eviction.
@@ -102,6 +112,15 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         dir.appendingPathComponent(slug + "_thumb.jpg")
     }
 
+    /// Local disk path for a cached size (thumbnail or medium). The full-res
+    /// tier is memory-only, so it has none.
+    private func fileURL(forSlug slug: String, size: ImageSize) -> URL {
+        switch size {
+        case .thumb: return thumbFileURL(forSlug: slug)
+        case .medium: return fileURL(forSlug: slug)
+        }
+    }
+
     // MARK: - Reads
 
     /// Synchronous in-memory lookup only (no disk, no network). Safe + instant
@@ -131,9 +150,10 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         return fullResImageMemory.object(forKey: slug as NSString)
     }
 
-    /// Returns the photo, loading from memory → disk → network as needed, and
-    /// promoting the result up the tiers. Returns nil when there's no metadata
-    /// URL for the species or the download fails. Call off the main actor.
+    /// Returns the medium photo, loading from memory → disk → network as needed,
+    /// and promoting the result up the tiers. Returns nil when there's no
+    /// metadata URL for the species or the download fails. On a network miss the
+    /// download jumps the prefetch queue. Call off the main actor.
     func image(for scientificName: String) async -> UIImage? {
         let slug = SpeciesImage.slug(for: scientificName)
         guard !slug.isEmpty else { return nil }
@@ -149,18 +169,11 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
             return prepared
         }
 
-        // Network.
-        guard let info = SpeciesPhotoMetadata.shared.info(for: scientificName),
-              let url = URL(string: info.url),
-              let data = await download(url),
+        // Network (coalesced + queue-jumping).
+        guard let data = await queue.fetch(slug: slug, name: scientificName, size: .medium),
               let img = UIImage(data: data) else {
             return nil
         }
-        try? data.write(to: fileURL(forSlug: slug), options: .atomic)
-        didCacheImage(slug: slug)
-        // Generate the thumbnail off the bytes we already have in hand, so a small
-        // context that loads this species next gets it from cache.
-        _ = makeAndCacheThumbnail(slug: slug, from: data)
         let prepared = img.preparingForDisplay() ?? img
         memory.setObject(prepared, forKey: key)
         return prepared
@@ -180,7 +193,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         if let cached = fullResImageMemory.object(forKey: key) { return cached }
 
         guard let info = SpeciesPhotoMetadata.shared.info(for: scientificName),
-              let url = Self.fullResolutionURL(from: info.url),
+              let url = Self.url(from: info.url, sizePixels: Self.fullResSizePixels),
               let data = await download(url),
               let img = UIImage(data: data) else {
             return nil
@@ -190,28 +203,12 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         return prepared
     }
 
-    /// Rewrites a Macaulay asset URL to request the full-resolution size by
-    /// swapping its trailing numeric path component (e.g. `…/asset/123/900`) for
-    /// `fullResSizeComponent`. Returns nil if the URL doesn't end in a numeric size
-    /// component (so we never fabricate a bad URL) or already requests it.
-    static func fullResolutionURL(from urlString: String) -> URL? {
-        guard let url = URL(string: urlString) else { return nil }
-        let last = url.lastPathComponent
-        // Only upgrade URLs whose final component is a bare size number, matching
-        // the shape of the stored metadata URLs.
-        guard !last.isEmpty, last.allSatisfy(\.isNumber) else { return nil }
-        if last == fullResSizeComponent { return url }
-        let upgraded = url.deletingLastPathComponent()
-            .appendingPathComponent(fullResSizeComponent)
-        return upgraded
-    }
-
-    /// Returns a small downsampled thumbnail of the species photo, loading from
-    /// memory → disk-thumbnail → (full-resolution bytes, downsampled) → network as
-    /// needed and promoting the result up the tiers. Far cheaper to decode and
-    /// hold than the full image — use it for lists, map pins, and cluster grids.
-    /// Returns nil when there's no metadata URL for the species or loading fails.
-    /// Call off the main actor.
+    /// Returns the small (320 px) thumbnail, loading from memory → disk → CDN
+    /// `/320` as needed and promoting up the tiers. Far cheaper to decode and hold
+    /// than the medium image — use it for lists, map pins, cluster grids, and the
+    /// hero's first paint. On a network miss the download jumps the prefetch
+    /// queue. Returns nil when there's no metadata URL or loading fails. Call off
+    /// the main actor.
     func thumbnailImage(for scientificName: String) async -> UIImage? {
         let slug = SpeciesImage.slug(for: scientificName)
         guard !slug.isEmpty else { return nil }
@@ -227,158 +224,115 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
             return prepared
         }
 
-        // No thumbnail yet: downsample from the full image's bytes (cached on disk
-        // if we have it, otherwise fetched from the network — which also persists
-        // the full image and seeds its own thumbnail).
-        guard let fullData = await fullImageData(slug: slug, scientificName: scientificName) else {
+        // Network (coalesced + queue-jumping).
+        guard let data = await queue.fetch(slug: slug, name: scientificName, size: .thumb),
+              let img = UIImage(data: data) else {
             return nil
         }
-        return makeAndCacheThumbnail(slug: slug, from: fullData)
+        let prepared = img.preparingForDisplay() ?? img
+        thumbnailMemory.setObject(prepared, forKey: key)
+        return prepared
     }
 
-    /// Full-resolution image bytes for a species — from the on-disk cache if
-    /// present, otherwise downloaded and persisted (so the viewer and a later
-    /// thumbnail request both benefit). Returns nil when unavailable.
-    private func fullImageData(slug: String, scientificName: String) async -> Data? {
-        if let data = try? Data(contentsOf: fileURL(forSlug: slug)) {
-            return data
-        }
-        guard let info = SpeciesPhotoMetadata.shared.info(for: scientificName),
-              let url = URL(string: info.url),
+    /// Raw JPEG bytes of the 320 px thumbnail — disk if present, otherwise
+    /// fetched from the CDN (jumping the prefetch queue). Handed straight to the
+    /// watch, which caches and decodes them itself, so the phone never decodes or
+    /// re-encodes. Call off the main actor.
+    func thumbnailData(for scientificName: String) async -> Data? {
+        let slug = SpeciesImage.slug(for: scientificName)
+        guard !slug.isEmpty else { return nil }
+        if let data = try? Data(contentsOf: thumbFileURL(forSlug: slug)) { return data }
+        return await queue.fetch(slug: slug, name: scientificName, size: .thumb)
+    }
+
+    /// Rewrites a Macaulay asset URL to request a specific size by swapping its
+    /// trailing numeric path component (e.g. `…/asset/123/900` → `…/900`). Returns
+    /// nil if the URL doesn't end in a bare size number, so we never fabricate a
+    /// bad URL.
+    static func url(from urlString: String, sizePixels: Int) -> URL? {
+        guard let url = URL(string: urlString) else { return nil }
+        let last = url.lastPathComponent
+        guard !last.isEmpty, last.allSatisfy(\.isNumber) else { return nil }
+        let target = String(sizePixels)
+        if last == target { return url }
+        return url.deletingLastPathComponent().appendingPathComponent(target)
+    }
+
+    /// Downloads (if not already on disk) and persists the bytes for one
+    /// prefetchable size, returning them. This is the single primitive the
+    /// download queue drives; it does no in-memory caching (bulk prefetch
+    /// shouldn't decode thousands of images), leaving that to the on-demand tier
+    /// methods. Medium downloads count toward the "other images" cap; thumbnails
+    /// don't. Safe to call concurrently.
+    private func downloadAndStore(slug: String, name: String, size: ImageSize) async -> Data? {
+        let dest = fileURL(forSlug: slug, size: size)
+        if let data = try? Data(contentsOf: dest) { return data }
+
+        guard let info = SpeciesPhotoMetadata.shared.info(for: name),
+              let url = Self.url(from: info.url, sizePixels: size.pixels),
               let data = await download(url),
               UIImage(data: data) != nil else {
             return nil
         }
-        try? data.write(to: fileURL(forSlug: slug), options: .atomic)
-        didCacheImage(slug: slug)
+        try? data.write(to: dest, options: .atomic)
+        if size == .medium { didCacheImage(slug: slug) }
         return data
     }
 
-    /// Downsamples the given image bytes to a thumbnail, writes it to disk, and
-    /// caches it in memory. Returns the decoded thumbnail (nil if downsampling
-    /// fails). Safe to call from any actor.
-    @discardableResult
-    private func makeAndCacheThumbnail(slug: String, from data: Data) -> UIImage? {
-        guard let thumb = Self.downsample(data, maxPixelSize: Self.thumbnailMaxPixelSize) else {
-            return nil
-        }
-        if let jpeg = thumb.jpegData(compressionQuality: 0.8) {
-            try? jpeg.write(to: thumbFileURL(forSlug: slug), options: .atomic)
-        }
-        thumbnailMemory.setObject(thumb, forKey: slug as NSString)
-        return thumb
-    }
-
-    /// Decode-downsamples JPEG/PNG bytes to a thumbnail whose longest edge is at
-    /// most `maxPixelSize`, using ImageIO so the full-size bitmap is never
-    /// allocated. `ShouldCacheImmediately` returns a ready-to-draw image.
-    private static func downsample(_ data: Data, maxPixelSize: CGFloat) -> UIImage? {
-        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
-        guard let source = CGImageSourceCreateWithData(data as CFData, sourceOptions) else {
-            return nil
-        }
-        let thumbOptions = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceShouldCacheImmediately: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-        ] as CFDictionary
-        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbOptions) else {
-            return nil
-        }
-        return UIImage(cgImage: cgImage)
-    }
-
-    /// Ensures the species photo is on disk (downloading if needed) and returns
-    /// its local file URL, or nil if unavailable. Used by the notification
-    /// attachment, which needs a real file to hand to the system. Call off the
-    /// main actor.
+    /// Ensures the medium species photo is on disk (downloading if needed) and
+    /// returns its local file URL, or nil if unavailable. Used by the
+    /// notification attachment, which needs a real file to hand to the system.
+    /// Call off the main actor.
     func localFileURL(for scientificName: String) async -> URL? {
         let slug = SpeciesImage.slug(for: scientificName)
         guard !slug.isEmpty else { return nil }
         let dest = fileURL(forSlug: slug)
         if FileManager.default.fileExists(atPath: dest.path) { return dest }
-        await ensureDownloaded(scientificName)
+        _ = await queue.fetch(slug: slug, name: scientificName, size: .medium)
         return FileManager.default.fileExists(atPath: dest.path) ? dest : nil
     }
 
     // MARK: - Prefetch
 
-    /// Downloads + persists every not-yet-cached species in the list, in the
-    /// background, with bounded concurrency. Idempotent — already-downloaded
-    /// photos are skipped, so this is cheap to call on every launch and
-    /// whenever the region list changes.
-    func prefetch(scientificNames: [String]) {
-        let targets = scientificNames.filter { name in
+    /// Warms the caches on a wake (app launch or session start). Enqueues four
+    /// tiers, drained strictly in order: every nearby species' 320 thumbnail
+    /// first, then the rest of the life list's 320 thumbnails, then nearby 900
+    /// medium, then the rest of the life list's 900 medium. 2400 is never
+    /// prefetched. Already-on-disk sizes and duplicates are filtered out, so this
+    /// is cheap to call on every launch and whenever the region list changes.
+    ///
+    /// `nearby` may already include life-list species (that's expected — nearby
+    /// lifers get their thumbnails first); `lifeList` is fetched for the species
+    /// *not* already covered by `nearby` so nothing is queued twice.
+    func prefetchWake(lifeList: [String], nearby: [String]) {
+        let nearbySlugs = Set(nearby.map { SpeciesImage.slug(for: $0) })
+        let lifeListOnly = lifeList.filter { !nearbySlugs.contains(SpeciesImage.slug(for: $0)) }
+
+        Task { [queue] in
+            guard let queue else { return }
+            await queue.resetPrefetch()
+            await queue.enqueue(requests(nearby, .thumb), tier: .nearbyThumb)
+            await queue.enqueue(requests(lifeListOnly, .thumb), tier: .lifeListThumb)
+            await queue.enqueue(requests(nearby, .medium), tier: .nearbyMedium)
+            await queue.enqueue(requests(lifeListOnly, .medium), tier: .lifeListMedium)
+        }
+    }
+
+    /// Builds the download requests for a group at one size: de-duplicated by
+    /// slug, only species that have photo metadata, and only those not already on
+    /// disk at that size.
+    private func requests(_ scientificNames: [String], _ size: ImageSize) -> [ImageDownloadQueue.Request] {
+        let fm = FileManager.default
+        var seen = Set<String>()
+        var out: [ImageDownloadQueue.Request] = []
+        for name in scientificNames {
             let slug = SpeciesImage.slug(for: name)
-            return !slug.isEmpty
-                && !FileManager.default.fileExists(atPath: fileURL(forSlug: slug).path)
-                && SpeciesPhotoMetadata.shared.info(for: name) != nil
+            guard !slug.isEmpty, seen.insert(slug).inserted,
+                  SpeciesPhotoMetadata.shared.info(for: name) != nil,
+                  !fm.fileExists(atPath: fileURL(forSlug: slug, size: size).path) else { continue }
+            out.append(ImageDownloadQueue.Request(slug: slug, name: name, size: size))
         }
-        guard !targets.isEmpty else { return }
-
-        Task.detached(priority: .utility) { [weak self] in
-            guard let self else { return }
-            let maxConcurrent = 6
-            var iterator = targets.makeIterator()
-            await withTaskGroup(of: Void.self) { group in
-                func addNext() {
-                    guard let name = iterator.next() else { return }
-                    group.addTask { await self.ensureDownloaded(name) }
-                }
-                for _ in 0..<maxConcurrent { addNext() }
-                while await group.next() != nil { addNext() }
-            }
-        }
-    }
-
-    /// Downloads a single species' photo to disk if missing. Skips the memory
-    /// cache + display prep — prefetch only needs the bytes on disk, decoding
-    /// thousands of images up front would waste memory.
-    private func ensureDownloaded(_ scientificName: String) async {
-        let slug = SpeciesImage.slug(for: scientificName)
-        guard !slug.isEmpty else { return }
-        let dest = fileURL(forSlug: slug)
-        if FileManager.default.fileExists(atPath: dest.path) { return }
-        guard let info = SpeciesPhotoMetadata.shared.info(for: scientificName),
-              let url = URL(string: info.url),
-              let data = await download(url),
-              UIImage(data: data) != nil else {
-            return
-        }
-        try? data.write(to: dest, options: .atomic)
-        didCacheImage(slug: slug)
-        // Seed the thumbnail while we have the bytes, so the first time this
-        // species scrolls into a list/map it's served straight from cache.
-        makeAndCacheThumbnail(slug: slug, from: data)
-    }
-
-    /// Scans the on-disk cache and generates a thumbnail for every full image
-    /// that doesn't already have one. Run once at launch so the first scroll
-    /// through a large multi-bird card doesn't pay the per-thumbnail downsample
-    /// cost (which is what made that first scroll sluggish). Writes straight to
-    /// disk without touching the memory cache, so seeding thousands of thumbnails
-    /// up front doesn't balloon memory — they decode cheaply from disk on demand.
-    func generateMissingThumbnails() {
-        Task.detached(priority: .utility) { [weak self] in
-            guard let self else { return }
-            let fm = FileManager.default
-            guard let urls = try? fm.contentsOfDirectory(
-                at: dir,
-                includingPropertiesForKeys: nil,
-                options: [.skipsHiddenFiles]
-            ) else { return }
-            for url in urls where url.pathExtension == "jpg" {
-                let filename = url.deletingPathExtension().lastPathComponent
-                if filename.hasSuffix("_thumb") { continue }
-                let thumbURL = thumbFileURL(forSlug: filename)
-                if fm.fileExists(atPath: thumbURL.path) { continue }
-                guard let data = try? Data(contentsOf: url),
-                      let thumb = Self.downsample(data, maxPixelSize: Self.thumbnailMaxPixelSize),
-                      let jpeg = thumb.jpegData(compressionQuality: 0.8) else { continue }
-                try? jpeg.write(to: thumbURL, options: .atomic)
-            }
-        }
+        return out
     }
 
     private func download(_ url: URL) async -> Data? {
@@ -405,6 +359,35 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         guard let allowed = SpeciesRangeFilter.cachedAllowedIndices() else { return [] }
         let all = SpeciesCatalog.shared.all
         return allowed.compactMap { all.indices.contains($0) ? all[$0].scientificName : nil }
+    }
+
+    // MARK: - Cache stats (debug)
+
+    /// Per-resolution count of how many of a group of species have an image
+    /// cached: `thumb`/`medium` from disk, `full` from the in-memory viewer tier.
+    /// `total` is how many of the group have photo metadata at all (the reachable
+    /// maximum). Used by the More tab's debug readout.
+    struct ResolutionCounts: Sendable {
+        var thumb = 0
+        var medium = 0
+        var full = 0
+        var total = 0
+    }
+
+    func cacheCounts(for scientificNames: [String]) -> ResolutionCounts {
+        let fm = FileManager.default
+        var seen = Set<String>()
+        var counts = ResolutionCounts()
+        for name in scientificNames {
+            let slug = SpeciesImage.slug(for: name)
+            guard !slug.isEmpty, seen.insert(slug).inserted,
+                  SpeciesPhotoMetadata.shared.info(for: name) != nil else { continue }
+            counts.total += 1
+            if fm.fileExists(atPath: thumbFileURL(forSlug: slug).path) { counts.thumb += 1 }
+            if fm.fileExists(atPath: fileURL(forSlug: slug).path) { counts.medium += 1 }
+            if fullResImageMemory.object(forKey: slug as NSString) != nil { counts.full += 1 }
+        }
+        return counts
     }
 
     // MARK: - "Other" image cap
@@ -468,7 +451,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
             let filename = url.deletingPathExtension().lastPathComponent
             // Thumbnails (`{slug}_thumb.jpg`) are never evicted — they're tiny, and
             // keeping every one on disk means a large multi-bird card never has to
-            // regenerate them while scrolling. Skip them entirely (neither counted
+            // re-download them while scrolling. Skip them entirely (neither counted
             // toward the cap nor eligible for removal).
             if filename.hasSuffix("_thumb") { continue }
             let slug = filename
@@ -481,7 +464,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         }
         guard total > Self.otherImagesLimitBytes else { return }
 
-        // Oldest first, evicting until back under the cap. Only the full image is
+        // Oldest first, evicting until back under the cap. Only the medium image is
         // removed; its thumbnail (disk + memory) is intentionally left resident.
         others.sort { $0.date < $1.date }
         for entry in others {
@@ -494,7 +477,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
 
     /// Debug helper (About screen, DEBUG builds): wipes every cached species
     /// image across all tiers — the in-memory medium, thumbnail, and
-    /// full-resolution caches, plus every on-disk JPEG (full images and
+    /// full-resolution caches, plus every on-disk JPEG (medium images and
     /// thumbnails). Protected-slug bookkeeping is left intact; images simply
     /// re-download on next access.
     func clearAllCaches() {

@@ -41,18 +41,16 @@ struct KestrelApp: App {
         manager.lifeListStore = store
 
         // Warm species photos at launch: download + persist the life-list and
-        // cached region species so they're available offline. These are also
-        // the "protected" set the image-cache cap never evicts — set it before
-        // prefetching so newly-downloaded protected images aren't pruned.
+        // cached region species so they're available offline, thumbnails first
+        // (see `prefetchWake`). These are also the "protected" set the
+        // image-cache cap never evicts — set it before prefetching so
+        // newly-downloaded protected images aren't pruned.
         let lifeListNames = store.entries.map(\.scientificName)
-        let targets = RemoteSpeciesImageStore.launchTargets(lifeList: lifeListNames)
-        RemoteSpeciesImageStore.shared.setProtectedSpecies(targets)
-        RemoteSpeciesImageStore.shared.prefetch(scientificNames: targets)
-
-        // Backfill thumbnails for every already-downloaded species image that
-        // lacks one, so opening a large multi-bird card for the first time
-        // doesn't stutter generating them on the fly while scrolling.
-        RemoteSpeciesImageStore.shared.generateMissingThumbnails()
+        let nearbyNames = RemoteSpeciesImageStore.nearbyNames()
+        RemoteSpeciesImageStore.shared.setProtectedSpecies(
+            RemoteSpeciesImageStore.launchTargets(lifeList: lifeListNames)
+        )
+        RemoteSpeciesImageStore.shared.prefetchWake(lifeList: lifeListNames, nearby: nearbyNames)
 
         // Cap cached "other" images (anything not on the life list or in the
         // current nearby list) at 50 MB so the on-disk cache can't grow without

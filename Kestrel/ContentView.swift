@@ -463,8 +463,10 @@ private struct SpeciesHeroImage: View {
 
     var body: some View {
         // No attribution caption inline — it's shown in the full-screen viewer
-        // instead (tap the image). Keeps the Identify rows uncluttered.
-        SpeciesPhoto(scientificName: scientificName, showsCredit: false) {
+        // instead (tap the image). Keeps the Identify rows uncluttered. Loads the
+        // 320px thumbnail first, then upgrades to the 900px medium, so the hero
+        // for a just-heard bird appears immediately.
+        SpeciesPhoto(scientificName: scientificName, showsCredit: false, progressive: true) {
             Image(systemName: "bird")
                 .font(.system(size: 36))
                 .foregroundStyle(.secondary)
