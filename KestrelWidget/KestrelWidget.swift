@@ -30,8 +30,14 @@ struct StartRecordingWidgetView: View {
         ZStack {
             AccessoryWidgetBackground()
             Button(intent: StartRecordingIntent()) {
-                Image(systemName: "bird")
-                    .font(.system(size: 22, weight: .semibold))
+                // Monochrome kestrel-head glyph; lock-screen widgets render
+                // vibrant, so the template silhouette tints to the face color.
+                Image("KestrelMono")
+                    .renderingMode(.template)
+                    .resizable()
+                    .scaledToFit()
+                    // Matches the watch complication: near-fills the ~44pt disc.
+                    .frame(width: 40, height: 40)
             }
             .buttonStyle(.plain)
         }
@@ -54,9 +60,28 @@ struct StartRecordingWidget: Widget {
     }
 }
 
+/// Control Center button (iOS 18+): starts a recording via the same
+/// `StartRecordingIntent` as the lock-screen widget. Control Center doesn't
+/// reliably render custom template images, so it uses the `bird` SF Symbol.
+@available(iOS 18.0, *)
+struct StartRecordingControl: ControlWidget {
+    var body: some ControlWidgetConfiguration {
+        StaticControlConfiguration(kind: "com.cruzgodar.Kestrel.StartRecordingControl") {
+            ControlWidgetButton(action: StartRecordingIntent()) {
+                Label("Record", systemImage: "bird")
+            }
+        }
+        .displayName("Start Recording")
+        .description("Start listening for birds.")
+    }
+}
+
 @main
 struct KestrelWidgetBundle: WidgetBundle {
     var body: some Widget {
         StartRecordingWidget()
+        if #available(iOS 18.0, *) {
+            StartRecordingControl()
+        }
     }
 }
