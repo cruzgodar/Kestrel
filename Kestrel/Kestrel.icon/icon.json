@@ -1,9 +1,6 @@
 {
   "fill" : {
-    "linear-gradient" : [
-      "display-p3:0.60096,0.50649,1.05483,1.00000",
-      "srgb:0.48000,0.35000,1.00000,1.00000"
-    ],
+    "automatic-gradient" : "srgb:1.00000,1.00000,1.00000,1.00000",
     "orientation" : {
       "start" : {
         "x" : 0.5,
@@ -19,21 +16,76 @@
     {
       "layers" : [
         {
-          "fill" : {
-            "solid" : "srgb:1.00000,1.00000,1.00000,1.00000"
-          },
-          "image-name" : "bird.png",
-          "name" : "bird",
-          "opacity" : 1,
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "extended-gray:0.00000,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "gray:0.35459,1.00000"
+              }
+            },
+            {
+              "appearance" : "tinted",
+              "value" : {
+                "solid" : "extended-gray:0.75000,1.00000"
+              }
+            }
+          ],
+          "glass" : false,
+          "image-name" : "3 3.png",
+          "name" : "3 3",
+          "opacity" : 0.9,
           "position" : {
-            "scale" : 0.5,
+            "scale" : 0.6,
             "translation-in-points" : [
-              29.03038767152111,
-              0
+              31.327806441249322,
+              23.5429628924428
+            ]
+          }
+        },
+        {
+          "fill" : {
+            "solid" : "srgb:0.39775,0.24719,1.00000,1.00000"
+          },
+          "glass" : false,
+          "image-name" : "2 6.png",
+          "name" : "2 6",
+          "opacity" : 0.75,
+          "position" : {
+            "scale" : 0.6,
+            "translation-in-points" : [
+              31.327806441249322,
+              23.5429628924428
+            ]
+          }
+        },
+        {
+          "fill" : {
+            "automatic-gradient" : "extended-gray:1.00000,1.00000"
+          },
+          "hidden" : true,
+          "image-name" : "1 4.png",
+          "name" : "1 4",
+          "position" : {
+            "scale" : 0.6,
+            "translation-in-points" : [
+              -10.081460606037012,
+              -9.167037107557178
             ]
           }
         }
       ],
+      "position" : {
+        "scale" : 1,
+        "translation-in-points" : [
+          -2.8827965011581114,
+          0.15932724681897525
+        ]
+      },
       "shadow" : {
         "kind" : "neutral",
         "opacity" : 0.5
