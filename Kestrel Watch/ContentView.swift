@@ -495,26 +495,39 @@ struct ContentView: View {
         .transition(.opacity)
     }
 
-    @ViewBuilder
+    /// The full single-line height of the `.headline` font. The name label is
+    /// pinned to this height so that, as a long name (or the "Listening…"
+    /// caption) scales down via `minimumScaleFactor`, the text stays vertically
+    /// centered within the same fixed box — its midline holds steady between the
+    /// photo below and the controls above rather than drifting with the scale.
+    private static var nameLineHeight: CGFloat {
+        UIFont.preferredFont(forTextStyle: .headline).lineHeight
+    }
+
     private var nameLabel: some View {
-        if let bird = session.lastBird {
-            Text(bird.commonName)
-                .font(.headline)
-                .multilineTextAlignment(.center)
-                // Keep the name on one line and shrink it to fit rather than
-                // wrapping — a long name scales down instead of stealing a
-                // second line from the photo below.
-                .lineLimit(1)
-                .minimumScaleFactor(0.5)
-                .foregroundStyle(.white)
-        } else {
-            // While the phone is the audio source the watch is only mirroring its
-            // now-hearing screen, so make the placeholder say so rather than implying
-            // the watch itself is listening.
-            Text(session.mirroringPhone ? "Listening on iPhone…" : "Listening…")
-                .font(.headline)
-                .foregroundStyle(.white.opacity(0.85))
+        Group {
+            if let bird = session.lastBird {
+                Text(bird.commonName)
+                    .foregroundStyle(.white)
+            } else {
+                // While the phone is the audio source the watch is only mirroring
+                // its now-hearing screen, so make the placeholder say so rather
+                // than implying the watch itself is listening.
+                Text(session.mirroringPhone ? "Listening on iPhone…" : "Listening…")
+                    .foregroundStyle(.white.opacity(0.85))
+            }
         }
+        .font(.headline)
+        .multilineTextAlignment(.center)
+        // Keep every caption on one line and shrink it to fit rather than
+        // wrapping — a long species name (or "Listening on iPhone…") scales down
+        // instead of stealing a second line from the photo below. No text on the
+        // watch should ever wrap.
+        .lineLimit(1)
+        .minimumScaleFactor(0.3)
+        // Fix the box to the full-scale line height and center within it, so the
+        // shrunk text keeps its midline instead of shifting the layout.
+        .frame(height: Self.nameLineHeight)
     }
 
 }

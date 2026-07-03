@@ -49,7 +49,7 @@ enum WatchMetrics {
         case CGSize(width: 187, height: 223): radius = 45   // 42mm  (Series 10/11)
         case CGSize(width: 208, height: 248): radius = 49   // 46mm  (Series 10/11)
         case CGSize(width: 205, height: 251): radius = 54   // 49mm  (Ultra 1/2)
-        case CGSize(width: 211, height: 257): radius = 54   // 49mm  (Ultra 3)
+        case CGSize(width: 211, height: 257): radius = 56   // 49mm  (Ultra 3)
         default: radius = 0.245 * size.width                // proportional estimate
         }
 
@@ -61,13 +61,13 @@ enum WatchMetrics {
         let nameImageGap: CGFloat
         switch size {
         case CGSize(width: 162, height: 197): imageMargin = 6; nameImageGap = 7    // 40mm  (SE 2/3, Series 6)
-        case CGSize(width: 184, height: 224): imageMargin = 8; nameImageGap = 11   // 44mm  (SE 2/3, Series 6)
-        case CGSize(width: 176, height: 215): imageMargin = 8; nameImageGap = 9    // 41mm  (Series 7/8/9)
-        case CGSize(width: 198, height: 242): imageMargin = 10; nameImageGap = 14  // 45mm  (Series 7/8/9)
-        case CGSize(width: 187, height: 223): imageMargin = 8; nameImageGap = 8    // 42mm  (Series 10/11)
-        case CGSize(width: 208, height: 248): imageMargin = 10; nameImageGap = 13  // 46mm  (Series 10/11)
-        case CGSize(width: 205, height: 251): imageMargin = 10; nameImageGap = 14  // 49mm  (Ultra 1/2)
-        case CGSize(width: 211, height: 257): imageMargin = 10; nameImageGap = 14  // 49mm  (Ultra 3)
+        case CGSize(width: 184, height: 224): imageMargin = 8; nameImageGap = 10   // 44mm  (SE 2/3, Series 6)
+        case CGSize(width: 176, height: 215): imageMargin = 8; nameImageGap = 8    // 41mm  (Series 7/8/9)
+        case CGSize(width: 198, height: 242): imageMargin = 10; nameImageGap = 12  // 45mm  (Series 7/8/9)
+        case CGSize(width: 187, height: 223): imageMargin = 8; nameImageGap = 7    // 42mm  (Series 10/11)
+        case CGSize(width: 208, height: 248): imageMargin = 10; nameImageGap = 10  // 46mm  (Series 10/11)
+        case CGSize(width: 205, height: 251): imageMargin = 10; nameImageGap = 12  // 49mm  (Ultra 1/2)
+        case CGSize(width: 211, height: 257): imageMargin = 10; nameImageGap = 13  // 49mm  (Ultra 3)
         default:
             imageMargin = defaultImageMargin
             nameImageGap = defaultNameImageGap
