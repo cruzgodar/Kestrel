@@ -95,6 +95,10 @@ struct ContentView: View {
                         .opacity(manager.isWatchAppInstalled ? 1 : 0)
                     }
                     .animation(.easeInOut(duration: 0.3), value: manager.isWatchAppInstalled)
+                    // Widen the description out of ContentUnavailableView's
+                    // narrower default reading column so its text sits at the
+                    // same 16pt screen margin as the life-list rows.
+                    .containerRelativeFrame(.horizontal) { width, _ in width - 32 }
                 }
                 .opacity(manager.isRecording ? 0 : 1)
                 .animation(.easeInOut(duration: 0.25), value: manager.isRecording)
@@ -220,7 +224,7 @@ struct ContentView: View {
                     : (manager.recordingBlocked ? "lock.fill" : "mic.fill"))
                     .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
                 if !manager.isRecording {
-                    Text("Start Recording")
+                    Text("Start Birding")
                         .padding(.leading, 8)
                         .fixedSize()
                         .transition(.opacity.combined(with: .scale(scale: 0.92)))
@@ -322,8 +326,8 @@ struct ContentView: View {
     /// backgrounds those two kinds of detection get.
     private static func placeholderSegments(watchInstalled: Bool) -> [HighlightedText.Segment] {
         let lead = watchInstalled
-            ? "Start recording here or on Apple Watch to listen for birds in the background. You will be notified about "
-            : "Start recording to listen for birds in the background. You will be notified about "
+            ? "Start a birding session here or on Apple Watch to listen for birds in the background. You will be notified about "
+            : "Start a birding session to listen for birds in the background. You will be notified about "
         return [
             .init(lead),
             .init("starred birds", highlight: HighlightedText.starHighlight),

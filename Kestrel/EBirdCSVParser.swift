@@ -160,7 +160,17 @@ nonisolated enum EBirdCSVParser {
         var field = ""
         var inQuotes = false
 
-        var iter = text.makeIterator()
+        // Normalize line endings up front. Swift iterates `String` by grapheme
+        // cluster, and CRLF ("\r\n") is a *single* Character that equals neither
+        // "\n" nor "\r" — so a Windows/Numbers-saved export (CRLF) would otherwise
+        // fall through to `default`, embed the break as field content, and collapse
+        // the entire file into one row. eBird's own export uses bare "\n". Fold
+        // CRLF and lone CR down to "\n" so the scan below sees real row breaks.
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+
+        var iter = normalized.makeIterator()
         while let c = iter.next() {
             if inQuotes {
                 if c == "\"" {

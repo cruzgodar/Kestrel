@@ -64,7 +64,7 @@ enum WatchMetrics {
         case CGSize(width: 184, height: 224): imageMargin = 8; nameImageGap = 11   // 44mm  (SE 2/3, Series 6)
         case CGSize(width: 176, height: 215): imageMargin = 8; nameImageGap = 9    // 41mm  (Series 7/8/9)
         case CGSize(width: 198, height: 242): imageMargin = 10; nameImageGap = 14  // 45mm  (Series 7/8/9)
-        case CGSize(width: 187, height: 223): imageMargin = 8; nameImageGap = 9    // 42mm  (Series 10/11)
+        case CGSize(width: 187, height: 223): imageMargin = 8; nameImageGap = 8    // 42mm  (Series 10/11)
         case CGSize(width: 208, height: 248): imageMargin = 10; nameImageGap = 13  // 46mm  (Series 10/11)
         case CGSize(width: 205, height: 251): imageMargin = 10; nameImageGap = 14  // 49mm  (Ultra 1/2)
         case CGSize(width: 211, height: 257): imageMargin = 10; nameImageGap = 14  // 49mm  (Ultra 3)

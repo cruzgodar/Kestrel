@@ -16,67 +16,9 @@
     {
       "layers" : [
         {
-          "fill-specializations" : [
-            {
-              "value" : {
-                "solid" : "extended-gray:0.00000,1.00000"
-              }
-            },
-            {
-              "appearance" : "dark",
-              "value" : {
-                "solid" : "gray:0.35459,1.00000"
-              }
-            },
-            {
-              "appearance" : "tinted",
-              "value" : {
-                "solid" : "extended-gray:0.75000,1.00000"
-              }
-            }
-          ],
           "glass" : false,
-          "image-name" : "3 3.png",
-          "name" : "3 3",
-          "opacity" : 0.9,
-          "position" : {
-            "scale" : 0.6,
-            "translation-in-points" : [
-              31.327806441249322,
-              23.5429628924428
-            ]
-          }
-        },
-        {
-          "fill" : {
-            "solid" : "srgb:0.39775,0.24719,1.00000,1.00000"
-          },
-          "glass" : false,
-          "image-name" : "2 6.png",
-          "name" : "2 6",
-          "opacity" : 0.75,
-          "position" : {
-            "scale" : 0.6,
-            "translation-in-points" : [
-              31.327806441249322,
-              23.5429628924428
-            ]
-          }
-        },
-        {
-          "fill" : {
-            "automatic-gradient" : "extended-gray:1.00000,1.00000"
-          },
-          "hidden" : true,
-          "image-name" : "1 4.png",
-          "name" : "1 4",
-          "position" : {
-            "scale" : 0.6,
-            "translation-in-points" : [
-              -10.081460606037012,
-              -9.167037107557178
-            ]
-          }
+          "image-name" : "KestrelBase 2.png",
+          "name" : "KestrelBase 2"
         }
       ],
       "position" : {

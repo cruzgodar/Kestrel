@@ -158,16 +158,14 @@ struct MapView: View {
     /// the dismiss gesture for why.
     @State private var annotationTapConsumed = false
 
-    /// The two kinds of bottom card the map can show. Routed through a single
-    /// sheet (see `mapCard`) so re-targeting it never tears the sheet down.
+    /// The bottom card the map can show — a multi-bird cluster. Routed through a
+    /// single sheet (see `mapCard`) so re-targeting it never tears the sheet down.
     enum MapCard: Identifiable {
         case cluster(BirdCluster)
-        case settings
 
         var id: String {
             switch self {
             case .cluster(let cluster): return "cluster-" + cluster.id
-            case .settings:             return "settings"
             }
         }
     }
@@ -360,34 +358,28 @@ struct MapView: View {
             }
             .ignoresSafeArea(edges: .bottom)
 
-            // Liquid-glass controls pinned to the top-right, laid out side by
-            // side to mirror the Life List tab's two trailing buttons: a
-            // recenter button on the left and the map-settings button on the
-            // right (replacing the stock MapUserLocationButton).
-            HStack(spacing: 12) {
-                GlassMapButton(
-                    systemImage: centeredOnUser ? "location.fill" : "location",
-                    accessibility: "Center on current location"
-                ) {
-                    Task {
-                        guard let coord = await LocationCache.shared.current() else { return }
-                        // Fill the icon on recenter; skip clearing it for the
-                        // duration of the recenter animation (the grace window).
-                        withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = true }
-                        recenterGraceUntil = Date.now + 0.7
-                        withAnimation(.easeInOut(duration: 0.45)) {
-                            position = .region(MKCoordinateRegion(
-                                center: CLLocationCoordinate2D(
-                                    latitude: coord.latitude,
-                                    longitude: coord.longitude
-                                ),
-                                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-                            ))
-                        }
+            // Liquid-glass recenter control pinned to the top-right, in the same
+            // trailing slot the map-settings button used to share (settings now
+            // live in the More tab). Replaces the stock MapUserLocationButton.
+            GlassMapButton(
+                systemImage: centeredOnUser ? "location.fill" : "location",
+                accessibility: "Center on current location"
+            ) {
+                Task {
+                    guard let coord = await LocationCache.shared.current() else { return }
+                    // Fill the icon on recenter; skip clearing it for the
+                    // duration of the recenter animation (the grace window).
+                    withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = true }
+                    recenterGraceUntil = Date.now + 0.7
+                    withAnimation(.easeInOut(duration: 0.45)) {
+                        position = .region(MKCoordinateRegion(
+                            center: CLLocationCoordinate2D(
+                                latitude: coord.latitude,
+                                longitude: coord.longitude
+                            ),
+                            span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                        ))
                     }
-                }
-                GlassMapButton(systemImage: "gearshape", accessibility: "Map settings") {
-                    mapCard = .settings
                 }
             }
             .padding(.top, 8)
@@ -970,12 +962,11 @@ private struct MapCardSheet: View {
     /// here because `onDismiss` can't read the (already-cleared) `photo` item.
     @State private var closeCardOnPhotoDismiss = false
     /// Current detent. A multi-bird cluster can be pulled up to `.large` to see
-    /// every bird; the settings card is medium-only. Reset to `.medium` whenever
-    /// the card swaps so settings never inherits a stranded `.large`.
+    /// every bird.
     @State private var detent: PresentationDetent = .medium
 
-    /// The detents allowed for the current card: clusters get medium + large,
-    /// the settings card stays at medium (matching the import card).
+    /// The detents allowed for the current card: clusters get medium + large;
+    /// no card (nil) falls back to medium.
     private var detents: Set<PresentationDetent> {
         switch card {
         case .cluster: return [.medium, .large]
@@ -1042,10 +1033,6 @@ private struct MapCardSheet: View {
                 clusterGrid(cluster)
                     .id("cluster-" + cluster.id)
                     .transition(.opacity)
-            case .settings:
-                MapSettingsContent()
-                    .id("settings")
-                    .transition(.opacity)
             case .none:
                 Color.clear
             }
@@ -1063,15 +1050,10 @@ private struct MapCardSheet: View {
         // cluster→settings, …). The sheet host is unaffected; only the contents
         // animate, so the swap reads as a smooth dissolve rather than a snap.
         .animation(.easeInOut(duration: 0.14), value: card?.id)
-        // A cluster can expand to .large; settings stays medium. Snap back to
-        // medium on a swap so the settings card never opens stranded at large.
-        .onChange(of: card?.id) { _, _ in
-            if case .settings = card { detent = .medium }
-        }
         .presentationDetents(detents, selection: $detent)
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card — this is what
-        // lets you open other things from either card and tap the map to dismiss.
+        // lets you open other things from the card and tap the map to dismiss.
         .presentationBackgroundInteraction(.enabled(upThrough: .medium))
         // Remember (before the item clears) whether to close the card on exit.
         .onChange(of: photo) { _, newValue in
@@ -1362,47 +1344,6 @@ private struct GlassMapButton: View {
 }
 
 // MARK: - Map options card
-
-/// The card opened from the map's settings button. Mirrors the import card's
-/// look and holds the single "Show Repeat Observations on Map" toggle that
-/// formerly lived in the Settings tab.
-private struct MapSettingsContent: View {
-    @Bindable private var settings = AppSettings.shared
-
-    var body: some View {
-        // Scrollable so the full set of options is reachable even at the medium
-        // detent on smaller screens.
-        ScrollView {
-        VStack(spacing: 24) {
-            VStack(spacing: 16) {
-                Image(systemName: "mappin.and.ellipse")
-                    .font(.system(size: 44, weight: .regular))
-                    .foregroundStyle(Color.accentColor)
-                Text("Map Options")
-                    .font(.title2.weight(.bold))
-                    .multilineTextAlignment(.center)
-            }
-            .padding(.horizontal, 28)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Toggle(
-                    "Show Repeat Observations",
-                    isOn: $settings.showRepeatObservationsOnMap
-                )
-                .font(.body.weight(.semibold))
-                Text("Show every recorded observation of a species on the map, rather than only the earliest.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 28)
-
-            Spacer(minLength: 0)
-        }
-        .padding(.top, 12)
-        .padding(.bottom, 24)
-        }
-    }
-}
 
 #Preview {
     MapView()

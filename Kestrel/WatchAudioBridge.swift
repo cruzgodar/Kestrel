@@ -130,9 +130,17 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
     }
 
     /// Produces (or reuses) the downscaled species image and ships it to the
-    /// watch. `transferUserInfo` is the right channel: it's reliable and
-    /// background-tolerant, and the payloads are only a few KB. The watch
-    /// caches what it receives, so each species is normally sent only once.
+    /// watch. Payloads are only a few KB, and the watch caches what it receives,
+    /// so each species is normally sent only once.
+    ///
+    /// Prefers a live `sendMessage` when the watch is reachable, falling back to
+    /// the background-tolerant `transferUserInfo` otherwise (or if the live send
+    /// errors). This ordering matters in the watchOS **simulator**, where the
+    /// background `transferUserInfo` queue is silently dropped and never
+    /// delivered — the live message is the only channel that works there. On a
+    /// real, possibly-backgrounded watch, `transferUserInfo` remains the
+    /// reliable path. The watch handles the image identically from either
+    /// channel (see `WatchSessionManager.route`).
     private func sendWatchImage(for scientificName: String) {
         Task.detached(priority: .utility) {
             guard let data = await WatchImageProvider.shared.jpegData(for: scientificName) else {
@@ -140,7 +148,14 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
             }
             let session = WCSession.default
             guard session.activationState == .activated else { return }
-            session.transferUserInfo(["imageFor": scientificName, "image": data])
+            let payload: [String: Any] = ["imageFor": scientificName, "image": data]
+            if session.isReachable {
+                session.sendMessage(payload, replyHandler: nil, errorHandler: { _ in
+                    WCSession.default.transferUserInfo(payload)
+                })
+            } else {
+                session.transferUserInfo(payload)
+            }
         }
     }
 

@@ -193,13 +193,14 @@ final class RecordingManager {
     /// a modal alert on the phone (the device that noticed). Observable.
     var watchConnectionAlert: String?
 
-    /// Watchdog that auto-stops the recording once the session goes 30 min
-    /// without any detection. Reset each time `merge(_:)` sees at least one
+    /// Watchdog that auto-stops the recording once the session goes long enough
+    /// without any detection. The threshold is the user's "Timeout After No
+    /// Birds" setting (`AppSettings.noBirdTimeout`, 30 min by default; `.never`
+    /// disables the auto-stop). Reset each time `merge(_:)` sees at least one
     /// result; armed in `startLocally`/`startFromWatch`; cancelled in `stop`/
     /// `stopFromWatch`.
     private var idleTerminationTask: Task<Void, Never>?
     private var lastDetectionAt: Date?
-    private let idleTerminationThreshold: TimeInterval = 30 * 60
 
     init() {
         registerInterruptionObserver()
@@ -688,13 +689,17 @@ final class RecordingManager {
     /// loop should exit.
     private func checkIdleAndMaybeStop() -> Bool {
         guard isRecording, let last = lastDetectionAt else { return true }
+        // Read the timeout live so a mid-session change takes effect. `.never`
+        // yields a nil threshold — keep listening and let the poll loop continue.
+        let timeout = AppSettings.shared.noBirdTimeout
+        guard let threshold = timeout.seconds else { return false }
         let gap = Date().timeIntervalSince(last)
-        guard gap >= idleTerminationThreshold else { return false }
+        guard gap >= threshold else { return false }
 
         Task {
             await SpeciesNotifications.shared.notifySessionLifecycle(
                 title: "Kestrel",
-                body: "No birds heard for 30 minutes — recording stopped."
+                body: "No birds heard for \(timeout.rawValue) minutes — recording stopped."
             )
         }
         if watchRecording {

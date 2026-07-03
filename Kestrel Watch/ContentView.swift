@@ -71,9 +71,10 @@ struct ContentView: View {
 
         ZStack {
             // Standing background for the current bird's kind (black / blue /
-            // purple), with a brighter flash of the same hue pulsed over it on
-            // each detection and fading back to the standing color — mirroring
-            // the phone Identify tab's per-detection row flash (see `flash()`).
+            // purple), with a deeper flash of the same hue pulsed over it when a
+            // starred or new bird is heard, then fading back to the dim standing
+            // color — mirroring the phone Identify tab's per-detection row flash
+            // (see `flash()`). A normal bird updates the screen without a flash.
             backgroundColor.ignoresSafeArea()
             flashColor
                 .ignoresSafeArea()
@@ -253,13 +254,14 @@ struct ContentView: View {
     private static let idleBackground: Color = .black
 
     /// The color flashed over the standing background when a bird is heard — a
-    /// brighter beat of the same hue (yellow over black for a normal bird),
-    /// mirroring the phone Identify tab's per-detection row flash.
+    /// deeper beat of the same purple/blue hue that fades back to the dimmer
+    /// standing tint, mirroring the phone Identify tab's per-detection row flash.
+    /// A normal bird never flashes (see `flash()`), so it has no flash color.
     private var flashColor: Color {
         switch session.lastBird?.highlight {
         case .newSpecies:    return Self.newSpeciesFlash
         case .starred:       return Self.starredFlash
-        case .normal, .none: return Self.normalFlash
+        case .normal, .none: return .clear
         }
     }
 
@@ -269,8 +271,8 @@ struct ContentView: View {
     private func flash() {
         guard session.isRecording, !isLuminanceReduced else { return }
         // Only the highlighted birds pulse — a plain/normal bird updates the
-        // screen without the yellow flash. New species + starred still flash
-        // their brighter purple/blue.
+        // screen without any flash. New species + starred flash a deeper
+        // purple/blue that resolves back to their dimmer standing tint.
         switch session.lastBird?.highlight {
         case .newSpecies, .starred:
             break
@@ -283,22 +285,21 @@ struct ContentView: View {
         }
     }
 
-    // Standing background tints — darkened hues for a full-screen background:
-    // purple (hue 252°) for a new species, blue (hue 215°) for a starred one.
+    // Standing background tints the flash resolves back to — dim purple (hue
+    // 252°) for a new species, dim blue (hue 215°) for a starred one. A normal
+    // bird has no tint (black).
     private static let newSpeciesBackground =
-        Color(hue: 252.0 / 360.0, saturation: 0.55, brightness: 0.42)
+        Color(hue: 252.0 / 360.0, saturation: 0.60, brightness: 0.34)
     private static let starredBackground =
-        Color(hue: 215.0 / 360.0, saturation: 0.55, brightness: 0.42)
+        Color(hue: 215.0 / 360.0, saturation: 0.60, brightness: 0.34)
 
-    // Flash pulse — a brighter beat of the same hue than the standing tint so the
-    // pulse reads, fading back to the standing color. Yellow (hue 48°) for a
-    // normal bird, which has no standing tint, so it pulses over black.
+    // Flash pulse — a deeper beat of the same hue than the dim standing tint, so
+    // the pulse reads, then fades back to the standing color. Only new species
+    // and starred birds flash (matching the phone); a normal bird never does.
     private static let newSpeciesFlash =
-        Color(hue: 252.0 / 360.0, saturation: 0.60, brightness: 0.68)
+        Color(hue: 252.0 / 360.0, saturation: 0.68, brightness: 0.55)
     private static let starredFlash =
-        Color(hue: 215.0 / 360.0, saturation: 0.60, brightness: 0.68)
-    private static let normalFlash =
-        Color(hue: 48.0 / 360.0, saturation: 0.90, brightness: 0.85)
+        Color(hue: 215.0 / 360.0, saturation: 0.68, brightness: 0.55)
 
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
 
