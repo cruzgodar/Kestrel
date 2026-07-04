@@ -216,6 +216,12 @@ struct MoreView: View {
             credit(
                 "Kahl, S., Wood, C. M., Eibl, M., & Klinck, H. (2021). BirdNET: A deep learning solution for avian diversity monitoring. *Ecological Informatics*, 61, 101236. [doi:10.1016/j.ecoinf.2021.101236](https://doi.org/10.1016/j.ecoinf.2021.101236)"
             )
+            // BirdNET model license notice (CC BY-NC-SA 4.0 requires naming the
+            // license, linking it, and indicating the model was modified — here,
+            // converted to ONNX for on-device inference).
+            credit(
+                "The BirdNET model is © the Cornell Lab of Ornithology and Chemnitz University of Technology, used under the [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) license and adapted (converted to ONNX) to run on-device."
+            )
 
             // Macaulay Library photos + their individual photographers.
             credit(
