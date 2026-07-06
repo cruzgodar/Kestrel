@@ -162,6 +162,13 @@ final class RecordingManager {
     // spectrogram, and accumulate into BirdNET-sized windows.
     private var watchWindowBuffer: [Float] = []
     private var watchLastSample: Float = 0
+    /// Coordinate the *watch* supplied for the current session (via the
+    /// `watchLocation` handshake). The watch now sends its own GPS so a watch-first
+    /// user — whose iPhone may never have been opened — still gets a nearby-species
+    /// filter: the phone runs BirdNET but no longer needs its own location. When
+    /// set, `refreshSpeciesFilter` builds the filter from here instead of the
+    /// phone's location. Reset at the start of each watch session.
+    private var watchSuppliedCoordinate: (lat: Double, lon: Double)?
     /// Silent-audio playback used to keep the iOS app alive in the
     /// background while the watch is the audio source.
     private let watchKeepalive = BackgroundAudioKeepalive()
@@ -177,21 +184,23 @@ final class RecordingManager {
     private var phoneHeartbeatTask: Task<Void, Never>?
     /// Timestamp of the most recent audio chunk delivered by the watch.
     private var lastWatchAudioAt: Date?
-    /// A stall (no watch audio for this long during an active session) trips a
-    /// capture-restart request. Short, per the heartbeat spec.
-    private let watchAudioStallThreshold: TimeInterval = 10
-    /// How often the liveness watchdog polls. Threshold ÷ poll bounds detection
-    /// latency; the heartbeat sender uses the same cadence.
-    private let watchWatchdogInterval: TimeInterval = 3
-    /// Consecutive stall strikes this session. Each adds a restart request; the
-    /// 3rd raises the modal alert, and a generous ceiling finally gives up so a
-    /// truly-dead watch doesn't keep the keepalive (and battery) running forever.
-    private var watchAudioStallCount = 0
-    private let watchStallAlertThreshold = 3
-    private let watchStallGiveUpThreshold = 6
-    /// Set when repeated stalls mean the watch link is clearly unhealthy; drives
-    /// a modal alert on the phone (the device that noticed). Observable.
-    var watchConnectionAlert: String?
+    /// A stall of this length nudges the watch to restart its capture *once* — a
+    /// backstop, since the watch now recovers its own engine from interruptions
+    /// and re-queues dropped chunks. Deliberately generous: brief reachability
+    /// dips (the wrist dropping) are normal and must not trip a restart, which is
+    /// what made the old 10s / per-poll churn disconnect sessions within ~30s.
+    private let watchAudioStallThreshold: TimeInterval = 20
+    /// How often the liveness watchdog polls. The heartbeat sender uses the same
+    /// cadence.
+    private let watchWatchdogInterval: TimeInterval = 5
+    /// If no watch audio arrives for this long the watch is effectively gone (app
+    /// killed, out of range, dead battery); we stop so the keepalive isn't left
+    /// draining the phone, and notify.
+    private let watchGiveUpThreshold: TimeInterval = 90
+    /// True once we've asked the watch to restart capture for the *current* silent
+    /// stretch, so we nudge only once per stall rather than every poll. Cleared as
+    /// soon as audio resumes (`ingestWatchSamples16k`).
+    private var watchStallNudged = false
 
     /// Watchdog that auto-stops the recording once the session goes long enough
     /// without any detection. The threshold is the user's "Timeout After No
@@ -587,25 +596,12 @@ final class RecordingManager {
         if isRecording && !watchRecording { return }
         guard !watchRecording else { return }
 
-        // The watch can't grant the phone's location access. If the phone is in
-        // the user's hand (foregrounded) we can still surface the system prompt so
-        // a first start from the watch can grant location there; if it's pocketed
-        // (backgrounded) a prompt wouldn't be seen, so we only read the current
-        // status. Without location there's no species filter, so refuse and tell
-        // the watch to roll back its optimistic start and point the user at the
-        // iPhone.
-        guard await isLocationAuthorized(prompt: appForegrounded) else {
-            sendToWatch(["cmd": "recordingRefused", "reason": "location"])
-            return
-        }
-
-        // Likewise, the watch can't grant the phone's microphone access; if it's
-        // denied, refuse and point the user at the iPhone. (The watch UI is
-        // normally already blocked in this state — this is the race backstop.)
-        guard AVAudioApplication.shared.recordPermission != .denied else {
-            sendToWatch(["cmd": "recordingRefused", "reason": "microphone"])
-            return
-        }
+        // A watch-driven session needs *neither* of the phone's permissions: the
+        // watch captures with its own microphone and sends its own coordinate (via
+        // the `watchLocation` handshake) for the nearby-species filter. So we never
+        // refuse here. The filter starts from the last-known / offline list and is
+        // refined the moment the watch's coordinate arrives (`updateWatchLocation`).
+        watchSuppliedCoordinate = nil
 
         errorMessage = nil
         detections = []
@@ -633,6 +629,18 @@ final class RecordingManager {
         preload()
         Task { await self.refreshSpeciesFilter() }
         startIdleWatchdog()
+    }
+
+    /// The watch sent its own coordinate for the current session. Cache it and
+    /// rebuild the nearby-species filter from where the watch is — this is what
+    /// lets a watch-first user (phone never opened, so the phone has no location
+    /// of its own) still get a location-focused list. No-op unless a watch session
+    /// is active.
+    func updateWatchLocation(lat: Double, lon: Double) {
+        LocationCache.shared.update(latitude: lat, longitude: lon)
+        guard watchRecording else { return }
+        watchSuppliedCoordinate = (lat, lon)
+        Task { await self.refreshSpeciesFilter() }
     }
 
     /// Called when the watch sends a "stop" handshake.
@@ -711,8 +719,7 @@ final class RecordingManager {
     }
 
     private func startWatchLifecycleWatchdogs() {
-        watchAudioStallCount = 0
-        watchConnectionAlert = nil
+        watchStallNudged = false
         lastWatchAudioAt = Date()
 
         // Audio-liveness watchdog: verifies chunks are actually arriving.
@@ -745,7 +752,7 @@ final class RecordingManager {
         phoneHeartbeatTask?.cancel()
         phoneHeartbeatTask = nil
         lastWatchAudioAt = nil
-        watchAudioStallCount = 0
+        watchStallNudged = false
     }
 
     /// Beat sent only while the phone believes a watch session is live. Live
@@ -782,25 +789,13 @@ final class RecordingManager {
     private func checkWatchAudioLiveness() -> Bool {
         guard watchRecording, let last = lastWatchAudioAt else { return false }
         let gap = Date().timeIntervalSince(last)
-        guard gap >= watchAudioStallThreshold else { return true }
 
-        // No audio for a full window while we believe the watch is recording.
-        watchAudioStallCount += 1
-        Log.warning("Watch audio stalled \(Int(gap))s during active session "
-            + "(strike \(watchAudioStallCount)) — requesting watch capture restart")
-        requestWatchCaptureRestart()
-        // Reset the clock so the next strike needs another full window, not an
-        // immediate re-trip on the next poll.
-        lastWatchAudioAt = Date()
-
-        if watchAudioStallCount == watchStallAlertThreshold {
-            watchConnectionAlert = "Kestrel keeps losing audio from your Apple Watch. "
-                + "Keep both apps open and, if it's on, turn off Low Power Mode."
-        }
-
-        if watchAudioStallCount >= watchStallGiveUpThreshold {
-            // Repeated restarts haven't helped — the watch is effectively gone.
-            // Stop so the keepalive isn't left draining the battery.
+        // A generous ceiling: audio absent this long means the watch is effectively
+        // gone (app killed, out of range, dead battery). Restart requests won't
+        // reach it, so stop cleanly so the keepalive isn't left draining the phone,
+        // and notify.
+        if gap >= watchGiveUpThreshold {
+            Log.warning("No watch audio for \(Int(gap))s — giving up on watch session")
             let s = WCSession.default
             if s.activationState == .activated {
                 s.sendMessage(["cmd": "remoteStop"], replyHandler: nil, errorHandler: nil)
@@ -815,6 +810,15 @@ final class RecordingManager {
             stopFromWatch()
             return false
         }
+
+        // A shorter stall: nudge the watch to restart its capture, but only once
+        // per silent stretch (not every poll) so we don't churn its engine. The
+        // flag clears the moment audio resumes.
+        if gap >= watchAudioStallThreshold, !watchStallNudged {
+            watchStallNudged = true
+            Log.warning("Watch audio stalled \(Int(gap))s — requesting one capture restart")
+            requestWatchCaptureRestart()
+        }
         return true
     }
 
@@ -824,6 +828,9 @@ final class RecordingManager {
     func ingestWatchSamples16k(_ samples16k: [Float]) {
         guard watchRecording, !samples16k.isEmpty else { return }
         lastWatchAudioAt = Date()
+        // Audio is flowing again — re-arm the one-shot stall nudge for the next
+        // silent stretch.
+        watchStallNudged = false
 
         // 3× linear upsample: between each input sample we emit two
         // interpolated samples. Carries `watchLastSample` across chunks so
@@ -1117,7 +1124,14 @@ final class RecordingManager {
             locationStatus = "Showing all species"
             return
         }
-        let location = await locationProvider.currentLocation()
+        // Prefer a coordinate the watch supplied for this session — it's the only
+        // location a watch-first user has — falling back to the phone's own fix.
+        let location: CLLocation?
+        if let coord = watchSuppliedCoordinate {
+            location = CLLocation(latitude: coord.lat, longitude: coord.lon)
+        } else {
+            location = await locationProvider.currentLocation()
+        }
         let week = SpeciesRangeFilter.birdnetWeek()
         if let location {
             LocationCache.shared.update(
@@ -1211,38 +1225,39 @@ final class RecordingManager {
                 let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                 let type = AVAudioSession.InterruptionType(rawValue: typeValue)
             else { return }
+            let optionsValue = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
             Task { @MainActor [weak self] in
-                self?.handleInterruption(type)
+                self?.handleInterruption(type, options: options)
             }
         }
     }
 
-    private func handleInterruption(_ type: AVAudioSession.InterruptionType) {
+    private func handleInterruption(
+        _ type: AVAudioSession.InterruptionType,
+        options: AVAudioSession.InterruptionOptions
+    ) {
         switch type {
         case .began:
-            // Only a phone-mic session is driven by our own capture session. A
-            // watch-sourced session has the watch as the audio source — the phone
-            // only runs a silent keepalive — and is governed by the heartbeat
-            // watchdog, so tearing it down here would wrongly deactivate the
-            // keepalive session and leave `isRecording`/`watchRecording` desynced.
-            // Leave that case to the watchdog.
-            guard isRecording, !watchRecording else { return }
-            // Route through the normal stop so the watch mirror is told, the idle
-            // watchdog + any pending transition task are cancelled, and teardown
-            // is deferred cleanly — rather than the partial `pipeline.stop()` that
-            // left those running.
-            stop()
-            // The interruption (call, alarm, Siri, another app taking audio) ends
-            // the session; we don't auto-resume, so tell the user it stopped the
-            // same way a watch-session lifecycle event does.
-            Task {
-                await SpeciesNotifications.shared.notifySessionLifecycle(
-                    title: "Kestrel",
-                    body: "Recording stopped after an interruption. Open Kestrel to start listening again."
-                )
-            }
-        case .ended:
+            // The system has paused our audio engine (a call, alarm, Siri, another
+            // app taking audio, a video recording). We deliberately do NOT stop the
+            // session — when the interruption ends we resume automatically below.
+            // `isRecording` stays true so the UI keeps showing the session, and the
+            // watch keepalive stays "active" so `.ended` re-arms it.
             break
+        case .ended:
+            // Resume only when the system says the interruption ended cleanly and
+            // the interrupted audio should resume. A user who deliberately started
+            // another audio app gets no `.shouldResume`, so we leave things be.
+            guard options.contains(.shouldResume) else { return }
+            if watchRecording {
+                // Watch is the audio source; the phone only runs the silent
+                // keepalive — re-arm it so the app stays alive + reachable for the
+                // watch stream.
+                watchKeepalive.resumeAfterInterruption()
+            } else if isRecording {
+                pipeline.resumeAfterInterruption()
+            }
         @unknown default:
             break
         }

@@ -112,6 +112,25 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
         try engine.start()
     }
 
+    /// Reactivates the audio session and restarts the engine after a system audio
+    /// interruption ends (a call, alarm, Siri, another app, a video recording), so
+    /// recording resumes without the user re-tapping. The tap stays installed
+    /// across an interruption, so this just re-arms the session + engine.
+    func resumeAfterInterruption() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetoothHFP, .defaultToSpeaker])
+            try? session.setAllowHapticsAndSystemSoundsDuringRecording(true)
+            try session.setActive(true, options: [])
+            if !engine.isRunning {
+                engine.prepare()
+                try engine.start()
+            }
+        } catch {
+            Log.error("AudioPipeline resume error: \(error)")
+        }
+    }
+
     func stop() {
         if engine.isRunning {
             engine.stop()

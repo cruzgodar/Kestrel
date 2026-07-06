@@ -13,6 +13,8 @@
 			</array>
 		</dict>
 	</array>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Kestrel uses your location to focus identification on birds in your area.</string>
 	<key>NSHealthShareUsageDescription</key>
 	<string>Kestrel reads workout metrics while you record a birding walk so it can be saved as an outdoor walk.</string>
 	<key>NSHealthUpdateUsageDescription</key>

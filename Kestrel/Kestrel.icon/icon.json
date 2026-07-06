@@ -17,38 +17,30 @@
       "layers" : [
         {
           "glass" : false,
-          "hidden" : false,
-          "image-name" : "KestrelBase 2.png",
-          "name" : "KestrelBase 2",
+          "image-name" : "KestrelDarkLarge.png",
+          "name" : "KestrelDarkLarge",
           "opacity-specializations" : [
             {
-              "value" : 1
+              "value" : 0
             },
             {
               "appearance" : "dark",
-              "value" : 0
+              "value" : 1
             },
             {
               "appearance" : "tinted",
-              "value" : 0
+              "value" : 1
             }
           ]
         },
         {
           "glass" : false,
-          "image-name" : "KestrelDarkBase.png",
-          "name" : "KestrelDarkBase",
+          "image-name" : "Kestrel.png",
+          "name" : "Kestrel",
           "opacity-specializations" : [
             {
-              "value" : 0
-            },
-            {
               "appearance" : "dark",
-              "value" : 1
-            },
-            {
-              "appearance" : "tinted",
-              "value" : 1
+              "value" : 0
             }
           ]
         }

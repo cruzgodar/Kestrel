@@ -22,46 +22,25 @@ final class WatchSessionManager: NSObject {
     /// appearing dead.
     private(set) var isStarting = false
 
-    /// A short message shown when the phone refuses a start the watch already
-    /// announced optimistically — currently when the iPhone lacks location access
-    /// and so can't build the nearby-species filter. Auto-clears after a few
-    /// seconds. Settable so the view can dismiss it.
-    var recordingError: String?
+    /// Whether the *watch's own* microphone or location permission is denied. The
+    /// watch now records with its own mic and supplies its own coordinate to the
+    /// phone (which runs BirdNET but no longer needs its own permissions), so the
+    /// watch's own permissions gate the record button — a gray lock the user fixes
+    /// in the watch's Settings. Undetermined does *not* lock: the first start
+    /// prompts for whatever's missing. Refreshed at launch, on foreground, and
+    /// after each permission prompt. Observable so the UI reacts.
+    private(set) var micDenied = false
+    private(set) var locationDenied = false
+    /// True only when a permission recording needs is *explicitly denied* (not
+    /// merely undetermined). Drives the gray lock.
+    var permissionDenied: Bool { micDenied || locationDenied }
 
-    /// The iPhone's recording-authorization state, pushed from the phone via the
-    /// WCSession application context. Tri-state so the watch can tell a genuine
-    /// *denial* (gray lock — the user must fix it in the phone's Settings) apart
-    /// from permissions that simply haven't been requested yet on the phone
-    /// (deferred to its first Start Recording), where the watch keeps a normal
-    /// record button rather than a confusing lock. `nil` until the first context
-    /// arrives. Raw values match the strings the phone sends.
-    enum PhoneAuthState: String {
-        case authorized
-        case denied
-        case undetermined
-    }
-    private(set) var phoneAuthState: PhoneAuthState?
-
-    /// Whether the watch has *ever* received an authorization context from the
-    /// phone (persisted). It only stays false until the iPhone app has been
-    /// opened once — that's the sole case for the first-launch "Open Kestrel on
-    /// iPhone to begin" screen. Once true, a denied permission shows a tappable
-    /// gray lock instead. Persisted so a returning watch (whose `phoneRecording-
-    /// Authorized` is momentarily `nil` before activation re-seeds it) doesn't
-    /// flash the first-launch screen.
-    private(set) var everReceivedPhoneAuth =
-        UserDefaults.standard.bool(forKey: WatchSessionManager.everReceivedPhoneAuthKey)
-    private static let everReceivedPhoneAuthKey = "everReceivedPhoneAuth"
-
-    /// Updates `phoneAuthState` (whose setter is private). Routed through here from
-    /// the WCSession application-context callbacks, mirroring how the other delegate
-    /// handlers reach main-actor state via `shared`.
-    func setPhoneAuthState(_ state: PhoneAuthState) {
-        phoneAuthState = state
-        if !everReceivedPhoneAuth {
-            everReceivedPhoneAuth = true
-            UserDefaults.standard.set(true, forKey: Self.everReceivedPhoneAuthKey)
-        }
+    /// Re-reads the watch's own mic + location authorization into the observable
+    /// flags. There's no push callback for mic changes, so the view calls this on
+    /// appear / foreground as well as after prompts.
+    func refreshPermissionState() {
+        micDenied = AVAudioApplication.shared.recordPermission == .denied
+        locationDenied = WatchLocationProvider.shared.isDenied
     }
 
     /// How a heard bird is highlighted — picks the watch's background color.
@@ -158,20 +137,21 @@ final class WatchSessionManager: NSObject {
     private var activated = false
 
     // Phone-liveness watchdog. While the watch is capturing, the phone sends a
-    // periodic `phoneHeartbeat` (only while it considers the session active). If
-    // one stops arriving for `phoneHeartbeatStallThreshold`, the watch tears down
-    // and restarts its own capture (logged, no UI side effects); after
-    // `stallAlertThreshold` such strikes it raises a modal alert, and a generous
-    // ceiling finally stops the session so the workout/battery aren't left
-    // running against a phone that's clearly gone.
+    // periodic `phoneHeartbeat` (only while it considers the session active). The
+    // watch keeps capturing through *transient* gaps — the wrist dropping flips
+    // `isReachable` constantly, and heartbeats that fall back to the background
+    // `transferUserInfo` queue arrive late — so a short silence must NOT tear the
+    // session down (the old 10s / 3-strike version disconnected within ~30s of
+    // normal use). Only a *long* silence means the phone is genuinely gone (app
+    // killed, out of range with nothing left to receive audio); then we stop so
+    // the workout + battery aren't left running. Audio-engine health is handled
+    // separately by the interruption/media-reset observers, so this watchdog no
+    // longer restarts capture on its own.
     private var phoneHeartbeatWatchdog: Task<Void, Never>?
     private var lastPhoneHeartbeatAt: Date?
-    private var missingHeartbeatCount = 0
-    private let phoneHeartbeatStallThreshold: TimeInterval = 10
-    private let watchdogInterval: TimeInterval = 3
-    private let stallAlertThreshold = 3
-    private let stallGiveUpThreshold = 6
-    /// Set when the phone link repeatedly stalls; drives a modal alert on the
+    private let watchdogInterval: TimeInterval = 5
+    private let phoneGoneThreshold: TimeInterval = 60
+    /// Set when the phone link is lost for good; drives a one-shot alert on the
     /// watch (the device that noticed). Observable; the view clears it.
     var connectionAlert: String?
 
@@ -200,11 +180,59 @@ final class WatchSessionManager: NSObject {
     nonisolated private let bgFlushBytes = 32_000
 
     func activate() {
+        refreshPermissionState()
+        registerAudioObservers()
         guard !activated, WCSession.isSupported() else { return }
         activated = true
         let session = WCSession.default
         session.delegate = delegate
         session.activate()
+    }
+
+    /// Observers that keep the watch's own capture alive across audio
+    /// interruptions and a media-services reset. On an interruption the system
+    /// stops our engine; rather than letting the session silently go dead (the
+    /// old failure where "audio never reached the phone for minutes"), we bring
+    /// capture straight back up when the interruption ends — the watch analogue of
+    /// the phone's auto-resume. Registered once.
+    private var audioObserversRegistered = false
+    private func registerAudioObservers() {
+        guard !audioObserversRegistered else { return }
+        audioObserversRegistered = true
+        let center = NotificationCenter.default
+        center.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard
+                let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                let type = AVAudioSession.InterruptionType(rawValue: raw)
+            else { return }
+            Task { @MainActor [weak self] in self?.handleAudioInterruption(type) }
+        }
+        center.addObserver(
+            forName: AVAudioSession.mediaServicesWereResetNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.restartCapture(reason: "media services were reset")
+            }
+        }
+    }
+
+    /// Auto-resume for the watch's own capture. `.began` is a no-op — the system
+    /// has paused our engine; `.ended` brings it back so the stream continues
+    /// without the user re-tapping. Only acts while we're the audio source.
+    private func handleAudioInterruption(_ type: AVAudioSession.InterruptionType) {
+        guard isRecording, !mirroringPhone else { return }
+        switch type {
+        case .began:
+            break
+        case .ended:
+            restartCapture(reason: "audio interruption ended")
+        @unknown default:
+            break
+        }
     }
 
     func toggle() {
@@ -264,35 +292,6 @@ final class WatchSessionManager: NSObject {
     func handlePhoneRecordingStopped() {
         guard mirroringPhone else { return }
         endMirrorDisplay()
-    }
-
-    /// The phone refused a start the watch announced optimistically (it can't
-    /// record — currently because the iPhone lacks location access for the
-    /// nearby-species filter). Roll the watch's recording state back and show a
-    /// short message pointing the user at the iPhone, since only it owns location.
-    func handleRecordingRefused(reason: String) {
-        isStarting = false
-        if isRecording {
-            // Tears down anything that may have come up and tells the phone we
-            // stopped (a harmless no-op there — it already refused).
-            stop()
-        } else {
-            mirroringPhone = false
-        }
-        switch reason {
-        case "location":
-            recordingError = "Turn on Location for Kestrel on your iPhone to identify birds nearby."
-        case "microphone":
-            recordingError = "Turn on Microphone for Kestrel on your iPhone to identify birds."
-        default:
-            recordingError = "Couldn't start recording. Open Kestrel on your iPhone."
-        }
-        // Auto-dismiss so the idle screen isn't left showing a stale error.
-        let message = recordingError
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(6))
-            if self?.recordingError == message { self?.recordingError = nil }
-        }
     }
 
     /// Tells the phone to stop its mic recording, then drops the mirror locally.
@@ -460,6 +459,7 @@ final class WatchSessionManager: NSObject {
 
         guard await Self.ensureMicrophonePermission() else {
             Log.warning("Microphone permission denied")
+            refreshPermissionState()  // reflect the just-made denial in the lock
             isRecording = false  // undo the optimistic flip
             notifyPhoneStopped()  // roll back the optimistic start on the phone
             return
@@ -498,6 +498,42 @@ final class WatchSessionManager: NSObject {
 
         // Capture is truly live now — start watching for the phone's heartbeat.
         startHeartbeatWatchdog()
+
+        // Resolve the rest of what a watch-first session needs — the watch's own
+        // location (handed to the phone so it can build the nearby-species filter
+        // without ever having been opened) and notification permission — off the
+        // critical path, so audio is already flowing while these settle. The mic
+        // prompt has already resolved above; these come after so prompts never
+        // stack.
+        Task { [weak self] in await self?.resolveLocationAndNotifications() }
+    }
+
+    /// Requests the watch's own location + notification permissions and, once a
+    /// fix arrives, sends the coordinate to the phone so it can build (or refine)
+    /// the nearby-species filter from where the *watch* is. Best-effort: a denied
+    /// or slow fix just leaves the phone on its cached / offline list.
+    private func resolveLocationAndNotifications() async {
+        await WatchLocationProvider.shared.requestAuthorization()
+        refreshPermissionState()
+        await WatchNotifications.requestAuthorizationIfNeeded()
+        guard let loc = await WatchLocationProvider.shared.currentLocation() else { return }
+        sendWatchLocation(lat: loc.coordinate.latitude, lon: loc.coordinate.longitude)
+    }
+
+    /// Ships the watch's coordinate to the phone. Live `sendMessage` when
+    /// reachable, background-tolerant `transferUserInfo` otherwise.
+    private func sendWatchLocation(lat: Double, lon: Double) {
+        guard WCSession.isSupported() else { return }
+        let s = WCSession.default
+        guard s.activationState == .activated else { return }
+        let payload: [String: Any] = ["cmd": "watchLocation", "lat": lat, "lon": lon]
+        if s.isReachable {
+            s.sendMessage(payload, replyHandler: nil, errorHandler: { _ in
+                WCSession.default.transferUserInfo(payload)
+            })
+        } else {
+            s.transferUserInfo(payload)
+        }
     }
 
     /// Starts the audio engine on a background queue. `AVAudioSession.setActive`
@@ -567,9 +603,25 @@ final class WatchSessionManager: NSObject {
     nonisolated private func deliver(_ data: Data) {
         let s = WCSession.default
         if s.isReachable {
-            s.sendMessageData(data, replyHandler: nil, errorHandler: nil)
+            // Live path. If it fails despite reachability — common right after the
+            // watch resumes from suspension, where `sendMessageData` errors with
+            // WCErrorCode 7014 ("Payload could not be delivered") — don't drop the
+            // audio. Re-queue it for background delivery so a momentary hiccup
+            // doesn't punch a hole in the stream (the failure that used to leave
+            // the phone hearing nothing for stretches).
+            s.sendMessageData(data, replyHandler: nil, errorHandler: { [weak self] _ in
+                self?.bufferForBackground(data)
+            })
             return
         }
+        bufferForBackground(data)
+    }
+
+    /// Accumulates audio and ships ~1 s at a time via `transferUserInfo`, which
+    /// queues + delivers even while unreachable (and can wake a suspended iOS
+    /// app). Used both when unreachable and as the recovery path for a failed
+    /// live send. Serialized by `bgLock`.
+    nonisolated private func bufferForBackground(_ data: Data) {
         bgLock.lock()
         bgBuffer.append(data)
         let payload: Data?
@@ -581,7 +633,7 @@ final class WatchSessionManager: NSObject {
         }
         bgLock.unlock()
         if let payload {
-            s.transferUserInfo(["audio": payload])
+            WCSession.default.transferUserInfo(["audio": payload])
         }
     }
 
@@ -603,19 +655,18 @@ final class WatchSessionManager: NSObject {
 
     /// Phone (its own audio-liveness watchdog) asked us to restart capture.
     func handleRestartCapture() {
-        restartCaptureForStall(reason: "phone requested capture restart")
+        restartCapture(reason: "phone requested capture restart")
     }
 
     /// Begins (or restarts) the watchdog that confirms the phone's heartbeat is
     /// still arriving. Called once real capture is underway.
     private func startHeartbeatWatchdog() {
-        missingHeartbeatCount = 0
         connectionAlert = nil
         lastPhoneHeartbeatAt = Date()
         phoneHeartbeatWatchdog?.cancel()
         phoneHeartbeatWatchdog = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(self?.watchdogInterval ?? 3))
+                try? await Task.sleep(for: .seconds(self?.watchdogInterval ?? 5))
                 guard !Task.isCancelled, let self else { return }
                 let keepGoing = self.checkPhoneHeartbeat()
                 if !keepGoing { return }
@@ -627,37 +678,32 @@ final class WatchSessionManager: NSObject {
         phoneHeartbeatWatchdog?.cancel()
         phoneHeartbeatWatchdog = nil
         lastPhoneHeartbeatAt = nil
-        missingHeartbeatCount = 0
     }
 
-    /// Returns false once it stops the session so the polling loop exits.
+    /// Returns false once it stops the session so the polling loop exits. Only a
+    /// prolonged silence (`phoneGoneThreshold`) counts — transient gaps are
+    /// tolerated so the session survives normal reachability churn.
     private func checkPhoneHeartbeat() -> Bool {
         guard isRecording, !mirroringPhone, let last = lastPhoneHeartbeatAt else { return false }
         let gap = Date().timeIntervalSince(last)
-        guard gap >= phoneHeartbeatStallThreshold else { return true }
+        guard gap >= phoneGoneThreshold else { return true }
 
-        missingHeartbeatCount += 1
-        restartCaptureForStall(
-            reason: "no phone heartbeat for \(Int(gap))s (strike \(missingHeartbeatCount))"
+        // The phone has been silent long enough to consider it gone — restarting
+        // our capture wouldn't reach it, so stop cleanly and say why.
+        Log.warning("No phone heartbeat for \(Int(gap))s — stopping watch session")
+        connectionAlert = "Lost the connection to your iPhone. Recording stopped."
+        WatchNotifications.notifySessionEnded(
+            body: "Lost the connection to your iPhone. Re-tap to keep listening."
         )
-
-        if missingHeartbeatCount == stallAlertThreshold {
-            connectionAlert = "Lost the connection to your iPhone. "
-                + "Keep both apps open and, if it's on, turn off Low Power Mode."
-        }
-        if missingHeartbeatCount >= stallGiveUpThreshold {
-            // The phone is effectively gone — restarting capture won't reach it.
-            // Stop so the workout (and battery) aren't left running.
-            stop()
-            return false
-        }
-        return true
+        stop()
+        return false
     }
 
     /// Tears the audio engine down and brings it straight back up, without
-    /// touching `isRecording`/the UI — the remedy when audio has stalled. Logged
-    /// per spec; resets the heartbeat clock so the restart gets a fresh window.
-    private func restartCaptureForStall(reason: String) {
+    /// touching `isRecording`/the UI — the remedy when audio has stalled or a
+    /// system interruption stopped the engine. Resets the heartbeat clock so the
+    /// restart gets a fresh window.
+    private func restartCapture(reason: String) {
         guard isRecording, !mirroringPhone else { return }
         Log.warning("\(reason) — restarting capture")
         lastPhoneHeartbeatAt = Date()
@@ -681,9 +727,6 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                  activationDidCompleteWith activationState: WCSessionActivationState,
                  error: Error?) {
         if let error { Log.error("WCSession activation error: \(error)") }
-        // Seed the phone's recording-auth state from the last context it pushed,
-        // delivered even if the phone is currently unreachable.
-        applyRecordingContext(session.receivedApplicationContext)
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any]) {
@@ -692,20 +735,6 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
 
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
         route(userInfo)
-    }
-
-    /// The phone pushes its recording-authorization state through the persisted
-    /// application context; mirror it into `phoneAuthState` for the UI.
-    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
-        applyRecordingContext(applicationContext)
-    }
-
-    private func applyRecordingContext(_ context: [String: Any]) {
-        guard let raw = context["recordingAuthState"] as? String,
-              let state = WatchSessionManager.PhoneAuthState(rawValue: raw) else { return }
-        Task { @MainActor in
-            WatchSessionManager.shared.setPhoneAuthState(state)
-        }
     }
 
     private func route(_ payload: [String: Any]) {
@@ -718,10 +747,6 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                 case "phoneStop":   WatchSessionManager.shared.handlePhoneRecordingStopped()
                 case "phoneHeartbeat":  WatchSessionManager.shared.handlePhoneHeartbeat()
                 case "restartCapture":  WatchSessionManager.shared.handleRestartCapture()
-                case "recordingRefused":
-                    WatchSessionManager.shared.handleRecordingRefused(
-                        reason: payload["reason"] as? String ?? ""
-                    )
                 default: break
                 }
             }

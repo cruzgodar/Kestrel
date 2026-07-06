@@ -187,19 +187,6 @@ struct ContentView: View {
         } message: {
             Text("Kestrel cannot identify birds without microphone access, because it listens for their songs and calls. You can turn on microphone access for Kestrel in Settings.")
         }
-        // Surfaced when the watch link repeatedly stalls during a session (audio
-        // stops arriving despite restart attempts) — the heartbeat watchdog.
-        .alert(
-            "Apple Watch Connection",
-            isPresented: Binding(
-                get: { manager.watchConnectionAlert != nil },
-                set: { if !$0 { manager.watchConnectionAlert = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(manager.watchConnectionAlert ?? "")
-        }
     }
 
     // The single button morphs from a wide "Start Recording" pill to a 56pt

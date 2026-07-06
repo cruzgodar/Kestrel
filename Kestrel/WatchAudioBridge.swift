@@ -109,6 +109,12 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
             Task { @MainActor in manager.stop() }
         case "stop":
             Task { @MainActor in manager.stopFromWatch() }
+        case "watchLocation":
+            // The watch supplied its own GPS for this session so the phone can
+            // build the nearby-species filter from where the watch is.
+            if let lat = payload["lat"] as? Double, let lon = payload["lon"] as? Double {
+                Task { @MainActor in manager.updateWatchLocation(lat: lat, lon: lon) }
+            }
         case "stopUnexpected":
             Task { @MainActor in manager.stopFromWatchUnexpectedly() }
         case "addToLifeList":

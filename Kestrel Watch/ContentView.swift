@@ -36,27 +36,15 @@ struct ContentView: View {
     /// there to tune the bezel match on new watches.
     private static var screenCornerRadius: CGFloat { WatchMetrics.current.screenCornerRadius }
 
-    /// True when the iPhone app has never been opened (no authorization context
-    /// has ever reached the watch), so we can't know its permission state and the
-    /// user needs to open the phone app at least once. This — and only this — is
-    /// the first-launch "Open Kestrel on iPhone to begin" screen. A returning
-    /// watch keeps `everReceivedPhoneAuth` true, so the brief `nil` window before
-    /// activation re-seeds the context doesn't trip this.
-    private var phoneNeverOpened: Bool {
-        !session.everReceivedPhoneAuth
-            && session.phoneAuthState == nil
-            && !session.isRecording
-    }
-
-    /// True only when the iPhone has *explicitly denied* a permission recording
-    /// needs (microphone and/or location) — the watch can't prompt for either, so
-    /// the record button becomes a gray lock (mirroring the phone) and tapping it
-    /// explains the issue. Permissions that are merely undetermined on the phone
-    /// (not yet requested) deliberately do NOT block here: the watch keeps a normal
-    /// record button, and the first start lets the phone prompt (if it's in hand)
-    /// or falls back to the "open Kestrel on your iPhone" message.
+    /// True only when the *watch's own* microphone and/or location permission is
+    /// explicitly denied. The watch now records with its own mic and supplies its
+    /// own coordinate, so its own permissions gate recording: the button becomes a
+    /// gray lock and tapping it explains how to fix it in the watch's Settings.
+    /// Permissions that are merely undetermined do NOT block — the first start
+    /// prompts for them — so a brand-new watch-first user just sees a normal
+    /// record button.
     private var blockedForPermissions: Bool {
-        session.phoneAuthState == .denied && !session.isRecording
+        session.permissionDenied && !session.isRecording
     }
 
     /// Drives the explanatory modal shown when the user taps the gray lock button.
@@ -122,11 +110,6 @@ struct ContentView: View {
                         x: recording ? cornerC : geo.size.width / 2,
                         y: recording ? cornerC : geo.size.height / 2
                     )
-                    // Hidden only on the first-launch screen (phone never opened);
-                    // when permission is merely denied the button stays, as a gray
-                    // lock the user can tap for an explanation.
-                    .opacity(phoneNeverOpened ? 0 : 1)
-                    .allowsHitTesting(!phoneNeverOpened)
 
                 // Idle-screen caption sitting just below the centered play
                 // button. Fades out (with the button's morph to the corner) as
@@ -147,22 +130,8 @@ struct ContentView: View {
                         x: geo.size.width / 2,
                         y: geo.size.height / 2 + Self.buttonBaseSize / 2 + 24
                     )
-                    .opacity(recording || phoneNeverOpened ? 0 : 1)
+                    .opacity(recording ? 0 : 1)
                     .allowsHitTesting(false)
-
-                // First-launch only: the iPhone app has never been opened, so the
-                // watch has no permission state to act on. Point the user at the
-                // phone. (A denied permission instead shows the gray lock button.)
-                if phoneNeverOpened {
-                    Text("Open Kestrel on iPhone to begin")
-                        .font(.system(size: 17, weight: .medium))
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .frame(width: geo.size.width)
-                        .position(x: geo.size.width / 2, y: geo.size.height / 2)
-                        .transition(.opacity)
-                }
 
                 addButton(size: Self.cornerButtonSize)
                     // `interButtonGap` to the right of the stop button, same row.
@@ -175,18 +144,15 @@ struct ContentView: View {
             }
             .ignoresSafeArea()
 
-            // A denied phone permission is surfaced entirely through the gray lock
+            // A denied watch permission is surfaced entirely through the gray lock
             // button (see `blockedForPermissions` / `recordButton`) — tapping it
-            // opens the explanatory sheet. We deliberately show *no* full-screen
-            // yellow error overlay when a start is refused: the gray button already
-            // communicates the blocked state from the outset, so the refusal just
-            // rolls the optimistic recording state back silently.
+            // opens the explanatory sheet. No full-screen error overlay: the gray
+            // button already communicates the blocked state from the outset.
         }
         .animation(.easeInOut(duration: 0.25), value: blockedForPermissions)
-        .animation(.easeInOut(duration: 0.25), value: phoneNeverOpened)
-        // Explains why the record button is locked (iPhone hasn't granted mic /
-        // location). The watch can't open the phone's Settings, so it just tells
-        // the user to do it there — mirroring the phone's own permission alert.
+        // Explains why the record button is locked (the watch's own mic / location
+        // is denied). The watch can't deep-link to Settings, so it tells the user
+        // where to go.
         .sheet(isPresented: $showPermissionInfo) {
             permissionInfo
         }
@@ -207,15 +173,20 @@ struct ContentView: View {
         // while already active. `handleRemoteStart()` is idempotent — a no-op if
         // a session is already running.
         .onChange(of: scenePhase, initial: true) { _, phase in
-            if phase == .active { startRecordingIfRequested() }
+            if phase == .active {
+                startRecordingIfRequested()
+                // The user may have flipped mic/location in the watch's Settings
+                // while away; re-read so the lock clears (or appears) on return.
+                session.refreshPermissionState()
+            }
         }
         .onReceive(NotificationCenter.default.publisher(for: RecordingIntentRequest.notification)) { _ in
             startRecordingIfRequested()
         }
         // Flash the background each time a bird is heard.
         .onChange(of: session.heardTick) { _, _ in flash() }
-        // Surfaced when the phone's heartbeat repeatedly stalls during a session
-        // (audio likely isn't reaching the phone) — the heartbeat watchdog.
+        // Surfaced only when the phone link is lost for good (no heartbeat for a
+        // full minute) and the session was stopped — not for transient dips.
         .alert(
             "iPhone Connection",
             isPresented: Binding(
@@ -355,8 +326,8 @@ struct ContentView: View {
     }
 
     /// Explanatory modal shown when the user taps the locked record button —
-    /// recording needs microphone and location access, which only the iPhone can
-    /// grant. Mirrors the phone's permission alert; tap Done (or swipe) to close.
+    /// recording needs the watch's own microphone and location access, which was
+    /// denied and must be re-enabled in the watch's Settings. Tap Done to close.
     private var permissionInfo: some View {
         ScrollView {
             VStack(spacing: 10) {
@@ -366,7 +337,7 @@ struct ContentView: View {
                 Text("Permissions Needed")
                     .font(.headline)
                     .multilineTextAlignment(.center)
-                Text("Kestrel needs microphone and location access to identify birds. Open Kestrel on your iPhone and grant access in its settings.")
+                Text("Kestrel needs microphone and location access to identify birds. Grant access for Kestrel in the watch's Settings app.")
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
