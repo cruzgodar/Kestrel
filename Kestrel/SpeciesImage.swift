@@ -1,13 +1,13 @@
 import Foundation
 
 /// Filename-slug helper for species photos. The slug keys both the remote
-/// embed store's on-disk cache and the watch image transfer. The slugging
-/// algorithm is identical to the one in `scripts/fetch_species_images.py`
+/// image store's on-disk cache and the watch image transfer. The slugging
+/// algorithm is identical to the one in `scripts/build_species_photos.py`
 /// (`slug_for`) so the two stay in sync.
 nonisolated enum SpeciesImage {
     /// Converts a scientific name into the filename slug used by the
     /// ingestion script. Lowercased, ASCII-only, runs of non-alphanumerics
-    /// collapsed to `_`. Must mirror `slug_for` in fetch_species_images.py.
+    /// collapsed to `_`. Must mirror `slug_for` in build_species_photos.py.
     static func slug(for scientificName: String) -> String {
         let lowered = scientificName.lowercased()
         // Strip diacritics. `applyingTransform(.stripDiacritics)` returns an

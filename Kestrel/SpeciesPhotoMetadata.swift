@@ -1,26 +1,38 @@
 import Foundation
 
-/// Per-species remote photo info used by the `.embed` image source. Sourced
-/// from `Kestrel/Models/species_photos.json`, which the
-/// `scripts/fetch_species_images.py` run emits alongside the bundled JPEGs
-/// (keyed by the same filename slug). Maps a species to the Macaulay Library
-/// CDN URL of its featured photo plus, when the page exposed it, the
-/// photographer credit for attribution.
+/// Per-species photo metadata for the CC-licensed image set. Sourced from
+/// `Kestrel/Models/species_photos.json`, which `scripts/build_species_photos.py`
+/// emits (keyed by filename slug). The image bytes themselves are *not*
+/// referenced here — `RemoteSpeciesImageStore` derives each size's URL from the
+/// slug and a jsDelivr base — so this holds only the crediting/licensing info an
+/// entry needs: photographer, license, and the source page for verification.
 struct SpeciesPhotoInfo: Decodable {
-    let url: String
-    /// Photographer / contributor name, when the eBird page exposed one.
+    /// Photographer / contributor name, when the source page exposed one.
     let credit: String?
+    /// License string as published at the source (e.g. "CC BY-SA 4.0", "CC0").
+    let license: String?
+    /// Source page (Wikimedia Commons / iNaturalist), where the license and
+    /// attribution can be verified.
+    let pageURL: String?
     /// eBird species code (e.g. "rufwar1"), used to link to the species page.
     let code: String?
 
-    /// Macaulay attribution line. Follows the Macaulay Library crediting
-    /// format ("… © Contributor; Cornell Lab of Ornithology | Macaulay
-    /// Library"), degrading to the institutional credit when we have no name.
+    /// Attribution line for the CC-licensed photo: photographer and license,
+    /// degrading gracefully when either is missing.
     var attribution: String {
-        if let credit, !credit.isEmpty {
-            return "© \(credit); Cornell Lab of Ornithology | Macaulay Library"
+        switch (credit?.nilIfEmpty, license?.nilIfEmpty) {
+        case let (credit?, license?): return "\(credit) · \(license)"
+        case let (credit?, nil): return credit
+        case let (nil, license?): return license
+        case (nil, nil): return "Public domain"
         }
-        return "Cornell Lab of Ornithology | Macaulay Library"
+    }
+
+    /// Link to the photo's source page, so a tap can verify the license and
+    /// attribution.
+    var sourceURL: URL? {
+        guard let pageURL, !pageURL.isEmpty else { return nil }
+        return URL(string: pageURL)
     }
 
     /// Link to the species' eBird page, when we have its species code.
@@ -30,9 +42,13 @@ struct SpeciesPhotoInfo: Decodable {
     }
 }
 
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
+}
+
 /// Loads + caches the bundled `species_photos.json` once. Absent file (e.g. the
-/// fetch script hasn't been re-run to emit it yet) yields an empty map, so the
-/// `.embed` source simply falls back to the placeholder.
+/// build script hasn't been re-run to emit it yet) yields an empty map, so
+/// species with no metadata simply fall back to the placeholder.
 nonisolated final class SpeciesPhotoMetadata: @unchecked Sendable {
     nonisolated static let shared = SpeciesPhotoMetadata()
 

@@ -1,17 +1,20 @@
 import ImageIO
 import UIKit
 
-/// Persistent store for the remote ("Official embed") species photos.
+/// Persistent store for the CC-licensed species photos, served through the free
+/// jsDelivr CDN from a GitHub photo repo (see `assetBaseURL`).
 ///
-/// Three network tiers, each a distinct Macaulay CDN size, mirrored across
+/// Three network tiers, each a pre-rendered size folder, mirrored across
 /// memory + disk caches:
-///   • **thumbnail** (320 px) — `{slug}_thumb.jpg`, fetched straight from the
-///     CDN's `/320` size. Lists, map pins, cluster grids, the Identify hero's
+///   • **thumbnail** (300 px tall) — `{slug}_thumb.jpg`, fetched from the CDN's
+///     `thumb/` folder. Lists, map pins, cluster grids, the Identify hero's
 ///     first paint, and the watch's "now hearing" screen all use it.
-///   • **medium** (900 px) — `{slug}.jpg`, the offline source of truth. The
-///     Identify hero upgrades to it, and the full-screen viewer opens on it.
-///   • **full** (2400 px) — memory-only, never persisted. Fetched only on demand
-///     when a card opens full-screen, so a pinch-zoom is crisp.
+///   • **medium** (900 px tall) — `{slug}.jpg`, from the `hero/` folder and the
+///     offline source of truth. The Identify hero upgrades to it, and the
+///     full-screen viewer opens on it.
+///   • **full** (cropped original) — from the `full/` folder, memory-only and
+///     never persisted. Fetched only on demand when a card opens full-screen, so
+///     a pinch-zoom is crisp.
 ///
 /// Downloads are ordered and coalesced by `ImageDownloadQueue`: a wake (app
 /// launch or session start) prefetches 320-nearby, then 320-life-list, then
@@ -39,8 +42,8 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// Separate from `memory` so a thumbnail and its medium image can both be
     /// resident without evicting each other.
     private let thumbnailMemory = NSCache<NSString, UIImage>()
-    /// In-memory-only cache of the **true full-resolution** photos (the largest
-    /// size the Macaulay CDN exposes). The full-screen viewer fetches one in the
+    /// In-memory-only cache of the **true full-resolution** photos (the cropped
+    /// original from the `full/` folder). The full-screen viewer fetches one in the
     /// background when a card opens and swaps it in for the medium-res image so a
     /// pinch-zoom is crisp. Bounded by total decoded byte cost (see
     /// `fullResImageMemory.totalCostLimit`) rather than count, and never persisted —
@@ -63,12 +66,17 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// set's total cost exceeds this.
     static let fullResMemoryLimitBytes = 50 * 1024 * 1024
 
-    /// The Macaulay CDN size component for the full-resolution tier. The stored
-    /// metadata URLs use `/900`; `/2400` is the largest the asset endpoint serves
-    /// (`large`/`original` 404). `/320` is the smallest valid size (`/300` 404s),
-    /// so it's the thumbnail size. Swapped into a URL's trailing numeric path
-    /// component by `url(from:sizePixels:)`.
-    private static let fullResSizePixels = 2400
+    /// Base URL for the CC-licensed species-photo set, served through the free
+    /// jsDelivr CDN from the GitHub photo repo. Pinned to an immutable release
+    /// tag so jsDelivr caches it permanently — **bump the tag whenever you
+    /// publish a new build of the photo set** (see
+    /// `scripts/README_species_photos.md`). Each size lives under its own folder
+    /// (`thumb/`, `hero/`, `full/`), and every file is named `<slug>.jpg`.
+    static let assetBaseURL = "https://cdn.jsdelivr.net/gh/cruzgodar/Kestrel@v1"
+
+    /// Path component of the on-demand full-resolution tier — the cropped
+    /// original, used only when a card opens full-screen for a crisp pinch-zoom.
+    private static let fullResFolder = "full"
 
     /// Guards `protectedSlugs` + `limitOtherImages`, which are read/written from
     /// the main actor (settings, launch) and background prefetch/eviction.
@@ -192,8 +200,8 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
 
         if let cached = fullResImageMemory.object(forKey: key) { return cached }
 
-        guard let info = SpeciesPhotoMetadata.shared.info(for: scientificName),
-              let url = Self.url(from: info.url, sizePixels: Self.fullResSizePixels),
+        guard SpeciesPhotoMetadata.shared.info(for: scientificName) != nil,
+              let url = Self.assetURL(slug: slug, folder: Self.fullResFolder),
               let data = await download(url),
               let img = UIImage(data: data) else {
             return nil
@@ -245,17 +253,10 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         return await queue.fetch(slug: slug, name: scientificName, size: .thumb)
     }
 
-    /// Rewrites a Macaulay asset URL to request a specific size by swapping its
-    /// trailing numeric path component (e.g. `…/asset/123/900` → `…/900`). Returns
-    /// nil if the URL doesn't end in a bare size number, so we never fabricate a
-    /// bad URL.
-    static func url(from urlString: String, sizePixels: Int) -> URL? {
-        guard let url = URL(string: urlString) else { return nil }
-        let last = url.lastPathComponent
-        guard !last.isEmpty, last.allSatisfy(\.isNumber) else { return nil }
-        let target = String(sizePixels)
-        if last == target { return url }
-        return url.deletingLastPathComponent().appendingPathComponent(target)
+    /// Builds the jsDelivr URL for one species photo at a given size folder
+    /// (`thumb`/`hero`/`full`) from its slug: `{base}/{folder}/{slug}.jpg`.
+    static func assetURL(slug: String, folder: String) -> URL? {
+        URL(string: "\(assetBaseURL)/\(folder)/\(slug).jpg")
     }
 
     /// Downloads (if not already on disk) and persists the bytes for one
@@ -268,8 +269,8 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         let dest = fileURL(forSlug: slug, size: size)
         if let data = try? Data(contentsOf: dest) { return data }
 
-        guard let info = SpeciesPhotoMetadata.shared.info(for: name),
-              let url = Self.url(from: info.url, sizePixels: size.pixels),
+        guard SpeciesPhotoMetadata.shared.info(for: name) != nil,
+              let url = Self.assetURL(slug: slug, folder: size.folder),
               let data = await download(url),
               UIImage(data: data) != nil else {
             return nil

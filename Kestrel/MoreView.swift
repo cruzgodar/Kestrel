@@ -223,9 +223,9 @@ struct MoreView: View {
                 "The BirdNET model is © the Cornell Lab of Ornithology and Chemnitz University of Technology, used under the [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/) license and adapted (converted to ONNX) to run on-device."
             )
 
-            // Macaulay Library photos + their individual photographers.
+            // Creative-Commons photos + their individual photographers.
             credit(
-                "Bird photographs are provided by the [Macaulay Library](https://www.macaulaylibrary.org) at the Cornell Lab of Ornithology. Each photo is © its individual photographer, who is credited on the photo when you tap it."
+                "Bird photographs are contributed by individual photographers under [Creative Commons](https://creativecommons.org/licenses/) licenses, sourced from [Wikimedia Commons](https://commons.wikimedia.org) and [iNaturalist](https://www.inaturalist.org). Each photo is © its photographer under the license shown when you tap it; tap the credit to view the source."
             )
         }
     }

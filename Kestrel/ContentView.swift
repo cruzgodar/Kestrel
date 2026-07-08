@@ -347,14 +347,8 @@ struct ContentView: View {
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(detection.commonName)
-                        .font(.headline)
-                    Text(detection.scientificName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .italic()
-                }
+                Text(detection.commonName)
+                    .font(.headline)
                 Spacer()
                 if needsLifeListAdd {
                     Button {

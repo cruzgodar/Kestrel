@@ -560,17 +560,17 @@ struct SpeciesPhotoFullScreen: View {
             }
 
             if let info = info(for: item) {
-                // The whole attribution block (credit text + the "View on eBird"
+                // The whole attribution block (credit text + the "View source"
                 // line) is the tap target, so taps anywhere on the credit open the
-                // eBird page — but only the "View on eBird" line is colored blue; the
-                // attribution above it stays white.
+                // photo's source page — but only the "View source" line is colored
+                // blue; the attribution above it stays white.
                 let attributionBlock = VStack(spacing: 4) {
                     Text(info.attribution)
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.85))
                         .multilineTextAlignment(.center)
-                    if info.ebirdURL != nil {
-                        Text("View on eBird")
+                    if info.sourceURL != nil {
+                        Text("View source")
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(.blue)
                     }
@@ -579,10 +579,10 @@ struct SpeciesPhotoFullScreen: View {
                 .padding(.vertical, 2)
                 .contentShape(Rectangle())
 
-                if let ebirdURL = info.ebirdURL {
-                    Link(destination: ebirdURL) { attributionBlock }
+                if let sourceURL = info.sourceURL {
+                    Link(destination: sourceURL) { attributionBlock }
                         .buttonStyle(NoDimButtonStyle())
-                        .accessibilityLabel("View on eBird")
+                        .accessibilityLabel("View photo source")
                 } else {
                     attributionBlock
                 }

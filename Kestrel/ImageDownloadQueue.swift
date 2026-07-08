@@ -1,18 +1,19 @@
 import Foundation
 
-/// The two prefetchable species-photo sizes. The full-resolution (2400) tier is
+/// The two prefetchable species-photo sizes. The full-resolution tier is
 /// deliberately absent — it's only ever fetched on demand when a card opens
-/// full-screen, never queued. `pixels` is the size component the Macaulay CDN
-/// serves (300 isn't a valid CDN size; 320 is the smallest, and it's exactly
-/// what the watch's "now hearing" screen wants).
+/// full-screen, never queued. `folder` is the path component under the jsDelivr
+/// photo base that holds this size's pre-rendered JPEGs (see
+/// `scripts/build_species_photos.py`): `thumb` is 300 px tall (lists, map pins,
+/// the watch's "now hearing" screen), `hero` is 900 px tall.
 enum ImageSize: Sendable {
     case thumb
     case medium
 
-    var pixels: Int {
+    var folder: String {
         switch self {
-        case .thumb: return 320
-        case .medium: return 900
+        case .thumb: return "thumb"
+        case .medium: return "hero"
         }
     }
 }

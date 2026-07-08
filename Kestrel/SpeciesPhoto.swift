@@ -5,7 +5,7 @@ import SwiftUI
 /// framing, clipping, and borders); shows the caller-supplied `placeholder`
 /// when no image is available.
 ///
-/// The photo is the Macaulay embed from `RemoteSpeciesImageStore` (memory →
+/// The photo is the CC-licensed image from `RemoteSpeciesImageStore` (memory →
 /// persistent disk → network), with an attribution caption when `showsCredit`
 /// is set (large contexts only — it's unreadable behind a 60pt thumbnail).
 ///
