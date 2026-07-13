@@ -12,9 +12,9 @@ import UIKit
 ///   • **medium** (900 px tall) — `{slug}.jpg`, from the `hero/` folder and the
 ///     offline source of truth. The Identify hero upgrades to it, and the
 ///     full-screen viewer opens on it.
-///   • **full** (cropped original) — from the `full/` folder, memory-only and
-///     never persisted. Fetched only on demand when a card opens full-screen, so
-///     a pinch-zoom is crisp.
+///   • **full** (cropped original, longest edge ≤ 2700 px) — from the `full/`
+///     folder, memory-only and never persisted. Fetched only on demand when a
+///     card opens full-screen, so a pinch-zoom is crisp.
 ///
 /// Downloads are ordered and coalesced by `ImageDownloadQueue`: a wake (app
 /// launch or session start) prefetches 320-nearby, then 320-life-list, then
@@ -72,10 +72,11 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// publish a new build of the photo set** (see
     /// `scripts/README_species_photos.md`). Each size lives under its own folder
     /// (`thumb/`, `hero/`, `full/`), and every file is named `<slug>.jpg`.
-    static let assetBaseURL = "https://cdn.jsdelivr.net/gh/cruzgodar/Kestrel@v1"
+    static let assetBaseURL = "https://cdn.jsdelivr.net/gh/cruzgodar/kestrel-species-photos"
 
     /// Path component of the on-demand full-resolution tier — the cropped
-    /// original, used only when a card opens full-screen for a crisp pinch-zoom.
+    /// original (longest edge capped at 2700 px by the build script), used only
+    /// when a card opens full-screen for a crisp pinch-zoom.
     private static let fullResFolder = "full"
 
     /// Guards `protectedSlugs` + `limitOtherImages`, which are read/written from
