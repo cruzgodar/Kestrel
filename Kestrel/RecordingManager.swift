@@ -149,6 +149,18 @@ final class RecordingManager {
     /// hearing" screen, so we only push an update when it actually changes.
     /// Reset at the start of every session.
     private var lastWatchDisplaySci: String?
+    /// When the watch's "now hearing" display was last pushed. The watch resets
+    /// its own display to the placeholder after `idleDisplayReset` (60 s) with no
+    /// update; because we otherwise de-dupe a continuously-heard bird (only
+    /// pushing on a *species change*), that bird would silently drop off the watch
+    /// while the phone still shows a fresh observation. So we also re-push the
+    /// same species if it's still being heard and this much time has passed —
+    /// comfortably under the watch's reset so its timer stays armed.
+    private var lastWatchDisplayAt: Date?
+    /// Re-push interval for an unchanged, still-heard watch display. Half the
+    /// watch's 60 s idle-reset window, so a continuously-singing bird refreshes
+    /// the watch with margin to spare.
+    private let watchDisplayRefreshInterval: TimeInterval = 30
     /// Tracks the deferred audio engine start/stop task so rapid taps can
     /// cancel a pending transition before its sleep elapses.
     private var pendingTransitionTask: Task<Void, Never>?
@@ -210,6 +222,12 @@ final class RecordingManager {
     /// `stopFromWatch`.
     private var idleTerminationTask: Task<Void, Never>?
     private var lastDetectionAt: Date?
+    /// True once the idle-timeout *prompt* has been sent for the current silent
+    /// stretch, so the watchdog asks once (rather than re-nagging every poll)
+    /// until a fresh detection resets the clock. Unlike the old behavior, the
+    /// watchdog no longer stops the session on its own — it asks, via a rich
+    /// notification whose "End Session" action does the stopping.
+    private var idlePromptSent = false
 
     init() {
         registerInterruptionObserver()
@@ -350,6 +368,13 @@ final class RecordingManager {
         sendToWatch(["haptic": kind])
     }
 
+    /// Buzz the wrist with a single subtle tap for an ordinary (known,
+    /// non-starred) bird — the "Haptic for All Birds" opt-in. Maps to the watch's
+    /// lightest `WKHapticType` (see `WatchSessionManager.playHaptic`).
+    private func sendSoftHapticToWatch() {
+        sendToWatch(["haptic": "soft"])
+    }
+
     /// Buzz the *phone* for a fresh new/starred bird while its app is
     /// foregrounded. Mirrors the watch's distinction: a softer `.success`
     /// notification for a starred bird, and a sharp tap followed by a buzz for a
@@ -361,6 +386,13 @@ final class RecordingManager {
         case .newSpecies:
             playNewLiferHaptic()
         }
+    }
+
+    /// Buzz the *phone* with a single subtle tap for an ordinary (known,
+    /// non-starred) bird — the "Haptic for All Birds" opt-in, fired while the app
+    /// is foregrounded. A soft impact is the gentlest of the system generators.
+    private func playSoftLocalHaptic() {
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
     }
 
     /// A crisp transient tap immediately followed by a short continuous buzz —
@@ -499,6 +531,7 @@ final class RecordingManager {
         lastFlashAt = [:]
         lastHapticAt = [:]
         lastWatchDisplaySci = nil
+        lastWatchDisplayAt = nil
         watchAddedThisSession = []
         spectrogram.reset()
         refreshLifeListFromStore()
@@ -610,6 +643,7 @@ final class RecordingManager {
         lastFlashAt = [:]
         lastHapticAt = [:]
         lastWatchDisplaySci = nil
+        lastWatchDisplayAt = nil
         watchAddedThisSession = []
         watchWindowBuffer.removeAll(keepingCapacity: true)
         watchLastSample = 0
@@ -677,12 +711,13 @@ final class RecordingManager {
     private func startIdleWatchdog() {
         idleTerminationTask?.cancel()
         lastDetectionAt = Date()
+        idlePromptSent = false
         idleTerminationTask = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(60))
                 guard !Task.isCancelled, let self else { return }
-                let shouldStop = self.checkIdleAndMaybeStop()
-                if shouldStop { return }
+                let stillRunning = self.checkIdleAndMaybePrompt()
+                if !stillRunning { return }
             }
         }
     }
@@ -691,31 +726,41 @@ final class RecordingManager {
         idleTerminationTask?.cancel()
         idleTerminationTask = nil
         lastDetectionAt = nil
+        idlePromptSent = false
     }
 
-    /// Returns true if the watchdog tore the session down and the polling
-    /// loop should exit.
-    private func checkIdleAndMaybeStop() -> Bool {
-        guard isRecording, let last = lastDetectionAt else { return true }
+    /// Called by the poll loop. Returns whether the session is still running (so
+    /// the loop keeps polling). When the no-detection stretch passes the user's
+    /// timeout, it sends the idle-timeout *prompt* — a rich notification with an
+    /// "End Session" action — rather than stopping the session itself. The prompt
+    /// fires once per silent stretch (guarded by `idlePromptSent`, cleared by the
+    /// next detection in `merge`), so the user isn't re-nagged every minute.
+    private func checkIdleAndMaybePrompt() -> Bool {
+        guard isRecording, let last = lastDetectionAt else { return false }
         // Read the timeout live so a mid-session change takes effect. `.never`
         // yields a nil threshold — keep listening and let the poll loop continue.
         let timeout = AppSettings.shared.noBirdTimeout
-        guard let threshold = timeout.seconds else { return false }
+        guard let threshold = timeout.seconds else { return true }
         let gap = Date().timeIntervalSince(last)
-        guard gap >= threshold else { return false }
+        guard gap >= threshold, !idlePromptSent else { return true }
 
+        idlePromptSent = true
+        let minutes = timeout.rawValue
         Task {
-            await SpeciesNotifications.shared.notifySessionLifecycle(
-                title: "Kestrel",
-                body: "No birds heard for \(timeout.rawValue) minutes — recording stopped."
-            )
-        }
-        if watchRecording {
-            stopWatchSession()
-        } else {
-            stop()
+            await SpeciesNotifications.shared.notifyIdleTimeoutPrompt(minutes: minutes)
         }
         return true
+    }
+
+    /// Ends whichever session is currently active — the phone's own mic session
+    /// or a watch-sourced one. Invoked by the idle-timeout notification's "End
+    /// Session" action (wired in `KestrelApp`). A no-op if nothing is recording.
+    func endActiveSession() {
+        if watchRecording {
+            stopWatchSession()
+        } else if isRecording {
+            stop()
+        }
     }
 
     private func startWatchLifecycleWatchdogs() {
@@ -976,7 +1021,12 @@ final class RecordingManager {
         // enforce a per-species cooldown so the same row doesn't strobe on
         // every overlapping inference window.
         let now = Date()
-        if !results.isEmpty { lastDetectionAt = now }
+        if !results.isEmpty {
+            lastDetectionAt = now
+            // A bird was heard — re-arm the idle-timeout prompt so a later silent
+            // stretch asks again.
+            idlePromptSent = false
+        }
         let cooldown: TimeInterval = 5
         var repeatedIDs: [String] = []
         // Detections that should fire a notification this batch: species heard
@@ -986,6 +1036,13 @@ final class RecordingManager {
         // `hapticCooldown`, so a repeated new/starred bird keeps tapping even
         // while its notification is still on cooldown.
         var haptics: [SpeciesNotifications.Reason] = []
+        // When the "Haptic for All Birds" setting is on, a single soft haptic
+        // also fires for any *known, non-starred* bird heard this batch — the
+        // everyday birds that otherwise buzz nothing. Read once; collapsed to one
+        // tap per batch so several ordinary species in the same window don't
+        // stack buzzes.
+        let hapticForAllBirds = AppSettings.shared.hapticForAllBirds
+        var playSoftHaptic = false
         for d in results {
             if let existing = detectionMap[d.id] {
                 if d.confidence > existing.confidence {
@@ -1028,6 +1085,15 @@ final class RecordingManager {
                     haptics.append(reason)
                     lastHapticAt[d.scientificName] = now
                 }
+            } else if hapticForAllBirds && !isNew && !isStarred {
+                // A known, non-starred bird — a single subtle haptic when the
+                // setting is on, on the same short per-species cooldown so a
+                // continuously-singing bird doesn't buzz every window.
+                let lastBuzz = lastHapticAt[d.scientificName]
+                if lastBuzz == nil || now.timeIntervalSince(lastBuzz!) >= hapticCooldown {
+                    playSoftHaptic = true
+                    lastHapticAt[d.scientificName] = now
+                }
             }
             lastHeardAt[d.scientificName] = now
         }
@@ -1057,27 +1123,32 @@ final class RecordingManager {
                 sendHapticToWatch(reason: reason)
             }
         }
+        // The opt-in soft haptic for an ordinary (known, non-starred) bird uses
+        // the same destination as the alerts above: the phone when its app is in
+        // hand, otherwise the wrist.
+        if playSoftHaptic {
+            if appForegrounded {
+                playSoftLocalHaptic()
+            } else {
+                sendSoftHapticToWatch()
+            }
+        }
 
         // The watch's "now hearing" screen always shows the *last* species
         // heard, interesting or not. Push the most-confident detection of this
-        // window when it differs from what the watch is already showing, so a
-        // continuously-singing bird isn't re-sent every window.
-        if let top = results.max(by: { $0.confidence < $1.confidence }),
-           top.scientificName != lastWatchDisplaySci {
-            lastWatchDisplaySci = top.scientificName
-            var highlight: String
-            if starredNames.contains(top.scientificName) {
-                highlight = "starred"
-            } else if !lifeListSnapshot.contains(top.scientificName) {
-                highlight = "newSpecies"
-            } else {
-                highlight = "normal"
+        // window when it differs from what the watch is already showing — but
+        // also re-push the same species once it's been unsent for
+        // `watchDisplayRefreshInterval`, so a continuously-singing bird keeps the
+        // watch's idle-reset timer armed instead of silently dropping to the
+        // placeholder while the phone still shows a fresh observation.
+        if let top = results.max(by: { $0.confidence < $1.confidence }) {
+            let speciesChanged = top.scientificName != lastWatchDisplaySci
+            let staleRefresh = lastWatchDisplayAt.map {
+                now.timeIntervalSince($0) >= watchDisplayRefreshInterval
+            } ?? true
+            if speciesChanged || staleRefresh {
+                sendWatchDisplay(for: top)
             }
-            sendBirdDisplayToWatch(
-                commonName: top.commonName,
-                scientificName: top.scientificName,
-                highlight: highlight
-            )
         }
 
         for id in repeatedIDs {
@@ -1096,6 +1167,27 @@ final class RecordingManager {
                 await MainActor.run { _ = self?.flashIDs.remove(id) }
             }
         }
+    }
+
+    /// Pushes a freshly-heard species to the watch's "now hearing" screen and
+    /// records the send so the refresh throttle above can re-push an unchanged
+    /// species before the watch's idle-reset timer would drop it.
+    private func sendWatchDisplay(for top: Detection) {
+        lastWatchDisplaySci = top.scientificName
+        lastWatchDisplayAt = Date()
+        let highlight: String
+        if starredNames.contains(top.scientificName) {
+            highlight = "starred"
+        } else if !lifeListSnapshot.contains(top.scientificName) {
+            highlight = "newSpecies"
+        } else {
+            highlight = "normal"
+        }
+        sendBirdDisplayToWatch(
+            commonName: top.commonName,
+            scientificName: top.scientificName,
+            highlight: highlight
+        )
     }
 
     // MARK: - Location + species filter

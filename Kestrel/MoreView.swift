@@ -50,7 +50,19 @@ struct MoreView: View {
             } header: {
                 Text("Timeout After No Detections")
             } footer: {
-                Text("Kestrel can automatically stop sessions to save battery life after it doesn't hear any birds for some time.")
+                Text("After Kestrel doesn't hear any birds for some time, it can send a notification asking whether to end the session to save battery life — press and hold it to end the session right from the notification.")
+            }
+
+            // A single soft haptic for the everyday birds that otherwise buzz
+            // nothing (new species and starred birds already have their own,
+            // stronger alerts). Off by default; read live in RecordingManager.
+            Section {
+                Toggle(
+                    "Haptic for All Birds",
+                    isOn: $settings.hapticForAllBirds
+                )
+            } footer: {
+                Text("Play a subtle haptic when Kestrel identifies a bird already on your life list that isn't starred.")
             }
 
             // Moved here from the Map tab's old settings card.

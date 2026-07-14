@@ -31,6 +31,13 @@ struct KestrelApp: App {
         // recording is possible.
         manager.onRecordingAuthorizationChanged = { bridge.pushRecordingAuthorized() }
 
+        // Register the notification delegate + idle-timeout category, and wire its
+        // "End Session" action to end whichever session is active. The idle
+        // watchdog now asks (via this notification) rather than stopping outright.
+        SpeciesNotifications.shared.configure { [weak manager] in
+            manager?.endActiveSession()
+        }
+
         let store = LifeListStore()
         _lifeListStore = State(wrappedValue: store)
 

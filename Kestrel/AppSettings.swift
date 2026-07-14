@@ -7,6 +7,7 @@ import Observation
 private nonisolated enum SettingsKeys {
     static let showRepeatObservations = "settings.showRepeatObservationsOnMap"
     static let noBirdTimeout = "settings.noBirdTimeout"
+    static let hapticForAllBirds = "settings.hapticForAllBirds"
 }
 
 /// App-wide user settings, persisted to `UserDefaults`. A single shared
@@ -65,6 +66,18 @@ final class AppSettings {
         }
     }
 
+    /// When enabled, Kestrel plays a single subtle haptic whenever it identifies a
+    /// bird that's already on the user's life list and isn't starred — the birds
+    /// that otherwise buzz nothing (new species and starred birds have their own,
+    /// stronger haptics). Off by default so the wrist/phone only buzzes for the
+    /// noteworthy birds unless the user opts in. Read live in
+    /// `RecordingManager.merge(_:)`.
+    var hapticForAllBirds: Bool {
+        didSet {
+            defaults.set(hapticForAllBirds, forKey: SettingsKeys.hapticForAllBirds)
+        }
+    }
+
     private let defaults = UserDefaults.standard
 
     private init() {
@@ -73,5 +86,7 @@ final class AppSettings {
         // Defaults to 30 minutes.
         let storedTimeout = defaults.object(forKey: SettingsKeys.noBirdTimeout) as? Int
         noBirdTimeout = storedTimeout.flatMap(NoBirdTimeout.init(rawValue:)) ?? .thirtyMinutes
+        // Defaults to off.
+        hapticForAllBirds = defaults.object(forKey: SettingsKeys.hapticForAllBirds) as? Bool ?? false
     }
 }

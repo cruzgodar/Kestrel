@@ -334,6 +334,7 @@ final class WatchSessionManager: NSObject {
         switch kind {
         case "starred": type = .success       // softer rising chime
         case "newSpecies": type = .notification  // sharper double-tap
+        case "soft": type = .click            // subtle single tap (all-birds opt-in)
         default: type = .click
         }
         WKInterfaceDevice.current().play(type)
