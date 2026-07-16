@@ -486,6 +486,10 @@ struct LifeListView: View {
     /// feel like a continuation of that "you can add me" affordance.
     private static let addButtonTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
 
+    /// Height of the trailing thumbnail on life-list and catalog-suggestion
+    /// rows. Width follows at 4:3.
+    private static let rowThumbnailHeight: CGFloat = 68
+
     @ViewBuilder
     private func existingRow(entry: LifeListEntry) -> some View {
         HStack(spacing: 12) {
@@ -538,7 +542,7 @@ struct LifeListView: View {
                     ? "Turn off alerts for \(entry.commonName)"
                     : "Alert me when \(entry.commonName) is heard"
             )
-            SpeciesThumbnail(scientificName: entry.scientificName, onTap: {
+            SpeciesThumbnail(scientificName: entry.scientificName, height: Self.rowThumbnailHeight, onTap: {
                 // Open the viewer over the whole life list (canonical order) so
                 // the photo can be swiped left/right between birds.
                 let names = store.entries.map(\.scientificName)
@@ -629,7 +633,7 @@ struct LifeListView: View {
                     ? "Remove \(commonName) from Life List"
                     : "Add \(commonName) to Life List"
             )
-            SpeciesThumbnail(scientificName: scientificName)
+            SpeciesThumbnail(scientificName: scientificName, height: Self.rowThumbnailHeight)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 4)

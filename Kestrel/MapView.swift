@@ -185,9 +185,14 @@ struct MapView: View {
         }
     }
 
-    /// Pinned thumbnail dimensions on the map. The total annotation
-    /// occupies more space than this — see `Self.annotationFootprint`.
-    private static let thumbSize = CGSize(width: 78, height: 60)
+    /// Height of a pinned thumbnail on the map. The total annotation occupies
+    /// more space than the thumbnail — see `Self.annotationFootprint`.
+    private static let thumbHeight: CGFloat = 68
+    /// Pinned thumbnail dimensions on the map, at a 13:10 box (map pins run
+    /// slightly narrower than the 4:3 row thumbnails).
+    private static var thumbSize: CGSize {
+        CGSize(width: (thumbHeight * 13 / 10).rounded(), height: thumbHeight)
+    }
     /// Vertical space the label below the thumbnail typically eats up
     /// (capsule height + spacing). Counted as part of the annotation's
     /// footprint so the clustering threshold prevents the label of one

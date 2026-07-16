@@ -18,6 +18,9 @@ struct ContentView: View {
     /// A detection older than this (since last heard) drops below the header.
     private static let agingThreshold: TimeInterval = 60
 
+    /// Height of the trailing thumbnail on detection rows. Width follows at 4:3.
+    private static let rowThumbnailHeight: CGFloat = 68
+
     /// Diameter of the circular stop button.
     private static let stopButtonDiameter: CGFloat = 56
     /// How far the stop button is nudged right from the leading edge.
@@ -402,7 +405,10 @@ struct ContentView: View {
                 } else {
                     // Already in life list — show the thumbnail at the row's
                     // trailing edge, same place the add button would occupy.
-                    SpeciesThumbnail(scientificName: detection.scientificName)
+                    SpeciesThumbnail(
+                        scientificName: detection.scientificName,
+                        height: Self.rowThumbnailHeight
+                    )
                 }
             }
 
