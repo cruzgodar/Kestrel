@@ -404,9 +404,6 @@ struct SpeciesPhotoFullScreen: View {
     private func info(for item: SpeciesPhotoItem) -> SpeciesPhotoInfo? {
         SpeciesPhotoMetadata.shared.info(for: item.scientificName)
     }
-    private func hasCaptionContent(for item: SpeciesPhotoItem) -> Bool {
-        item.dateFound != nil || info(for: item) != nil
-    }
 
     @ViewBuilder
     private func chrome(topInset: CGFloat, bottomInset: CGFloat, screenWidth: CGFloat) -> some View {
@@ -427,10 +424,11 @@ struct SpeciesPhotoFullScreen: View {
 
                 Spacer(minLength: 0)
 
-                if hasCaptionContent(for: item) {
-                    infoPanel(for: item, screenWidth: screenWidth)
-                        .padding(.bottom, bottomInset + 8)
-                }
+                // Always shown: it carries the sighting place/date and the photo
+                // attribution — or, for a species we don't have a photo for yet, a
+                // "coming soon" notice in the attribution's place.
+                infoPanel(for: item, screenWidth: screenWidth)
+                    .padding(.bottom, bottomInset + 8)
             }
         }
     }
@@ -586,6 +584,15 @@ struct SpeciesPhotoFullScreen: View {
                 } else {
                     attributionBlock
                 }
+            } else {
+                // No photo for this species yet — reassure the user one is coming,
+                // in the same slot the attribution would occupy.
+                Text("Photo coming soon")
+                    .font(.caption2)
+                    .foregroundStyle(.white.opacity(0.85))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 4)
+                    .padding(.vertical, 2)
             }
         }
         .padding(.vertical, 14)
@@ -1068,9 +1075,14 @@ private struct ZoomablePhotoPage: View {
                 onPageBeyondEdge: onPageBeyondEdge
             )
         } else if loadFailed {
+            // No photo exists for this species yet (or one failed to load) — a
+            // centered bird-glyph placeholder. It fills the page and lives inside
+            // the paged, offsetting card, so it tracks the swipe-to-dismiss drag
+            // 1:1 exactly like a real photo does.
             Image(systemName: "bird")
-                .font(.system(size: 56))
-                .foregroundStyle(.white.opacity(0.4))
+                .font(.system(size: 64))
+                .foregroundStyle(.white.opacity(0.35))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ProgressView().tint(.white)
         }
@@ -1085,6 +1097,14 @@ private struct ZoomablePhotoPage: View {
         loadFailed = false
         fullResLoaded = false
         let name = item.scientificName
+
+        // No photo exists for this species (no remote metadata) — show the
+        // bird-glyph placeholder immediately, skipping the pointless network
+        // round-trip and the loading spinner that a real photo would need.
+        guard SpeciesPhotoMetadata.shared.info(for: name) != nil else {
+            loadFailed = true
+            return
+        }
 
         // Already have the true full-res image resident (a previous open this
         // session): show it straight away, no download or swap needed.

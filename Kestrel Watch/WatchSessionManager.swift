@@ -63,6 +63,12 @@ final class WatchSessionManager: NSObject {
     /// is heard, and reset at the start of each session).
     private(set) var lastBird: HeardBird?
 
+    /// The `birdSeq` of the most recently applied now-hearing push, so a
+    /// re-delivered application context (fired when any other key in it changes)
+    /// doesn't re-apply and re-flash the same bird. Not reset per session — the
+    /// phone's tag rises monotonically and equality alone gates re-application.
+    @ObservationIgnored private var lastBirdSeq: Int = -1
+
     /// Clears the "now hearing" display back to the placeholder once a bird has
     /// gone unheard for `idleDisplayReset`. Restarted on every detection;
     /// cancelled when the session ends.
@@ -334,7 +340,7 @@ final class WatchSessionManager: NSObject {
         switch kind {
         case "starred": type = .success       // softer rising chime
         case "newSpecies": type = .notification  // sharper double-tap
-        case "soft": type = .click            // subtle single tap (all-birds opt-in)
+        case "soft": type = .directionUp      // gentle single tap (all-birds opt-in); .click is imperceptible on-wrist
         default: type = .click
         }
         WKInterfaceDevice.current().play(type)
@@ -343,7 +349,16 @@ final class WatchSessionManager: NSObject {
     /// Phone reported a freshly-heard interesting bird. Updates the "now
     /// hearing" display and resolves its image — from the local cache if we've
     /// seen this species before, otherwise by asking the phone to send it.
-    func handleBirdHeard(commonName: String, scientificName: String, highlight: BirdHighlight) {
+    func handleBirdHeard(commonName: String, scientificName: String, highlight: BirdHighlight, seq: Int? = nil) {
+        // The bird now arrives via the application context, which re-delivers the
+        // *whole* context whenever any key changes (e.g. an auth-state update). The
+        // phone tags each genuine now-hearing push with a rising `birdSeq`; ignore a
+        // context that carries one we've already applied so an unrelated re-delivery
+        // doesn't re-flash the same bird. Untagged calls (none today) always apply.
+        if let seq {
+            if seq == lastBirdSeq { return }
+            lastBirdSeq = seq
+        }
         lastBird = HeardBird(
             commonName: commonName,
             scientificName: scientificName,
@@ -738,6 +753,15 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
         route(userInfo)
     }
 
+    /// The phone mirrors the "now hearing" bird here (see `RecordingManager`),
+    /// because the application context is delivered even when the phone is
+    /// backgrounded — unlike a live `sendMessage`, which a pocketed phone can't
+    /// send. Routed the same way as a live bird message; `birdSeq` de-dupes a
+    /// context re-delivered for an unrelated key change.
+    func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {
+        route(applicationContext)
+    }
+
     private func route(_ payload: [String: Any]) {
         if let cmd = payload["cmd"] as? String {
             Task { @MainActor in
@@ -761,11 +785,13 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
             let highlight = WatchSessionManager.BirdHighlight(
                 rawValue: payload["highlight"] as? String ?? ""
             ) ?? .normal
+            let seq = payload["birdSeq"] as? Int
             Task { @MainActor in
                 WatchSessionManager.shared.handleBirdHeard(
                     commonName: common,
                     scientificName: scientific,
-                    highlight: highlight
+                    highlight: highlight,
+                    seq: seq
                 )
             }
         }

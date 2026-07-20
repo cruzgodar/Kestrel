@@ -54,11 +54,11 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
     /// session/watch-state event.
     func pushRecordingAuthorized() {
         Task { @MainActor in
-            guard WCSession.isSupported() else { return }
-            let session = WCSession.default
-            guard session.activationState == .activated else { return }
             let state = manager.recordingAuthorizationStateForWatch
-            try? session.updateApplicationContext(["recordingAuthState": state.rawValue])
+            // Merge through the manager's single application-context owner so this
+            // doesn't clobber the now-hearing bird the manager also publishes there
+            // (`updateApplicationContext` replaces the whole dictionary).
+            manager.mergeWatchAppContext(["recordingAuthState": state.rawValue])
         }
     }
 

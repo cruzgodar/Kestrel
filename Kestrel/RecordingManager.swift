@@ -161,6 +161,20 @@ final class RecordingManager {
     /// watch's 60 s idle-reset window, so a continuously-singing bird refreshes
     /// the watch with margin to spare.
     private let watchDisplayRefreshInterval: TimeInterval = 30
+    /// The application context mirrored to the watch. `updateApplicationContext`
+    /// *replaces* the whole dictionary each call, so every key (the now-hearing
+    /// bird, plus the recording-auth state) is merged through this single owner
+    /// rather than clobbering one another. Unlike a live `sendMessage`, the
+    /// application context is delivered even from a backgrounded phone — the case
+    /// where a watch-first session runs with the phone in a pocket.
+    private var watchAppContext: [String: Any] = [:]
+    /// Monotonic tag on each now-hearing push. `updateApplicationContext` de-dupes
+    /// identical dictionaries, so without this a re-push of the *same* still-singing
+    /// species (which keeps the watch's 60 s idle-reset armed) would be dropped and
+    /// the bird would silently fall back to the placeholder. Bumped per push so
+    /// every one is a distinct context that actually delivers; the watch de-dupes
+    /// on it so a context re-delivered for an unrelated key change doesn't re-flash.
+    private var watchDisplaySeq = 0
     /// Tracks the deferred audio engine start/stop task so rapid taps can
     /// cancel a pending transition before its sleep elapses.
     private var pendingTransitionTask: Task<Void, Never>?
@@ -348,11 +362,34 @@ final class RecordingManager {
     /// ("starred"/"newSpecies"/"normal") tints the watch background. No haptic:
     /// buzzing is reserved for new/starred birds and sent via `sendHapticToWatch`.
     private func sendBirdDisplayToWatch(commonName: String, scientificName: String, highlight: String) {
-        sendToWatch([
+        // The "now hearing" bird is latest-state, not an event, so it rides the
+        // application context rather than `sendToWatch`'s sendMessage/transferUserInfo
+        // funnel. A backgrounded phone (the usual watch-first case) reports
+        // `isReachable == false`, so a live send falls to `transferUserInfo` — an
+        // opportunistic background queue iOS delivers with large, unpredictable
+        // latency, which left the watch stuck on "Listening…" while the phone was
+        // recognizing birds. `updateApplicationContext` delivers promptly even from
+        // the background and coalesces to the latest, exactly matching a single
+        // now-hearing slot. (Haptics stay on `sendToWatch` — they're events that
+        // need immediacy, and application-context coalescing would drop rapid ones.)
+        watchDisplaySeq &+= 1
+        mergeWatchAppContext([
             "birdCommon": commonName,
             "birdSci": scientificName,
             "highlight": highlight,
+            "birdSeq": watchDisplaySeq,
         ])
+    }
+
+    /// Merges `updates` into the watch application context and re-publishes it.
+    /// The single owner of `updateApplicationContext` (see `watchAppContext`), so
+    /// the now-hearing bird and the auth state coexist instead of overwriting.
+    func mergeWatchAppContext(_ updates: [String: Any]) {
+        guard WCSession.isSupported() else { return }
+        let s = WCSession.default
+        guard s.activationState == .activated, s.isPaired, s.isWatchAppInstalled else { return }
+        watchAppContext.merge(updates) { _, new in new }
+        try? s.updateApplicationContext(watchAppContext)
     }
 
     /// Buzz the wrist for a fresh new/starred bird. The kind picks a distinct

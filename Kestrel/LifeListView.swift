@@ -488,7 +488,7 @@ struct LifeListView: View {
 
     /// Height of the trailing thumbnail on life-list and catalog-suggestion
     /// rows. Width follows at 4:3.
-    private static let rowThumbnailHeight: CGFloat = 68
+    private static let rowThumbnailHeight: CGFloat = 72
 
     @ViewBuilder
     private func existingRow(entry: LifeListEntry) -> some View {

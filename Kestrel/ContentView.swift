@@ -19,7 +19,7 @@ struct ContentView: View {
     private static let agingThreshold: TimeInterval = 60
 
     /// Height of the trailing thumbnail on detection rows. Width follows at 4:3.
-    private static let rowThumbnailHeight: CGFloat = 68
+    private static let rowThumbnailHeight: CGFloat = 72
 
     /// Diameter of the circular stop button.
     private static let stopButtonDiameter: CGFloat = 56

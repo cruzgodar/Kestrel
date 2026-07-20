@@ -187,7 +187,7 @@ struct MapView: View {
 
     /// Height of a pinned thumbnail on the map. The total annotation occupies
     /// more space than the thumbnail — see `Self.annotationFootprint`.
-    private static let thumbHeight: CGFloat = 68
+    private static let thumbHeight: CGFloat = 72
     /// Pinned thumbnail dimensions on the map, at a 13:10 box (map pins run
     /// slightly narrower than the 4:3 row thumbnails).
     private static var thumbSize: CGSize {

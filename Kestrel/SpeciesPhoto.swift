@@ -37,17 +37,10 @@ struct SpeciesPhoto<Placeholder: View>: View {
         content
             .modifier(PresentPhotoOnTap(
                 scientificName: scientificName,
-                enabled: tappable && hasImage,
+                enabled: tappable,
                 presenter: presenter,
                 onTap: onTap
             ))
-    }
-
-    /// Whether an image is expected — gates tappability so a bare placeholder
-    /// doesn't open an empty viewer. Depends only on remote metadata; species
-    /// without it (e.g. Indonesian Honeyeater) show the placeholder.
-    private var hasImage: Bool {
-        SpeciesPhotoMetadata.shared.info(for: scientificName) != nil
     }
 
     @ViewBuilder
