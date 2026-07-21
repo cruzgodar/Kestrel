@@ -190,6 +190,27 @@ struct ContentView: View {
         } message: {
             Text("Kestrel cannot identify birds without microphone access, because it listens for their songs and calls. You can turn on microphone access for Kestrel in Settings.")
         }
+        // Stopping a watch-started session ends a birding walk the watch has been
+        // recording as a workout. Ask here — the user is looking at the phone —
+        // rather than leaving the question waiting on a wrist they've put down.
+        // The answer rides along with the stop (see `resolveWatchWorkout`), so
+        // the watch acts on it instead of prompting again. Deliberately an alert
+        // rather than a confirmation dialog: its automatic Cancel would sit
+        // alongside Resume meaning almost the same thing, and every outcome here
+        // should be a deliberate choice among the three.
+        .alert(
+            "Save This Birding Walk?",
+            isPresented: Binding(
+                get: { manager.showWatchWorkoutPrompt },
+                set: { manager.showWatchWorkoutPrompt = $0 }
+            )
+        ) {
+            Button("Save Workout") { manager.resolveWatchWorkout(.save) }
+            Button("Resume") { manager.showWatchWorkoutPrompt = false }
+            Button("Discard", role: .destructive) { manager.resolveWatchWorkout(.discard) }
+        } message: {
+            Text("Your Apple Watch has been recording this session as a walk. Saving logs it to Fitness and counts toward your rings.")
+        }
     }
 
     // The single button morphs from a wide "Start Recording" pill to a 56pt

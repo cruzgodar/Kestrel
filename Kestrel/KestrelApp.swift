@@ -15,7 +15,7 @@ struct KestrelApp: App {
     /// start/stop handshakes into `recordingManager`.
     private let watchBridge: WatchAudioBridge
 
-    enum AppTab: Hashable { case identify, lifeList, map, more }
+    enum AppTab: Hashable { case identify, lifeList, map, settings }
 
     init() {
         let manager = RecordingManager()
@@ -116,7 +116,7 @@ struct KestrelApp: App {
                 Tab("Map", systemImage: "map", value: AppTab.map) {
                     MapView()
                 }
-                Tab("More", systemImage: "ellipsis.circle", value: AppTab.more) {
+                Tab("Settings", systemImage: "gearshape.fill", value: AppTab.settings) {
                     NavigationStack {
                         MoreView()
                     }

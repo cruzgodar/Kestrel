@@ -37,9 +37,9 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// When the current workout began, so `end()` can discard walks shorter
     /// than `minimumDuration` rather than offering to log a trivially short one.
     private var startDate: Date?
-    /// Birding walks under a minute aren't worth saving to HealthKit — they're
+    /// Birding walks this short aren't worth saving to HealthKit — they're
     /// usually an accidental start/stop, not a real walk.
-    private let minimumDuration: TimeInterval = 60
+    private let minimumDuration: TimeInterval = 15
 
     /// A walk waiting on the user's decision. Non-nil only between
     /// `pause()`/`end()` and `save()`/`discard()`/`resume()`; the view observes it
@@ -150,21 +150,26 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// A paused session keeps both the walk and our background runtime intact,
     /// so resuming is genuinely a continuation.
     ///
-    /// Trivially short walks skip the prompt entirely — a stop ten seconds in is
-    /// a mistake or a change of mind, and re-tapping record is less friction than
-    /// a modal.
-    func pause() async {
-        guard let session, let builder, let started = startDate else { return }
-
-        guard Date().timeIntervalSince(started) >= minimumDuration else {
-            await end()  // too short to be worth a decision; end + discard
-            return
-        }
+    /// Trivially short walks skip the prompt entirely — a stop a few seconds in
+    /// is a mistake or a change of mind, and re-tapping record is less friction
+    /// than a prompt. Those return false so the caller can `end()` them instead,
+    /// which discards them outright.
+    ///
+    /// Synchronous on purpose. The watch morphs the stop button *directly* into
+    /// the prompt's save button, so `pendingSave` has to land in the same turn
+    /// the morph starts. Behind an `await` there'd be a beat where the view sees
+    /// neither "recording" nor "prompting", and the button would slingshot back
+    /// toward center before snapping into the corner.
+    @discardableResult
+    func pause() -> Bool {
+        guard let session, let builder, let started = startDate else { return false }
+        guard Date().timeIntervalSince(started) >= minimumDuration else { return false }
 
         session.pause()
         pendingBuilder = builder
         pendingSave = PendingWorkout(start: started, end: Date(), canResume: true)
         startAbandonTimeout()
+        return true
     }
 
     /// The user chose to keep birding. Un-pauses the workout so the walk carries

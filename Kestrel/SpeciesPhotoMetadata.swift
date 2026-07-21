@@ -17,15 +17,63 @@ struct SpeciesPhotoInfo: Decodable {
     /// eBird species code (e.g. "rufwar1"), used to link to the species page.
     let code: String?
 
-    /// Attribution line for the CC-licensed photo: photographer and license,
-    /// degrading gracefully when either is missing.
+    /// Attribution line for the CC-licensed photo: just the photographer's name.
+    ///
+    /// The license is deliberately left out — it's carried by the separate
+    /// `license` field and verifiable on the source page the caption links to,
+    /// so repeating it here only crowds the line. Source credits arrive in a
+    /// boilerplate form ("(c) Name, some rights reserved (CC BY-NC)") that
+    /// smuggles the same license back in, so `displayCredit` strips it (along
+    /// with the copyright mark and the rights-reserved phrase) rather than
+    /// letting it through the back door.
+    ///
+    /// Falls back to the license — and then to "Public domain" — only when
+    /// there's no photographer to name at all, where an empty caption would be
+    /// worse than a bare license.
     var attribution: String {
-        switch (credit?.nilIfEmpty, license?.nilIfEmpty) {
-        case let (credit?, license?): return "\(credit) · \(license)"
-        case let (credit?, nil): return credit
-        case let (nil, license?): return license
-        case (nil, nil): return "Public domain"
+        // Cleaning can empty a credit that was nothing but boilerplate, so the
+        // fallbacks are checked against the cleaned result rather than the raw.
+        if let name = credit?.nilIfEmpty.map(Self.displayCredit)?.nilIfEmpty {
+            return name
         }
+        return license?.nilIfEmpty ?? "Public domain"
+    }
+
+    /// Strips the syndicated-credit boilerplate down to the photographer's name:
+    /// `"(c) Miguel A Mejias, PhD., some rights reserved (CC BY-NC)"` becomes
+    /// `"Miguel A Mejias, PhD."`.
+    ///
+    /// The trailing-parenthetical rule requires a license-ish token inside the
+    /// parentheses, so a name that legitimately ends in one — "Alvaro Rivera
+    /// Rojas (brújula de aves)" — survives intact.
+    /// `nonisolated` because `attribution` is read off the main actor (see
+    /// `SpeciesPhotoMetadata`, itself nonisolated), and this module defaults to
+    /// MainActor isolation.
+    nonisolated static func displayCredit(_ raw: String) -> String {
+        var text = raw
+        // Leading copyright mark: "(c) ", "(C) ", "© ".
+        text = text.replacingOccurrences(
+            of: #"^\s*(?:\(c\)|©)\s*"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        // "…, some rights reserved" / "…, all rights reserved", comma included.
+        text = text.replacingOccurrences(
+            of: #",?\s*(?:some|all)\s+rights\s+reserved"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        // Trailing license parenthetical: "(CC BY-NC)", "(CC0 1.0)", "(GFDL)".
+        text = text.replacingOccurrences(
+            of: #"\s*\([^)]*(?:CC|Creative Commons|public domain|GFDL|BY-|SA)[^)]*\)\s*$"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        // Trailing separators left behind by the removals above. A trailing
+        // period is kept — "PhD." needs it.
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: ",;·-"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     /// Link to the photo's source page, so a tap can verify the license and

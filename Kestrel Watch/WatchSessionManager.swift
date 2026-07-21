@@ -288,10 +288,19 @@ final class WatchSessionManager: NSObject {
         start()
     }
 
+    /// What to do with the birding walk when a stop comes in from the phone.
+    /// The phone puts up its own save/resume/discard prompt when the user stops
+    /// a watch-started session there, so it sends the answer along with the stop
+    /// — otherwise the same question would be waiting on the wrist afterwards.
+    /// `.ask` is the watch's own behavior: park the walk and prompt here.
+    enum WorkoutDecision: String {
+        case ask, save, discard
+    }
+
     /// Called when the phone asks the watch to stop streaming. Idempotent.
-    func handleRemoteStop() {
+    func handleRemoteStop(decision: WorkoutDecision = .ask) {
         guard isRecording else { return }
-        stop()
+        stop(decision: decision)
     }
 
     /// Phone started recording with its own mic — mirror its now-hearing screen
@@ -595,7 +604,12 @@ final class WatchSessionManager: NSObject {
     /// paused so "Resume" on the save prompt can continue the same walk — from an
     /// unattended teardown (a watchdog giving up, the system ending the workout),
     /// where the session is genuinely over and must be ended outright.
-    private func stop(resumable: Bool = true) {
+    ///
+    /// `decision` carries an answer the user already gave on the phone, so the
+    /// walk is saved or discarded outright instead of parking a duplicate prompt
+    /// on the wrist. It's applied in the same task that winds the workout down,
+    /// so it can't race the pause/end that has to precede it.
+    private func stop(resumable: Bool = true, decision: WorkoutDecision = .ask) {
         guard isRecording else { return }
 
         // End the phone-liveness watchdog before tearing down.
@@ -614,12 +628,21 @@ final class WatchSessionManager: NSObject {
         // can't quietly post a workout to their activity-sharing friends. A
         // user-initiated stop only *pauses* the workout, so picking Resume on
         // that prompt continues the same walk rather than starting a second one.
-        // A no-op if no workout was running (e.g. stopped before audio came up).
+        //
+        // Parking happens *before* the morph below, and synchronously, so the
+        // view can swap the stop button straight into the prompt's save button
+        // in one step (see `pause()`). A false return means there was nothing
+        // worth asking about — no workout running, or too short a walk — and
+        // the session is ended outright instead, which discards it.
+        let parked = resumable && WatchWorkoutManager.shared.pause()
         Task {
-            if resumable {
-                await WatchWorkoutManager.shared.pause()
-            } else {
+            if !parked {
                 await WatchWorkoutManager.shared.end()
+            }
+            switch decision {
+            case .ask:     break  // leave it in `pendingSave` and prompt here
+            case .save:    await WatchWorkoutManager.shared.save()
+            case .discard: await WatchWorkoutManager.shared.discard()
             }
         }
 
@@ -880,7 +903,16 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
             Task { @MainActor in
                 switch cmd {
                 case "remoteStart": WatchSessionManager.shared.handleRemoteStart()
-                case "remoteStop":  WatchSessionManager.shared.handleRemoteStop()
+                case "remoteStop":
+                    // The phone answers the save/resume/discard question itself
+                    // when the user stops there, and rides the answer along on
+                    // `workout`. An older phone build (or a stop from anywhere
+                    // else) sends none, which decodes to `.ask` — the watch then
+                    // puts the question up on the wrist as before.
+                    let raw = payload["workout"] as? String
+                    let decision = raw.flatMap(WatchSessionManager.WorkoutDecision.init(rawValue:))
+                        ?? WatchSessionManager.WorkoutDecision.ask
+                    WatchSessionManager.shared.handleRemoteStop(decision: decision)
                 case "phoneStart":  WatchSessionManager.shared.handlePhoneRecordingStarted()
                 case "phoneStop":   WatchSessionManager.shared.handlePhoneRecordingStopped()
                 case "phoneHeartbeat":  WatchSessionManager.shared.handlePhoneHeartbeat()

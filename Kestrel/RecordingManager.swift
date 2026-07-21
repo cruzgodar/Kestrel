@@ -30,6 +30,20 @@ final class RecordingManager {
     /// denied. Drives an alert offering to open Settings, mirroring the location
     /// one. Cleared by the view on dismiss (hence not `private(set)`).
     var showMicPermissionAlert = false
+    /// Set when the user taps stop on a session the *watch* started, to ask
+    /// whether the birding walk should be saved to Fitness, resumed, or thrown
+    /// away. The walk lives on the watch (it owns the `HKWorkoutSession`), so the
+    /// answer is relayed with the stop rather than acted on here. Cleared by the
+    /// view on dismiss (hence not `private(set)`).
+    var showWatchWorkoutPrompt = false
+    /// When the current watch-driven session started, so a stop can tell a real
+    /// walk from an accidental tap and skip the prompt for the latter — matching
+    /// the watch's own `minimumDuration` cutoff, below which it discards the walk
+    /// without asking either.
+    private var watchSessionStart: Date?
+    /// Mirrors `WatchWorkoutManager.minimumDuration`: shorter than this and the
+    /// watch throws the walk away regardless, so there's nothing to ask about.
+    private static let minimumWorkoutDuration: TimeInterval = 15
     /// True when location access is explicitly *denied* or *restricted* (not merely
     /// undetermined). The Identify tab grays the record button and shows a lock
     /// glyph in this state; undetermined keeps the normal button so the first tap
@@ -325,10 +339,19 @@ final class RecordingManager {
 
     func toggle() async {
         if watchRecording {
-            // Active session was started on / for the watch — ask the watch
-            // to stop. It'll tear down its streamer + ERS and send back a
-            // "stop" handshake that flips our state.
-            stopWatchSession()
+            // Active session was started on / for the watch, so there's a
+            // birding walk on the wrist waiting to be saved or thrown away. Ask
+            // here rather than letting the watch ask afterwards — the user is
+            // looking at the phone, and the prompt would otherwise be sitting
+            // unanswered on a wrist they aren't looking at. `stopWatchSession`
+            // then relays their answer along with the stop.
+            if watchWalkIsSaveable {
+                showWatchWorkoutPrompt = true
+            } else {
+                // Too short to be a real walk — the watch discards it without
+                // asking, so neither should we.
+                stopWatchSession(workout: .ask)
+            }
         } else if isRecording {
             stop()
         } else {
@@ -504,10 +527,35 @@ final class RecordingManager {
         }
     }
 
-    private func stopWatchSession() {
+    /// What the user chose for the birding walk on the phone's stop prompt.
+    /// Mirrors `WatchSessionManager.WorkoutDecision` on the watch side, which
+    /// decodes the raw value off the `remoteStop` payload. `.ask` leaves the
+    /// question to the watch (the pre-existing behavior).
+    enum WatchWorkoutDecision: String {
+        case ask, save, discard
+    }
+
+    /// Whether a stop should raise the save/resume/discard prompt: only for a
+    /// watch session that has run long enough for the watch to be holding a walk
+    /// worth deciding about.
+    private var watchWalkIsSaveable: Bool {
+        guard watchRecording, let start = watchSessionStart else { return false }
+        return Date().timeIntervalSince(start) >= Self.minimumWorkoutDuration
+    }
+
+    /// The user answered the phone's prompt. Relays the decision to the watch
+    /// with the stop, so the walk is saved or dropped without a second prompt
+    /// appearing on the wrist.
+    func resolveWatchWorkout(_ decision: WatchWorkoutDecision) {
+        showWatchWorkoutPrompt = false
+        stopWatchSession(workout: decision)
+    }
+
+    private func stopWatchSession(workout: WatchWorkoutDecision) {
         let s = WCSession.default
-        s.sendMessage(["cmd": "remoteStop"], replyHandler: nil, errorHandler: nil)
-        s.transferUserInfo(["cmd": "remoteStop"])
+        let payload: [String: Any] = ["cmd": "remoteStop", "workout": workout.rawValue]
+        s.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+        s.transferUserInfo(payload)
         // Tear our own side down immediately rather than waiting for the watch's
         // "stop" handshake to flip our state. If the watch has died (battery,
         // crash, out of range with no app left to answer) that handshake never
@@ -689,6 +737,7 @@ final class RecordingManager {
 
         isRecording = true
         watchRecording = true
+        watchSessionStart = Date()
 
         // Activate the silent-audio keepalive so iOS doesn't suspend us
         // if the user puts the phone away mid-session.
@@ -719,6 +768,11 @@ final class RecordingManager {
         guard watchRecording else { return }
         watchRecording = false
         isRecording = false
+        watchSessionStart = nil
+        // The session is over however we got here — a watch-side stop, a
+        // watchdog, a lost link. Any prompt still up is now asking about a walk
+        // whose fate is no longer ours to decide, so take it down.
+        showWatchWorkoutPrompt = false
         watchWindowBuffer.removeAll(keepingCapacity: true)
         watchKeepalive.stop()
         cancelWatchLifecycleWatchdogs()
@@ -794,7 +848,10 @@ final class RecordingManager {
     /// Session" action (wired in `KestrelApp`). A no-op if nothing is recording.
     func endActiveSession() {
         if watchRecording {
-            stopWatchSession()
+            // Triggered from a notification action, not the stop button, so
+            // there's no answer to relay — the user never saw the phone's
+            // prompt. `.ask` leaves the walk parked for the watch to ask about.
+            stopWatchSession(workout: .ask)
         } else if isRecording {
             stop()
         }
