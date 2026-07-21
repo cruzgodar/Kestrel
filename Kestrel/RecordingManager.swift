@@ -855,6 +855,15 @@ final class RecordingManager {
         }
     }
 
+    /// Replies to the watch's "are you still there?" probe with an out-of-band
+    /// heartbeat. The watch sends this once its heartbeat gap crosses the
+    /// give-up threshold, so answering promptly is what saves a long session
+    /// from being torn down after a stretch where both apps were backgrounded
+    /// and the scheduled beats never landed.
+    func answerWatchPing() {
+        sendPhoneHeartbeat()
+    }
+
     /// Asks the watch to tear down and restart its capture session — the remedy
     /// for a stall noticed on the phone side (no audio arriving). Logged, with no
     /// UI side effects, per spec.

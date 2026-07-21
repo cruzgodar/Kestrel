@@ -115,6 +115,12 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
             if let lat = payload["lat"] as? Double, let lon = payload["lon"] as? Double {
                 Task { @MainActor in manager.updateWatchLocation(lat: lat, lon: lon) }
             }
+        case "watchPing":
+            // The watch's heartbeat has been quiet long enough to worry it and
+            // it's asking us to prove we're still here before it tears the
+            // session down. Answer immediately rather than waiting for the next
+            // scheduled beat.
+            Task { @MainActor in manager.answerWatchPing() }
         case "stopUnexpected":
             Task { @MainActor in manager.stopFromWatchUnexpectedly() }
         case "addToLifeList":

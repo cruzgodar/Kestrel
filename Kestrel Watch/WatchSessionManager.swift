@@ -157,6 +157,20 @@ final class WatchSessionManager: NSObject {
     private var lastPhoneHeartbeatAt: Date?
     private let watchdogInterval: TimeInterval = 5
     private let phoneGoneThreshold: TimeInterval = 60
+    /// Wall-clock time of the watchdog's previous tick. The loop is a chain of
+    /// `Task.sleep`s, which the system freezes outright while the app is
+    /// suspended — so a tick arriving far later than `watchdogInterval` means
+    /// *we* were frozen, not that the phone went quiet. See `checkPhoneHeartbeat`.
+    private var lastWatchdogTickAt: Date?
+    /// A tick gap beyond this means the app was suspended rather than merely
+    /// scheduled late; the heartbeat clock is then reset instead of judged.
+    private let suspensionTickGap: TimeInterval = 15
+    /// Set when a heartbeat gap first crosses `phoneGoneThreshold`. We probe the
+    /// phone and give it one grace window to answer before giving up, so a phone
+    /// that was itself suspended (and is about to flush a queued heartbeat) isn't
+    /// mistaken for a phone that's gone.
+    private var phoneProbedAt: Date?
+    private let phoneProbeGrace: TimeInterval = 30
     /// Set when the phone link is lost for good; drives a one-shot alert on the
     /// watch (the device that noticed). Observable; the view clears it.
     var connectionAlert: String?
@@ -340,7 +354,12 @@ final class WatchSessionManager: NSObject {
         switch kind {
         case "starred": type = .success       // softer rising chime
         case "newSpecies": type = .notification  // sharper double-tap
-        case "soft": type = .directionUp      // gentle single tap (all-birds opt-in); .click is imperceptible on-wrist
+        // Single soft tap for the all-birds opt-in. Deliberately *not* one of the
+        // multi-beat patterns: `.directionUp` reads on-wrist as the same rising
+        // double as `.success` (the starred alert), which defeats the point of a
+        // distinct subtle buzz, and `.click` is imperceptible. `.start` is the
+        // gentlest single-impulse type that's still reliably felt.
+        case "soft": type = .start
         default: type = .click
         }
         WKInterfaceDevice.current().play(type)
@@ -572,7 +591,11 @@ final class WatchSessionManager: NSObject {
         }
     }
 
-    private func stop() {
+    /// `resumable` distinguishes the user tapping stop — where the workout is
+    /// paused so "Resume" on the save prompt can continue the same walk — from an
+    /// unattended teardown (a watchdog giving up, the system ending the workout),
+    /// where the session is genuinely over and must be ended outright.
+    private func stop(resumable: Bool = true) {
         guard isRecording else { return }
 
         // End the phone-liveness watchdog before tearing down.
@@ -585,9 +608,20 @@ final class WatchSessionManager: NSObject {
         session.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
         session.transferUserInfo(["cmd": "stop"])
 
-        // End the birding-walk workout and save it to HealthKit. A no-op if no
-        // workout was running (e.g. stopped before audio came up).
-        Task { await WatchWorkoutManager.shared.stop() }
+        // Wind the birding-walk workout down. Nothing is written to HealthKit
+        // here — a long-enough walk lands in `WatchWorkoutManager.pendingSave`
+        // and the user confirms before it's logged, so an unattended teardown
+        // can't quietly post a workout to their activity-sharing friends. A
+        // user-initiated stop only *pauses* the workout, so picking Resume on
+        // that prompt continues the same walk rather than starting a second one.
+        // A no-op if no workout was running (e.g. stopped before audio came up).
+        Task {
+            if resumable {
+                await WatchWorkoutManager.shared.pause()
+            } else {
+                await WatchWorkoutManager.shared.end()
+            }
+        }
 
         // Animate the morph; tear the audio engine down only once it has played
         // out (the timed sleep below). `engine.stop()` + `setActive(false)`
@@ -679,6 +713,8 @@ final class WatchSessionManager: NSObject {
     private func startHeartbeatWatchdog() {
         connectionAlert = nil
         lastPhoneHeartbeatAt = Date()
+        lastWatchdogTickAt = Date()
+        phoneProbedAt = nil
         phoneHeartbeatWatchdog?.cancel()
         phoneHeartbeatWatchdog = Task { [weak self] in
             while !Task.isCancelled {
@@ -694,6 +730,8 @@ final class WatchSessionManager: NSObject {
         phoneHeartbeatWatchdog?.cancel()
         phoneHeartbeatWatchdog = nil
         lastPhoneHeartbeatAt = nil
+        lastWatchdogTickAt = nil
+        phoneProbedAt = nil
     }
 
     /// Returns false once it stops the session so the polling loop exits. Only a
@@ -701,18 +739,93 @@ final class WatchSessionManager: NSObject {
     /// tolerated so the session survives normal reachability churn.
     private func checkPhoneHeartbeat() -> Bool {
         guard isRecording, !mirroringPhone, let last = lastPhoneHeartbeatAt else { return false }
-        let gap = Date().timeIntervalSince(last)
-        guard gap >= phoneGoneThreshold else { return true }
+        let now = Date()
 
-        // The phone has been silent long enough to consider it gone — restarting
-        // our capture wouldn't reach it, so stop cleanly and say why.
-        Log.warning("No phone heartbeat for \(Int(gap))s — stopping watch session")
+        // Were *we* asleep? The watchdog is a `Task.sleep` chain, so it stops
+        // advancing entirely while watchOS has the app suspended. On resume the
+        // very first tick would otherwise measure the whole suspension as phone
+        // silence and kill a perfectly healthy long session — the failure this
+        // guard exists to prevent. Treat an impossibly long tick gap as our own
+        // downtime: reset the clock and re-judge on the next real interval.
+        if let tick = lastWatchdogTickAt, now.timeIntervalSince(tick) >= suspensionTickGap {
+            Log.warning("Watchdog resumed after \(Int(now.timeIntervalSince(tick)))s suspended — not counting it as phone silence")
+            lastWatchdogTickAt = now
+            lastPhoneHeartbeatAt = now
+            phoneProbedAt = nil
+            return true
+        }
+        lastWatchdogTickAt = now
+
+        let gap = now.timeIntervalSince(last)
+        guard gap >= phoneGoneThreshold else {
+            phoneProbedAt = nil  // healthy again; clear any in-flight probe
+            return true
+        }
+
+        // Silent long enough to be suspicious — but a backgrounded phone can go
+        // quiet for a stretch and then flush its queued heartbeats. Poke it once
+        // and wait out `phoneProbeGrace` before concluding anything.
+        guard let probed = phoneProbedAt else {
+            Log.warning("No phone heartbeat for \(Int(gap))s — probing before giving up")
+            phoneProbedAt = now
+            probePhone()
+            return true
+        }
+        guard now.timeIntervalSince(probed) >= phoneProbeGrace else { return true }
+
+        // The phone ignored a direct probe too — consider it genuinely gone.
+        // Restarting our capture wouldn't reach it, so stop cleanly and say why.
+        Log.warning("No phone heartbeat for \(Int(gap))s and no answer to a probe — stopping watch session")
         connectionAlert = "Lost the connection to your iPhone. Recording stopped."
         WatchNotifications.notifySessionEnded(
             body: "Lost the connection to your iPhone. Re-tap to keep listening."
         )
-        stop()
+        // Not resumable: with the phone gone there's nothing to resume *into*,
+        // so the walk is genuinely over.
+        stop(resumable: false)
         return false
+    }
+
+    /// The workout session — and with it our background runtime — was ended by
+    /// the system rather than by the user. The mic won't survive it, so stop the
+    /// recording properly and say so, instead of leaving a session that looks
+    /// live on the wrist but has gone deaf.
+    func handleWorkoutEndedBySystem() {
+        guard isRecording, !mirroringPhone else { return }
+        Log.warning("Workout ended by the system — stopping watch session")
+        connectionAlert = "Apple Watch ended the session. Re-tap to keep listening."
+        WatchNotifications.notifySessionEnded(
+            body: "Apple Watch ended the session. Re-tap to keep listening."
+        )
+        // The workout session is already gone — there's nothing left to pause.
+        stop(resumable: false)
+    }
+
+    /// User picked "Resume" on the save prompt. Un-pauses the workout so the walk
+    /// stays one continuous session, then brings audio and the phone link back up
+    /// through the normal start path (whose `WatchWorkoutManager.start()` is a
+    /// no-op while a session is already live, so it won't open a second workout).
+    /// Falls through to a plain start if the workout couldn't be resumed, so the
+    /// user still gets a working session rather than a dead button.
+    func resumeBirding() {
+        guard !isRecording, !isStarting else { return }
+        if !WatchWorkoutManager.shared.resume() {
+            Log.warning("Resume requested but the workout was no longer resumable — starting fresh")
+        }
+        start()
+    }
+
+    /// Asks the phone to prove it's still there, used once a heartbeat gap turns
+    /// suspicious. The phone answers with an immediate `phoneHeartbeat` (see
+    /// `RecordingManager`), which resets our clock. Sent both live and via the
+    /// queued channel so a backgrounded phone still gets it.
+    private func probePhone() {
+        guard WCSession.isSupported() else { return }
+        let s = WCSession.default
+        guard s.activationState == .activated else { return }
+        let payload: [String: Any] = ["cmd": "watchPing"]
+        s.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+        s.transferUserInfo(payload)
     }
 
     /// Tears the audio engine down and brings it straight back up, without

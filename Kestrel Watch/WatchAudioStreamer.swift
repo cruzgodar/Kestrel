@@ -15,8 +15,20 @@ import Foundation
 /// spins up.
 final class WatchAudioStreamer: @unchecked Sendable {
     static let targetSampleRate: Double = 16_000
-    /// 3200 samples @ 16 kHz = 200 ms per chunk → 5 messages/sec.
-    static let chunkSamples: Int = 3_200
+    /// 8000 samples @ 16 kHz = 500 ms per chunk → 2 messages/sec.
+    ///
+    /// Was 200 ms / 5 messages a second. Each `sendMessageData` is a full IPC +
+    /// Bluetooth round trip, and watchOS suspends a backgrounded app that averages
+    /// over ~15% CPU across a minute — the ceiling a multi-hour birding session
+    /// has to live under. Halving-and-then-some the message rate is the single
+    /// cheapest win available; the cost is 300 ms more latency to the now-hearing
+    /// display, invisible against BirdNET's 3-second analysis window.
+    static let chunkSamples: Int = 8_000
+
+    /// Frames per input tap. At a 48 kHz hardware rate the old 1024 meant ~47
+    /// converter invocations a second; 4800 makes it ~10 for the same audio, with
+    /// the buffering that used to happen downstream now happening in the tap.
+    private static let tapBufferSize: AVAudioFrameCount = 4_800
 
     private let engine = AVAudioEngine()
 
@@ -52,7 +64,7 @@ final class WatchAudioStreamer: @unchecked Sendable {
         converter = AVAudioConverter(from: hwFormat, to: targetFormat)
 
         input.removeTap(onBus: 0)
-        input.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { [weak self] buf, _ in
+        input.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: hwFormat) { [weak self] buf, _ in
             self?.handleTap(buf)
         }
 

@@ -50,6 +50,12 @@ struct ContentView: View {
     /// Drives the explanatory modal shown when the user taps the gray lock button.
     @State private var showPermissionInfo = false
 
+    /// The birding walk waiting on a save/discard decision, if any. Observed from
+    /// the workout manager so the prompt appears however the session ended —
+    /// including the unattended endings that used to log a workout (and notify
+    /// the user's activity-sharing friends) with no one watching.
+    @State private var workout = WatchWorkoutManager.shared
+
     /// Gray fill for the locked (permission-denied) record button, matching the
     /// phone's locked state.
     private static let lockedTint = Color(white: 0.45)
@@ -156,6 +162,19 @@ struct ContentView: View {
         .sheet(isPresented: $showPermissionInfo) {
             permissionInfo
         }
+        // Nothing has been written to HealthKit at this point — the walk is only
+        // logged if the user taps Save here.
+        .sheet(item: Binding(
+            get: { workout.pendingSave },
+            // Dismissal is driven entirely by the buttons, each of which clears
+            // `pendingSave` itself. The setter deliberately does nothing: mapping
+            // a swipe-away onto Discard would throw the walk out on an ambiguous
+            // gesture, and onto Finish would log one the user never asked for.
+            set: { _ in }
+        )) { pending in
+            saveWorkoutPrompt(pending)
+                .interactiveDismissDisabled()
+        }
         // The record/stop morph is animated explicitly via `withAnimation` in
         // the session manager (so the audio bring-up/teardown can be deferred
         // until after it). Only the bird cross-fade is animated here.
@@ -167,6 +186,13 @@ struct ContentView: View {
             // deferred to the first time the user actually starts a session (see
             // `WatchWorkoutManager.start`), so a brand-new user isn't met with a
             // health-permission sheet before they've done anything.
+
+            // If watchOS killed us mid-session, the workout session outlived the
+            // app and is still running with nothing driving it — reclaim and end
+            // it, or the next start would be refused and the orphan would keep
+            // draining battery. It routes through the same confirm-before-save
+            // prompt, so a terminated session still never logs a walk silently.
+            await WatchWorkoutManager.shared.recoverOrphanedSession()
         }
         // Start Recording complication: drain a pending request when the app
         // becomes active (cold/background launch) and immediately when it fires
@@ -347,6 +373,48 @@ struct ContentView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
+    }
+
+    /// Asks whether to log the birding walk to the Fitness app. Deliberately a
+    /// question rather than an automatic save: writing the workout is what makes
+    /// Apple announce it to the user's activity-sharing friends, and a session
+    /// can end without the user ever asking it to (a dropped phone link, an
+    /// OS-side termination and relaunch).
+    private func saveWorkoutPrompt(_ pending: WatchWorkoutManager.PendingWorkout) -> some View {
+        ScrollView {
+            VStack(spacing: 10) {
+                Image(systemName: "figure.walk")
+                    .font(.system(size: 28))
+                    .foregroundStyle(Self.recordTint)
+                Text(pending.canResume ? "Done Birding?" : "Save This Walk?")
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+                Text("\(Self.durationText(pending.duration)) so far. Finishing logs it to Fitness and counts toward your rings.")
+                    .font(.footnote)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                Button("Finish") { Task { await workout.save() } }
+                    .padding(.top, 4)
+                // Only offered while the workout is merely paused, where resuming
+                // continues the same walk. Once the session is truly over there's
+                // nothing to resume into, and the button would be a lie.
+                if pending.canResume {
+                    Button("Resume") { session.resumeBirding() }
+                        .tint(Self.recordTint)
+                }
+                Button("Discard") { Task { await workout.discard() } }
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+        }
+    }
+
+    /// "1h 12m" / "43m" — enough for the user to recognize which walk this was.
+    private static func durationText(_ seconds: TimeInterval) -> String {
+        let minutes = max(1, Int(seconds) / 60)
+        let (h, m) = (minutes / 60, minutes % 60)
+        return h > 0 ? "\(h)h \(m)m" : "\(m)m"
     }
 
     // MARK: - Add to life list button
