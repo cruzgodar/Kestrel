@@ -46,6 +46,24 @@ struct SpeciesPhotoInfo: Decodable {
         return license?.nilIfEmpty ?? "Public domain"
     }
 
+    /// The full-screen viewer's caption: the photographer marked with a
+    /// copyright sign, then the license the photo is used under —
+    /// `"© Miguel A Mejias, PhD. • CC BY-NC"`. The inline credit overlay stays on
+    /// the bare `attribution`, where a corner of the image is all the room there
+    /// is for a name.
+    ///
+    /// Either half can be missing at the source. No license on record leaves just
+    /// `"© Name"`; no photographer falls back to `attribution` untouched, since
+    /// "© CC BY-SA 4.0" would credit the license as though it were a person and
+    /// "© Public domain" contradicts itself.
+    var attributionWithLicense: String {
+        guard let name = credit?.nilIfEmpty.map(Self.displayCredit)?.nilIfEmpty else {
+            return attribution
+        }
+        guard let license = license?.nilIfEmpty else { return "© \(name)" }
+        return "© \(name) • \(license)"
+    }
+
     /// Strips the syndicated-credit boilerplate down to the photographer's name:
     /// `"(c) Miguel A Mejias, PhD., some rights reserved (CC BY-NC)"` becomes
     /// `"Miguel A Mejias, PhD."`.

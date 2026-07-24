@@ -563,7 +563,7 @@ struct SpeciesPhotoFullScreen: View {
                 // photo's source page — but only the "View source" line is colored
                 // blue; the attribution above it stays white.
                 let attributionBlock = VStack(spacing: 4) {
-                    Text(info.attribution)
+                    Text(info.attributionWithLicense)
                         .font(.caption2)
                         .foregroundStyle(.white.opacity(0.85))
                         .multilineTextAlignment(.center)
