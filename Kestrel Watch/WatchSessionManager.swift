@@ -430,6 +430,16 @@ final class WatchSessionManager: NSObject {
         }
     }
 
+    /// The phone's debug "Clear Image Cache" control fired. Drop ours too, and
+    /// re-fetch whatever we're showing right now so the screen doesn't sit on a
+    /// bird whose photo we just deleted.
+    func handleClearImageCache() {
+        WatchSpeciesImageCache.shared.clearAll()
+        guard let scientificName = lastBird?.scientificName else { return }
+        lastBirdImage = nil
+        requestImage(scientificName: scientificName)
+    }
+
     /// Asks the phone for a species image we don't have cached. Live path when
     /// reachable, queued fallback otherwise.
     private func requestImage(scientificName: String) {
@@ -947,6 +957,7 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                 case "phoneStop":   WatchSessionManager.shared.handlePhoneRecordingStopped()
                 case "phoneHeartbeat":  WatchSessionManager.shared.handlePhoneHeartbeat()
                 case "restartCapture":  WatchSessionManager.shared.handleRestartCapture()
+                case "clearImageCache": WatchSessionManager.shared.handleClearImageCache()
                 default: break
                 }
             }

@@ -174,6 +174,32 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
         }
     }
 
+    /// Tells the watch to drop its own species-photo cache. Paired with the
+    /// phone's debug "Clear Image Cache" control: the watch keeps a separate
+    /// copy of every thumbnail it's been sent, so clearing only the phone's
+    /// would leave the wrist showing the very images we meant to re-fetch.
+    ///
+    /// Static because the caller (the debug About screen) has no reason to hold
+    /// a bridge — the send needs nothing but the shared session. Both channels
+    /// fire the same way as everything else here: live message when reachable,
+    /// queued user-info otherwise, so a watch on the charger still clears when
+    /// it next wakes.
+    static func clearWatchImageCache() {
+        guard WCSession.isSupported() else { return }
+        let session = WCSession.default
+        guard session.activationState == .activated,
+              session.isPaired,
+              session.isWatchAppInstalled else { return }
+        let payload: [String: Any] = ["cmd": "clearImageCache"]
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: nil, errorHandler: { _ in
+                WCSession.default.transferUserInfo(payload)
+            })
+        } else {
+            session.transferUserInfo(payload)
+        }
+    }
+
     private func ingest(_ data: Data) {
         // Decode Int16 little-endian → Float32 in [-1, 1].
         let count = data.count / MemoryLayout<Int16>.size

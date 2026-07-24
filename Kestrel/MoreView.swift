@@ -202,10 +202,13 @@ struct MoreView: View {
 
     /// Debug-only control at the very bottom of the About screen: drops every
     /// cached species image (thumbnail, medium, and full-resolution tiers, on
-    /// disk and in memory) so the next view re-downloads from scratch.
+    /// disk and in memory) so the next view re-downloads from scratch. Also
+    /// clears the watch's own thumbnail cache, which is a separate copy the
+    /// phone pushed over WatchConnectivity and would otherwise survive this.
     private var clearCacheButton: some View {
         Button(role: .destructive) {
             RemoteSpeciesImageStore.shared.clearAllCaches()
+            WatchAudioBridge.clearWatchImageCache()
             refreshCacheCounts()
         } label: {
             Text("Clear Image Cache")
