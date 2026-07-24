@@ -72,9 +72,11 @@ struct KestrelApp: App {
         // bound. Life-list + nearby images are protected and never evicted.
         RemoteSpeciesImageStore.shared.setLimitOtherImages(true)
 
-        // Permission prompts (location, then notifications) are deferred to the
-        // first Start Recording tap rather than fired at launch — see
-        // `RecordingManager.startLocally`.
+        // Permission prompts are never fired straight from launch: on a fresh
+        // install the welcome screen introduces them and its Get Started button
+        // runs the sequence (`RecordingManager.requestOnboardingPermissions`),
+        // and after that the first Start Recording tap covers anything still
+        // unanswered — see `RecordingManager.startLocally`.
 
         // Warm up UIKit's keyboard subsystem off-screen. The first time a
         // text field becomes first responder anywhere in the app, the
@@ -112,104 +114,122 @@ struct KestrelApp: App {
 
     var body: some Scene {
         WindowGroup {
-            TabView(selection: $selectedTab) {
-                Tab("Identify", systemImage: "magnifyingglass", value: AppTab.identify) {
-                    ContentView()
-                }
-                Tab("Life List", systemImage: "bird", value: AppTab.lifeList) {
-                    NavigationStack {
-                        LifeListView()
+            // The welcome screen is layered *over* a live app rather than shown
+            // in its place, so nothing below it is torn down and rebuilt when it
+            // goes away — the preloads kicked off in `init` keep warming behind
+            // it while the user reads.
+            ZStack {
+                mainInterface
+                if recordingManager.needsOnboarding {
+                    WelcomeView {
+                        await recordingManager.requestOnboardingPermissions()
                     }
-                }
-                Tab("Map", systemImage: "map", value: AppTab.map) {
-                    MapView()
-                }
-                Tab("Settings", systemImage: "gearshape.fill", value: AppTab.settings) {
-                    NavigationStack {
-                        MoreView()
-                    }
+                    .transition(.opacity)
                 }
             }
-            // Both tabs need both stores.
-            .environment(recordingManager)
-            .environment(lifeListStore)
-            // Drives the full-screen photo viewer; read by every SpeciesPhoto
-            // and the map's annotation tap handlers.
-            .environment(photoPresenter)
-            // Lets the full-screen viewer focus the Map tab on a bird.
-            .environment(mapNavigator)
-            // Full-screen species photo, opened by tapping any bird image. When
-            // the species has a recorded first sighting, a "Show on Map" button
-            // switches to the Map tab and zooms to that location.
-            .fullScreenCover(item: Binding(
-                get: { photoPresenter.presented },
-                set: { photoPresenter.presented = $0 }
-            )) { presentation in
-                // Each bird's place + date comes from its life-list entry (the
-                // earliest sighting shown in the Life List tab). Non-lifers have
-                // no entry, so both are nil and the sighting section is hidden.
-                let items = presentation.names.map { name in
-                    let observation = lifeListStore.firstObservation(for: name)
-                    return SpeciesPhotoItem(
-                        scientificName: name,
-                        placeName: observation?.location,
-                        dateFound: observation?.date
-                    )
+            .animation(.easeInOut(duration: 0.3), value: recordingManager.needsOnboarding)
+        }
+    }
+
+    @ViewBuilder
+    private var mainInterface: some View {
+        TabView(selection: $selectedTab) {
+            Tab("Identify", systemImage: "magnifyingglass", value: AppTab.identify) {
+                ContentView()
+            }
+            Tab("Life List", systemImage: "bird", value: AppTab.lifeList) {
+                NavigationStack {
+                    LifeListView()
                 }
-                SpeciesPhotoFullScreen(
-                    items: items,
-                    initialIndex: presentation.index,
-                    mapButtonTitle: "Show on Map",
-                    onShowOnMap: { item in
-                        guard let coord = lifeListStore.firstObservationCoordinate(
-                            for: item.scientificName
-                        ) else { return }
-                        photoPresenter.presented = nil
-                        selectedTab = .map
-                        mapNavigator.focus(latitude: coord.latitude, longitude: coord.longitude)
-                    }
+            }
+            Tab("Map", systemImage: "map", value: AppTab.map) {
+                MapView()
+            }
+            Tab("Settings", systemImage: "gearshape.fill", value: AppTab.settings) {
+                NavigationStack {
+                    MoreView()
+                }
+            }
+        }
+        // Both tabs need both stores.
+        .environment(recordingManager)
+        .environment(lifeListStore)
+        // Drives the full-screen photo viewer; read by every SpeciesPhoto
+        // and the map's annotation tap handlers.
+        .environment(photoPresenter)
+        // Lets the full-screen viewer focus the Map tab on a bird.
+        .environment(mapNavigator)
+        // Full-screen species photo, opened by tapping any bird image. When
+        // the species has a recorded first sighting, a "Show on Map" button
+        // switches to the Map tab and zooms to that location.
+        .fullScreenCover(item: Binding(
+            get: { photoPresenter.presented },
+            set: { photoPresenter.presented = $0 }
+        )) { presentation in
+            // Each bird's place + date comes from its life-list entry (the
+            // earliest sighting shown in the Life List tab). Non-lifers have
+            // no entry, so both are nil and the sighting section is hidden.
+            let items = presentation.names.map { name in
+                let observation = lifeListStore.firstObservation(for: name)
+                return SpeciesPhotoItem(
+                    scientificName: name,
+                    placeName: observation?.location,
+                    dateFound: observation?.date
                 )
-                // Re-inject the store: with the Observation framework, `.environment`
-                // objects don't reliably cross a fullScreenCover boundary, so the
-                // viewer's star toggle (which reads `LifeListStore` from the
-                // environment) would otherwise find it nil and do nothing.
-                .environment(lifeListStore)
             }
-            // Push "is the spectrogram visible?" into the recording manager
-            // — true only when the Identify tab is selected AND the scene
-            // is active. RecordingManager uses this to decide whether new
-            // species should fire a local notification.
-            .onChange(of: selectedTab, initial: true) { _, _ in
-                updateSpectrogramVisibility()
-            }
-            .onChange(of: scenePhase, initial: true) { _, phase in
-                updateSpectrogramVisibility()
-                // Cold-launch / background-launch path for the Start Recording
-                // widget: drain the pending request once the scene is active.
-                if phase == .active {
-                    startRecordingIfRequested()
-                    // No system callback fires for mic-permission changes, so
-                    // re-read it on foreground in case the user flipped it in
-                    // Settings while away — keeps the grayed button current.
-                    recordingManager.refreshMicrophoneAuthorization()
-                    // Catch travel: if location is already granted and no session
-                    // is running, recompute the nearby region + prefetch its
-                    // photos now, so opening the app somewhere new updates the
-                    // list immediately (see `refreshRegionOnForeground`).
-                    recordingManager.refreshRegionOnForeground()
-                    // Discover photos added to the CDN since last time (throttled),
-                    // so a growing photo set fills in without an app update.
-                    discoverNewPhotosOnForeground()
-                } else if phase == .background {
-                    // Queue the background photo prefetch + high-power update
-                    // check for whenever iOS next grants us time.
-                    BackgroundRefreshCoordinator.shared.scheduleAll()
+            SpeciesPhotoFullScreen(
+                items: items,
+                initialIndex: presentation.index,
+                mapButtonTitle: "Show on Map",
+                onShowOnMap: { item in
+                    guard let coord = lifeListStore.firstObservationCoordinate(
+                        for: item.scientificName
+                    ) else { return }
+                    photoPresenter.presented = nil
+                    selectedTab = .map
+                    mapNavigator.focus(latitude: coord.latitude, longitude: coord.longitude)
                 }
-            }
-            // Warm path: the intent fired while the app was already active.
-            .onReceive(NotificationCenter.default.publisher(for: RecordingIntentRequest.notification)) { _ in
+            )
+            // Re-inject the store: with the Observation framework, `.environment`
+            // objects don't reliably cross a fullScreenCover boundary, so the
+            // viewer's star toggle (which reads `LifeListStore` from the
+            // environment) would otherwise find it nil and do nothing.
+            .environment(lifeListStore)
+        }
+        // Push "is the spectrogram visible?" into the recording manager
+        // — true only when the Identify tab is selected AND the scene
+        // is active. RecordingManager uses this to decide whether new
+        // species should fire a local notification.
+        .onChange(of: selectedTab, initial: true) { _, _ in
+            updateSpectrogramVisibility()
+        }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            updateSpectrogramVisibility()
+            // Cold-launch / background-launch path for the Start Recording
+            // widget: drain the pending request once the scene is active.
+            if phase == .active {
                 startRecordingIfRequested()
+                // No system callback fires for mic-permission changes, so
+                // re-read it on foreground in case the user flipped it in
+                // Settings while away — keeps the grayed button current.
+                recordingManager.refreshMicrophoneAuthorization()
+                // Catch travel: if location is already granted and no session
+                // is running, recompute the nearby region + prefetch its
+                // photos now, so opening the app somewhere new updates the
+                // list immediately (see `refreshRegionOnForeground`).
+                recordingManager.refreshRegionOnForeground()
+                // Discover photos added to the CDN since last time (throttled),
+                // so a growing photo set fills in without an app update.
+                discoverNewPhotosOnForeground()
+            } else if phase == .background {
+                // Queue the background photo prefetch + high-power update
+                // check for whenever iOS next grants us time.
+                BackgroundRefreshCoordinator.shared.scheduleAll()
             }
+        }
+        // Warm path: the intent fired while the app was already active.
+        .onReceive(NotificationCenter.default.publisher(for: RecordingIntentRequest.notification)) { _ in
+            startRecordingIfRequested()
         }
     }
 

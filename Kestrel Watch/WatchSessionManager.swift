@@ -35,12 +35,51 @@ final class WatchSessionManager: NSObject {
     /// merely undetermined). Drives the gray lock.
     var permissionDenied: Bool { micDenied || locationDenied }
 
+    /// True while neither permission the watch needs has been answered yet,
+    /// which puts `WatchWelcomeView` up over the record screen. Derived from the
+    /// permissions themselves rather than a "has launched before" flag, so it
+    /// clears the moment either is answered — whichever way.
+    ///
+    /// The watch needs its own screen even when the phone has already been
+    /// through onboarding: watchOS microphone and location authorization are
+    /// per-device and can only be granted from the wrist.
+    private(set) var needsOnboarding = false
+
     /// Re-reads the watch's own mic + location authorization into the observable
     /// flags. There's no push callback for mic changes, so the view calls this on
     /// appear / foreground as well as after prompts.
     func refreshPermissionState() {
         micDenied = AVAudioApplication.shared.recordPermission == .denied
         locationDenied = WatchLocationProvider.shared.isDenied
+        // `&&`, not `||`: see the phone's matching seed in `RecordingManager` —
+        // once either prompt has been answered the watch app has been used, and
+        // an existing user shouldn't be met by an introduction on upgrade.
+        needsOnboarding =
+            AVAudioApplication.shared.recordPermission == .undetermined
+            && WatchLocationProvider.shared.authorizationStatus == .notDetermined
+    }
+
+    /// Runs the first-launch permission sequence behind the welcome screen's Get
+    /// Started button, then takes the screen down.
+    ///
+    /// Same order the first Start Recording tap uses — microphone, then
+    /// location, then notifications — each awaited so only one prompt is on the
+    /// tiny screen at a time, with the workout request last. Nothing here stops
+    /// at a refusal: a user who declines one should still get to answer the rest
+    /// now rather than meeting them piecemeal later.
+    ///
+    /// The workout request belongs here rather than on the phone. HealthKit
+    /// authorization is shared across the pair, so the phone could ask for it —
+    /// but doing so wouldn't spare the watch this screen (mic and location on
+    /// watchOS are per-device), and it would put a Health sheet in front of
+    /// phone-only users who never record a walk.
+    func requestOnboardingPermissions() async {
+        _ = await Self.ensureMicrophonePermission()
+        await WatchLocationProvider.shared.requestAuthorization()
+        await WatchNotifications.requestAuthorizationIfNeeded()
+        await WatchWorkoutManager.shared.requestAuthorization()
+        refreshPermissionState()
+        needsOnboarding = false
     }
 
     /// How a heard bird is highlighted — picks the watch's background color.
@@ -177,6 +216,10 @@ final class WatchSessionManager: NSObject {
 
     private override init() {
         super.init()
+        // Seed the permission flags — in particular `needsOnboarding`, which the
+        // app's root reads on its very first render, before anything has had a
+        // chance to call `activate()` or the view's on-appear refresh.
+        refreshPermissionState()
     }
 
     /// True while the watch is mirroring a recording the *phone* started with

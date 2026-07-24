@@ -91,6 +91,12 @@ final class RecordingManager {
     /// Invoked whenever the phone's recording authorization (mic or location)
     /// changes, so the app can push the new state to the watch (set in `KestrelApp`).
     var onRecordingAuthorizationChanged: (() -> Void)?
+    /// True while neither permission Kestrel needs has been answered yet, which
+    /// is what puts the first-launch `WelcomeView` up over the app. Seeded in
+    /// `preload()` and cleared by `requestOnboardingPermissions()`; see the
+    /// welcome screen for why this is derived from the permissions themselves
+    /// rather than from a "has launched before" flag.
+    private(set) var needsOnboarding = false
     /// IDs (scientific names) of detections whose confidence was just upgraded;
     /// the UI flashes their row yellow while they're in this set.
     private(set) var flashIDs: Set<String> = []
@@ -295,6 +301,28 @@ final class RecordingManager {
         onRecordingAuthorizationChanged?()
     }
 
+    /// Runs the first-launch permission sequence behind the welcome screen's Get
+    /// Started button, then takes the screen down.
+    ///
+    /// Same order as `startLocally` — microphone, then location, then
+    /// notifications — each awaited so only one system prompt is ever on screen.
+    /// Unlike `startLocally` this doesn't stop at the first refusal: a user who
+    /// declines the microphone should still get to answer the rest here, rather
+    /// than being re-prompted for them piecemeal later.
+    ///
+    /// Only the phone's own permissions. HealthKit — which the phone *could*
+    /// request on the watch's behalf, since authorization is shared across the
+    /// pair — is deliberately left to the watch: it can't spare the watch its
+    /// welcome screen either way (microphone and location on watchOS are
+    /// per-device), so asking here would only put a Health sheet in front of a
+    /// phone-only user who will never record a workout.
+    func requestOnboardingPermissions() async {
+        _ = await requestMicrophonePermission()
+        _ = await isLocationAuthorized(prompt: true)
+        await SpeciesNotifications.shared.requestAuthorizationIfNeeded()
+        needsOnboarding = false
+    }
+
     func preload() {
         // Track location authorization changes (button gating + watch state), and
         // seed the current value. Idempotent — re-assigning the callback is fine.
@@ -308,6 +336,16 @@ final class RecordingManager {
         // Seed the mic-denied flag too, so the record button is grayed at launch
         // when mic access was previously denied.
         micAccessDenied = AVAudioApplication.shared.recordPermission == .denied
+
+        // A brand-new install has answered *neither* prompt — put the welcome
+        // screen up rather than letting the first Start Recording tap fire two
+        // system dialogs with no explanation behind them. Deliberately `&&`, not
+        // `||`: once either has been answered the app has been used, and an
+        // existing user (say one who declined the mic long ago, leaving location
+        // never asked) shouldn't be met by an introduction on upgrade.
+        needsOnboarding =
+            AVAudioApplication.shared.recordPermission == .undetermined
+            && locationProvider.authorizationStatus == .notDetermined
 
         if classifierTask == nil {
             classifierTask = Task.detached(priority: .userInitiated) {

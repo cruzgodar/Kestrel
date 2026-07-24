@@ -103,6 +103,7 @@ struct MoreView: View {
 
                 Text(Self.intro)
                 Text(Self.watch)
+                Text(Self.images)
                 Text(Self.importing)
 
                 Divider()
@@ -307,11 +308,15 @@ struct MoreView: View {
     }
 
     private static let intro = markdown(
-        "Kestrel listens for birds in the background so you can focus on the nature around you. It uses Cornell Lab's BirdNET model to identify birds by their songs and calls, and when it hears one that you have starred in your life list or have never seen before, it notifies you. That lets you keep your focus off of your phone, with confidence that you'll know when a bird you care about is nearby. All processing happens on-device, all audio is deleted immediately after (i.e. within a few seconds of being recorded), and [the source code is freely available.](https://github.com/cruzgodar/Kestrel)"
+        "Kestrel listens for birds in the background so you can focus on the nature around you. It uses Cornell Lab's BirdNET model to identify birds by their songs and calls, and when it hears one that you have starred in your life list or have never seen before, it notifies you. That lets you keep your focus off of your phone, with confidence that you'll know when a bird you care about is nearby. All processing happens on-device, all audio is deleted immediately (i.e. within a few seconds of being recorded), and [the source code is freely available.](https://github.com/cruzgodar/Kestrel)"
     )
 
     private static let watch = markdown(
         "On Apple Watch, Kestrel can log your birding walk as a workout. That uses the watch's microphone, and so your phone can stay in your pocket. Since audio is processed on your phone, you must keep it with you to use Kestrel."
+    )
+    
+    private static let images = markdown(
+        "Kestrel uses freely-available (creative commons) images. Currently, the 1000 most common species have images, but more are coming soon!"
     )
 
     private static let importing = markdown(

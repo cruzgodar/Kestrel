@@ -264,7 +264,7 @@ struct ContentView: View {
         return manager.recordingBlocked ? Self.lockedTint : Self.recordTint
     }
 
-    private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
+    private static let recordTint = Color.kestrelPurple
     /// Red for the stop state, matching the life-list Delete All Entries button.
     private static let stopTint = Color.red
     /// Gray for the locked (location-denied) idle state.
