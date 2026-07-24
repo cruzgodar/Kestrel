@@ -12,17 +12,40 @@
 		<key>Kestrel.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
-			<integer>5</integer>
+			<integer>4</integer>
 		</dict>
 		<key>KestrelWatchWidgetExtension.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
-			<integer>4</integer>
+			<integer>5</integer>
 		</dict>
 		<key>KestrelWidgetExtension.xcscheme_^#shared#^_</key>
 		<dict>
 			<key>orderHint</key>
-			<integer>5</integer>
+			<integer>6</integer>
+		</dict>
+	</dict>
+	<key>SuppressBuildableAutocreation</key>
+	<dict>
+		<key>FC4BA8812FB951AA00955EA2</key>
+		<dict>
+			<key>primary</key>
+			<true/>
+		</dict>
+		<key>FC5ECB752FC0B82F00667FD7</key>
+		<dict>
+			<key>primary</key>
+			<true/>
+		</dict>
+		<key>FC5FFF552FE76654003F0F43</key>
+		<dict>
+			<key>primary</key>
+			<true/>
+		</dict>
+		<key>FC5FFF702FE766B5003F0F43</key>
+		<dict>
+			<key>primary</key>
+			<true/>
 		</dict>
 	</dict>
 </dict>

@@ -480,15 +480,26 @@ struct MapView: View {
                 coordinate: tappedInfo.coordinate,
                 others: tappedInfo.others
             ))
-        } else if mapCard != nil {
-            // A card is already open. Present the photo from the *sheet's own*
-            // context so it appears instantly — a root cover would have to wait for
-            // the sheet to finish dismissing first. The card is closed when this
-            // photo is dismissed (see MapCardSheet).
-            sheetPhoto = .lone(tappedInfo.representative)
         } else {
-            // No card open: present full-screen from the root (nothing to wait on).
-            presentedSinglePoint = tappedInfo.representative
+            // A stack of repeat observations of one bird counts as a single
+            // species and opens straight to its photo. It still holds every
+            // repeat, so pick the earliest sighting the same way the card grid
+            // does — the representative is the *newest* point of the stack.
+            let point = BirdCluster(
+                representative: tappedInfo.representative,
+                coordinate: tappedInfo.coordinate,
+                others: tappedInfo.others
+            ).uniqueByEarliest.first ?? tappedInfo.representative
+            if mapCard != nil {
+                // A card is already open. Present the photo from the *sheet's own*
+                // context so it appears instantly — a root cover would have to wait for
+                // the sheet to finish dismissing first. The card is closed when this
+                // photo is dismissed (see MapCardSheet).
+                sheetPhoto = .lone(point)
+            } else {
+                // No card open: present full-screen from the root (nothing to wait on).
+                presentedSinglePoint = point
+            }
         }
     }
 
@@ -589,7 +600,7 @@ struct MapView: View {
                 // Count distinct species, matching the deduped card grid — so a
                 // stack of repeat observations of one bird reads as "1" (and is
                 // tapped straight through to its photo) rather than "N Birds".
-                count: cluster.uniqueByMostRecent.count,
+                count: cluster.uniqueByEarliest.count,
                 coordinate: cluster.coordinate,
                 representative: cluster.representative,
                 others: cluster.others
@@ -892,10 +903,12 @@ struct BirdCluster: Identifiable, Hashable {
     var id: String { representative.id }
     var all: [MapPoint] { [representative] + others }
 
-    /// One point per species — the most recent observation — newest first.
+    /// One point per species — the *earliest* observation — newest first.
     /// With repeat observations enabled a cluster can hold several sightings of
-    /// the same bird; the card shows a single, latest thumbnail for each instead
-    /// of duplicates.
+    /// the same bird; the card shows a single thumbnail for each instead of
+    /// duplicates, carrying the date and place of the first time that bird was
+    /// seen here rather than the latest, to match how the rest of the app treats
+    /// a species' first sighting as the one worth showing.
     ///
     /// The sort carries a stable tiebreaker (scientific name, then point id)
     /// after the date, so birds sharing an exact timestamp — several species
@@ -903,16 +916,23 @@ struct BirdCluster: Identifiable, Hashable {
     /// order. Without it, `Dictionary.values` is unordered and `sorted(by:)`
     /// isn't guaranteed stable on equal keys, so the card could shuffle its
     /// birds between recomputations (e.g. when opening the full-screen viewer).
-    var uniqueByMostRecent: [MapPoint] {
-        var latest: [String: MapPoint] = [:]
+    var uniqueByEarliest: [MapPoint] {
+        var earliest: [String: MapPoint] = [:]
         for point in all {
-            if let existing = latest[point.scientificName] {
-                if Self.ordersBefore(point, existing) { latest[point.scientificName] = point }
-            } else {
-                latest[point.scientificName] = point
+            guard let existing = earliest[point.scientificName] else {
+                earliest[point.scientificName] = point
+                continue
+            }
+            // Ties go to the lower id, which is the life-list entry's own first
+            // sighting (`scientificName`) rather than one of its repeats
+            // (`scientificName#i`) — so an exact timestamp match keeps the
+            // canonical point.
+            if point.date < existing.date
+                || (point.date == existing.date && point.id < existing.id) {
+                earliest[point.scientificName] = point
             }
         }
-        return latest.values.sorted(by: Self.ordersBefore)
+        return earliest.values.sorted(by: Self.ordersBefore)
     }
 
     /// Deterministic "newest first" ordering with stable tiebreakers, so equal
@@ -1128,7 +1148,7 @@ private struct MapCardSheet: View {
                     alignment: .center,
                     spacing: Self.gridSpacing
                 ) {
-                    ForEach(cluster.uniqueByMostRecent) { point in
+                    ForEach(cluster.uniqueByEarliest) { point in
                         ClusterGridItem(
                             point: point,
                             cornerRadius: thumbCornerRadius
@@ -1136,7 +1156,7 @@ private struct MapCardSheet: View {
                         .onTapGesture {
                             // Open the viewer over every bird in the card so the
                             // photo can be swiped between them, starting here.
-                            let points = cluster.uniqueByMostRecent
+                            let points = cluster.uniqueByEarliest
                             let idx = points.firstIndex(of: point) ?? 0
                             photo = .pinpoint(points: points, index: idx)
                         }

@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "2650"
-   version = "1.7">
+   LastUpgradeVersion = "2660"
+   wasCreatedForAppExtension = "YES"
+   version = "2.0">
    <BuildAction
       parallelizeBuildables = "YES"
       buildImplicitDependencies = "YES"
@@ -15,9 +16,9 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "FC5ECB752FC0B82F00667FD7"
-               BuildableName = "Kestrel Watch.app"
-               BlueprintName = "Kestrel Watch"
+               BlueprintIdentifier = "FC5FFF552FE76654003F0F43"
+               BuildableName = "KestrelWidgetExtension.appex"
+               BlueprintName = "KestrelWidgetExtension"
                ReferencedContainer = "container:Kestrel.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -45,40 +46,61 @@
       shouldAutocreateTestPlan = "YES">
    </TestAction>
    <LaunchAction
-      buildConfiguration = "Release"
-      selectedDebuggerIdentifier = "Xcode.DebuggerFoundation.Debugger.LLDB"
-      selectedLauncherIdentifier = "Xcode.DebuggerFoundation.Launcher.LLDB"
+      buildConfiguration = "Debug"
+      selectedDebuggerIdentifier = ""
+      selectedLauncherIdentifier = "Xcode.IDEFoundation.Launcher.PosixSpawn"
       launchStyle = "0"
+      askForAppToLaunch = "Yes"
       useCustomWorkingDirectory = "NO"
       ignoresPersistentStateOnLaunch = "NO"
       debugDocumentVersioning = "YES"
       debugServiceExtension = "internal"
       allowLocationSimulation = "YES"
+      launchAutomaticallySubstyle = "2"
       queueDebuggingEnableBacktraceRecording = "Yes">
       <BuildableProductRunnable
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "FC5ECB752FC0B82F00667FD7"
-            BuildableName = "Kestrel Watch.app"
-            BlueprintName = "Kestrel Watch"
+            BlueprintIdentifier = "FC4BA8812FB951AA00955EA2"
+            BuildableName = "Kestrel.app"
+            BlueprintName = "Kestrel"
             ReferencedContainer = "container:Kestrel.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
+      <EnvironmentVariables>
+         <EnvironmentVariable
+            key = "_XCWidgetKind"
+            value = ""
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "_XCWidgetDefaultView"
+            value = "timeline"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+         <EnvironmentVariable
+            key = "_XCWidgetFamily"
+            value = "systemMedium"
+            isEnabled = "YES">
+         </EnvironmentVariable>
+      </EnvironmentVariables>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"
       shouldUseLaunchSchemeArgsEnv = "YES"
       savedToolIdentifier = ""
       useCustomWorkingDirectory = "NO"
-      debugDocumentVersioning = "YES">
+      debugDocumentVersioning = "YES"
+      askForAppToLaunch = "Yes"
+      launchAutomaticallySubstyle = "2">
       <BuildableProductRunnable
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "FC5ECB752FC0B82F00667FD7"
-            BuildableName = "Kestrel Watch.app"
-            BlueprintName = "Kestrel Watch"
+            BlueprintIdentifier = "FC4BA8812FB951AA00955EA2"
+            BuildableName = "Kestrel.app"
+            BlueprintName = "Kestrel"
             ReferencedContainer = "container:Kestrel.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

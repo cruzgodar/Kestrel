@@ -83,7 +83,15 @@ struct ContentView: View {
                     // and the reflow mid-transition rode the text up over the
                     // magnifying-glass icon. A ZStack sizes to the taller string
                     // and holds that slot steady, so the crossfade never reflows.
-                    ZStack {
+                    //
+                    // Top-aligned, not centered: the watch copy wraps to one more
+                    // line than the other, so centering the two in the same slot
+                    // put every shared line half a line-height apart between them.
+                    // The crossfade then read as the text sliding up into place
+                    // instead of dissolving. Sharing a top edge pins the lines both
+                    // strings have in common, so only the wording changes and the
+                    // extra line fades in below.
+                    ZStack(alignment: .top) {
                         HighlightedText(
                             segments: Self.placeholderSegments(watchInstalled: false),
                             textColor: .secondary,
