@@ -105,9 +105,12 @@ struct ContentView: View {
     /// answer animates.
     private var promptVisible: Bool { prompting && morphing == nil }
 
-    /// Vertical distance between the prompt buttons' centers: one and a half
-    /// diameters, so the gap between two circles is half a circle wide.
-    private static var promptSlotSpacing: CGFloat { cornerButtonSize * 1.5 }
+    /// Clearance between two prompt circles: a quarter of their radius.
+    private static var promptSlotGap: CGFloat { cornerButtonSize * 0.25 }
+    /// Vertical distance between the prompt buttons' centers — a diameter plus
+    /// that gap. Doubles as the height of each row's tap target, so the rows tile
+    /// the stack with no dead band between them.
+    private static var promptSlotSpacing: CGFloat { cornerButtonSize + promptSlotGap }
 
     /// Center y of a prompt button. The stack is centered on the screen — which
     /// pulls the buttons and their captions in from the corners the prompt used
@@ -274,6 +277,14 @@ struct ContentView: View {
                             y: promptSlotY(.save, in: geo.size.height))
                     .transaction { if morphing == nil { $0.animation = nil } }
                     .opacity(promptVisible ? 1 : 0)
+
+                // Row-wide tap targets, last so they sit above the buttons they
+                // cover. Answering shouldn't demand a 42pt bullseye on a wrist:
+                // the whole row — circle, caption and the space between them —
+                // takes the tap.
+                promptRowTarget(.cancel, in: geo.size)
+                promptRowTarget(.discard, in: geo.size)
+                promptRowTarget(.save, in: geo.size)
             }
             .ignoresSafeArea()
 
@@ -608,6 +619,40 @@ struct ContentView: View {
         .transaction { if morphing == nil { $0.animation = nil } }
         .opacity(visible ? 1 : 0)
         .allowsHitTesting(visible)
+    }
+
+    /// The invisible rectangle that actually takes a row's tap — the circle, its
+    /// caption, and the space between them, from the button's leading edge out to
+    /// the captions' trailing margin. Nothing here is ever drawn: it's
+    /// `Color.clear` with a `contentShape`, so the row reads as a button and a
+    /// label while behaving like one target. Stacked above the visible buttons,
+    /// which keep their own (identical) actions so VoiceOver still has a labelled
+    /// control to activate — hence `accessibilityHidden` here, to avoid offering
+    /// the same answer twice.
+    private func promptRowTarget(_ role: PromptRole, in size: CGSize) -> some View {
+        let leading = Self.cornerCenter(radius: Self.cornerButtonSize / 2) - Self.cornerButtonSize / 2
+        let width = max(0, size.width - Self.imageMargin - leading)
+        // Cancel is only offered while the walk can still be resumed, and no row
+        // takes a tap while an answer is already morphing away.
+        let active = promptVisible && (role != .cancel || showResumeButton)
+        return Button {
+            if role == .cancel {
+                session.resumeBirding()
+            } else {
+                answerPrompt(role)
+            }
+        } label: {
+            Color.clear
+                .frame(width: width, height: Self.promptSlotSpacing)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityHidden(true)
+        .position(x: leading + width / 2, y: promptSlotY(role, in: size.height))
+        // As with the buttons themselves: the rows belong at their final slots
+        // the instant the prompt exists, never sliding into them.
+        .transaction { if morphing == nil { $0.animation = nil } }
+        .allowsHitTesting(active)
     }
 
     /// Answers the prompt. Animate first, act second: the tapped button grows
