@@ -445,32 +445,47 @@ final class WatchSessionManager: NSObject {
 
     private func start() {
         guard !isRecording, !isStarting else { return }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            beginSession()
+        }
+    }
 
+    /// Flips into the recording state and schedules the bring-up that follows the
+    /// morph. **Call this inside an animated transaction** — the animation belongs
+    /// to the caller so a resume can clear the prompt and start recording in one
+    /// beat, sending the Cancel button back up into the stop button rather than
+    /// having it blink out and a fresh one blink in.
+    private func beginSession() {
         // Fresh session — drop any bird left over from the previous one so the
         // "now hearing" screen starts on "Listening…", and clear the per-session
         // add-to-life-list tracking.
         lastBird = nil
         lastBirdImage = nil
         addedThisSession = []
-        // Flip to recording inside an animated transaction, then touch audio
-        // only after the morph has played (the timed sleep below). Nothing
-        // audio-related runs on the tap itself, so the first tap is never
-        // blocked by audio-subsystem warm-up. A plain `withAnimation` is used
-        // deliberately — the `completion:` variant stalled the first render by
-        // ~1 s on watchOS. `isStarting` marks the bring-up window so a stop
-        // tapped during it cancels cleanly.
+        // Nothing but state flips happen on the tap: audio and the phone
+        // handshake are both deferred until the morph has played (the timed
+        // sleep below), so the tap is never the frame that stalls. A plain
+        // `withAnimation` is used deliberately — the `completion:` variant
+        // stalled the first render by ~1 s on watchOS. `isStarting` marks the
+        // bring-up window so a stop tapped during it cancels cleanly.
         isStarting = true
-        withAnimation(.easeInOut(duration: 0.3)) {
-            isRecording = true
-        }
-        // Tell the phone immediately — optimistically, before the seconds-long
-        // audio-engine bring-up below — so its UI flips to the watch-recording
-        // state without waiting. The failure paths in `startWithPermission`
-        // roll this back with a matching "stop".
-        notifyPhoneStarted()
+        isRecording = true
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(320))
-            await self?.startWithPermission()
+            guard let self else { return }
+            // Stopped again before the morph even finished — abandon the
+            // bring-up, and close the window ourselves since
+            // `startWithPermission` (which normally does) never runs.
+            guard self.isRecording else {
+                self.isStarting = false
+                return
+            }
+            // Tell the phone optimistically, before the seconds-long audio-engine
+            // bring-up below, so its UI flips to the watch-recording state without
+            // waiting. The failure paths in `startWithPermission` roll this back
+            // with a matching "stop".
+            self.notifyPhoneStarted()
+            await self.startWithPermission()
         }
     }
 
@@ -615,28 +630,52 @@ final class WatchSessionManager: NSObject {
         // End the phone-liveness watchdog before tearing down.
         cancelHeartbeatWatchdog()
 
-        // Tell the phone right away (both cheap + non-blocking) so it tears
-        // down too, after flushing any background-queued audio.
-        flushBackgroundBuffer()
-        let session = WCSession.default
-        session.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
-        session.transferUserInfo(["cmd": "stop"])
+        // The tap does nothing but decide and animate. Parking the birding walk
+        // is the decision — a long-enough walk lands in
+        // `WatchWorkoutManager.pendingSave` and the user confirms before it's
+        // logged, so an unattended teardown can't quietly post a workout to
+        // their activity-sharing friends — and it has to land synchronously,
+        // inside the same transaction as the flip, so the view knows in one step
+        // that the stop button is sliding down into the prompt's Cancel button
+        // rather than flying back to center. A false return means there was
+        // nothing worth asking about (no workout running, or too short a walk);
+        // the session is ended outright below instead, which discards it.
+        let parked = withAnimation(.easeInOut(duration: 0.3)) { () -> Bool in
+            let parked = resumable && WatchWorkoutManager.shared.pause()
+            isRecording = false
+            return parked
+        }
 
-        // Wind the birding-walk workout down. Nothing is written to HealthKit
-        // here — a long-enough walk lands in `WatchWorkoutManager.pendingSave`
-        // and the user confirms before it's logged, so an unattended teardown
-        // can't quietly post a workout to their activity-sharing friends. A
-        // user-initiated stop only *pauses* the workout, so picking Resume on
-        // that prompt continues the same walk rather than starting a second one.
-        //
-        // Parking happens *before* the morph below, and synchronously, so the
-        // view can swap the stop button straight into the prompt's save button
-        // in one step (see `pause()`). A false return means there was nothing
-        // worth asking about — no workout running, or too short a walk — and
-        // the session is ended outright instead, which discards it.
-        let parked = resumable && WatchWorkoutManager.shared.pause()
-        Task {
-            if !parked {
+        // Everything with a real cost — the phone handshake, HealthKit, the
+        // audio engine — waits out the morph. `engine.stop()` + `setActive(false)`
+        // block their caller for seconds on a cold first stop and post
+        // route-change callbacks to the main actor, which would freeze the morph
+        // if run during it. If the user picks Cancel before the sleep elapses
+        // (`isRecording` flips back true), the whole teardown is skipped so the
+        // continuing session keeps its engine, its phone link and its workout.
+        let streamer = self.streamer
+        let audioQueue = self.audioQueue
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(320))
+            guard let self, !self.isRecording else { return }
+
+            // Tell the phone so it tears down too, after flushing any
+            // background-queued audio.
+            self.flushBackgroundBuffer()
+            let session = WCSession.default
+            session.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
+            session.transferUserInfo(["cmd": "stop"])
+
+            audioQueue.async { streamer.stop() }
+            // Now-hearing screen is hidden — drop the retained bird so the next
+            // session doesn't briefly flash this one.
+            self.clearHeardBird()
+
+            // Wind the workout down: apply the deferred pause behind the prompt,
+            // or end the session outright when there was nothing to prompt about.
+            if parked {
+                WatchWorkoutManager.shared.applyPause()
+            } else {
                 await WatchWorkoutManager.shared.end()
             }
             switch decision {
@@ -644,29 +683,6 @@ final class WatchSessionManager: NSObject {
             case .save:    await WatchWorkoutManager.shared.save()
             case .discard: await WatchWorkoutManager.shared.discard()
             }
-        }
-
-        // Animate the morph; tear the audio engine down only once it has played
-        // out (the timed sleep below). `engine.stop()` + `setActive(false)`
-        // block their caller for seconds on a cold first stop and post
-        // route-change callbacks to the main actor, which would freeze the morph
-        // if run during it. A plain `withAnimation` is used deliberately — the
-        // `completion:` variant stalled the first render by ~1 s on watchOS. If
-        // the user re-taps record before the sleep elapses (`isRecording` flips
-        // back true), the teardown is skipped so the fresh session keeps its
-        // engine.
-        let streamer = self.streamer
-        let audioQueue = self.audioQueue
-        withAnimation(.easeInOut(duration: 0.3)) {
-            isRecording = false
-        }
-        Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(320))
-            guard self?.isRecording == false else { return }
-            audioQueue.async { streamer.stop() }
-            // Now-hearing screen is hidden — drop the retained bird so the next
-            // session doesn't briefly flash this one.
-            self?.clearHeardBird()
         }
     }
 
@@ -824,18 +840,32 @@ final class WatchSessionManager: NSObject {
         stop(resumable: false)
     }
 
-    /// User picked "Resume" on the save prompt. Un-pauses the workout so the walk
+    /// User picked "Cancel" on the save prompt. Un-pauses the workout so the walk
     /// stays one continuous session, then brings audio and the phone link back up
     /// through the normal start path (whose `WatchWorkoutManager.start()` is a
     /// no-op while a session is already live, so it won't open a second workout).
     /// Falls through to a plain start if the workout couldn't be resumed, so the
     /// user still gets a working session rather than a dead button.
+    ///
+    /// Clearing the prompt and flipping into recording share one transaction, so
+    /// the Cancel button animates back up into the stop button it came from. As
+    /// everywhere else, the tap itself only animates: the HealthKit un-pause
+    /// (`applyResume`) and the audio bring-up both wait out the morph.
     func resumeBirding() {
         guard !isRecording, !isStarting else { return }
-        if !WatchWorkoutManager.shared.resume() {
+        let resumed = withAnimation(.easeInOut(duration: 0.3)) { () -> Bool in
+            let resumed = WatchWorkoutManager.shared.resume()
+            beginSession()
+            return resumed
+        }
+        if !resumed {
             Log.warning("Resume requested but the workout was no longer resumable — starting fresh")
         }
-        start()
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(320))
+            guard let self, self.isRecording else { return }
+            WatchWorkoutManager.shared.applyResume()
+        }
     }
 
     /// Asks the phone to prove it's still there, used once a heartbeat gap turns

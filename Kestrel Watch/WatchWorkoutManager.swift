@@ -1,5 +1,6 @@
 import Foundation
 import HealthKit
+import SwiftUI
 
 /// Runs a walking `HKWorkoutSession`, branded "Birding", for the duration of a
 /// watch-started birding session. Two reasons it exists:
@@ -156,34 +157,77 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// which discards them outright.
     ///
     /// Synchronous on purpose. The watch morphs the stop button *directly* into
-    /// the prompt's save button, so `pendingSave` has to land in the same turn
+    /// the prompt's Cancel button, so `pendingSave` has to land in the same turn
     /// the morph starts. Behind an `await` there'd be a beat where the view sees
     /// neither "recording" nor "prompting", and the button would slingshot back
     /// toward center before snapping into the corner.
+    ///
+    /// Only the decision is made here: HealthKit isn't touched until
+    /// `applyPause()`, which the session manager calls once the morph has played,
+    /// so the tap's frame carries nothing but state flips.
     @discardableResult
     func pause() -> Bool {
-        guard let session, let builder, let started = startDate else { return false }
+        guard session != nil, let builder, let started = startDate else { return false }
         guard Date().timeIntervalSince(started) >= minimumDuration else { return false }
 
-        session.pause()
         pendingBuilder = builder
         pendingSave = PendingWorkout(start: started, end: Date(), canResume: true)
+        pendingPause = true
         startAbandonTimeout()
         return true
     }
 
-    /// The user chose to keep birding. Un-pauses the workout so the walk carries
-    /// on as one continuous session. Returns false if the session was no longer
-    /// resumable, in which case the caller must not act as though it recovered.
+    /// The HealthKit half of `pause()`, run after the stop button has finished
+    /// morphing down into the prompt. A no-op if the user already answered the
+    /// prompt inside that window — there's nothing to pause a session for when
+    /// it's about to end (or has just carried on).
+    func applyPause() {
+        guard pendingPause else { return }
+        pendingPause = false
+        guard pendingSave?.canResume == true, let session else { return }
+        session.pause()
+        pausedForPrompt = true
+    }
+
+    /// Set between `pause()` and `applyPause()` — the walk is parked for the
+    /// prompt, but HealthKit hasn't been told yet.
+    private var pendingPause = false
+    /// True once `applyPause()` has actually paused the session, so `applyResume()`
+    /// knows whether there's a pause to undo.
+    private var pausedForPrompt = false
+
+    /// The user chose to keep birding. Clears the prompt so the Cancel button can
+    /// animate straight back up into the stop button; the workout itself is
+    /// un-paused by `applyResume()` once that has played. Returns false if the
+    /// session was no longer resumable, in which case the caller must not act as
+    /// though it recovered.
     @discardableResult
     func resume() -> Bool {
-        guard let session, pendingSave?.canResume == true else { return false }
+        guard session != nil, pendingSave?.canResume == true else { return false }
         cancelAbandonTimeout()
-        session.resume()
         // The builder keeps collecting into the same workout; nothing to reset.
         pendingBuilder = nil
         pendingSave = nil
         return true
+    }
+
+    /// The HealthKit half of `resume()`, run after the morph. If the pause never
+    /// reached HealthKit (the user hit Cancel inside the morph window) this just
+    /// cancels it rather than resuming a session that was never paused.
+    func applyResume() {
+        pendingPause = false
+        guard pausedForPrompt, let session else { return }
+        pausedForPrompt = false
+        session.resume()
+    }
+
+    /// Drops the prompt without deciding anything. The view calls this the instant
+    /// a tapped Save/Discard button has finished morphing back into the record
+    /// button, so the HealthKit work that follows — which can take a moment —
+    /// never leaves the answered prompt sitting on screen behind the animation.
+    func dismissPrompt() {
+        cancelAbandonTimeout()
+        pendingSave = nil
     }
 
     /// A paused walk the user never answered shouldn't hold the workout session —
@@ -215,6 +259,8 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         guard let session, let builder else { return }
         self.session = nil
         self.builder = nil
+        pendingPause = false
+        pausedForPrompt = false
         cancelAbandonTimeout()
 
         let end = Date()
@@ -225,7 +271,13 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
             Log.error("Workout endCollection error: \(error)")
         }
         if let pending = pendingSave {
-            pendingSave = PendingWorkout(start: pending.start, end: pending.end, canResume: false)
+            // Losing Resume re-centers the two remaining buttons, so animate it
+            // rather than letting the prompt jump under the user's thumb. The
+            // view animates nothing implicitly — every transition is driven from
+            // an explicit transaction like this one.
+            withAnimation(.easeInOut(duration: 0.3)) {
+                pendingSave = PendingWorkout(start: pending.start, end: pending.end, canResume: false)
+            }
         }
     }
 
@@ -243,6 +295,8 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         // a fresh session by mistake.
         self.session = nil
         self.builder = nil
+        pendingPause = false
+        pausedForPrompt = false
         let started = startDate
         self.startDate = nil
 
@@ -267,7 +321,11 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         // Hold the builder open. Nothing is written to HealthKit (and so no
         // activity-sharing notification fires) until `save()`.
         self.pendingBuilder = builder
-        self.pendingSave = PendingWorkout(start: started, end: end, canResume: false)
+        // This is the unattended path — the prompt arrives on its own rather
+        // than under a button's morph — so it fades in on its own transaction.
+        withAnimation(.easeInOut(duration: 0.3)) {
+            self.pendingSave = PendingWorkout(start: started, end: end, canResume: false)
+        }
     }
 
     /// The ended-but-unwritten builder behind `pendingSave`.

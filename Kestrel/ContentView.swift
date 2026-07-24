@@ -196,8 +196,9 @@ struct ContentView: View {
         // The answer rides along with the stop (see `resolveWatchWorkout`), so
         // the watch acts on it instead of prompting again. Deliberately an alert
         // rather than a confirmation dialog: its automatic Cancel would sit
-        // alongside Resume meaning almost the same thing, and every outcome here
-        // should be a deliberate choice among the three.
+        // alongside "Cancel and Resume" meaning almost the same thing, and every
+        // outcome here should be a deliberate choice among the three. The order
+        // matches the watch's own prompt — cancel, discard, save, top to bottom.
         .alert(
             "Save This Birding Walk?",
             isPresented: Binding(
@@ -205,9 +206,9 @@ struct ContentView: View {
                 set: { manager.showWatchWorkoutPrompt = $0 }
             )
         ) {
+            Button("Cancel and Resume") { manager.showWatchWorkoutPrompt = false }
+            Button("Discard Workout", role: .destructive) { manager.resolveWatchWorkout(.discard) }
             Button("Save Workout") { manager.resolveWatchWorkout(.save) }
-            Button("Resume") { manager.showWatchWorkoutPrompt = false }
-            Button("Discard", role: .destructive) { manager.resolveWatchWorkout(.discard) }
         } message: {
             Text("Your Apple Watch has been recording this session as a walk. Saving logs it to Fitness and counts toward your rings.")
         }

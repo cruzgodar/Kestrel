@@ -20,13 +20,13 @@ struct ContentView: View {
     /// species name below them follows from this and the screen size.
     private static let cornerButtonSize: CGFloat = 42
     /// Horizontal gap between the stop button and the add button beside it.
-    /// Doubles as the gap between the save/resume/discard buttons and their
+    /// Doubles as the gap between the cancel/discard/save buttons and their
     /// captions, so the prompt's text lines up off the same column.
     private static let interButtonGap: CGFloat = 8
     /// Glyph diameter inside a corner button, as a fraction of the button. The
-    /// single knob for every small button's icon size — the add, resume and
-    /// discard glyphs use it directly, and the record control's stop/lock/check
-    /// glyphs are pre-scaled to match it once shrunk into the corner.
+    /// single knob for every small button's icon size — the add glyph uses it
+    /// directly, and the record control's stop/lock/play glyphs and the prompt
+    /// buttons' trash/check are pre-scaled to match it once shrunk.
     private static let cornerGlyphRatio: CGFloat = 0.46
     /// Point size a corner glyph must be drawn at *inside the full-size record
     /// button* to land at `cornerGlyphRatio` once scaled down to the corner.
@@ -75,26 +75,75 @@ struct ContentView: View {
     /// Gray fill for the locked (permission-denied) record button, matching the
     /// phone's locked state.
     private static let lockedTint = Color(white: 0.45)
-    /// Green for the save button the stop button becomes once a walk is waiting
-    /// on a decision; red for discard, matching the phone's destructive actions.
+    /// Green for the save button at the bottom of the prompt; red for the discard
+    /// button above it, matching the phone's destructive actions.
     private static let saveTint = Color.green
     private static let discardTint = Color.red
 
-    /// True while a finished birding walk is waiting on a save/resume/discard
+    /// True while a finished birding walk is waiting on a cancel/discard/save
     /// answer. The prompt is drawn in place of the recording controls rather
-    /// than in a sheet (see the corner buttons in `body`), so it shares the
+    /// than in a sheet (see the prompt buttons in `body`), so it shares the
     /// record button's morph geometry.
     private var prompting: Bool { workout.pendingSave != nil }
+
+    /// The prompt's three answers, top to bottom. Cancel is the record control
+    /// itself — the stop button slides down into it and back up out of it — while
+    /// Discard and Save are their own buttons, each of which morphs into the
+    /// centered record button when it's the one the user taps.
+    private enum PromptRole {
+        case cancel, discard, save
+    }
+
+    /// The answer currently animating back into the record button, if any. Set on
+    /// the tap and cleared once the morph has played, at which point the real
+    /// save/discard work runs (see `answerPrompt`).
+    @State private var morphing: PromptRole?
+
+    /// True while the prompt is up *and* settled — not mid-morph. Everything the
+    /// prompt draws except the button the user actually hit (the other buttons,
+    /// all three captions) is keyed off this, so the rest clears away as the
+    /// answer animates.
+    private var promptVisible: Bool { prompting && morphing == nil }
+
+    /// Vertical distance between the prompt buttons' centers: one and a half
+    /// diameters, so the gap between two circles is half a circle wide.
+    private static var promptSlotSpacing: CGFloat { cornerButtonSize * 1.5 }
+
+    /// Center y of a prompt button. The stack is centered on the screen — which
+    /// pulls the buttons and their captions in from the corners the prompt used
+    /// to be spread across — and Cancel drops out when the walk can't be resumed,
+    /// leaving the other two re-centered rather than a hole at the top.
+    ///
+    /// A prompt that isn't up yet is laid out as though it has all three answers,
+    /// which is what a user-initiated stop is about to produce. Otherwise the
+    /// slots would reflow from two rows to three in the very transaction that
+    /// fades the prompt in, and Discard and Save would drift into place instead
+    /// of simply appearing there.
+    private func promptSlotY(_ role: PromptRole, in height: CGFloat) -> CGFloat {
+        let hasCancel = !prompting || showResumeButton
+        let roles: [PromptRole] = hasCancel ? [.cancel, .discard, .save] : [.discard, .save]
+        let index = roles.firstIndex(of: role) ?? 0
+        let middle = CGFloat(roles.count - 1) / 2
+        return height / 2 + (CGFloat(index) - middle) * Self.promptSlotSpacing
+    }
 
     var body: some View {
         let recording = session.isRecording
         let prompting = self.prompting
-        // Both states park the record control in the top-left corner at
-        // `cornerButtonSize`: recording (as the stop button) and prompting (as
-        // the save button it becomes). Everything keyed off the morph reads
-        // this rather than `recording` alone, so stopping flows straight into
-        // the prompt without the button flying back to center in between.
-        let shrunk = recording || prompting
+        // The record control doubles as the prompt's Cancel button whenever
+        // there's a walk to resume: tapping stop slides it out of the corner and
+        // down into the top slot, and tapping it there sends it back up.
+        let asCancel = prompting && showResumeButton
+        // Both states hold the record control at `cornerButtonSize`: recording
+        // (as the stop button, in the corner) and prompting-with-resume (as the
+        // Cancel button, a slot above center). Everything keyed off the morph
+        // reads this rather than `recording` alone, so stopping flows straight
+        // into the prompt without the button flying back to center in between.
+        let shrunk = recording || asCancel
+        // The idle screen — the big centered record button and its caption — is
+        // also what a tapped Save/Discard is animating back toward, so it comes
+        // out from behind the prompt as that morph plays.
+        let idling = !recording && (!prompting || morphing != nil)
 
         ZStack {
             // Standing background for the current bird's kind (black / blue /
@@ -138,7 +187,10 @@ struct ContentView: View {
             // off the rounded bezel corner. `.position` interpolates linearly
             // and the button scales uniformly (see `recordButton`), so the
             // record control travels in a straight line between the centered
-            // mic and the corner stop button — identically in both directions.
+            // mic and the corner stop button — identically in both directions,
+            // and on down to the prompt's Cancel slot and back when the user
+            // stops a walk. The prompt's other two answers are built the same
+            // way so whichever one is tapped can travel back to the center.
             GeometryReader { geo in
                 let r = Self.cornerButtonSize / 2
                 let cornerC = Self.cornerCenter(radius: r)
@@ -147,12 +199,23 @@ struct ContentView: View {
                 // the corner buttons, which all share the stop button's column.
                 let labelX = cornerC + r + Self.interButtonGap
                 let labelW = max(0, geo.size.width - labelX - Self.imageMargin)
+                // Where the record control parks: the corner while recording, the
+                // Cancel slot while the prompt offers a resume, dead center
+                // otherwise — including while faded out behind a save/discard
+                // morph, so the hand-off at the end of that morph lands it exactly
+                // where the growing button finished.
+                let recordY = asCancel
+                    ? promptSlotY(.cancel, in: geo.size.height)
+                    : (recording ? cornerC : geo.size.height / 2)
+                // The record control is Cancel while the prompt is up, so it's
+                // gone when there's nothing to cancel back into, and it clears
+                // away while a save/discard answer morphs into its place.
+                let showRecordControl = !prompting || (promptVisible && showResumeButton)
 
                 recordButton(scale: side / Self.buttonBaseSize)
-                    .position(
-                        x: shrunk ? cornerC : geo.size.width / 2,
-                        y: shrunk ? cornerC : geo.size.height / 2
-                    )
+                    .position(x: shrunk ? cornerC : geo.size.width / 2, y: recordY)
+                    .opacity(showRecordControl ? 1 : 0)
+                    .allowsHitTesting(showRecordControl)
 
                 // Idle-screen caption sitting just below the centered play
                 // button. Fades out (with the button's morph to the corner) as
@@ -173,7 +236,7 @@ struct ContentView: View {
                         x: geo.size.width / 2,
                         y: geo.size.height / 2 + Self.buttonBaseSize / 2 + 24
                     )
-                    .opacity(shrunk ? 0 : 1)
+                    .opacity(idling ? 1 : 0)
                     .allowsHitTesting(false)
 
                 addButton(size: Self.cornerButtonSize)
@@ -185,42 +248,32 @@ struct ContentView: View {
                     .opacity(showAddButton ? 1 : 0)
                     .allowsHitTesting(showAddButton)
 
-                // Save / Resume / Discard, drawn directly on the screen rather
-                // than in a sheet so the stop button can *become* the green save
-                // button — same corner, same size — instead of sliding a modal
-                // over it. The other two hang off the same left-hand column:
-                // Resume vertically centered, Discard mirrored into the bottom
-                // corner with the stop button's geometry.
-                promptLabel("Save Workout", x: labelX, width: labelW, y: cornerC)
-                    .opacity(prompting ? 1 : 0)
+                // Cancel / Discard / Save, drawn directly on the screen rather
+                // than in a sheet so the buttons can morph into and out of the
+                // record control instead of sliding a modal over it. All three
+                // share the stop button's left-hand column, stacked around the
+                // middle of the screen; Cancel is the record control above, and
+                // these two morph back into it when tapped.
+                promptButton(.discard, in: geo.size)
+                promptButton(.save, in: geo.size)
 
-                cornerButton(
-                    systemName: "play.fill",
-                    tint: Self.recordTint,
-                    accessibilityLabel: "Resume birding"
-                ) {
-                    session.resumeBirding()
-                }
-                .position(x: cornerC, y: geo.size.height / 2)
-                .opacity(showResumeButton ? 1 : 0)
-                .allowsHitTesting(showResumeButton)
+                // Cancel's caption tracks the record control's own y, so it
+                // travels down from the stop button's row and back up again in
+                // lockstep with the button it names, fading as it goes.
+                promptLabel("Cancel", x: labelX, width: labelW, y: recordY)
+                    .opacity(promptVisible && showResumeButton ? 1 : 0)
 
-                promptLabel("Resume", x: labelX, width: labelW, y: geo.size.height / 2)
-                    .opacity(showResumeButton ? 1 : 0)
+                // Discard and Save name buttons that don't move, so their
+                // captions don't either — see `promptButton` for the transaction.
+                promptLabel("Discard", x: labelX, width: labelW,
+                            y: promptSlotY(.discard, in: geo.size.height))
+                    .transaction { if morphing == nil { $0.animation = nil } }
+                    .opacity(promptVisible ? 1 : 0)
 
-                cornerButton(
-                    systemName: "xmark",
-                    tint: Self.discardTint,
-                    accessibilityLabel: "Discard workout"
-                ) {
-                    Task { await workout.discard() }
-                }
-                .position(x: cornerC, y: geo.size.height - cornerC)
-                .opacity(prompting ? 1 : 0)
-                .allowsHitTesting(prompting)
-
-                promptLabel("Discard", x: labelX, width: labelW, y: geo.size.height - cornerC)
-                    .opacity(prompting ? 1 : 0)
+                promptLabel("Save Workout", x: labelX, width: labelW,
+                            y: promptSlotY(.save, in: geo.size.height))
+                    .transaction { if morphing == nil { $0.animation = nil } }
+                    .opacity(promptVisible ? 1 : 0)
             }
             .ignoresSafeArea()
 
@@ -230,18 +283,23 @@ struct ContentView: View {
             // button already communicates the blocked state from the outset.
         }
         .animation(.easeInOut(duration: 0.25), value: blockedForPermissions)
-        // Fades the prompt's buttons + captions in together, and carries the
-        // record control's red-stop → green-check swap with them.
-        .animation(.easeInOut(duration: 0.25), value: prompting)
+        // Deliberately *no* implicit animation on `prompting`. Every button here
+        // animates first and acts second, which only works if the hand-off at the
+        // end of a morph — the tapped button vanishing and the record button
+        // reappearing in the exact spot it grew into — happens in one unanimated
+        // frame. So the prompt's transitions are driven from explicit
+        // `withAnimation` transactions in `answerPrompt`, `WatchSessionManager`
+        // and `WatchWorkoutManager` instead.
         // Explains why the record button is locked (the watch's own mic / location
         // is denied). The watch can't deep-link to Settings, so it tells the user
         // where to go.
         .sheet(isPresented: $showPermissionInfo) {
             permissionInfo
         }
-        // The save/resume/discard prompt is not a sheet — it's drawn in the
-        // main view (see `body`'s corner buttons) so the stop button morphs
-        // into the save button in place. There's deliberately no swipe-away:
+        // The cancel/discard/save prompt is not a sheet — it's drawn in the
+        // main view (see `body`'s prompt buttons) so the stop button morphs
+        // down into it and whichever answer is tapped morphs back out into the
+        // record button. There's deliberately no swipe-away:
         // mapping an ambiguous gesture onto Discard would throw the walk out,
         // and onto Save would log one the user never asked for. Nothing is
         // written to HealthKit until Save is tapped.
@@ -381,13 +439,14 @@ struct ContentView: View {
         let recording = session.isRecording
         let prompting = self.prompting
         // The prompt owns the button while it's up, so a denied permission can't
-        // also claim it — otherwise the walk-ending save button would render as
+        // also claim it — otherwise the walk-ending Cancel button would render as
         // a lock (the prompt runs with `isRecording` already false).
         let blocked = blockedForPermissions && !prompting
         return Button {
             if prompting {
-                // Same corner, same size, now green: this is Save.
-                Task { await workout.save() }
+                // Same button, one slot down and purple again: this is Cancel,
+                // and tapping it sends it straight back up into the stop button.
+                session.resumeBirding()
             } else if blocked {
                 // A denied permission turns the button into a tap-for-explanation
                 // lock rather than a recording control (matching the phone).
@@ -410,19 +469,20 @@ struct ContentView: View {
                 Image(systemName: "lock.fill")
                     .font(.system(size: Self.cornerGlyphBaseSize, weight: .bold))
                     .opacity(blocked && !recording ? 1 : 0)
-                // Save. Sized so that, once scaled into the corner, it matches
-                // the add button's checkmark rather than reading a size smaller
-                // (a checkmark's ink sits well inside its em box).
-                Image(systemName: "checkmark")
-                    .font(.system(size: Self.checkGlyphBaseSize, weight: .bold))
+                // Cancel — the small play glyph the stop button crosses into as
+                // it slides down into the prompt. Drawn separately from the idle
+                // play above so each lands at its own size: this one is pre-scaled
+                // to `cornerGlyphRatio` once shrunk, that one fills the big button.
+                Image(systemName: "play.fill")
+                    .font(.system(size: Self.cornerGlyphBaseSize, weight: .bold))
                     .opacity(prompting ? 1 : 0)
             }
             .foregroundStyle(.white)
             .frame(width: Self.buttonBaseSize, height: Self.buttonBaseSize)
             // Purple while idle, red once recording (matching the phone's stop
-            // button), green as the save button once a walk is awaiting a
-            // decision, gray when locked by a denied permission. The fill
-            // interpolates with the morph, which runs under the session
+            // button), purple again as the prompt's Cancel button once a walk is
+            // awaiting a decision, gray when locked by a denied permission. The
+            // fill interpolates with the morph, which runs under the session
             // manager's `withAnimation(isRecording)`.
             .background(Circle().fill(recordButtonTint(recording: recording, blocked: blocked, prompting: prompting)))
             .scaleEffect(scale)
@@ -432,13 +492,13 @@ struct ContentView: View {
     }
 
     private func recordButtonTint(recording: Bool, blocked: Bool, prompting: Bool) -> Color {
-        if prompting { return Self.saveTint }
+        if prompting { return Self.recordTint }
         if recording { return .red }
         return blocked ? Self.lockedTint : Self.recordTint
     }
 
     private func recordButtonLabel(recording: Bool, blocked: Bool, prompting: Bool) -> String {
-        if prompting { return "Save workout" }
+        if prompting { return "Cancel — keep birding" }
         if blocked { return "Recording unavailable — permissions needed" }
         return recording ? "Stop recording" : "Start recording"
     }
@@ -469,11 +529,12 @@ struct ContentView: View {
 
     // MARK: - Save / resume / discard prompt
 
-    /// Resume is offered only while the workout is merely *paused*, where
+    /// Cancel is offered only while the workout is merely *paused*, where
     /// resuming continues the same walk. Once the session is truly over — the
     /// system ended it, a watchdog gave up, an orphan was reclaimed — there's
-    /// nothing to resume into and the button would be a lie, so it's dropped and
-    /// only Save and Discard remain.
+    /// nothing to resume into and the button would be a lie, so it's dropped
+    /// (along with the record control it's drawn by) and only Discard and Save
+    /// remain, re-centered.
     private var showResumeButton: Bool {
         workout.pendingSave?.canResume == true
     }
@@ -494,26 +555,85 @@ struct ContentView: View {
             .allowsHitTesting(false)
     }
 
-    /// A circular button matching the stop button's diameter and glyph size —
-    /// the shared shape behind Resume and Discard. The add button and the record
-    /// control's corner state are sized off the same `cornerGlyphRatio`, so every
-    /// small button's icon stays in step.
-    private func cornerButton(
-        systemName: String,
-        tint: Color,
-        accessibilityLabel: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        let size = Self.cornerButtonSize
-        return Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: size * Self.cornerGlyphRatio, weight: .bold))
-                .foregroundStyle(.white)
-                .frame(width: size, height: size)
-                .background(Circle().fill(tint))
+    /// Discard or Save — the two answers that aren't the record control itself.
+    /// Built on the record button's geometry (drawn at the full base size and
+    /// uniformly scaled down into its slot) rather than as a fixed small circle,
+    /// because the button the user taps is the one that grows back into the
+    /// centered Start Birding button: same shape, same travel, tint and glyph
+    /// crossing over on the way.
+    private func promptButton(_ role: PromptRole, in size: CGSize) -> some View {
+        let morphed = morphing == role
+        let saving = role == .save
+        // Visible while the prompt is settled, and afterwards only if this is the
+        // button that was tapped — the other one clears away with the captions.
+        let visible = promptVisible || morphed
+        let side: CGFloat = morphed ? Self.buttonBaseSize : Self.cornerButtonSize
+        return Button {
+            answerPrompt(role)
+        } label: {
+            ZStack {
+                // The trash/checkmark and the record button's play glyph are both
+                // always present and cross-faded, as in `recordButton` — a single
+                // swapped `Image` leaves the outgoing glyph half-visible at the end.
+                // The checkmark is drawn a touch larger so it reads as the same
+                // weight (its ink sits well inside its em box).
+                Image(systemName: saving ? "checkmark" : "trash.fill")
+                    .font(.system(
+                        size: saving ? Self.checkGlyphBaseSize : Self.cornerGlyphBaseSize,
+                        weight: .bold
+                    ))
+                    .opacity(morphed ? 0 : 1)
+                Image(systemName: "play.fill")
+                    .font(.system(size: 44, weight: .semibold))
+                    .opacity(morphed ? 1 : 0)
+            }
+            .foregroundStyle(.white)
+            .frame(width: Self.buttonBaseSize, height: Self.buttonBaseSize)
+            .background(Circle().fill(morphed
+                ? Self.recordTint
+                : (saving ? Self.saveTint : Self.discardTint)))
+            .scaleEffect(side / Self.buttonBaseSize)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(accessibilityLabel)
+        .accessibilityLabel(saving ? "Save workout" : "Discard workout")
+        .position(
+            x: morphed ? size.width / 2 : Self.cornerCenter(radius: Self.cornerButtonSize / 2),
+            y: morphed ? size.height / 2 : promptSlotY(role, in: size.height)
+        )
+        // Only a morph is allowed to move these two. The prompt coming or going
+        // is a pure cross-fade — they belong at their final slots the instant
+        // they exist, not drifting into them under the fade. `.transaction`
+        // applies to everything below it in the chain, so the position is pinned
+        // while the opacity outside it still animates.
+        .transaction { if morphing == nil { $0.animation = nil } }
+        .opacity(visible ? 1 : 0)
+        .allowsHitTesting(visible)
+    }
+
+    /// Answers the prompt. Animate first, act second: the tapped button grows
+    /// back into the centered record button, and only once that has played does
+    /// the HealthKit work run — finishing or discarding a workout builder is slow
+    /// enough to visibly hitch an animation sharing its frame.
+    private func answerPrompt(_ role: PromptRole) {
+        guard morphing == nil else { return }
+        withAnimation(.easeInOut(duration: 0.3)) {
+            morphing = role
+        }
+        Task {
+            try? await Task.sleep(for: .milliseconds(320))
+            // Hand off in a single unanimated turn: the prompt drops and the
+            // record button reappears at dead center — exactly where the morphed
+            // button just landed, same size, same tint, same glyph — so the swap
+            // is invisible. Dismissing here rather than waiting on `save()` keeps
+            // the prompt from flashing back up behind the finished animation.
+            workout.dismissPrompt()
+            morphing = nil
+            switch role {
+            case .save:    await workout.save()
+            case .discard: await workout.discard()
+            case .cancel:  break  // Cancel is the record control (`resumeBirding`)
+            }
+        }
     }
 
     // MARK: - Add to life list button
