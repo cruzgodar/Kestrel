@@ -1313,6 +1313,25 @@ final class RecordingManager {
         }
     }
 
+    /// Recomputes the nearby-species filter (and prefetches that region's photos)
+    /// when the app foregrounds, so opening it in a new area picks up the new
+    /// region right away rather than waiting for the next recording session.
+    ///
+    /// This is the closest approximation to "prefetch as you travel" available
+    /// without Always-location: the app can only get a fresh fix while in the
+    /// foreground. Deliberately conservative — it never prompts (only runs if
+    /// location is *already* authorized) and never fights an active session,
+    /// which owns the filter and uses the watch-supplied coordinate.
+    func refreshRegionOnForeground() {
+        guard !isRecording, !watchRecording else { return }
+        switch locationProvider.authorizationStatus {
+        case .authorizedWhenInUse, .authorizedAlways:
+            Task { await self.refreshSpeciesFilter() }
+        default:
+            break
+        }
+    }
+
     private func refreshSpeciesFilter() async {
         guard let rangeFilter = await getRangeFilter() else {
             allowedIndices = nil

@@ -278,11 +278,6 @@
     "license": "CC-BY",
     "pageURL": "https://www.inaturalist.org/observations/196731617"
   },
-  "amazona_autumnalis": {
-    "credit": "paulbjones (Flickr)",
-    "license": "reverse match — verify at source",
-    "pageURL": "https://www.flickr.com/photos/paulbjones/sets/72157663774908331?utm_medium=organic&utm_source=yandexsmartcamera"
-  },
   "ammodramus_savannarum": {
     "credit": "Bettina Arrigoni",
     "license": "CC BY 2.0",
@@ -2162,7 +2157,8 @@
     "code": "perfal"
   },
   "falco_sparverius": {
-    "license": "user-supplied — verify at source",
+    "credit": "Andy Morffew",
+    "license": "CC BY 2.0",
     "pageURL": "https://s3.animalia.bio/animals/photos/full/original/american-kestrel-male.webp",
     "code": "amekes"
   },
@@ -2205,7 +2201,8 @@
     "code": "comcha"
   },
   "fringilla_montifringilla": {
-    "license": "user-supplied — verify at source",
+    "credit": "Геннадий",
+    "license": "CC BY-NC",
     "pageURL": "https://inaturalist-open-data.s3.amazonaws.com/photos/43710488/original.jpg"
   },
   "fulica_americana": {
@@ -2435,7 +2432,8 @@
     "code": "whtkin2"
   },
   "haliaeetus_albicilla": {
-    "license": "user-supplied — verify at source",
+    "credit": "Yathin S Krishnappa",
+    "license": "CC BY-SA 3.0",
     "pageURL": "https://s3.animalia.bio/animals/photos/full/original/Nr0wSABEsxP6ApCUIgmv.webp"
   },
   "haliaeetus_leucocephalus": {
@@ -3454,8 +3452,8 @@
     "pageURL": "https://www.inaturalist.org/observations/151884861"
   },
   "pachycephala_rufiventris": {
-    "credit": "commons.wikimedia.org",
-    "license": "reverse match — verify at source",
+    "credit": "JJ Harrison",
+    "license": "CC BY-SA 4.0",
     "pageURL": "https://commons.wikimedia.org/wiki/File:Pachycephala_rufiventris_male_2_-_Glen_Davis.jpg?utm_medium=organic&utm_source=yandexsmartcamera"
   },
   "pachysylvia_decurtata": {
@@ -4391,7 +4389,8 @@
     "code": "wilwag1"
   },
   "riparia_riparia": {
-    "license": "user-supplied — verify at source",
+    "credit": "Charles Gates",
+    "license": "CC BY 2.0",
     "pageURL": "https://www.flickr.com/photo_download.gne?size=o&id=50171516551&secret=215dbcb032",
     "code": "banswa"
   },
@@ -4765,7 +4764,8 @@
     "pageURL": "https://www.inaturalist.org/observations/261601785"
   },
   "sphyrapicus_ruber": {
-    "license": "user-supplied — verify at source",
+    "credit": "Michael Klotz",
+    "license": "CC BY-NC 2.0",
     "pageURL": "https://www.flickr.com/photo_download.gne?id=13982205143&secret=b95e88a832&size=o&source=photoPageEngagement"
   },
   "sphyrapicus_varius": {

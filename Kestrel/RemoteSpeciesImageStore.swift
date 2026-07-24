@@ -67,11 +67,13 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     static let fullResMemoryLimitBytes = 50 * 1024 * 1024
 
     /// Base URL for the CC-licensed species-photo set, served through the free
-    /// jsDelivr CDN from the GitHub photo repo. Pinned to an immutable release
-    /// tag so jsDelivr caches it permanently — **bump the tag whenever you
-    /// publish a new build of the photo set** (see
-    /// `scripts/README_species_photos.md`). Each size lives under its own folder
-    /// (`thumb/`, `hero/`, `full/`), and every file is named `<slug>.jpg`.
+    /// jsDelivr CDN from the GitHub photo repo. **Un-tagged** — the version is no
+    /// longer pinned here; `assetURL` inserts the current `@<version>` (from
+    /// `PhotoManifestStore`) so a re-publish is picked up per-image via the
+    /// manifest rather than by editing this constant (see
+    /// `scripts/README_species_photos.md`). The `manifest.json` at this base
+    /// (default branch) drives update detection; each size lives under its own
+    /// folder (`thumb/`, `hero/`, `full/`), every file named `<slug>.jpg`.
     static let assetBaseURL = "https://cdn.jsdelivr.net/gh/cruzgodar/kestrel-species-photos"
 
     /// Path component of the on-demand full-resolution tier — the cropped
@@ -255,9 +257,25 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     }
 
     /// Builds the jsDelivr URL for one species photo at a given size folder
-    /// (`thumb`/`hero`/`full`) from its slug: `{base}/{folder}/{slug}.jpg`.
+    /// (`thumb`/`hero`/`full`) from its slug, pinned to the photo set's current
+    /// version: `{base}@{version}/{folder}/{slug}.jpg`. When no version has been
+    /// published yet (`currentVersion` empty) it falls back to the un-pinned
+    /// `{base}/{folder}/{slug}.jpg`, i.e. the repo's default branch — the
+    /// behavior before any tagged photo release existed. Pinning to a version
+    /// means a re-download after an image update gets the *new* bytes rather than
+    /// jsDelivr's still-cached copy of the old ones at the un-versioned path.
     static func assetURL(slug: String, folder: String) -> URL? {
-        URL(string: "\(assetBaseURL)/\(folder)/\(slug).jpg")
+        let version = PhotoManifestStore.shared.currentVersion
+        let ref = version.isEmpty ? "" : "@\(version)"
+        return URL(string: "\(assetBaseURL)\(ref)/\(folder)/\(slug).jpg")
+    }
+
+    /// URL of the published photo manifest, fetched from the repo's default
+    /// branch (not a version tag) so it always reflects the newest publish. The
+    /// background update pass diffs it against the local manifest to find changed
+    /// species (see `refreshUpdatedImages`).
+    static func manifestURL() -> URL? {
+        URL(string: "\(assetBaseURL)/manifest.json")
     }
 
     /// Downloads (if not already on disk) and persists the bytes for one
@@ -307,17 +325,29 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// lifers get their thumbnails first); `lifeList` is fetched for the species
     /// *not* already covered by `nearby` so nothing is queued twice.
     func prefetchWake(lifeList: [String], nearby: [String]) {
+        Task { await enqueuePrefetch(lifeList: lifeList, nearby: nearby) }
+    }
+
+    /// Same as `prefetchWake` but suspends until the queue has fully drained.
+    /// Used by the background prefetch task, which must keep its runtime
+    /// assertion open until the downloads actually finish (see
+    /// `ImageDownloadQueue.waitUntilIdle`). Call off the main actor.
+    func prefetchWakeAwaitingDrain(lifeList: [String], nearby: [String]) async {
+        await enqueuePrefetch(lifeList: lifeList, nearby: nearby)
+        await queue.waitUntilIdle()
+    }
+
+    /// Resets and repopulates the four prefetch tiers. Shared by the fire-and-
+    /// forget `prefetchWake` and the drain-awaiting background variant.
+    private func enqueuePrefetch(lifeList: [String], nearby: [String]) async {
         let nearbySlugs = Set(nearby.map { SpeciesImage.slug(for: $0) })
         let lifeListOnly = lifeList.filter { !nearbySlugs.contains(SpeciesImage.slug(for: $0)) }
 
-        Task { [queue] in
-            guard let queue else { return }
-            await queue.resetPrefetch()
-            await queue.enqueue(requests(nearby, .thumb), tier: .nearbyThumb)
-            await queue.enqueue(requests(lifeListOnly, .thumb), tier: .lifeListThumb)
-            await queue.enqueue(requests(nearby, .medium), tier: .nearbyMedium)
-            await queue.enqueue(requests(lifeListOnly, .medium), tier: .lifeListMedium)
-        }
+        await queue.resetPrefetch()
+        await queue.enqueue(requests(nearby, .thumb), tier: .nearbyThumb)
+        await queue.enqueue(requests(lifeListOnly, .thumb), tier: .lifeListThumb)
+        await queue.enqueue(requests(nearby, .medium), tier: .nearbyMedium)
+        await queue.enqueue(requests(lifeListOnly, .medium), tier: .lifeListMedium)
     }
 
     /// Builds the download requests for a group at one size: de-duplicated by
@@ -361,6 +391,109 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         guard let allowed = SpeciesRangeFilter.cachedAllowedIndices() else { return [] }
         let all = SpeciesCatalog.shared.all
         return allowed.compactMap { all.indices.contains($0) ? all[$0].scientificName : nil }
+    }
+
+    // MARK: - Image updates (hash-based)
+
+    /// Reconciles the on-disk cache against the manifest baked into *this* build.
+    /// Any species whose bundled hash differs from what the app last recorded had
+    /// its photo updated in this app version, so its stale disk copy is dropped
+    /// (the next access re-downloads the new bytes at the bundled version) and
+    /// the new hash recorded. Cheap and synchronous-ish (a few file deletes at
+    /// most); call once at launch, before the first prefetch, so no stale image
+    /// is served or counted as already-cached. No-op on builds with no bundled
+    /// manifest.
+    func reconcileBundledManifest() {
+        guard let bundled = PhotoManifestStore.shared.bundled else { return }
+        let changed = PhotoManifestStore.shared.changedSlugs(against: bundled)
+        // Adopt the shipped version first so any re-download uses its bytes.
+        PhotoManifestStore.shared.adoptVersion(bundled.version)
+        for slug in changed {
+            invalidateDiskImages(slug: slug)
+            if let hash = bundled.files[slug] {
+                PhotoManifestStore.shared.markResolved(slug: slug, hash: hash)
+            }
+        }
+    }
+
+    /// High-power "check for updated images" pass: fetches the published manifest,
+    /// diffs it against what the app has, and re-downloads **only** the changed
+    /// species' images — the sizes already on disk, at the newly-published
+    /// version — leaving everything else untouched. Since photos change very
+    /// rarely this is almost always a single small manifest fetch and no
+    /// downloads. Intended for the background task gated on power + Wi-Fi, but
+    /// safe to call anytime (e.g. a debug button). Call off the main actor.
+    ///
+    /// Returns the number of species refreshed (0 when nothing changed or the
+    /// manifest couldn't be fetched).
+    @discardableResult
+    func refreshUpdatedImages() async -> Int {
+        guard let url = Self.manifestURL(),
+              let data = await download(url),
+              let remote = PhotoManifest(data: data) else {
+            return 0
+        }
+        let changed = PhotoManifestStore.shared.changedSlugs(against: remote)
+        guard !changed.isEmpty else {
+            // Version may still have advanced (e.g. a pipeline bump that touched
+            // no slug we hold); adopt it so future URLs stay current.
+            PhotoManifestStore.shared.adoptVersion(remote.version)
+            return 0
+        }
+        // Adopt the new version *before* re-downloading so the fresh bytes come
+        // from the right ref rather than the old cached path.
+        PhotoManifestStore.shared.adoptVersion(remote.version)
+
+        let fm = FileManager.default
+        var refreshed = 0
+        for slug in changed {
+            let hadThumb = fm.fileExists(atPath: thumbFileURL(forSlug: slug).path)
+            let hadMedium = fm.fileExists(atPath: fileURL(forSlug: slug).path)
+            // Drop the stale bytes first so the re-download can't short-circuit on
+            // "already on disk" and so a failed refresh leaves nothing stale.
+            invalidateDiskImages(slug: slug)
+
+            var ok = true
+            if hadThumb { ok = await redownload(slug: slug, size: .thumb) && ok }
+            if hadMedium { ok = await redownload(slug: slug, size: .medium) && ok }
+
+            // Record the new hash only when every size we held came down cleanly,
+            // so a partial/failed refresh is retried on the next pass. If we held
+            // nothing on disk there's nothing to warm — still mark resolved, since
+            // an on-demand fetch will now pull the new version.
+            if ok, let hash = remote.files[slug] {
+                PhotoManifestStore.shared.markResolved(slug: slug, hash: hash)
+                refreshed += 1
+            }
+        }
+        return refreshed
+    }
+
+    /// Force-fetches one size from the network (bypassing the "already on disk"
+    /// short-circuit, which the caller has already cleared) and persists it.
+    /// Returns whether the bytes landed.
+    private func redownload(slug: String, size: ImageSize) async -> Bool {
+        guard let url = Self.assetURL(slug: slug, folder: size.folder),
+              let data = await download(url),
+              UIImage(data: data) != nil else {
+            return false
+        }
+        try? data.write(to: fileURL(forSlug: slug, size: size), options: .atomic)
+        return true
+    }
+
+    /// Drops a species' cached bytes across the persisted tiers and their
+    /// in-memory caches, so the next access re-downloads. Leaves the full-res
+    /// memory tier's entry out only because it's keyed the same and cheap to
+    /// re-evict here too. Used by manifest reconciliation and the update refresh.
+    private func invalidateDiskImages(slug: String) {
+        let fm = FileManager.default
+        try? fm.removeItem(at: thumbFileURL(forSlug: slug))
+        try? fm.removeItem(at: fileURL(forSlug: slug))
+        let key = slug as NSString
+        memory.removeObject(forKey: key)
+        thumbnailMemory.removeObject(forKey: key)
+        fullResImageMemory.removeObject(forKey: key)
     }
 
     // MARK: - Cache stats (debug)

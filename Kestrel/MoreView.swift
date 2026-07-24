@@ -12,6 +12,8 @@ struct MoreView: View {
     @Environment(LifeListStore.self) private var lifeListStore
     @State private var lifeCounts: RemoteSpeciesImageStore.ResolutionCounts?
     @State private var nearbyCounts: RemoteSpeciesImageStore.ResolutionCounts?
+    @State private var updateCheckStatus: String?
+    @State private var checkingForUpdates = false
     #endif
 
     var body: some View {
@@ -115,6 +117,7 @@ struct MoreView: View {
 
                 #if DEBUG
                 cacheCountsView
+                checkForUpdatesButton
                 clearCacheButton
                 #endif
             }
@@ -210,6 +213,42 @@ struct MoreView: View {
         }
         .buttonStyle(.borderedProminent)
         .tint(.red)
+        .padding(.top, 8)
+    }
+
+    /// Debug-only trigger for the hash-based update check that normally runs from
+    /// the high-power background task — fetches the published manifest, diffs it,
+    /// and re-downloads only changed species. Lets the update path be exercised
+    /// on demand rather than waiting on the OS scheduler.
+    private var checkForUpdatesButton: some View {
+        VStack(spacing: 6) {
+            Button {
+                checkingForUpdates = true
+                updateCheckStatus = nil
+                Task {
+                    let count = await RemoteSpeciesImageStore.shared.refreshUpdatedImages()
+                    updateCheckStatus = count == 0
+                        ? "No image updates"
+                        : "Updated \(count) species"
+                    checkingForUpdates = false
+                    refreshCacheCounts()
+                }
+            } label: {
+                HStack {
+                    if checkingForUpdates { ProgressView() }
+                    Text("Check for Updated Images")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.bordered)
+            .disabled(checkingForUpdates)
+
+            if let updateCheckStatus {
+                Text(updateCheckStatus)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
         .padding(.top, 8)
     }
     #endif

@@ -52,12 +52,26 @@ struct KestrelApp: App {
         // (see `prefetchWake`). These are also the "protected" set the
         // image-cache cap never evicts — set it before prefetching so
         // newly-downloaded protected images aren't pruned.
+        // Before warming anything, reconcile the on-disk photo cache against the
+        // manifest baked into this build: any species whose image changed since
+        // the last version this device ran gets its stale copy dropped, so the
+        // prefetch below re-pulls the new bytes instead of serving old ones.
+        RemoteSpeciesImageStore.shared.reconcileBundledManifest()
+
         let lifeListNames = store.entries.map(\.scientificName)
         let nearbyNames = RemoteSpeciesImageStore.nearbyNames()
         RemoteSpeciesImageStore.shared.setProtectedSpecies(
             RemoteSpeciesImageStore.launchTargets(lifeList: lifeListNames)
         )
         RemoteSpeciesImageStore.shared.prefetchWake(lifeList: lifeListNames, nearby: nearbyNames)
+
+        // Register the background tasks (must happen before launch completes) so
+        // photo prefetch + the high-power image-update check can run with the app
+        // backgrounded. The provider lets the prefetch task read the current life
+        // list even when no view is mounted.
+        BackgroundRefreshCoordinator.shared.register { [weak store] in
+            store?.entries.map(\.scientificName) ?? []
+        }
 
         // Cap cached "other" images (anything not on the life list or in the
         // current nearby list) at 50 MB so the on-disk cache can't grow without
@@ -184,6 +198,15 @@ struct KestrelApp: App {
                     // re-read it on foreground in case the user flipped it in
                     // Settings while away — keeps the grayed button current.
                     recordingManager.refreshMicrophoneAuthorization()
+                    // Catch travel: if location is already granted and no session
+                    // is running, recompute the nearby region + prefetch its
+                    // photos now, so opening the app somewhere new updates the
+                    // list immediately (see `refreshRegionOnForeground`).
+                    recordingManager.refreshRegionOnForeground()
+                } else if phase == .background {
+                    // Queue the background photo prefetch + high-power update
+                    // check for whenever iOS next grants us time.
+                    BackgroundRefreshCoordinator.shared.scheduleAll()
                 }
             }
             // Warm path: the intent fired while the app was already active.
