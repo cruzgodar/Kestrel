@@ -226,10 +226,10 @@ struct MoreView: View {
                 checkingForUpdates = true
                 updateCheckStatus = nil
                 Task {
-                    let count = await RemoteSpeciesImageStore.shared.refreshUpdatedImages()
-                    updateCheckStatus = count == 0
-                        ? "No image updates"
-                        : "Updated \(count) species"
+                    let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: true)
+                    updateCheckStatus = result.newCount == 0 && result.changedCount == 0
+                        ? "No photo updates"
+                        : "\(result.newCount) new, \(result.changedCount) changed"
                     checkingForUpdates = false
                     refreshCacheCounts()
                 }

@@ -17,6 +17,13 @@ struct SpeciesPhotoInfo: Decodable {
     /// eBird species code (e.g. "rufwar1"), used to link to the species page.
     let code: String?
 
+    init(credit: String?, license: String?, pageURL: String?, code: String?) {
+        self.credit = credit
+        self.license = license
+        self.pageURL = pageURL
+        self.code = code
+    }
+
     /// Attribution line for the CC-licensed photo: just the photographer's name.
     ///
     /// The license is deliberately left out — it's carried by the separate
@@ -94,9 +101,12 @@ private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
-/// Loads + caches the bundled `species_photos.json` once. Absent file (e.g. the
-/// build script hasn't been re-run to emit it yet) yields an empty map, so
-/// species with no metadata simply fall back to the placeholder.
+/// Loads + caches the bundled `species_photos.json` once as the metadata base
+/// for species shipped with this build, and overlays `PhotoManifestStore`'s
+/// runtime manifest on top (see `info(for:)`) so species whose photos are added
+/// to the CDN later are still recognized and attributed. Absent bundled file
+/// yields an empty base, so species with no metadata anywhere fall back to the
+/// placeholder.
 nonisolated final class SpeciesPhotoMetadata: @unchecked Sendable {
     nonisolated static let shared = SpeciesPhotoMetadata()
 
@@ -116,6 +126,10 @@ nonisolated final class SpeciesPhotoMetadata: @unchecked Sendable {
     func info(for scientificName: String) -> SpeciesPhotoInfo? {
         let slug = SpeciesImage.slug(for: scientificName)
         guard !slug.isEmpty else { return nil }
-        return bySlug[slug]
+        // Prefer the runtime manifest overlay — it covers species added to the
+        // photo set after this build shipped (which have no bundled entry) and
+        // carries the freshest attribution. Fall back to the bundled
+        // `species_photos.json` for everything the overlay hasn't described yet.
+        return PhotoManifestStore.shared.overlayInfo(forSlug: slug) ?? bySlug[slug]
     }
 }

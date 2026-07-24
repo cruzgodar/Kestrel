@@ -1,19 +1,21 @@
 import Foundation
 
-/// A photo manifest: a global `version` (the jsDelivr git tag the app fetches
-/// images from — empty means "serve from the default branch") plus a
-/// slug→content-hash map. `scripts/build_species_photos.py` emits it in three
-/// places: the app bundle (`Models/photos_manifest.json`, the baseline shipped
-/// with each build), the published photo repo's default branch (the copy the
-/// app fetches to detect updates), and the git tag named by `version`.
+/// The photo manifest: `files` maps each photographed species' slug to a content
+/// hash plus (in the *published* copy) its crediting/licensing metadata.
+/// `scripts/build_species_photos.py` emits two forms: a hashes-only baseline
+/// bundled with the app (`Models/photos_manifest.json`) and the full
+/// metadata-carrying copy published to the photo repo's default branch (the copy
+/// the app fetches to discover new and changed photos at runtime).
 struct PhotoManifest: Decodable, Sendable {
-    let version: String
-    let files: [String: String]
-
-    init(version: String, files: [String: String]) {
-        self.version = version
-        self.files = files
+    struct Entry: Decodable, Sendable {
+        let hash: String
+        let credit: String?
+        let license: String?
+        let pageURL: String?
+        let code: String?
     }
+
+    let files: [String: Entry]
 
     init?(data: Data) {
         guard let decoded = try? JSONDecoder().decode(PhotoManifest.self, from: data) else {
@@ -23,35 +25,34 @@ struct PhotoManifest: Decodable, Sendable {
     }
 }
 
-/// Tracks which photo *version* the app is serving and the content hash of each
-/// species' image bytes as they exist locally, so the high-power "check for
-/// updated images" pass can re-download only what actually changed (see
-/// `RemoteSpeciesImageStore.refreshUpdatedImages`).
+/// Runtime source of truth for the *growable* photo set: which species have a
+/// published photo, each one's content hash (the change signal), and — for
+/// species added after the app shipped — their attribution metadata. This is
+/// what lets photos be added to the CDN over time and picked up **without an app
+/// update**.
 ///
-/// Two manifests feed it:
-///   • **bundled** (`Models/photos_manifest.json`) — the baseline shipped with
-///     the build. Reconciled at launch: any slug whose bundled hash differs from
-///     what's recorded locally shipped an updated photo, so its stale on-disk
-///     copy is invalidated (by the image store) and the newer `version` adopted.
-///   • **remote** (fetched from the photo repo's branch) — diffed by the
-///     background refresh to catch photos updated *after* this build shipped.
+/// It holds two things, both persisted so they survive relaunch:
+///   • **hashes** — seeded from the bundled baseline, then updated as published
+///     manifests are applied. Diffing an incoming manifest's hashes against these
+///     is how new (unseen slug) and changed (different hash) photos are found.
+///   • **metadata overlay** — the credit/license/page/code for every species a
+///     fetched manifest has told us about. `SpeciesPhotoMetadata` prefers this
+///     over its bundled `species_photos.json`, so a species that didn't exist in
+///     the shipped build still renders with correct attribution.
 ///
-/// The locally-recorded hash is the app's notion of "what the bytes at
-/// `currentVersion` hash to" for each slug — it's what incoming manifests are
-/// diffed against. `@unchecked Sendable` + an internal lock: read from view/
-/// prefetch/background paths, mutated as manifests are applied.
+/// `@unchecked Sendable` + an internal lock: read from view / prefetch /
+/// background paths, mutated as manifests are applied.
 nonisolated final class PhotoManifestStore: @unchecked Sendable {
     static let shared = PhotoManifestStore()
 
-    /// The manifest baked into this build. Nil only if the build script hasn't
-    /// emitted one yet (older builds), in which case reconciliation is a no-op.
-    let bundled: PhotoManifest?
-
     private let lock = NSLock()
-    /// The app's persisted view of what's on disk: the version whose bytes the
-    /// image URLs point at, and each slug's recorded content hash.
-    private var localVersion: String
-    private var localHashes: [String: String]
+    /// slug → content hash of the photo the app believes is current. Seeded from
+    /// the bundle, advanced as manifests are applied.
+    private var hashes: [String: String]
+    /// slug → attribution, for every species a fetched manifest has described.
+    /// Empty until the first successful fetch; the bundled baseline carries no
+    /// metadata (shipped species get theirs from `species_photos.json`).
+    private var metadata: [String: SpeciesPhotoInfo]
 
     private static func localURL() -> URL? {
         guard let dir = try? FileManager.default.url(
@@ -62,84 +63,128 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     }
 
     private init() {
-        let bundled: PhotoManifest?
+        // Bundled baseline: hashes only.
+        var bundledHashes: [String: String] = [:]
         if let url = Bundle.main.url(forResource: "photos_manifest", withExtension: "json"),
-           let data = try? Data(contentsOf: url) {
-            bundled = PhotoManifest(data: data)
-        } else {
-            bundled = nil
+           let data = try? Data(contentsOf: url),
+           let bundled = PhotoManifest(data: data) {
+            bundledHashes = bundled.files.mapValues(\.hash)
         }
-        self.bundled = bundled
 
+        // Persisted local state (hashes advanced by past applies + metadata
+        // overlay), if any.
+        var localHashes: [String: String] = [:]
+        var localMetadata: [String: SpeciesPhotoInfo] = [:]
         if let url = Self.localURL(), let data = try? Data(contentsOf: url),
-           let local = PhotoManifest(data: data) {
-            localVersion = local.version
-            localHashes = local.files
-        } else {
-            // First run (or unreadable): seed from the bundled baseline so the
-            // app starts out believing disk matches the shipped version. Nothing
-            // is on disk yet, so there's nothing to invalidate.
-            localVersion = bundled?.version ?? ""
-            localHashes = bundled?.files ?? [:]
-            persistLocked()
+           let snapshot = try? JSONDecoder().decode(LocalSnapshot.self, from: data) {
+            localHashes = snapshot.hashes
+            localMetadata = snapshot.metadata.mapValues(\.info)
         }
-    }
 
-    /// The jsDelivr ref image URLs are built from. Empty → the default branch.
-    var currentVersion: String {
-        lock.lock(); defer { lock.unlock() }
-        return localVersion
-    }
-
-    /// Slugs whose `incoming` hash differs from what's recorded locally — i.e.
-    /// species whose photo changed relative to what the app has. Slugs present in
-    /// `incoming` but not locally are treated as changed too (a newly-added
-    /// photo), so the fresh version is fetched.
-    func changedSlugs(against incoming: PhotoManifest) -> [String] {
-        lock.lock(); defer { lock.unlock() }
-        return incoming.files.compactMap { slug, hash in
-            localHashes[slug] == hash ? nil : slug
+        // Seed any slug the bundle knows but the local copy hasn't recorded yet —
+        // e.g. species whose photos shipped in this app version. Never override a
+        // locally-recorded hash (it may reflect a newer fetched manifest).
+        for (slug, hash) in bundledHashes where localHashes[slug] == nil {
+            localHashes[slug] = hash
         }
+
+        hashes = localHashes
+        metadata = localMetadata
     }
 
-    /// Adopts an incoming manifest's version so subsequent image URLs point at
-    /// its bytes. Call *before* re-downloading changed slugs so the new bytes are
-    /// fetched from the right ref; record each slug's new hash with
-    /// `markResolved` only once its bytes are actually handled.
-    func adoptVersion(_ version: String) {
+    // MARK: - Reads
+
+    /// The attribution a fetched manifest supplied for a slug, if any. Nil for
+    /// species only known from the bundle (they use `species_photos.json`).
+    func overlayInfo(forSlug slug: String) -> SpeciesPhotoInfo? {
         lock.lock(); defer { lock.unlock() }
-        guard version != localVersion else { return }
-        localVersion = version
-        persistLocked()
+        return metadata[slug]
     }
 
-    /// Records that a slug's local bytes now match `hash` (after its stale copy
-    /// was invalidated / re-downloaded at the current version). Persisted so a
-    /// later run doesn't re-flag it.
-    func markResolved(slug: String, hash: String) {
+    // MARK: - Apply
+
+    struct ApplyResult: Sendable {
+        var newSlugs: [String] = []
+        var changedSlugs: [String] = []
+    }
+
+    /// Diffs a freshly-fetched published manifest against local state and records
+    /// what it found.
+    ///
+    /// **New** species (a slug we've never seen) always have their hash + metadata
+    /// recorded, so they become downloadable and attributable immediately. This is
+    /// the "photos added over time" path and is safe to run anywhere (it only adds
+    /// knowledge; nothing on disk to disturb).
+    ///
+    /// **Changed** species (known slug, different hash) are only *committed* when
+    /// `includeChanged` is set — the caller (the high-power refresh) then drops and
+    /// re-pulls their bytes. When it isn't (the cellular/foreground path), changed
+    /// slugs are reported but left un-recorded, so a later high-power pass still
+    /// sees them as changed and does the heavier re-download on Wi-Fi + power.
+    func apply(_ remote: PhotoManifest, includeChanged: Bool) -> ApplyResult {
         lock.lock(); defer { lock.unlock() }
-        guard localHashes[slug] != hash else { return }
-        localHashes[slug] = hash
+        var result = ApplyResult()
+        for (slug, entry) in remote.files {
+            let known = hashes[slug]
+            if known == nil {
+                hashes[slug] = entry.hash
+                metadata[slug] = entry.info
+                result.newSlugs.append(slug)
+            } else if known != entry.hash {
+                result.changedSlugs.append(slug)
+                if includeChanged {
+                    hashes[slug] = entry.hash
+                    metadata[slug] = entry.info
+                }
+            } else {
+                // Same hash: refresh the overlay metadata anyway so a credit fix
+                // that didn't touch the image still propagates once fetched.
+                metadata[slug] = entry.info
+            }
+        }
         persistLocked()
-    }
-
-    /// The hash `incoming` records for a slug, if any — the value to pass to
-    /// `markResolved` once the slug's bytes have been refreshed.
-    func hash(forSlug slug: String, in manifest: PhotoManifest) -> String? {
-        manifest.files[slug]
+        return result
     }
 
     private func persistLocked() {
         guard let url = Self.localURL() else { return }
-        let snapshot = PhotoManifestSnapshot(version: localVersion, files: localHashes)
+        let snapshot = LocalSnapshot(
+            hashes: hashes,
+            metadata: metadata.mapValues(CodableInfo.init)
+        )
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         try? data.write(to: url, options: .atomic)
     }
 }
 
-/// Encodable mirror of `PhotoManifest` for persisting the local copy (the
-/// decodable type is intentionally read-only from JSON).
-private struct PhotoManifestSnapshot: Encodable {
-    let version: String
-    let files: [String: String]
+/// On-disk shape for the persisted local manifest state.
+private struct LocalSnapshot: Codable {
+    let hashes: [String: String]
+    let metadata: [String: CodableInfo]
+}
+
+/// Codable mirror of `SpeciesPhotoInfo` (which is decode-only from JSON) so the
+/// metadata overlay can round-trip through the persisted snapshot.
+private struct CodableInfo: Codable {
+    let credit: String?
+    let license: String?
+    let pageURL: String?
+    let code: String?
+
+    init(_ info: SpeciesPhotoInfo) {
+        credit = info.credit
+        license = info.license
+        pageURL = info.pageURL
+        code = info.code
+    }
+
+    var info: SpeciesPhotoInfo {
+        SpeciesPhotoInfo(credit: credit, license: license, pageURL: pageURL, code: code)
+    }
+}
+
+private extension PhotoManifest.Entry {
+    var info: SpeciesPhotoInfo {
+        SpeciesPhotoInfo(credit: credit, license: license, pageURL: pageURL, code: code)
+    }
 }

@@ -257,23 +257,20 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     }
 
     /// Builds the jsDelivr URL for one species photo at a given size folder
-    /// (`thumb`/`hero`/`full`) from its slug, pinned to the photo set's current
-    /// version: `{base}@{version}/{folder}/{slug}.jpg`. When no version has been
-    /// published yet (`currentVersion` empty) it falls back to the un-pinned
-    /// `{base}/{folder}/{slug}.jpg`, i.e. the repo's default branch — the
-    /// behavior before any tagged photo release existed. Pinning to a version
-    /// means a re-download after an image update gets the *new* bytes rather than
-    /// jsDelivr's still-cached copy of the old ones at the un-versioned path.
+    /// (`thumb`/`hero`/`full`) from its slug: `{base}/{folder}/{slug}.jpg`, served
+    /// straight off the photo repo's default branch. No version pinning — the set
+    /// grows in place, and the app finds new/changed photos by diffing the
+    /// manifest (see `checkForPhotoUpdates`). A *newly added* photo is at a URL
+    /// jsDelivr has never cached, so it appears immediately; a *changed* photo at
+    /// an existing URL can be served stale from the CDN edge for up to jsDelivr's
+    /// branch-cache window unless the publish purges it (see the README).
     static func assetURL(slug: String, folder: String) -> URL? {
-        let version = PhotoManifestStore.shared.currentVersion
-        let ref = version.isEmpty ? "" : "@\(version)"
-        return URL(string: "\(assetBaseURL)\(ref)/\(folder)/\(slug).jpg")
+        URL(string: "\(assetBaseURL)/\(folder)/\(slug).jpg")
     }
 
-    /// URL of the published photo manifest, fetched from the repo's default
-    /// branch (not a version tag) so it always reflects the newest publish. The
-    /// background update pass diffs it against the local manifest to find changed
-    /// species (see `refreshUpdatedImages`).
+    /// URL of the published photo manifest on the repo's default branch — the
+    /// growable list of every species that has a photo, with per-species content
+    /// hashes and metadata. `checkForPhotoUpdates` fetches and diffs it.
     static func manifestURL() -> URL? {
         URL(string: "\(assetBaseURL)/manifest.json")
     }
@@ -393,80 +390,66 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         return allowed.compactMap { all.indices.contains($0) ? all[$0].scientificName : nil }
     }
 
-    // MARK: - Image updates (hash-based)
+    // MARK: - Photo updates (growable manifest)
 
-    /// Reconciles the on-disk cache against the manifest baked into *this* build.
-    /// Any species whose bundled hash differs from what the app last recorded had
-    /// its photo updated in this app version, so its stale disk copy is dropped
-    /// (the next access re-downloads the new bytes at the bundled version) and
-    /// the new hash recorded. Cheap and synchronous-ish (a few file deletes at
-    /// most); call once at launch, before the first prefetch, so no stale image
-    /// is served or counted as already-cached. No-op on builds with no bundled
-    /// manifest.
-    func reconcileBundledManifest() {
-        guard let bundled = PhotoManifestStore.shared.bundled else { return }
-        let changed = PhotoManifestStore.shared.changedSlugs(against: bundled)
-        // Adopt the shipped version first so any re-download uses its bytes.
-        PhotoManifestStore.shared.adoptVersion(bundled.version)
-        for slug in changed {
-            invalidateDiskImages(slug: slug)
-            if let hash = bundled.files[slug] {
-                PhotoManifestStore.shared.markResolved(slug: slug, hash: hash)
-            }
-        }
+    /// UserDefaults key for the last successful manifest fetch, used to throttle
+    /// the foreground discovery check.
+    private static let lastManifestCheckKey = "photoManifestLastCheck"
+
+    struct PhotoUpdateResult: Sendable {
+        var newCount = 0
+        var changedCount = 0
     }
 
-    /// High-power "check for updated images" pass: fetches the published manifest,
-    /// diffs it against what the app has, and re-downloads **only** the changed
-    /// species' images — the sizes already on disk, at the newly-published
-    /// version — leaving everything else untouched. Since photos change very
-    /// rarely this is almost always a single small manifest fetch and no
-    /// downloads. Intended for the background task gated on power + Wi-Fi, but
-    /// safe to call anytime (e.g. a debug button). Call off the main actor.
+    /// Whether enough time has passed since the last manifest fetch to do another
+    /// foreground discovery check. Background tasks ignore this (the OS already
+    /// rate-limits them); only the on-foreground path throttles so opening the app
+    /// repeatedly doesn't refetch every time.
+    func manifestCheckDue(minInterval: TimeInterval) -> Bool {
+        let last = UserDefaults.standard.double(forKey: Self.lastManifestCheckKey)
+        return Date().timeIntervalSince1970 - last >= minInterval
+    }
+
+    /// Fetches the published manifest and reconciles it against what the app
+    /// knows — the single entry point for discovering photos added or changed on
+    /// the CDN, no app update required. Call off the main actor.
     ///
-    /// Returns the number of species refreshed (0 when nothing changed or the
-    /// manifest couldn't be fetched).
+    /// Always records **new** species (hash + metadata) so they immediately become
+    /// downloadable + attributable; the caller then prefetches whichever of them
+    /// are nearby / on the life list. **Changed** species are only acted on when
+    /// `includeChanged` is set (the high-power, Wi-Fi + power pass): their stale
+    /// bytes are dropped and the sizes previously on disk re-pulled. On the
+    /// cellular / foreground path (`includeChanged: false`) changed photos are
+    /// left for a later high-power pass, so metered data isn't spent re-fetching
+    /// images the user already has.
+    ///
+    /// Returns how many species were newly discovered / refreshed.
     @discardableResult
-    func refreshUpdatedImages() async -> Int {
+    func checkForPhotoUpdates(includeChanged: Bool) async -> PhotoUpdateResult {
         guard let url = Self.manifestURL(),
               let data = await download(url),
               let remote = PhotoManifest(data: data) else {
-            return 0
+            return PhotoUpdateResult()
         }
-        let changed = PhotoManifestStore.shared.changedSlugs(against: remote)
-        guard !changed.isEmpty else {
-            // Version may still have advanced (e.g. a pipeline bump that touched
-            // no slug we hold); adopt it so future URLs stay current.
-            PhotoManifestStore.shared.adoptVersion(remote.version)
-            return 0
-        }
-        // Adopt the new version *before* re-downloading so the fresh bytes come
-        // from the right ref rather than the old cached path.
-        PhotoManifestStore.shared.adoptVersion(remote.version)
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastManifestCheckKey)
 
-        let fm = FileManager.default
-        var refreshed = 0
-        for slug in changed {
-            let hadThumb = fm.fileExists(atPath: thumbFileURL(forSlug: slug).path)
-            let hadMedium = fm.fileExists(atPath: fileURL(forSlug: slug).path)
-            // Drop the stale bytes first so the re-download can't short-circuit on
-            // "already on disk" and so a failed refresh leaves nothing stale.
-            invalidateDiskImages(slug: slug)
+        let applied = PhotoManifestStore.shared.apply(remote, includeChanged: includeChanged)
+        var result = PhotoUpdateResult(newCount: applied.newSlugs.count)
 
-            var ok = true
-            if hadThumb { ok = await redownload(slug: slug, size: .thumb) && ok }
-            if hadMedium { ok = await redownload(slug: slug, size: .medium) && ok }
-
-            // Record the new hash only when every size we held came down cleanly,
-            // so a partial/failed refresh is retried on the next pass. If we held
-            // nothing on disk there's nothing to warm — still mark resolved, since
-            // an on-demand fetch will now pull the new version.
-            if ok, let hash = remote.files[slug] {
-                PhotoManifestStore.shared.markResolved(slug: slug, hash: hash)
-                refreshed += 1
+        if includeChanged {
+            for slug in applied.changedSlugs {
+                let hadThumb = FileManager.default.fileExists(atPath: thumbFileURL(forSlug: slug).path)
+                let hadMedium = FileManager.default.fileExists(atPath: fileURL(forSlug: slug).path)
+                // Drop the stale bytes first so the re-download can't short-circuit
+                // on "already on disk" and a failed refresh leaves nothing stale.
+                invalidateDiskImages(slug: slug)
+                var ok = true
+                if hadThumb { ok = await redownload(slug: slug, size: .thumb) && ok }
+                if hadMedium { ok = await redownload(slug: slug, size: .medium) && ok }
+                if ok { result.changedCount += 1 }
             }
         }
-        return refreshed
+        return result
     }
 
     /// Force-fetches one size from the network (bypassing the "already on disk"
@@ -483,9 +466,8 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     }
 
     /// Drops a species' cached bytes across the persisted tiers and their
-    /// in-memory caches, so the next access re-downloads. Leaves the full-res
-    /// memory tier's entry out only because it's keyed the same and cheap to
-    /// re-evict here too. Used by manifest reconciliation and the update refresh.
+    /// in-memory caches, so the next access re-downloads. Used by the update
+    /// refresh when a photo's hash changes.
     private func invalidateDiskImages(slug: String) {
         let fm = FileManager.default
         try? fm.removeItem(at: thumbFileURL(forSlug: slug))

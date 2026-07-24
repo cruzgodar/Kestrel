@@ -12,12 +12,12 @@ import Network
 ///     Each fire re-enqueues from scratch; already-downloaded files are skipped,
 ///     so successive fires chip away at whatever's left.
 ///
-///   • **imageRefresh** (`BGProcessingTask`) — the high-power "check for updated
-///     images" pass. Requested with `requiresExternalPower`, and additionally
-///     gated here on an unmetered (Wi-Fi) path, so it only runs plugged in on
-///     Wi-Fi. It diffs the published manifest against what the app holds and
-///     re-downloads only the changed species (see
-///     `RemoteSpeciesImageStore.refreshUpdatedImages`).
+///   • **imageRefresh** (`BGProcessingTask`) — the high-power photo-update pass.
+///     Requested with `requiresExternalPower`, and additionally gated here on an
+///     unmetered (Wi-Fi) path, so it only runs plugged in on Wi-Fi. It fetches
+///     the published manifest and both discovers newly-added photos and
+///     re-downloads changed ones (see
+///     `RemoteSpeciesImageStore.checkForPhotoUpdates`).
 ///
 /// Register once at launch (before the app finishes launching) and schedule both
 /// whenever the app backgrounds. Each handler reschedules its own next run.
@@ -114,6 +114,11 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
         let provider = currentProvider()
         let completion = TaskCompletionBox(task)
         let op = Task {
+            // Discover photos added to the CDN (cellular is fine — this only pulls
+            // the small manifest, then the new nearby/life-list images). Changed
+            // photos are deferred to the Wi-Fi + power pass.
+            await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: false)
+
             let lifeNames = await MainActor.run { provider?() ?? [] }
             let nearby = RemoteSpeciesImageStore.nearbyNames()
             RemoteSpeciesImageStore.shared.setProtectedSpecies(
@@ -140,8 +145,10 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
                 completion.complete(success: false)
                 return
             }
-            let count = await RemoteSpeciesImageStore.shared.refreshUpdatedImages()
-            Log.info("Image-update task refreshed \(count) species")
+            // Plugged in on Wi-Fi: the full pass — discover new photos *and*
+            // re-download changed ones.
+            let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: true)
+            Log.info("Image-update task: \(result.newCount) new, \(result.changedCount) changed")
             completion.complete(success: !Task.isCancelled)
         }
         completion.setExpirationHandler { op.cancel() }

@@ -52,12 +52,6 @@ struct KestrelApp: App {
         // (see `prefetchWake`). These are also the "protected" set the
         // image-cache cap never evicts — set it before prefetching so
         // newly-downloaded protected images aren't pruned.
-        // Before warming anything, reconcile the on-disk photo cache against the
-        // manifest baked into this build: any species whose image changed since
-        // the last version this device ran gets its stale copy dropped, so the
-        // prefetch below re-pulls the new bytes instead of serving old ones.
-        RemoteSpeciesImageStore.shared.reconcileBundledManifest()
-
         let lifeListNames = store.entries.map(\.scientificName)
         let nearbyNames = RemoteSpeciesImageStore.nearbyNames()
         RemoteSpeciesImageStore.shared.setProtectedSpecies(
@@ -203,6 +197,9 @@ struct KestrelApp: App {
                     // photos now, so opening the app somewhere new updates the
                     // list immediately (see `refreshRegionOnForeground`).
                     recordingManager.refreshRegionOnForeground()
+                    // Discover photos added to the CDN since last time (throttled),
+                    // so a growing photo set fills in without an app update.
+                    discoverNewPhotosOnForeground()
                 } else if phase == .background {
                     // Queue the background photo prefetch + high-power update
                     // check for whenever iOS next grants us time.
@@ -221,6 +218,26 @@ struct KestrelApp: App {
     private func startRecordingIfRequested() {
         guard RecordingIntentRequest.consume() else { return }
         Task { await recordingManager.startFromIntent() }
+    }
+
+    /// Fetches the published photo manifest on foreground (at most every few
+    /// hours) to discover species whose photos were added to the CDN since the
+    /// last check, then prefetches any that are nearby / on the life list so a
+    /// growing photo set fills in without an app update. Changed (vs new) photos
+    /// are left to the Wi-Fi + power background pass.
+    private func discoverNewPhotosOnForeground() {
+        guard RemoteSpeciesImageStore.shared.manifestCheckDue(minInterval: 6 * 3600) else { return }
+        let lifeNames = lifeListStore.entries.map(\.scientificName)
+        Task {
+            let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: false)
+            guard result.newCount > 0 else { return }
+            RemoteSpeciesImageStore.shared.setProtectedSpecies(
+                RemoteSpeciesImageStore.launchTargets(lifeList: lifeNames)
+            )
+            RemoteSpeciesImageStore.shared.prefetchWake(
+                lifeList: lifeNames, nearby: RemoteSpeciesImageStore.nearbyNames()
+            )
+        }
     }
 
     private func updateSpectrogramVisibility() {
