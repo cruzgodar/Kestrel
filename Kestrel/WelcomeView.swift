@@ -37,10 +37,15 @@ struct WelcomeView: View {
     /// are both this.
     private static let spacing: CGFloat = 20
 
-    /// Space above the logo, below the status bar. Its own knob rather than
-    /// `spacing`: the top of the screen wants more breathing room than the gaps
-    /// between elements, which read as one block.
-    private static let topPadding: CGFloat = 56
+    /// Breathing room above and below the block once it *does* outgrow the
+    /// screen and starts scrolling. Below that size the block is placed by
+    /// `centerFraction` and this only floors how close to the top it can get.
+    private static let verticalPadding: CGFloat = 32
+
+    /// Where the block's own center sits, as a fraction of the height above the
+    /// button. 0.5 is dead center; sitting a little high reads as deliberate
+    /// placement rather than as the screen having nothing else on it.
+    private static let centerFraction: CGFloat = 0.45
 
     /// Runs the permission sequence (see `RecordingManager.requestOnboardingPermissions`).
     /// Async so the button stays disabled until every prompt has been answered,
@@ -49,6 +54,25 @@ struct WelcomeView: View {
     let requestPermissions: () async -> Void
 
     @State private var requesting = false
+
+    /// Height of the scroll view — i.e. everything above the button. Fed back
+    /// into the content as a *minimum* height so the block can place itself in
+    /// that space (see `body`).
+    @State private var scrollHeight: CGFloat = 0
+
+    /// Height of the block itself, measured without its padding.
+    @State private var contentHeight: CGFloat = 0
+
+    /// Space above the block that puts its center `centerFraction` of the way
+    /// down the scroll view. Floored at `verticalPadding` so a block too tall
+    /// for the screen — the largest accessibility text sizes — starts below the
+    /// top edge and scrolls, rather than being pulled up off it.
+    private var topInset: CGFloat {
+        max(
+            Self.verticalPadding,
+            scrollHeight * Self.centerFraction - contentHeight / 2
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -97,12 +121,22 @@ struct WelcomeView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(maxWidth: .infinity)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
                 .padding(.horizontal, 32)
-                .padding(.top, Self.topPadding)
-                .padding(.bottom, 32)
+                // Placed by `topInset` rather than centered, so the block sits
+                // `centerFraction` of the way down the space above the button.
+                // The frame is a *minimum* height, not a fixed one: at the
+                // largest accessibility text sizes the block outgrows the
+                // screen, and this way it simply gets taller than the scroll
+                // view and scrolls, instead of being pinned to one screenful
+                // and clipped.
+                .padding(.top, topInset)
+                .padding(.bottom, Self.verticalPadding)
+                .frame(minHeight: scrollHeight, alignment: .top)
             }
             // No rubber-banding when the content already fits.
             .scrollBounceBehavior(.basedOnSize)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { scrollHeight = $0 }
 
             Button {
                 guard !requesting else { return }

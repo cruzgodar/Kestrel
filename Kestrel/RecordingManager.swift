@@ -320,7 +320,28 @@ final class RecordingManager {
         _ = await requestMicrophonePermission()
         _ = await isLocationAuthorized(prompt: true)
         await SpeciesNotifications.shared.requestAuthorizationIfNeeded()
+
+        // The app stays *inactive* for as long as a system alert is up — and
+        // for a moment after the last one is answered, while it dismisses.
+        // SwiftUI applies view updates without animation in that state, so
+        // clearing the flag any earlier means the welcome screen's crossfade
+        // (see `RootView`) is skipped and it vanishes in a single frame.
+        // Waiting also lands the fade after the alert has finished dismissing,
+        // which is where it wants to be anyway.
+        await waitUntilActive()
+
         needsOnboarding = false
+    }
+
+    /// Suspends until the app is foreground-active again, polling because
+    /// there's no `await`-able form of the scene phase down here. Bounded: if
+    /// the user answered the last prompt and immediately left, the caller still
+    /// gets to finish rather than hanging on a state that isn't coming back.
+    private func waitUntilActive(timeout: TimeInterval = 3) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while UIApplication.shared.applicationState != .active, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(30))
+        }
     }
 
     func preload() {
