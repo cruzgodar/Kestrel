@@ -91,15 +91,33 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         }
     }
 
-    /// Begins a walking workout branded "Birding". No-op if HealthKit is
-    /// unavailable or a session is already running.
+    /// Begins a walking workout branded "Birding". No-op if a session is already
+    /// running.
+    ///
+    /// A failure to bring the live session up is *not* fatal to the save prompt:
+    /// `startDate` is recorded first and kept whatever happens below, so a walk
+    /// HealthKit refused to collect live can still be offered when the user stops
+    /// and written after the fact (see `pause()` / `save()`). Before this, an
+    /// unauthorized or otherwise failed `HKWorkoutSession` meant no prompt ever
+    /// appeared — a device-only failure that never reproduced in the simulator.
     func start() async {
-        guard HKHealthStore.isHealthDataAvailable(), session == nil else { return }
+        guard session == nil else { return }
+        startDate = Date()
+
+        guard HKHealthStore.isHealthDataAvailable() else {
+            Log.warning("HealthKit unavailable — birding walk can't be collected or saved")
+            return
+        }
 
         // Ask for HealthKit access lazily, the first time a session is actually
         // started, rather than at app launch. Idempotent — HealthKit only shows
         // its sheet the first time, so later starts pass straight through.
         await requestAuthorization()
+        if workoutSharingStatus != .sharingAuthorized {
+            // The single likeliest reason a walk never reaches the save prompt on
+            // a real watch, and invisible without this line.
+            Log.warning("Workout sharing is \(Self.describe(workoutSharingStatus)) — this walk can't be saved to Health")
+        }
 
         let config = HKWorkoutConfiguration()
         config.activityType = .walking
@@ -127,19 +145,55 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
             self.builder = builder
             self.endedUnexpectedly = false
 
-            let start = Date()
-            self.startDate = start
+            let start = startDate ?? Date()
             session.startActivity(with: start)
             try await builder.beginCollection(at: start)
             // Brand the workout "Birding" so it shows up under that name in the
             // Fitness app instead of the generic "Outdoor Walk".
             try await builder.addMetadata([HKMetadataKeyWorkoutBrandName: "Birding"])
         } catch {
-            Log.error("Workout start error: \(error)")
+            Log.error("Workout start error: \(error) (sharing status: \(Self.describe(workoutSharingStatus)))")
             session = nil
             builder = nil
-            startDate = nil
+            // `startDate` deliberately survives: the walk is still happening, and
+            // the save prompt is keyed off its duration, not off HealthKit having
+            // come up. `save()` writes it retroactively.
         }
+    }
+
+    /// Whether HealthKit will let us write workouts. Read for diagnostics and to
+    /// decide whether offering to save a walk would be honest.
+    private var workoutSharingStatus: HKAuthorizationStatus {
+        healthStore.authorizationStatus(for: HKQuantityType.workoutType())
+    }
+
+    private static func describe(_ status: HKAuthorizationStatus) -> String {
+        switch status {
+        case .notDetermined:      return "not determined"
+        case .sharingDenied:      return "denied"
+        case .sharingAuthorized:  return "authorized"
+        @unknown default:         return "unknown (\(status.rawValue))"
+        }
+    }
+
+    /// Whether a walk of this span is worth putting the save prompt up for: long
+    /// enough to be a real walk, and actually writable to HealthKit. Offering to
+    /// save a walk we know can't be written would be a lie, so a denied
+    /// authorization skips the prompt (loudly — that's the case that used to look
+    /// like the prompt was simply broken).
+    private func canOfferSave(started: Date?, end: Date) -> Bool {
+        guard let started else { return false }
+        let elapsed = end.timeIntervalSince(started)
+        guard elapsed >= minimumDuration else { return false }
+        guard HKHealthStore.isHealthDataAvailable() else {
+            Log.warning("No save prompt for a \(Int(elapsed))s walk — HealthKit unavailable")
+            return false
+        }
+        guard workoutSharingStatus != .sharingDenied else {
+            Log.warning("No save prompt for a \(Int(elapsed))s walk — workout sharing is denied in Health")
+            return false
+        }
+        return true
     }
 
     /// The user tapped stop. *Pauses* the workout rather than ending it, and
@@ -156,8 +210,13 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// than a prompt. Those return false so the caller can `end()` them instead,
     /// which discards them outright.
     ///
+    /// A live session is *not* required. If HealthKit refused to start one (the
+    /// device-only failure that made this prompt look broken on a real watch),
+    /// the walk still happened and is still offered — just without Resume, since
+    /// there's no paused session to continue. `save()` writes it after the fact.
+    ///
     /// Synchronous on purpose. The watch morphs the stop button *directly* into
-    /// the prompt's Cancel button, so `pendingSave` has to land in the same turn
+    /// the prompt's Resume button, so `pendingSave` has to land in the same turn
     /// the morph starts. Behind an `await` there'd be a beat where the view sees
     /// neither "recording" nor "prompting", and the button would slingshot back
     /// toward center before snapping into the corner.
@@ -167,13 +226,20 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// so the tap's frame carries nothing but state flips.
     @discardableResult
     func pause() -> Bool {
-        guard session != nil, let builder, let started = startDate else { return false }
-        guard Date().timeIntervalSince(started) >= minimumDuration else { return false }
+        let end = Date()
+        guard let started = startDate, canOfferSave(started: started, end: end) else { return false }
+
+        // Only a session we're actually holding can be paused and picked back up.
+        let live = session != nil && builder != nil
+        if !live {
+            Log.warning("Stop with no live workout session — offering the walk without Resume")
+        }
 
         pendingBuilder = builder
-        pendingSave = PendingWorkout(start: started, end: Date(), canResume: true)
-        pendingPause = true
-        startAbandonTimeout()
+        pendingSpan = (started, end)
+        pendingSave = PendingWorkout(start: started, end: end, canResume: live)
+        pendingPause = live
+        if live { startAbandonTimeout() }
         return true
     }
 
@@ -196,7 +262,7 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// knows whether there's a pause to undo.
     private var pausedForPrompt = false
 
-    /// The user chose to keep birding. Clears the prompt so the Cancel button can
+    /// The user chose to keep birding. Clears the prompt so the Resume button can
     /// animate straight back up into the stop button; the workout itself is
     /// un-paused by `applyResume()` once that has played. Returns false if the
     /// session was no longer resumable, in which case the caller must not act as
@@ -207,12 +273,13 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         cancelAbandonTimeout()
         // The builder keeps collecting into the same workout; nothing to reset.
         pendingBuilder = nil
+        pendingSpan = nil
         pendingSave = nil
         return true
     }
 
     /// The HealthKit half of `resume()`, run after the morph. If the pause never
-    /// reached HealthKit (the user hit Cancel inside the morph window) this just
+    /// reached HealthKit (the user hit Resume inside the morph window) this just
     /// cancels it rather than resuming a session that was never paused.
     func applyResume() {
         pendingPause = false
@@ -290,17 +357,24 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// ending the session, an orphan being reclaimed — so the resulting prompt
     /// offers no Resume. A user-initiated stop goes through `pause()` instead.
     func end() async {
-        guard let session, let builder else { return }
+        let end = Date()
+        let started = startDate
+        self.startDate = nil
+        pendingPause = false
+        pausedForPrompt = false
+
+        guard let session, let builder else {
+            // No live session to end — HealthKit never brought one up. The walk
+            // itself still happened, so offer it on the same terms; `save()`
+            // writes it retroactively.
+            park(started: started, end: end, builder: nil)
+            return
+        }
         // Clear our references first so a stop/start race can't end up finishing
         // a fresh session by mistake.
         self.session = nil
         self.builder = nil
-        pendingPause = false
-        pausedForPrompt = false
-        let started = startDate
-        self.startDate = nil
 
-        let end = Date()
         session.end()
 
         do {
@@ -311,25 +385,39 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
             return
         }
 
-        // Too short to be a real birding walk — throw it away without bothering
-        // the user about it.
-        guard let started, end.timeIntervalSince(started) >= minimumDuration else {
+        // Too short (or unsavable) — throw it away without bothering the user.
+        guard canOfferSave(started: started, end: end) else {
             builder.discardWorkout()
             return
         }
 
         // Hold the builder open. Nothing is written to HealthKit (and so no
         // activity-sharing notification fires) until `save()`.
-        self.pendingBuilder = builder
-        // This is the unattended path — the prompt arrives on its own rather
-        // than under a button's morph — so it fades in on its own transaction.
+        park(started: started, end: end, builder: builder)
+    }
+
+    /// Parks a finished, unattended walk in `pendingSave` so the prompt fades in
+    /// on its own (rather than under a button's morph, which is `pause()`'s job).
+    /// A nil `builder` means nothing was collected live and `save()` will have to
+    /// write the walk after the fact.
+    private func park(started: Date?, end: Date, builder: HKLiveWorkoutBuilder?) {
+        guard let started, canOfferSave(started: started, end: end) else { return }
+        pendingBuilder = builder
+        pendingSpan = (started, end)
         withAnimation(.easeInOut(duration: 0.3)) {
-            self.pendingSave = PendingWorkout(start: started, end: end, canResume: false)
+            pendingSave = PendingWorkout(start: started, end: end, canResume: false)
         }
     }
 
-    /// The ended-but-unwritten builder behind `pendingSave`.
+    /// The ended-but-unwritten builder behind `pendingSave`, when the walk was
+    /// collected live.
     private var pendingBuilder: HKLiveWorkoutBuilder?
+
+    /// The span of the walk behind `pendingSave`. Kept separately because
+    /// `dismissPrompt()` clears `pendingSave` the moment the answer has finished
+    /// animating — before `save()` runs — and a walk with no live builder has
+    /// nothing else left to describe it.
+    private var pendingSpan: (start: Date, end: Date)?
 
     /// User confirmed: write the pending walk to HealthKit. This is the only
     /// path that creates a workout sample (and the only one that can notify the
@@ -339,13 +427,46 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         // session is still live — close it out before the builder can be
         // finished, or `finishWorkout()` has nothing valid to write.
         await endPausedSession()
-        guard let builder = pendingBuilder else { return }
+        let builder = pendingBuilder
+        let span = pendingSpan
         pendingBuilder = nil
+        pendingSpan = nil
         pendingSave = nil
+        startDate = nil
+
+        if let builder {
+            do {
+                _ = try await builder.finishWorkout()
+            } catch {
+                Log.error("Workout finish error: \(error)")
+            }
+            return
+        }
+        // Nothing was collected live — HealthKit never gave us a session for this
+        // walk. Write it from the span we recorded instead, so Save still means
+        // saved. No distance or energy samples, but the walk itself is logged.
+        guard let span else { return }
+        await saveRetroactively(start: span.start, end: span.end)
+    }
+
+    /// Writes a walk that was never collected live, using a plain (non-live)
+    /// builder over the span the recording actually ran for.
+    private func saveRetroactively(start: Date, end: Date) async {
+        let config = HKWorkoutConfiguration()
+        config.activityType = .walking
+        config.locationType = .outdoor
+        let builder = HKWorkoutBuilder(
+            healthStore: healthStore,
+            configuration: config,
+            device: .local()
+        )
         do {
+            try await builder.beginCollection(at: start)
+            try await builder.addMetadata([HKMetadataKeyWorkoutBrandName: "Birding"])
+            try await builder.endCollection(at: end)
             _ = try await builder.finishWorkout()
         } catch {
-            Log.error("Workout finish error: \(error)")
+            Log.error("Retroactive workout save error: \(error) (sharing status: \(Self.describe(workoutSharingStatus)))")
         }
     }
 
@@ -356,13 +477,14 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         // As in `save()`: a paused session has to be ended before its builder
         // can be disposed of.
         await endPausedSession()
-        guard let builder = pendingBuilder else {
-            pendingSave = nil
-            return
-        }
+        let builder = pendingBuilder
         pendingBuilder = nil
+        pendingSpan = nil
         pendingSave = nil
-        builder.discardWorkout()
+        startDate = nil
+        // A walk with no live builder was never collected, so there's nothing to
+        // throw away — dropping the pending state above is the whole discard.
+        builder?.discardWorkout()
     }
 
     /// Reattaches to a workout session that outlived the app — the case where

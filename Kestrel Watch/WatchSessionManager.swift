@@ -82,7 +82,8 @@ final class WatchSessionManager: NSObject {
         needsOnboarding = false
     }
 
-    /// How a heard bird is highlighted — picks the watch's background color.
+    /// How a heard bird is highlighted — picks the tint of the pill behind the
+    /// species name on the now-hearing screen.
     /// The raw values match the strings the phone sends in the `highlight` key.
     enum BirdHighlight: String, Equatable {
         case newSpecies  // not yet on the life list (purple)
@@ -113,12 +114,6 @@ final class WatchSessionManager: NSObject {
     /// cancelled when the session ends.
     private var idleDisplayResetTask: Task<Void, Never>?
     private let idleDisplayReset: TimeInterval = 60
-
-    /// Bumped every time the phone reports a heard bird, so the UI can flash the
-    /// background on each detection — including a `.normal` bird, which doesn't
-    /// change `lastBird`'s tint and so couldn't be caught by observing `lastBird`
-    /// alone. The flash color is read from `lastBird.highlight` when it fires.
-    private(set) var heardTick = 0
 
     /// Scientific names the user has added to the life list (via the watch's add
     /// button) during the current listening session. Tracked here so the add
@@ -435,9 +430,6 @@ final class WatchSessionManager: NSObject {
             scientificName: scientificName,
             highlight: highlight
         )
-        // Drive the background flash. Bumped after `lastBird` is set so the view
-        // reads the new bird's highlight when it picks the flash color.
-        heardTick &+= 1
         if let cached = WatchSpeciesImageCache.shared.image(for: scientificName) {
             lastBirdImage = cached
         } else {
@@ -506,7 +498,7 @@ final class WatchSessionManager: NSObject {
     /// Flips into the recording state and schedules the bring-up that follows the
     /// morph. **Call this inside an animated transaction** — the animation belongs
     /// to the caller so a resume can clear the prompt and start recording in one
-    /// beat, sending the Cancel button back up into the stop button rather than
+    /// beat, sending the Resume button back up into the stop button rather than
     /// having it blink out and a fresh one blink in.
     private func beginSession() {
         // Fresh session — drop any bird left over from the previous one so the
@@ -689,7 +681,7 @@ final class WatchSessionManager: NSObject {
         // logged, so an unattended teardown can't quietly post a workout to
         // their activity-sharing friends — and it has to land synchronously,
         // inside the same transaction as the flip, so the view knows in one step
-        // that the stop button is sliding down into the prompt's Cancel button
+        // that the stop button is sliding down into the prompt's Resume button
         // rather than flying back to center. A false return means there was
         // nothing worth asking about (no workout running, or too short a walk);
         // the session is ended outright below instead, which discards it.
@@ -703,7 +695,7 @@ final class WatchSessionManager: NSObject {
         // audio engine — waits out the morph. `engine.stop()` + `setActive(false)`
         // block their caller for seconds on a cold first stop and post
         // route-change callbacks to the main actor, which would freeze the morph
-        // if run during it. If the user picks Cancel before the sleep elapses
+        // if run during it. If the user picks Resume before the sleep elapses
         // (`isRecording` flips back true), the whole teardown is skipped so the
         // continuing session keeps its engine, its phone link and its workout.
         let streamer = self.streamer
@@ -893,7 +885,7 @@ final class WatchSessionManager: NSObject {
         stop(resumable: false)
     }
 
-    /// User picked "Cancel" on the save prompt. Un-pauses the workout so the walk
+    /// User picked "Resume" on the save prompt. Un-pauses the workout so the walk
     /// stays one continuous session, then brings audio and the phone link back up
     /// through the normal start path (whose `WatchWorkoutManager.start()` is a
     /// no-op while a session is already live, so it won't open a second workout).
@@ -901,7 +893,7 @@ final class WatchSessionManager: NSObject {
     /// user still gets a working session rather than a dead button.
     ///
     /// Clearing the prompt and flipping into recording share one transaction, so
-    /// the Cancel button animates back up into the stop button it came from. As
+    /// the Resume button animates back up into the stop button it came from. As
     /// everywhere else, the tap itself only animates: the HealthKit un-pause
     /// (`applyResume`) and the audio bring-up both wait out the morph.
     func resumeBirding() {

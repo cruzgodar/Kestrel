@@ -4,13 +4,6 @@ import SwiftUI
 struct ContentView: View {
     @State private var session = WatchSessionManager.shared
     @Environment(\.scenePhase) private var scenePhase
-    /// True while the always-on display is dimmed (wrist down). We suppress the
-    /// detection flash then — a full-screen pulse on the dimmed screen is jarring
-    /// and burns battery for something the user isn't looking at.
-    @Environment(\.isLuminanceReduced) private var isLuminanceReduced
-    /// Opacity of the full-screen detection flash overlay. Snapped to 1 when a
-    /// bird is heard, then eased back to 0.
-    @State private var flashOpacity: Double = 0
 
     /// Fixed base size of the record control; the morph is a uniform
     /// `scaleEffect` of this so the circle and glyph shrink together as one unit.
@@ -20,7 +13,7 @@ struct ContentView: View {
     /// species name below them follows from this and the screen size.
     private static let cornerButtonSize: CGFloat = 42
     /// Horizontal gap between the stop button and the add button beside it.
-    /// Doubles as the gap between the cancel/discard/save buttons and their
+    /// Doubles as the gap between the resume/discard/save buttons and their
     /// captions, so the prompt's text lines up off the same column.
     private static let interButtonGap: CGFloat = 8
     /// Glyph diameter inside a corner button, as a fraction of the button. The
@@ -38,18 +31,22 @@ struct ContentView: View {
     /// stop glyph it replaces.
     private static var checkGlyphBaseSize: CGFloat { cornerGlyphBaseSize * 1.1 }
     private static let sqrt2: CGFloat = 1.414213562373095
-    /// Inset between the bird image/placeholder and the screen edges. Paired
-    /// with `ContainerRelativeShape` so the corner radius stays concentric with
-    /// the watch bezel as this changes. Tunable per watch size in `WatchMetrics`.
-    private static var imageMargin: CGFloat { WatchMetrics.current.imageMargin }
+    /// Clearance the corner buttons keep off the rounded bezel (measured along
+    /// the diagonal), and the trailing margin the prompt captions stop at. The
+    /// bird image itself is no longer inset — it runs to the left, right and
+    /// bottom edges. Tunable per watch size in `WatchMetrics`.
+    private static var edgeMargin: CGFloat { WatchMetrics.current.edgeMargin }
+    /// Radius of the bird photo's *top* corners. Its bottom corners are square
+    /// and simply cut off by the bezel, whose radius this matches so all four
+    /// corners read the same. Tunable per watch size in `WatchMetrics`.
+    private static var imageTopCornerRadius: CGFloat { WatchMetrics.current.imageTopCornerRadius }
     /// Vertical gap between the species name and the photo below it. Tunable per
     /// watch size in `WatchMetrics`.
     private static var nameImageGap: CGFloat { WatchMetrics.current.nameImageGap }
     /// Approximate corner radius of the watch's physical screen. watchOS exposes
-    /// no public API for this, so we set it as the root container shape; the
-    /// image's `ContainerRelativeShape` then insets it by `imageMargin` to stay
-    /// concentric. Resolved per device by `WatchMetrics` — add measured sizes
-    /// there to tune the bezel match on new watches.
+    /// no public API for this, so the corner-button geometry derives its diagonal
+    /// clearance from this value. Resolved per device by `WatchMetrics` — add
+    /// measured sizes there to tune the bezel match on new watches.
     private static var screenCornerRadius: CGFloat { WatchMetrics.current.screenCornerRadius }
 
     /// True only when the *watch's own* microphone and/or location permission is
@@ -80,18 +77,18 @@ struct ContentView: View {
     private static let saveTint = Color.green
     private static let discardTint = Color.red
 
-    /// True while a finished birding walk is waiting on a cancel/discard/save
+    /// True while a finished birding walk is waiting on a resume/discard/save
     /// answer. The prompt is drawn in place of the recording controls rather
     /// than in a sheet (see the prompt buttons in `body`), so it shares the
     /// record button's morph geometry.
     private var prompting: Bool { workout.pendingSave != nil }
 
-    /// The prompt's three answers, top to bottom. Cancel is the record control
+    /// The prompt's three answers, top to bottom. Resume is the record control
     /// itself — the stop button slides down into it and back up out of it — while
     /// Discard and Save are their own buttons, each of which morphs into the
     /// centered record button when it's the one the user taps.
     private enum PromptRole {
-        case cancel, discard, save
+        case resume, discard, save
     }
 
     /// The answer currently animating back into the record button, if any. Set on
@@ -114,7 +111,7 @@ struct ContentView: View {
 
     /// Center y of a prompt button. The stack is centered on the screen — which
     /// pulls the buttons and their captions in from the corners the prompt used
-    /// to be spread across — and Cancel drops out when the walk can't be resumed,
+    /// to be spread across — and Resume drops out when the walk can't be resumed,
     /// leaving the other two re-centered rather than a hole at the top.
     ///
     /// A prompt that isn't up yet is laid out as though it has all three answers,
@@ -123,8 +120,8 @@ struct ContentView: View {
     /// fades the prompt in, and Discard and Save would drift into place instead
     /// of simply appearing there.
     private func promptSlotY(_ role: PromptRole, in height: CGFloat) -> CGFloat {
-        let hasCancel = !prompting || showResumeButton
-        let roles: [PromptRole] = hasCancel ? [.cancel, .discard, .save] : [.discard, .save]
+        let hasResume = !prompting || showResumeButton
+        let roles: [PromptRole] = hasResume ? [.resume, .discard, .save] : [.discard, .save]
         let index = roles.firstIndex(of: role) ?? 0
         let middle = CGFloat(roles.count - 1) / 2
         return height / 2 + (CGFloat(index) - middle) * Self.promptSlotSpacing
@@ -133,31 +130,27 @@ struct ContentView: View {
     var body: some View {
         let recording = session.isRecording
         let prompting = self.prompting
-        // The record control doubles as the prompt's Cancel button whenever
+        // The record control doubles as the prompt's Resume button whenever
         // there's a walk to resume: tapping stop slides it out of the corner and
         // down into the top slot, and tapping it there sends it back up.
-        let asCancel = prompting && showResumeButton
+        let asResume = prompting && showResumeButton
         // Both states hold the record control at `cornerButtonSize`: recording
         // (as the stop button, in the corner) and prompting-with-resume (as the
-        // Cancel button, a slot above center). Everything keyed off the morph
+        // Resume button, a slot above center). Everything keyed off the morph
         // reads this rather than `recording` alone, so stopping flows straight
         // into the prompt without the button flying back to center in between.
-        let shrunk = recording || asCancel
+        let shrunk = recording || asResume
         // The idle screen — the big centered record button and its caption — is
         // also what a tapped Save/Discard is animating back toward, so it comes
         // out from behind the prompt as that morph plays.
         let idling = !recording && (!prompting || morphing != nil)
 
         ZStack {
-            // Standing background for the current bird's kind (black / blue /
-            // purple), with a deeper flash of the same hue pulsed over it when a
-            // starred or new bird is heard, then fading back to the dim standing
-            // color — mirroring the phone Identify tab's per-detection row flash
-            // (see `flash()`). A normal bird updates the screen without a flash.
-            backgroundColor.ignoresSafeArea()
-            flashColor
-                .ignoresSafeArea()
-                .opacity(flashOpacity)
+            // The screen stays black whatever is heard. A starred or new bird is
+            // marked by tinting the species name's pill instead (see
+            // `nameHighlight`) — a full-screen wash and flash on the wrist was
+            // more alarm than information.
+            Color.black.ignoresSafeArea()
 
             // Pre-warm the text-rendering pipeline during launch. The idle
             // screen is all SF Symbols, so the bird name would otherwise be the
@@ -191,7 +184,7 @@ struct ContentView: View {
             // and the button scales uniformly (see `recordButton`), so the
             // record control travels in a straight line between the centered
             // mic and the corner stop button — identically in both directions,
-            // and on down to the prompt's Cancel slot and back when the user
+            // and on down to the prompt's Resume slot and back when the user
             // stops a walk. The prompt's other two answers are built the same
             // way so whichever one is tapped can travel back to the center.
             GeometryReader { geo in
@@ -201,17 +194,17 @@ struct ContentView: View {
                 // Leading edge of the prompt's captions — a gap to the right of
                 // the corner buttons, which all share the stop button's column.
                 let labelX = cornerC + r + Self.interButtonGap
-                let labelW = max(0, geo.size.width - labelX - Self.imageMargin)
+                let labelW = max(0, geo.size.width - labelX - Self.edgeMargin)
                 // Where the record control parks: the corner while recording, the
-                // Cancel slot while the prompt offers a resume, dead center
+                // Resume slot while the prompt offers one, dead center
                 // otherwise — including while faded out behind a save/discard
                 // morph, so the hand-off at the end of that morph lands it exactly
                 // where the growing button finished.
-                let recordY = asCancel
-                    ? promptSlotY(.cancel, in: geo.size.height)
+                let recordY = asResume
+                    ? promptSlotY(.resume, in: geo.size.height)
                     : (recording ? cornerC : geo.size.height / 2)
-                // The record control is Cancel while the prompt is up, so it's
-                // gone when there's nothing to cancel back into, and it clears
+                // The record control is Resume while the prompt is up, so it's
+                // gone when there's nothing to resume back into, and it clears
                 // away while a save/discard answer morphs into its place.
                 let showRecordControl = !prompting || (promptVisible && showResumeButton)
 
@@ -251,19 +244,19 @@ struct ContentView: View {
                     .opacity(showAddButton ? 1 : 0)
                     .allowsHitTesting(showAddButton)
 
-                // Cancel / Discard / Save, drawn directly on the screen rather
+                // Resume / Discard / Save, drawn directly on the screen rather
                 // than in a sheet so the buttons can morph into and out of the
                 // record control instead of sliding a modal over it. All three
                 // share the stop button's left-hand column, stacked around the
-                // middle of the screen; Cancel is the record control above, and
+                // middle of the screen; Resume is the record control above, and
                 // these two morph back into it when tapped.
                 promptButton(.discard, in: geo.size)
                 promptButton(.save, in: geo.size)
 
-                // Cancel's caption tracks the record control's own y, so it
+                // Resume's caption tracks the record control's own y, so it
                 // travels down from the stop button's row and back up again in
                 // lockstep with the button it names, fading as it goes.
-                promptLabel("Cancel", x: labelX, width: labelW, y: recordY)
+                promptLabel("Resume", x: labelX, width: labelW, y: recordY)
                     .opacity(promptVisible && showResumeButton ? 1 : 0)
 
                 // Discard and Save name buttons that don't move, so their
@@ -282,7 +275,7 @@ struct ContentView: View {
                 // cover. Answering shouldn't demand a 42pt bullseye on a wrist:
                 // the whole row — circle, caption and the space between them —
                 // takes the tap.
-                promptRowTarget(.cancel, in: geo.size)
+                promptRowTarget(.resume, in: geo.size)
                 promptRowTarget(.discard, in: geo.size)
                 promptRowTarget(.save, in: geo.size)
             }
@@ -307,7 +300,7 @@ struct ContentView: View {
         .sheet(isPresented: $showPermissionInfo) {
             permissionInfo
         }
-        // The cancel/discard/save prompt is not a sheet — it's drawn in the
+        // The resume/discard/save prompt is not a sheet — it's drawn in the
         // main view (see `body`'s prompt buttons) so the stop button morphs
         // down into it and whichever answer is tapped morphs back out into the
         // record button. There's deliberately no swipe-away:
@@ -348,8 +341,6 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: RecordingIntentRequest.notification)) { _ in
             startRecordingIfRequested()
         }
-        // Flash the background each time a bird is heard.
-        .onChange(of: session.heardTick) { _, _ in flash() }
         // Surfaced only when the phone link is lost for good (no heartbeat for a
         // full minute) and the session was stopped — not for transient dips.
         .alert(
@@ -370,74 +361,26 @@ struct ContentView: View {
         session.handleRemoteStart()
     }
 
-    // MARK: - Background
+    // MARK: - Tints
 
-    /// Standing (solid-state) background for the current bird's kind — black for
-    /// a normal/known bird, dark blue for a starred one, dark purple for a new
-    /// lifer (red for a debug injection). Unchanged from the original design; the
-    /// flash pulses over this and fades back to it.
-    private var backgroundColor: Color {
-        guard session.isRecording, let bird = session.lastBird else { return Self.idleBackground }
-        switch bird.highlight {
-        case .newSpecies: return Self.newSpeciesBackground
-        case .starred:    return Self.starredBackground
-        case .normal:     return .black
-        }
-    }
-
-    /// Standing background before any bird has been heard (idle, or recording but
-    /// nothing identified yet).
-    private static let idleBackground: Color = .black
-
-    /// The color flashed over the standing background when a bird is heard — a
-    /// deeper beat of the same purple/blue hue that fades back to the dimmer
-    /// standing tint, mirroring the phone Identify tab's per-detection row flash.
-    /// A normal bird never flashes (see `flash()`), so it has no flash color.
-    private var flashColor: Color {
-        switch session.lastBird?.highlight {
-        case .newSpecies:    return Self.newSpeciesFlash
-        case .starred:       return Self.starredFlash
-        case .normal, .none: return .clear
-        }
-    }
-
-    /// Snap the flash overlay to full, then ease it back to transparent so the
-    /// standing background shows through again. Suppressed while the always-on
-    /// display is dimmed, and when not recording.
-    private func flash() {
-        guard session.isRecording, !isLuminanceReduced else { return }
-        // Only the highlighted birds pulse — a plain/normal bird updates the
-        // screen without any flash. New species + starred flash a deeper
-        // purple/blue that resolves back to their dimmer standing tint.
-        switch session.lastBird?.highlight {
-        case .newSpecies, .starred:
-            break
-        default:
-            return
-        }
-        flashOpacity = 1
-        withAnimation(.easeOut(duration: 0.6)) {
-            flashOpacity = 0
-        }
-    }
-
-    // Standing background tints the flash resolves back to — dim purple (hue
-    // 252°) for a new species, dim blue (hue 215°) for a starred one. A normal
-    // bird has no tint (black).
-    private static let newSpeciesBackground =
-        Color(hue: 252.0 / 360.0, saturation: 0.60, brightness: 0.34)
-    private static let starredBackground =
-        Color(hue: 215.0 / 360.0, saturation: 0.60, brightness: 0.34)
-
-    // Flash pulse — a deeper beat of the same hue than the dim standing tint, so
-    // the pulse reads, then fades back to the standing color. Only new species
-    // and starred birds flash (matching the phone); a normal bird never does.
-    private static let newSpeciesFlash =
-        Color(hue: 252.0 / 360.0, saturation: 0.68, brightness: 0.55)
-    private static let starredFlash =
-        Color(hue: 215.0 / 360.0, saturation: 0.68, brightness: 0.55)
-
+    /// Purple: the record button's fill, and a new lifer's name.
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
+    /// Blue: the phone's star glyph color (`LifeListView.starButtonTint`), reused
+    /// for a starred species' name.
+    private static let starTint = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
+
+    /// Color the species name is drawn in — purple for a bird that isn't on the
+    /// life list yet, blue for a starred ("alert me") one, plain white for an
+    /// ordinary bird. This replaces the old full-screen purple/blue wash and
+    /// per-detection flash: the same information, confined to the one word it's
+    /// actually about.
+    private var nameColor: Color {
+        switch session.lastBird?.highlight {
+        case .newSpecies:    return Self.recordTint
+        case .starred:       return Self.starTint
+        case .normal, .none: return .white
+        }
+    }
 
     // MARK: - Record / stop button
 
@@ -450,12 +393,12 @@ struct ContentView: View {
         let recording = session.isRecording
         let prompting = self.prompting
         // The prompt owns the button while it's up, so a denied permission can't
-        // also claim it — otherwise the walk-ending Cancel button would render as
+        // also claim it — otherwise the walk-ending Resume button would render as
         // a lock (the prompt runs with `isRecording` already false).
         let blocked = blockedForPermissions && !prompting
         return Button {
             if prompting {
-                // Same button, one slot down and purple again: this is Cancel,
+                // Same button, one slot down and purple again: this is Resume,
                 // and tapping it sends it straight back up into the stop button.
                 session.resumeBirding()
             } else if blocked {
@@ -480,7 +423,7 @@ struct ContentView: View {
                 Image(systemName: "lock.fill")
                     .font(.system(size: Self.cornerGlyphBaseSize, weight: .bold))
                     .opacity(blocked && !recording ? 1 : 0)
-                // Cancel — the small play glyph the stop button crosses into as
+                // Resume — the small play glyph the stop button crosses into as
                 // it slides down into the prompt. Drawn separately from the idle
                 // play above so each lands at its own size: this one is pre-scaled
                 // to `cornerGlyphRatio` once shrunk, that one fills the big button.
@@ -491,7 +434,7 @@ struct ContentView: View {
             .foregroundStyle(.white)
             .frame(width: Self.buttonBaseSize, height: Self.buttonBaseSize)
             // Purple while idle, red once recording (matching the phone's stop
-            // button), purple again as the prompt's Cancel button once a walk is
+            // button), purple again as the prompt's Resume button once a walk is
             // awaiting a decision, gray when locked by a denied permission. The
             // fill interpolates with the morph, which runs under the session
             // manager's `withAnimation(isRecording)`.
@@ -509,7 +452,7 @@ struct ContentView: View {
     }
 
     private func recordButtonLabel(recording: Bool, blocked: Bool, prompting: Bool) -> String {
-        if prompting { return "Cancel — keep birding" }
+        if prompting { return "Resume — keep birding" }
         if blocked { return "Recording unavailable — permissions needed" }
         return recording ? "Stop recording" : "Start recording"
     }
@@ -540,7 +483,7 @@ struct ContentView: View {
 
     // MARK: - Save / resume / discard prompt
 
-    /// Cancel is offered only while the workout is merely *paused*, where
+    /// Resume is offered only while the workout is merely *paused*, where
     /// resuming continues the same walk. Once the session is truly over — the
     /// system ended it, a watchdog gave up, an orphan was reclaimed — there's
     /// nothing to resume into and the button would be a lie, so it's dropped
@@ -631,12 +574,12 @@ struct ContentView: View {
     /// the same answer twice.
     private func promptRowTarget(_ role: PromptRole, in size: CGSize) -> some View {
         let leading = Self.cornerCenter(radius: Self.cornerButtonSize / 2) - Self.cornerButtonSize / 2
-        let width = max(0, size.width - Self.imageMargin - leading)
-        // Cancel is only offered while the walk can still be resumed, and no row
+        let width = max(0, size.width - Self.edgeMargin - leading)
+        // Resume is only offered while the walk can still be resumed, and no row
         // takes a tap while an answer is already morphing away.
-        let active = promptVisible && (role != .cancel || showResumeButton)
+        let active = promptVisible && (role != .resume || showResumeButton)
         return Button {
-            if role == .cancel {
+            if role == .resume {
                 session.resumeBirding()
             } else {
                 answerPrompt(role)
@@ -676,7 +619,7 @@ struct ContentView: View {
             switch role {
             case .save:    await workout.save()
             case .discard: await workout.discard()
-            case .cancel:  break  // Cancel is the record control (`resumeBirding`)
+            case .resume:  break  // Resume is the record control (`resumeBirding`)
             }
         }
     }
@@ -729,43 +672,37 @@ struct ContentView: View {
     /// Distance from the screen corner to a zero-radius button's center that
     /// already accounts for the bezel curve + the diagonal corner gap.
     /// `cornerCenter` just adds the button's own `r / √2`. The diagonal
-    /// clearance reuses `imageMargin`, so the stop button sits the same distance
+    /// clearance reuses `edgeMargin`, so the stop button sits the same distance
     /// off the bezel as the bird image's inset — both track the per-watch margin.
     private static var cornerConst: CGFloat {
-        screenCornerRadius * (1 - 1 / sqrt2) + imageMargin / sqrt2
+        screenCornerRadius * (1 - 1 / sqrt2) + edgeMargin / sqrt2
     }
 
     // MARK: - Recording ("now hearing")
 
-    /// The species name centered above the photo, both anchored to the bottom
-    /// of the screen (bottom margin matching the side margins). No
-    /// `GeometryReader` — its first-time layout pass was the render stall; the
-    /// image sizes itself with `aspectRatio` instead.
+    /// The species name centered above the photo, which runs flush to the left,
+    /// right and bottom edges of the screen. No `GeometryReader` — its first-time
+    /// layout pass was the render stall; the image sizes itself with
+    /// `aspectRatio` instead.
     private var nowHearing: some View {
         VStack(spacing: 0) {
             // A flexible spacer pushes the name + photo to the bottom; the name
-            // sits `nameImageGap` above the photo, which keeps a fixed bottom
-            // margin (matching the sides).
+            // sits `nameImageGap` above the photo, which itself has no bottom
+            // margin — the bezel is its bottom edge.
             Spacer(minLength: 0)
             nameLabel
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 6)
+                // The name is the only thing here that's inset. `edgeMargin` is
+                // the corner buttons' clearance; the extra few points keep a long
+                // name off the bezel curve.
+                .padding(.horizontal, Self.edgeMargin + 6)
             Color.clear.frame(height: Self.nameImageGap)
             birdImage
-            Color.clear.frame(height: Self.imageMargin)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .padding(.horizontal, Self.imageMargin)
-        // Define the container shape for this full-screen region so the image's
-        // `ContainerRelativeShape` has the bezel's rounded rect to inset from.
-        // Without this, a standalone watchOS app has no container shape and
-        // `ContainerRelativeShape` degrades to a sharp-cornered rectangle.
-        .containerShape(
-            RoundedRectangle(cornerRadius: Self.screenCornerRadius, style: .continuous)
-        )
     }
 
-    /// The whole photo (never cropped) filling the full width, its height
+    /// The whole photo (never cropped) filling the full screen width, its height
     /// following the photo's aspect (`aspectRatio`). The placeholder uses the
     /// same full width at the photos' usual 4:3 so it's never narrow.
     @ViewBuilder
@@ -789,11 +726,20 @@ struct ContentView: View {
             }
         }
         .frame(maxWidth: .infinity)
-        // `ContainerRelativeShape` inherits the watch screen's rounded-rect
-        // corner and insets its radius by however far this view sits from the
-        // screen edge (`imageMargin`), keeping the photo's corners concentric
-        // with the bezel automatically.
-        .clipShape(ContainerRelativeShape())
+        // Only the top corners are rounded. The photo sits in the screen's own
+        // bottom corners, so its bottom edge is clipped by the bezel rather than
+        // by us — a radius here would just cut a second, smaller curve inside the
+        // hardware's. `imageTopCornerRadius` matches the bezel radius so all four
+        // corners read the same.
+        .clipShape(
+            UnevenRoundedRectangle(
+                topLeadingRadius: Self.imageTopCornerRadius,
+                bottomLeadingRadius: 0,
+                bottomTrailingRadius: 0,
+                topTrailingRadius: Self.imageTopCornerRadius,
+                style: .continuous
+            )
+        )
         .id(session.lastBird?.scientificName)
         .transition(.opacity)
     }
@@ -810,8 +756,12 @@ struct ContentView: View {
     private var nameLabel: some View {
         Group {
             if let bird = session.lastBird {
+                // Purple for a lifer, blue for a starred bird, white for an
+                // ordinary one — the replacement for the old full-screen tint.
+                // Cross-fades with the name itself under the body's
+                // `value: session.lastBird` animation.
                 Text(bird.commonName)
-                    .foregroundStyle(.white)
+                    .foregroundStyle(nameColor)
             } else {
                 // While the phone is the audio source the watch is only mirroring
                 // its now-hearing screen, so make the placeholder say so rather

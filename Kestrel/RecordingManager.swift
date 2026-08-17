@@ -441,7 +441,8 @@ final class RecordingManager {
 
     /// Update the watch's "now hearing" screen with a freshly-heard species —
     /// any species, since the watch always shows the last one heard. `highlight`
-    /// ("starred"/"newSpecies"/"normal") tints the watch background. No haptic:
+    /// ("starred"/"newSpecies"/"normal") tints the pill behind the species name
+    /// on the watch. No haptic:
     /// buzzing is reserved for new/starred birds and sent via `sendHapticToWatch`.
     private func sendBirdDisplayToWatch(commonName: String, scientificName: String, highlight: String) {
         // The "now hearing" bird is latest-state, not an event, so it rides the

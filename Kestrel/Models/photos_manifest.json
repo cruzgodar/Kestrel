@@ -66,6 +66,9 @@
     "acridotheres_tristis": {
       "hash": "71881363bd79ecc0"
     },
+    "acrocephalus_arundinaceus": {
+      "hash": "8baff6ccbfa01a41"
+    },
     "acrocephalus_australis": {
       "hash": "25f50c4f8e812bba"
     },
@@ -129,6 +132,9 @@
     "alectoris_rufa": {
       "hash": "57657e64bb9e70ef"
     },
+    "alectura_lathami": {
+      "hash": "b73183dc7c0cc4a9"
+    },
     "alisterus_scapularis": {
       "hash": "d89597d173d1bf17"
     },
@@ -144,8 +150,17 @@
     "amazilia_tzacatl": {
       "hash": "471a6bc7b967a2e1"
     },
+    "amazilia_yucatanensis": {
+      "hash": "630f8f4150396fc5"
+    },
     "amazona_albifrons": {
       "hash": "28cdd75e381b4dfb"
+    },
+    "amazona_autumnalis": {
+      "hash": "ce78094790146645"
+    },
+    "amazona_farinosa": {
+      "hash": "5d0adf090eea32e0"
     },
     "ammodramus_savannarum": {
       "hash": "f88f5d13ec5b5d1a"
@@ -221,6 +236,9 @@
     },
     "anthornis_melanura": {
       "hash": "8b2f0b385f5b07d1"
+    },
+    "anthracothorax_nigricollis": {
+      "hash": "db4e92f51d6bc33a"
     },
     "anthus_pratensis": {
       "hash": "d69d91748605e595"
@@ -414,6 +432,9 @@
     "branta_hutchinsii": {
       "hash": "ecdadc175c1d2832"
     },
+    "branta_leucopsis": {
+      "hash": "311bfb7b6deecc6f"
+    },
     "branta_sandvicensis": {
       "hash": "3a6d005c573708b0"
     },
@@ -440,6 +461,9 @@
     },
     "bucephala_islandica": {
       "hash": "a8face07e9b3ba69"
+    },
+    "buteo_albonotatus": {
+      "hash": "468cad1646878c4c"
     },
     "buteo_brachyurus": {
       "hash": "f6e1dece62e24885"
@@ -489,8 +513,14 @@
     "cacicus_cela": {
       "hash": "bc7ff60aee93af1d"
     },
+    "cacomantis_flabelliformis": {
+      "hash": "065ea6ae48a1e546"
+    },
     "cairina_moschata": {
       "hash": "42b1a5c1344199df"
+    },
+    "calamospiza_melanocorys": {
+      "hash": "2776daad6822bd00"
     },
     "calcarius_lapponicus": {
       "hash": "4e737510aeef4948"
@@ -678,6 +708,9 @@
     "chondestes_grammacus": {
       "hash": "630c78c38376210d"
     },
+    "chordeiles_acutipennis": {
+      "hash": "0879f9862d221e1a"
+    },
     "chordeiles_minor": {
       "hash": "8136e74756eb0f3b"
     },
@@ -695,6 +728,9 @@
     },
     "ciconia_ciconia": {
       "hash": "414f0a8c5b6ce787"
+    },
+    "ciconia_nigra": {
+      "hash": "c75980eaf315b4fd"
     },
     "cinclus_mexicanus": {
       "hash": "45634f091dce5ad6"
@@ -759,6 +795,9 @@
     "colaptes_melanochloros": {
       "hash": "1bb73192970cf51e"
     },
+    "colaptes_rubiginosus": {
+      "hash": "4f44925c564a406e"
+    },
     "colibri_coruscans": {
       "hash": "101d8a1a8fd34a83"
     },
@@ -767,6 +806,9 @@
     },
     "colinus_virginianus": {
       "hash": "0e9aafbf87c53691"
+    },
+    "colius_striatus": {
+      "hash": "d7fe8b0b3ff4cfa3"
     },
     "colluricincla_harmonica": {
       "hash": "d8e817dbb486f708"
@@ -788,6 +830,9 @@
     },
     "columbina_picui": {
       "hash": "f5821b02c9cee25f"
+    },
+    "columbina_squammata": {
+      "hash": "a25f4b6860874bb4"
     },
     "columbina_talpacoti": {
       "hash": "97b30f5d364e11c0"
@@ -873,8 +918,14 @@
     "crotophaga_sulcirostris": {
       "hash": "18a176af6bf8a546"
     },
+    "crypturellus_soui": {
+      "hash": "b765ea65d6382f4a"
+    },
     "cuculus_canorus": {
       "hash": "c5ea8a12ba179a01"
+    },
+    "culicicapa_ceylonensis": {
+      "hash": "ac097d716708b086"
     },
     "curruca_communis": {
       "hash": "682fb33b3992b031"
@@ -953,6 +1004,9 @@
     },
     "dendrocygna_autumnalis": {
       "hash": "0cdb78f247bd935f"
+    },
+    "dendrocygna_bicolor": {
+      "hash": "b0ff5da65a3c5361"
     },
     "dendrocygna_javanica": {
       "hash": "720c266aa3fbccc3"
@@ -1086,6 +1140,9 @@
     "empidonax_virescens": {
       "hash": "0e48565f6e89432d"
     },
+    "empidonax_wrightii": {
+      "hash": "c028e6c78b3c2ab8"
+    },
     "entomyzon_cyanotis": {
       "hash": "4c33505a086700dd"
     },
@@ -1128,8 +1185,14 @@
     "euphonia_laniirostris": {
       "hash": "8379869b8b506349"
     },
+    "euphonia_xanthogaster": {
+      "hash": "7c033e3449514127"
+    },
     "eupsittula_nana": {
       "hash": "cf94d5effbf8b02b"
+    },
+    "eupsittula_pertinax": {
+      "hash": "93eb0d32f407314f"
     },
     "eurystomus_orientalis": {
       "hash": "bf4b514df48d4d5e"
@@ -1188,6 +1251,9 @@
     "galerida_cristata": {
       "hash": "9112f0d88b7a5f48"
     },
+    "galerida_theklae": {
+      "hash": "febe460076a08c31"
+    },
     "gallinago_delicata": {
       "hash": "ba37f7f1a54bb556"
     },
@@ -1218,6 +1284,9 @@
     "gavia_stellata": {
       "hash": "bc188aba745674cb"
     },
+    "gavicalis_virescens": {
+      "hash": "f23744edb56fd571"
+    },
     "gelochelidon_nilotica": {
       "hash": "29586cb12caf2b2b"
     },
@@ -1245,6 +1314,9 @@
     "geothlypis_trichas": {
       "hash": "6b79bea29a001196"
     },
+    "geranoaetus_albicaudatus": {
+      "hash": "156f42b44beda72e"
+    },
     "gerygone_igata": {
       "hash": "f5d5c3a0e945cee1"
     },
@@ -1253,6 +1325,9 @@
     },
     "gracupica_contra": {
       "hash": "7f0e0ca00378531e"
+    },
+    "gracupica_nigricollis": {
+      "hash": "974b0eb0c287937b"
     },
     "grallina_cyanoleuca": {
       "hash": "363f2d94c4c5f0ec"
@@ -1371,6 +1446,9 @@
     "icterus_bullockii": {
       "hash": "6f19584ac24e55d8"
     },
+    "icterus_chrysater": {
+      "hash": "d9c38632ae9a5744"
+    },
     "icterus_cucullatus": {
       "hash": "309abc8ed88d4682"
     },
@@ -1379,6 +1457,12 @@
     },
     "icterus_gularis": {
       "hash": "5186b2f84942f96b"
+    },
+    "icterus_parisorum": {
+      "hash": "300037a0ab5dfec6"
+    },
+    "icterus_pustulatus": {
+      "hash": "79f7d5563de0949e"
     },
     "icterus_spurius": {
       "hash": "0716ac014c942f7e"
@@ -1397,6 +1481,9 @@
     },
     "junco_hyemalis": {
       "hash": "67d872b8d3df7021"
+    },
+    "junco_phaeonotus": {
+      "hash": "b9c24ceb88bdcbfe"
     },
     "lanius_borealis": {
       "hash": "3eb3b61e380afe0e"
@@ -1533,6 +1620,9 @@
     "lophophanes_cristatus": {
       "hash": "6b1e4d6739d24272"
     },
+    "loriculus_vernalis": {
+      "hash": "c144827862166412"
+    },
     "loxia_curvirostra": {
       "hash": "1d99217f3379256a"
     },
@@ -1592,6 +1682,9 @@
     },
     "melanerpes_hoffmannii": {
       "hash": "24fd374389633a67"
+    },
+    "melanerpes_lewis": {
+      "hash": "b625f0cad48b2b01"
     },
     "melanerpes_pucherani": {
       "hash": "c2d02c88795e8f96"
@@ -1710,6 +1803,9 @@
     "motacilla_tschutschensis": {
       "hash": "170205d9457f4921"
     },
+    "muscicapa_dauurica": {
+      "hash": "35bd7e60e3d25723"
+    },
     "muscicapa_striata": {
       "hash": "4e856cbb39a327aa"
     },
@@ -1740,11 +1836,17 @@
     "myioborus_pictus": {
       "hash": "c54eee5cc6e28ada"
     },
+    "myiodynastes_luteiventris": {
+      "hash": "87fea9633f6beaf6"
+    },
     "myiodynastes_maculatus": {
       "hash": "ba08d8cb92d5a441"
     },
     "myiopsitta_monachus": {
       "hash": "88b770d8f4f62e28"
+    },
+    "myiothlypis_fulvicauda": {
+      "hash": "1585c8d333c12279"
     },
     "myiozetetes_cayanensis": {
       "hash": "633d96888e43d726"
@@ -1800,6 +1902,9 @@
     "oenanthe_oenanthe": {
       "hash": "0418122925fc3be1"
     },
+    "oreoscoptes_montanus": {
+      "hash": "0b32a8ab1db8be6d"
+    },
     "oriolus_chinensis": {
       "hash": "dbbaf888e63a983d"
     },
@@ -1814,6 +1919,9 @@
     },
     "oriolus_xanthornus": {
       "hash": "b1db06c340f2f06c"
+    },
+    "ortalis_cinereiceps": {
+      "hash": "cc309d4960e7f461"
     },
     "ortalis_guttata": {
       "hash": "211b36ceabb011c1"
@@ -1835,6 +1943,9 @@
     },
     "pachycephala_rufiventris": {
       "hash": "201773ea27466c01"
+    },
+    "pachyramphus_aglaiae": {
+      "hash": "ebbacd8d3faf0f61"
     },
     "pachysylvia_decurtata": {
       "hash": "a054b402a33ec9ec"
@@ -1923,6 +2034,9 @@
     "pelecanus_occidentalis": {
       "hash": "a6711ea1b0c9f939"
     },
+    "perdix_perdix": {
+      "hash": "5f7583223abcbecf"
+    },
     "pericrocotus_cinnamomeus": {
       "hash": "7211e375e1d8c0f1"
     },
@@ -1931,6 +2045,9 @@
     },
     "perisoreus_canadensis": {
       "hash": "08c8c9fad3c6a46a"
+    },
+    "pernis_apivorus": {
+      "hash": "1b6e18bf5fb86310"
     },
     "pernis_ptilorhynchus": {
       "hash": "130d5aef149f7d67"
@@ -1943,6 +2060,9 @@
     },
     "petrochelidon_pyrrhonota": {
       "hash": "6912d82956958a36"
+    },
+    "phaethornis_guy": {
+      "hash": "f7f3cdd19d628804"
     },
     "phaethornis_striigularis": {
       "hash": "b4d3062a60063de6"
@@ -2033,6 +2153,9 @@
     },
     "pionus_menstruus": {
       "hash": "dfaaf3a4c8e6aca5"
+    },
+    "pionus_senilis": {
+      "hash": "a686d2e288a628c2"
     },
     "pipilo_chlorurus": {
       "hash": "5bee9505f6e0bf06"
@@ -2136,6 +2259,9 @@
     "polioptila_plumbea": {
       "hash": "0673e55a15d68d4f"
     },
+    "pomatorhinus_musicus": {
+      "hash": "6da22b7985650731"
+    },
     "pooecetes_gramineus": {
       "hash": "546cd6dea8a38554"
     },
@@ -2198,6 +2324,9 @@
     },
     "psephotus_haematonotus": {
       "hash": "6c180e79e523ae4d"
+    },
+    "pseudibis_papillosa": {
+      "hash": "5b651c6f1c6f7993"
     },
     "psilopogon_haemacephalus": {
       "hash": "e8ee853f7a93adb1"
@@ -2301,6 +2430,9 @@
     "ramphastos_sulfuratus": {
       "hash": "b1e8b05975afb355"
     },
+    "ramphocaenus_melanurus": {
+      "hash": "0d7d93eacaecfb43"
+    },
     "ramphocelus_carbo": {
       "hash": "bedda544659a0044"
     },
@@ -2363,6 +2495,9 @@
     },
     "saltator_maximus": {
       "hash": "d589b34ea680c588"
+    },
+    "saltator_striatipectus": {
+      "hash": "fc39e3b4acc11412"
     },
     "saxicola_caprata": {
       "hash": "86ba9eeb1fca5d7b"
@@ -2592,6 +2727,9 @@
     "stercorarius_parasiticus": {
       "hash": "2d1acab0ff1405e1"
     },
+    "stercorarius_pomarinus": {
+      "hash": "e90430c890414024"
+    },
     "sterna_forsteri": {
       "hash": "25665fd75c0d9e9a"
     },
@@ -2612,6 +2750,9 @@
     },
     "stilpnia_larvata": {
       "hash": "914d9fa268cf7b15"
+    },
+    "stilpnia_vitriolina": {
+      "hash": "c3ef67fa87410f79"
     },
     "strepera_graculina": {
       "hash": "353023156700bf91"
@@ -2648,6 +2789,9 @@
     },
     "sturnella_neglecta": {
       "hash": "96595724aa3cfb93"
+    },
+    "sturnia_malabarica": {
+      "hash": "5ca610ea2f713cc7"
     },
     "sturnia_pagodarum": {
       "hash": "ae6bb20c4de153f5"
@@ -2694,6 +2838,9 @@
     "tadorna_tadorna": {
       "hash": "bcaf21f8a4c6054f"
     },
+    "tangara_arthus": {
+      "hash": "4eee074c98a20d97"
+    },
     "tangara_gyrola": {
       "hash": "c954684a1a2c5eea"
     },
@@ -2723,6 +2870,9 @@
     },
     "thamnophilus_doliatus": {
       "hash": "d9575459e4ab2579"
+    },
+    "thraupis_abbas": {
+      "hash": "cd582cae5e436b66"
     },
     "thraupis_episcopus": {
       "hash": "301d81cdcd0f945e"
@@ -2822,6 +2972,9 @@
     },
     "trogon_caligatus": {
       "hash": "3d6ff4ae99c5a35a"
+    },
+    "trogon_melanocephalus": {
+      "hash": "69af08ac551ae6a4"
     },
     "turdus_amaurochalinus": {
       "hash": "a76bf5d3d83ca804"
@@ -2969,6 +3122,9 @@
     },
     "zimmerius_chrysops": {
       "hash": "5913a1e8ac1eb5b5"
+    },
+    "zimmerius_vilissimus": {
+      "hash": "338ee4138d33f45d"
     },
     "zonotrichia_albicollis": {
       "hash": "71bdd9f8d3c27804"
