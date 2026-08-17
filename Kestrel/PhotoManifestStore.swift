@@ -1,11 +1,12 @@
 import Foundation
 
 /// The photo manifest: `files` maps each photographed species' slug to a content
-/// hash plus (in the *published* copy) its crediting/licensing metadata.
-/// `scripts/build_species_photos.py` emits two forms: a hashes-only baseline
-/// bundled with the app (`Models/photos_manifest.json`) and the full
-/// metadata-carrying copy published to the photo repo's default branch (the copy
-/// the app fetches to discover new and changed photos at runtime).
+/// hash plus its crediting/licensing metadata. `build_species_photos.py` (in the
+/// Bird Image Selector repo) publishes it to the photo repo's default branch
+/// alongside the rendered images, and the app fetches it at runtime. Nothing
+/// about the photo set is bundled — this manifest is the app's only knowledge of
+/// which species have photos and who took them, which is what lets the set (and
+/// its attribution) be corrected or extended without an App Store submission.
 struct PhotoManifest: Decodable, Sendable {
     struct Entry: Decodable, Sendable {
         let hash: String
@@ -32,13 +33,18 @@ struct PhotoManifest: Decodable, Sendable {
 /// update**.
 ///
 /// It holds two things, both persisted so they survive relaunch:
-///   • **hashes** — seeded from the bundled baseline, then updated as published
-///     manifests are applied. Diffing an incoming manifest's hashes against these
-///     is how new (unseen slug) and changed (different hash) photos are found.
-///   • **metadata overlay** — the credit/license/page/code for every species a
-///     fetched manifest has told us about. `SpeciesPhotoMetadata` prefers this
-///     over its bundled `species_photos.json`, so a species that didn't exist in
-///     the shipped build still renders with correct attribution.
+///   • **hashes** — recorded as published manifests are applied. Diffing an
+///     incoming manifest's hashes against these is how new (unseen slug) and
+///     changed (different hash) photos are found.
+///   • **metadata** — the credit/license/page/code for every species a fetched
+///     manifest has told us about. This is the *only* source of photo metadata
+///     in the app (`SpeciesPhotoMetadata` reads nothing else), so a slug missing
+///     here has no photo as far as the rest of the app is concerned.
+///
+/// A fresh install therefore knows about no photos until its first successful
+/// fetch. That's the intended trade: the images are remote anyway, so an install
+/// that can't reach the network has nothing to show regardless, and in exchange
+/// no photo, credit, or license is frozen into the app binary.
 ///
 /// `@unchecked Sendable` + an internal lock: read from view / prefetch /
 /// background paths, mutated as manifests are applied.
@@ -46,12 +52,11 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     static let shared = PhotoManifestStore()
 
     private let lock = NSLock()
-    /// slug → content hash of the photo the app believes is current. Seeded from
-    /// the bundle, advanced as manifests are applied.
+    /// slug → content hash of the photo the app believes is current, advanced as
+    /// manifests are applied.
     private var hashes: [String: String]
     /// slug → attribution, for every species a fetched manifest has described.
-    /// Empty until the first successful fetch; the bundled baseline carries no
-    /// metadata (shipped species get theirs from `species_photos.json`).
+    /// Empty until the first successful fetch.
     private var metadata: [String: SpeciesPhotoInfo]
 
     private static func localURL() -> URL? {
@@ -63,16 +68,8 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     }
 
     private init() {
-        // Bundled baseline: hashes only.
-        var bundledHashes: [String: String] = [:]
-        if let url = Bundle.main.url(forResource: "photos_manifest", withExtension: "json"),
-           let data = try? Data(contentsOf: url),
-           let bundled = PhotoManifest(data: data) {
-            bundledHashes = bundled.files.mapValues(\.hash)
-        }
-
-        // Persisted local state (hashes advanced by past applies + metadata
-        // overlay), if any.
+        // Persisted state from past applies, if any. There is no bundled seed:
+        // everything the app knows about the photo set was fetched.
         var localHashes: [String: String] = [:]
         var localMetadata: [String: SpeciesPhotoInfo] = [:]
         if let url = Self.localURL(), let data = try? Data(contentsOf: url),
@@ -81,24 +78,30 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
             localMetadata = snapshot.metadata.mapValues(\.info)
         }
 
-        // Seed any slug the bundle knows but the local copy hasn't recorded yet —
-        // e.g. species whose photos shipped in this app version. Never override a
-        // locally-recorded hash (it may reflect a newer fetched manifest).
-        for (slug, hash) in bundledHashes where localHashes[slug] == nil {
-            localHashes[slug] = hash
-        }
-
         hashes = localHashes
         metadata = localMetadata
     }
 
     // MARK: - Reads
 
-    /// The attribution a fetched manifest supplied for a slug, if any. Nil for
-    /// species only known from the bundle (they use `species_photos.json`).
-    func overlayInfo(forSlug slug: String) -> SpeciesPhotoInfo? {
+    /// The attribution a fetched manifest supplied for a slug, if any. Nil means
+    /// the app has no photo for that species — either none is published or no
+    /// manifest has been fetched yet — and every image read path treats it that
+    /// way (see `RemoteSpeciesImageStore.isAttributed`).
+    func info(forSlug slug: String) -> SpeciesPhotoInfo? {
         lock.lock(); defer { lock.unlock() }
         return metadata[slug]
+    }
+
+    /// Whether any slug's hash is on record without its metadata — the state an
+    /// install left in by upgrading from a build that bundled `species_photos.json`
+    /// and seeded hashes from `photos_manifest.json`. Those species would show no
+    /// photo until the next manifest fetch, so the foreground check skips its
+    /// throttle while this is true and the gap closes on the first launch of the
+    /// new build.
+    var needsMetadataBackfill: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return hashes.keys.contains { metadata[$0] == nil }
     }
 
     // MARK: - Apply

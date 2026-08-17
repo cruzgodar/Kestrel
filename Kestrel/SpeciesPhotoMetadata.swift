@@ -1,11 +1,13 @@
 import Foundation
 
-/// Per-species photo metadata for the CC-licensed image set. Sourced from
-/// `Kestrel/Models/species_photos.json`, which `scripts/build_species_photos.py`
-/// emits (keyed by filename slug). The image bytes themselves are *not*
-/// referenced here — `RemoteSpeciesImageStore` derives each size's URL from the
-/// slug and a jsDelivr base — so this holds only the crediting/licensing info an
-/// entry needs: photographer, license, and the source page for verification.
+/// Per-species photo metadata for the CC-licensed image set. Sourced entirely
+/// from the published photo manifest the app fetches at runtime (see
+/// `PhotoManifestStore`) — nothing about the photo set ships in the app bundle,
+/// so photos and attribution can be corrected or extended without an app
+/// update. The image bytes themselves are *not* referenced here —
+/// `RemoteSpeciesImageStore` derives each size's URL from the slug and a
+/// jsDelivr base — so this holds only the crediting/licensing info an entry
+/// needs: photographer, license, and the source page for verification.
 struct SpeciesPhotoInfo: Decodable {
     /// Photographer / contributor name, when the source page exposed one.
     let credit: String?
@@ -119,35 +121,30 @@ private extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 
-/// Loads + caches the bundled `species_photos.json` once as the metadata base
-/// for species shipped with this build, and overlays `PhotoManifestStore`'s
-/// runtime manifest on top (see `info(for:)`) so species whose photos are added
-/// to the CDN later are still recognized and attributed. Absent bundled file
-/// yields an empty base, so species with no metadata anywhere fall back to the
-/// placeholder.
+/// Metadata lookup for the photo set, backed solely by `PhotoManifestStore` —
+/// i.e. by the manifest fetched from the photo repo and persisted locally.
+///
+/// There is deliberately no bundled copy to fall back on. A bundled base would
+/// pin every shipped species' credit and license to the app binary, so fixing an
+/// attribution or swapping a photo would mean an App Store submission; with the
+/// manifest as the only source, publishing to the photo repo is the whole
+/// update. The cost is that a fresh install knows about no photos until its
+/// first manifest fetch (see `KestrelApp.discoverNewPhotosOnForeground`), which
+/// costs nothing in practice: the images are remote too, so an install that
+/// can't reach the network has no photos to attribute either way.
+///
+/// This gate is load-bearing for licensing, not just display:
+/// `RemoteSpeciesImageStore` refuses to download or show any photo whose
+/// `info(for:)` is nil, so an image can never appear without the credit and
+/// license that came with it in the same manifest.
 nonisolated final class SpeciesPhotoMetadata: @unchecked Sendable {
     nonisolated static let shared = SpeciesPhotoMetadata()
 
-    private let bySlug: [String: SpeciesPhotoInfo]
-
-    private init() {
-        guard let url = Bundle.main.url(forResource: "species_photos", withExtension: "json"),
-              let data = try? Data(contentsOf: url),
-              let decoded = try? JSONDecoder().decode([String: SpeciesPhotoInfo].self, from: data)
-        else {
-            bySlug = [:]
-            return
-        }
-        bySlug = decoded
-    }
+    private init() {}
 
     func info(for scientificName: String) -> SpeciesPhotoInfo? {
         let slug = SpeciesImage.slug(for: scientificName)
         guard !slug.isEmpty else { return nil }
-        // Prefer the runtime manifest overlay — it covers species added to the
-        // photo set after this build shipped (which have no bundled entry) and
-        // carries the freshest attribution. Fall back to the bundled
-        // `species_photos.json` for everything the overlay hasn't described yet.
-        return PhotoManifestStore.shared.overlayInfo(forSlug: slug) ?? bySlug[slug]
+        return PhotoManifestStore.shared.info(forSlug: slug)
     }
 }

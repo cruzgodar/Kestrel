@@ -134,12 +134,26 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
 
     // MARK: - Reads
 
+    /// Whether the photo set currently describes this species — i.e. a fetched
+    /// manifest has supplied its credit and license (see `SpeciesPhotoMetadata`,
+    /// which has no bundled fallback).
+    ///
+    /// Every read path checks this *before* touching memory or disk, not merely
+    /// before downloading. Attribution now arrives only with the manifest, so a
+    /// species whose metadata we don't have must not render a photo even when
+    /// its bytes are still cached from an earlier build: a CC BY image shown
+    /// without its credit line is a license violation, not a cosmetic gap. The
+    /// block lifts on its own the moment a manifest fetch lands.
+    private func isAttributed(_ scientificName: String) -> Bool {
+        SpeciesPhotoMetadata.shared.info(for: scientificName) != nil
+    }
+
     /// Synchronous in-memory lookup only (no disk, no network). Safe + instant
     /// on the main actor — used to avoid a placeholder flash for photos already
     /// decoded this session.
     func memoryImage(for scientificName: String) -> UIImage? {
         let slug = SpeciesImage.slug(for: scientificName)
-        guard !slug.isEmpty else { return nil }
+        guard !slug.isEmpty, isAttributed(scientificName) else { return nil }
         return memory.object(forKey: slug as NSString)
     }
 
@@ -148,7 +162,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// to render an already-decoded thumbnail with no placeholder flash.
     func memoryThumbnail(for scientificName: String) -> UIImage? {
         let slug = SpeciesImage.slug(for: scientificName)
-        guard !slug.isEmpty else { return nil }
+        guard !slug.isEmpty, isAttributed(scientificName) else { return nil }
         return thumbnailMemory.object(forKey: slug as NSString)
     }
 
@@ -157,7 +171,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// card, with no medium→full swap flash.
     func memoryFullResolutionImage(for scientificName: String) -> UIImage? {
         let slug = SpeciesImage.slug(for: scientificName)
-        guard !slug.isEmpty else { return nil }
+        guard !slug.isEmpty, isAttributed(scientificName) else { return nil }
         return fullResImageMemory.object(forKey: slug as NSString)
     }
 
@@ -167,7 +181,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// download jumps the prefetch queue. Call off the main actor.
     func image(for scientificName: String) async -> UIImage? {
         let slug = SpeciesImage.slug(for: scientificName)
-        guard !slug.isEmpty else { return nil }
+        guard !slug.isEmpty, isAttributed(scientificName) else { return nil }
         let key = slug as NSString
 
         if let cached = memory.object(forKey: key) { return cached }
@@ -198,13 +212,12 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// it resolves.
     func fullResolutionImage(for scientificName: String) async -> UIImage? {
         let slug = SpeciesImage.slug(for: scientificName)
-        guard !slug.isEmpty else { return nil }
+        guard !slug.isEmpty, isAttributed(scientificName) else { return nil }
         let key = slug as NSString
 
         if let cached = fullResImageMemory.object(forKey: key) { return cached }
 
-        guard SpeciesPhotoMetadata.shared.info(for: scientificName) != nil,
-              let url = Self.assetURL(slug: slug, folder: Self.fullResFolder),
+        guard let url = Self.assetURL(slug: slug, folder: Self.fullResFolder),
               let data = await download(url),
               let img = UIImage(data: data) else {
             return nil
@@ -222,7 +235,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// the main actor.
     func thumbnailImage(for scientificName: String) async -> UIImage? {
         let slug = SpeciesImage.slug(for: scientificName)
-        guard !slug.isEmpty else { return nil }
+        guard !slug.isEmpty, isAttributed(scientificName) else { return nil }
         let key = slug as NSString
 
         if let cached = thumbnailMemory.object(forKey: key) { return cached }
@@ -251,7 +264,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// re-encodes. Call off the main actor.
     func thumbnailData(for scientificName: String) async -> Data? {
         let slug = SpeciesImage.slug(for: scientificName)
-        guard !slug.isEmpty else { return nil }
+        guard !slug.isEmpty, isAttributed(scientificName) else { return nil }
         if let data = try? Data(contentsOf: thumbFileURL(forSlug: slug)) { return data }
         return await queue.fetch(slug: slug, name: scientificName, size: .thumb)
     }
@@ -282,11 +295,11 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// methods. Medium downloads count toward the "other images" cap; thumbnails
     /// don't. Safe to call concurrently.
     private func downloadAndStore(slug: String, name: String, size: ImageSize) async -> Data? {
+        guard isAttributed(name) else { return nil }
         let dest = fileURL(forSlug: slug, size: size)
         if let data = try? Data(contentsOf: dest) { return data }
 
-        guard SpeciesPhotoMetadata.shared.info(for: name) != nil,
-              let url = Self.assetURL(slug: slug, folder: size.folder),
+        guard let url = Self.assetURL(slug: slug, folder: size.folder),
               let data = await download(url),
               UIImage(data: data) != nil else {
             return nil
@@ -302,7 +315,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// Call off the main actor.
     func localFileURL(for scientificName: String) async -> URL? {
         let slug = SpeciesImage.slug(for: scientificName)
-        guard !slug.isEmpty else { return nil }
+        guard !slug.isEmpty, isAttributed(scientificName) else { return nil }
         let dest = fileURL(forSlug: slug)
         if FileManager.default.fileExists(atPath: dest.path) { return dest }
         _ = await queue.fetch(slug: slug, name: scientificName, size: .medium)
@@ -356,8 +369,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         var out: [ImageDownloadQueue.Request] = []
         for name in scientificNames {
             let slug = SpeciesImage.slug(for: name)
-            guard !slug.isEmpty, seen.insert(slug).inserted,
-                  SpeciesPhotoMetadata.shared.info(for: name) != nil,
+            guard !slug.isEmpty, seen.insert(slug).inserted, isAttributed(name),
                   !fm.fileExists(atPath: fileURL(forSlug: slug, size: size).path) else { continue }
             out.append(ImageDownloadQueue.Request(slug: slug, name: name, size: size))
         }
@@ -498,7 +510,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         for name in scientificNames {
             let slug = SpeciesImage.slug(for: name)
             guard !slug.isEmpty, seen.insert(slug).inserted,
-                  SpeciesPhotoMetadata.shared.info(for: name) != nil else { continue }
+                  isAttributed(name) else { continue }
             counts.total += 1
             if fm.fileExists(atPath: thumbFileURL(forSlug: slug).path) { counts.thumb += 1 }
             if fm.fileExists(atPath: fileURL(forSlug: slug).path) { counts.medium += 1 }

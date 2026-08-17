@@ -332,8 +332,15 @@ struct KestrelApp: App {
     /// last check, then prefetches any that are nearby / on the life list so a
     /// growing photo set fills in without an app update. Changed (vs new) photos
     /// are left to the Wi-Fi + power background pass.
+    ///
+    /// The manifest is the app's only record of which species have photos and
+    /// who took them (nothing is bundled), so this is also what populates the
+    /// photo set on a fresh install — hence the throttle bypass while metadata is
+    /// missing, which covers both a first launch and an upgrade from a build that
+    /// still carried bundled metadata.
     private func discoverNewPhotosOnForeground() {
-        guard RemoteSpeciesImageStore.shared.manifestCheckDue(minInterval: 6 * 3600) else { return }
+        guard RemoteSpeciesImageStore.shared.manifestCheckDue(minInterval: 6 * 3600)
+                || PhotoManifestStore.shared.needsMetadataBackfill else { return }
         let lifeNames = lifeListStore.entries.map(\.scientificName)
         Task {
             let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: false)
