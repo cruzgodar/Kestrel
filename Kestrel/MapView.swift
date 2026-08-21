@@ -108,9 +108,10 @@ struct MapView: View {
 
     /// How long the pin takes to dissolve from its old spot to the new one.
     private static let pinCrossfade: Double = 0.22
-    /// Gray for the Save Observation button before a location is chosen. Matches
-    /// the record button's locked (permission-denied) fill.
-    private static let saveLockedTint = Color(white: 0.45)
+
+    /// Whether a pin is down — drives the crossfade between the long-press
+    /// instruction and the Save Observation button.
+    private var hasPickedLocation: Bool { !pickedPins.isEmpty }
 
     /// Records a long-pressed location. A pin already on the map isn't moved —
     /// the new one is added on top and the old is left to fade out under it, then
@@ -542,25 +543,41 @@ struct MapView: View {
                 .padding(.leading, 12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-                // The commit action, in the Identify tab's record-button
-                // treatment (same style, same metrics, no icon) so the primary
-                // action of a screen reads the same everywhere in the app. Gray
-                // and inert until a location has been long-pressed, matching how
-                // the record button grays out when it can't record.
-                Button {
-                    guard let pickedCoordinate else { return }
-                    picker.onConfirm(pickedCoordinate)
-                } label: {
-                    Text("Save Observation")
-                        .font(.title3.weight(.semibold))
-                        .frame(height: 58)
-                        .padding(.horizontal, 28)
+                // One slot along the bottom edge holding both states, stacked
+                // and crossfaded rather than swapped: the instruction until a
+                // location is chosen, then the commit button. Both are always
+                // mounted so the change is a dissolve in place, with hit-testing
+                // following the visible one.
+                ZStack {
+                    Text("Long press to choose a location")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 12)
+                        .glassEffect(.regular, in: .capsule)
+                        .opacity(hasPickedLocation ? 0 : 1)
+                        .allowsHitTesting(false)
+
+                    // The Identify tab's record-button treatment (same style,
+                    // same metrics, no icon) so the primary action of a screen
+                    // reads the same everywhere in the app.
+                    Button {
+                        guard let pickedCoordinate else { return }
+                        // Two-pulse confirmation — the same haptic the app uses
+                        // when a starred bird lands.
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                        picker.onConfirm(pickedCoordinate)
+                    } label: {
+                        Text("Save Observation")
+                            .font(.title3.weight(.semibold))
+                            .frame(height: 58)
+                            .padding(.horizontal, 28)
+                    }
+                    .buttonStyle(RecordButtonStyle(tint: .kestrelPurple))
+                    .opacity(hasPickedLocation ? 1 : 0)
+                    .allowsHitTesting(hasPickedLocation)
                 }
-                .buttonStyle(RecordButtonStyle(
-                    tint: pickedCoordinate == nil ? Self.saveLockedTint : .kestrelPurple
-                ))
-                .disabled(pickedCoordinate == nil)
-                .animation(.easeInOut(duration: 0.2), value: pickedCoordinate == nil)
+                .animation(.easeInOut(duration: 0.16), value: hasPickedLocation)
                 .padding(.bottom, 20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
@@ -1552,8 +1569,77 @@ private struct BirdMapThumbnail: View {
     }
 }
 
-/// The pin dropped by a long press in the map's location-picker mode: the bare
-/// `mappin` glyph in solid purple, its needle tip sitting on the chosen
+/// Material Symbols' `add_location`, transcribed from its 24×24 path: a map-pin
+/// balloon with a plus knocked out of the head. SF Symbols has no equivalent
+/// (there's no `mappin.badge.plus`), so it's drawn directly.
+///
+/// The path is authored in Material's 24×24 box but drawn to the *glyph's* tight
+/// bounds — x 5…19, y 2…22 — so the shape fills whatever frame it's given with
+/// no dead margin, and the balloon's tip lands exactly on the frame's bottom
+/// edge (which is what lets the annotation anchor it `.bottom`).
+struct AddLocationShape: Shape {
+    /// Width ÷ height of the tight glyph bounds. Callers size by height and take
+    /// the width from this so the pin never stretches.
+    static let aspectRatio: CGFloat = 14.0 / 20.0
+
+    /// Bounds of the glyph inside the 24×24 authoring box.
+    private static let originX: CGFloat = 5
+    private static let originY: CGFloat = 2
+    private static let glyphWidth: CGFloat = 14
+    private static let glyphHeight: CGFloat = 20
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+
+        // Balloon: `M12 2C8.14 2 5 5.14 5 9c0 5.25 7 13 7 13s7-7.75 7-13
+        // c0-3.86-3.14-7-7-7z`
+        path.move(to: CGPoint(x: 12, y: 2))
+        path.addCurve(
+            to: CGPoint(x: 5, y: 9),
+            control1: CGPoint(x: 8.14, y: 2),
+            control2: CGPoint(x: 5, y: 5.14)
+        )
+        path.addCurve(
+            to: CGPoint(x: 12, y: 22),
+            control1: CGPoint(x: 5, y: 14.25),
+            control2: CGPoint(x: 12, y: 22)
+        )
+        path.addCurve(
+            to: CGPoint(x: 19, y: 9),
+            control1: CGPoint(x: 12, y: 22),
+            control2: CGPoint(x: 19, y: 14.25)
+        )
+        path.addCurve(
+            to: CGPoint(x: 12, y: 2),
+            control1: CGPoint(x: 19, y: 5.14),
+            control2: CGPoint(x: 15.86, y: 2)
+        )
+        path.closeSubpath()
+
+        // Plus: `m4 8h-3v3h-2v-3H8V8h3V5h2v3h3v2z`, knocked out of the balloon by
+        // the even-odd fill the caller applies.
+        path.addLines([
+            CGPoint(x: 16, y: 10), CGPoint(x: 13, y: 10), CGPoint(x: 13, y: 13),
+            CGPoint(x: 11, y: 13), CGPoint(x: 11, y: 10), CGPoint(x: 8, y: 10),
+            CGPoint(x: 8, y: 8), CGPoint(x: 11, y: 8), CGPoint(x: 11, y: 5),
+            CGPoint(x: 13, y: 5), CGPoint(x: 13, y: 8), CGPoint(x: 16, y: 8),
+        ])
+        path.closeSubpath()
+
+        let transform = CGAffineTransform(
+            translationX: -Self.originX, y: -Self.originY
+        )
+        .concatenating(CGAffineTransform(
+            scaleX: rect.width / Self.glyphWidth,
+            y: rect.height / Self.glyphHeight
+        ))
+        .concatenating(CGAffineTransform(translationX: rect.minX, y: rect.minY))
+        return path.applying(transform)
+    }
+}
+
+/// The pin dropped by a long press in the map's location-picker mode: the
+/// `add_location` glyph in solid purple, its tip sitting on the chosen
 /// coordinate (the annotation anchors it `.bottom`).
 ///
 /// It owns its own fade because MapKit doesn't run SwiftUI insert/remove
@@ -1567,10 +1653,18 @@ private struct PickedLocationMarker: View {
 
     @State private var opacity: Double = 0
 
+    /// Height of the pin on the map. Width follows from the glyph's aspect.
+    private static let height: CGFloat = 36
+
     var body: some View {
-        Image(systemName: "mappin")
-            .font(.system(size: 34, weight: .regular))
-            .foregroundStyle(Color.kestrelPurple)
+        AddLocationShape()
+            // Even-odd so the plus is knocked out of the balloon, as in the
+            // original icon, rather than filled over it.
+            .fill(Color.kestrelPurple, style: FillStyle(eoFill: true))
+            .frame(
+                width: Self.height * AddLocationShape.aspectRatio,
+                height: Self.height
+            )
             .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
             // MapKit measures the hosting view once from the content's intrinsic
             // size; without this the glyph can be clipped (see MapAnnotationContent).

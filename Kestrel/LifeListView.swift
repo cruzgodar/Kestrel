@@ -41,24 +41,13 @@ struct LifeListView: View {
     /// typing or when the query is too short to bother scanning 6,500
     /// species.
     @State private var asyncSuggestions: [SearchRow] = []
-    /// Scientific names added via a suggestion row's plus button during the
-    /// current search session. Like `starredSnapshot`, this freezes the row's
-    /// position: a freshly-added bird keeps rendering in place as a suggestion
-    /// (now showing a checkmark) instead of immediately resorting to the top of
-    /// the life list. Cleared whenever the search query changes or closes, at
-    /// which point the bird settles into its sorted spot.
-    @State private var addedDuringSearch: Set<String> = []
-    /// The species partway through the two-step add flow (pick a date, then a
-    /// location), along with the date chosen so far. Non-nil for as long as
-    /// either step is on screen — including the hand-off between them, so
-    /// stepping back to the date sheet keeps the date the user already set.
+    /// The species partway through the add flow (pick a date, then a location),
+    /// along with the date chosen so far. Non-nil for as long as the flow is on
+    /// screen; the map is presented *over* the date sheet rather than in place
+    /// of it, so both are torn down together when the flow ends.
     @State private var pendingAdd: PendingAdd?
     @State private var showAddDate = false
     @State private var showAddLocation = false
-    /// Set when one step of the add flow is dismissed in order to show the
-    /// *other* step, so the dismiss handlers can tell "moving on" from "the
-    /// user backed out" and only drop `pendingAdd` in the latter case.
-    @State private var addFlowContinuing = false
 
     /// A species awaiting its observation date and location before it's written
     /// to the life list. Nothing is stored until the location is confirmed, so
@@ -109,11 +98,6 @@ struct LifeListView: View {
         let needle = q.lowercased()
 
         let lifeMatches = base.filter { entry in
-            // A bird added via a suggestion row this session stays rendered as
-            // its original suggestion row (with a checkmark) rather than
-            // resorting to the top as a fresh life-list entry. Skip it here so
-            // it doesn't appear twice.
-            guard !addedDuringSearch.contains(entry.scientificName) else { return false }
             let hay = "\(entry.commonName) \(entry.scientificName)".lowercased()
             return Self.scoreMatch(hay, needle: needle, allowFuzzy: needle.count >= 3) != nil
         }
@@ -319,11 +303,8 @@ struct LifeListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .scrollBounceBehavior(.basedOnSize)
-        // Editing the search field resets the scroll to the top of the list and
-        // releases any birds added in the previous query so they settle into
-        // their sorted positions.
+        // Editing the search field resets the scroll to the top of the list.
         .onChange(of: searchText) { _, _ in
-            addedDuringSearch = []
             if let topID = visibleRows.first?.id {
                 withAnimation(.easeOut(duration: 0.2)) {
                     proxy.scrollTo(topID, anchor: .top)
@@ -447,7 +428,12 @@ struct LifeListView: View {
         // query's scan ever publishes results. The id also tracks whether
         // the range filter has loaded, so suggestions re-rank for proximity
         // once the cached set arrives mid-search.
-        .task(id: "\(searchText)|\(allowedIndices != nil)") {
+        //
+        // The life-list size is in the id too: `computeSuggestions` excludes
+        // birds already on the list, so adding one mid-search has to drop its
+        // suggestion row — otherwise the bird renders twice, once as the stale
+        // suggestion and once as the new life-list match.
+        .task(id: "\(searchText)|\(allowedIndices != nil)|\(store.entries.count)") {
             let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !q.isEmpty else {
                 if !asyncSuggestions.isEmpty { asyncSuggestions = [] }
@@ -494,11 +480,8 @@ struct LifeListView: View {
                 set: { pendingAdd?.date = $0 }
             ),
             store: store,
-            onDateDismissed: dateStepDismissed,
-            onLocationDismissed: locationStepDismissed,
-            onDateConfirmed: { addFlowContinuing = true },
-            onBack: { addFlowContinuing = true },
-            onLocationConfirmed: commitPendingAdd(at:)
+            onDismissed: { pendingAdd = nil },
+            onSave: commitPendingAdd(at:)
         ))
         .sheet(isPresented: $showImportInfo) {
             ImportInfoSheet {
@@ -664,7 +647,6 @@ struct LifeListView: View {
                 // Tapping the checkmark undoes the add; the symbol-replace
                 // transition reverse-animates back to a plus.
                 if alreadyAdded {
-                    addedDuringSearch.remove(scientificName)
                     store.remove(scientificName: scientificName)
                     return
                 }
@@ -714,38 +696,11 @@ struct LifeListView: View {
         showAddDate = true
     }
 
-    /// The date sheet went away — either on to the map, or the flow is over.
-    private func dateStepDismissed() {
-        guard addFlowContinuing else {
-            pendingAdd = nil
-            return
-        }
-        addFlowContinuing = false
-        // One runloop turn between the sheet's teardown and the cover's
-        // presentation; presenting straight out of `onDismiss` can land while
-        // UIKit still considers the sheet's presentation in flight.
-        DispatchQueue.main.async { showAddLocation = true }
-    }
-
-    /// The map picker went away — either back to the date sheet, or the flow is
-    /// over (the add itself has already been committed by then, if it happened).
-    private func locationStepDismissed() {
-        guard addFlowContinuing else {
-            pendingAdd = nil
-            return
-        }
-        addFlowContinuing = false
-        DispatchQueue.main.async { showAddDate = true }
-    }
-
     /// Writes the pending species to the life list at the chosen date and
-    /// coordinate. Called from the picker's checkmark; `pendingAdd` is cleared
-    /// by `locationStepDismissed` right after.
+    /// coordinate. Called from the map's Save Observation button; `pendingAdd`
+    /// is cleared when the flow's presentations come down right after.
     private func commitPendingAdd(at coordinate: CLLocationCoordinate2D) {
         guard let pending = pendingAdd else { return }
-        // Remember the add so `visibleRows` keeps this row in place rather than
-        // resorting it to the top of the life list.
-        addedDuringSearch.insert(pending.scientificName)
         store.add(
             scientificName: pending.scientificName,
             commonName: pending.commonName,
@@ -817,60 +772,59 @@ struct NoDimButtonStyle: ButtonStyle {
 }
 
 
-/// The Life List tab's two-step add flow, as a single modifier: a half-height
-/// date sheet, then the map in location-picker mode. Each step's `onDismiss`
-/// fires for every way out of it — confirm, cancel, swipe-away — so the view
-/// itself only reports *why* it's leaving (`onDateConfirmed` / `onBack`) and
-/// this modifier owns the actual dismissal.
+/// The Life List tab's add flow, as a single modifier. Only *one* presentation
+/// hangs off the list: the date sheet. The map picker is presented from inside
+/// that sheet (see `ObservationDateSheet`), so it slides up over a sheet that
+/// stays put — the checkmark shows the map immediately instead of waiting out a
+/// sheet dismissal, and Back reveals the date sheet already sitting there rather
+/// than re-animating it in. `onDismissed` therefore fires once, when the whole
+/// flow ends, whichever way it ended.
 private struct AddFlowPresentations: ViewModifier {
     @Binding var showDate: Bool
     @Binding var showLocation: Bool
     @Binding var date: Date
-    /// Re-injected into the map: `@Observable` environment objects don't cross
-    /// a `fullScreenCover` boundary, and the map reads the life list to plot
-    /// its species thumbnails.
+    /// Threaded down to the map: `@Observable` environment objects don't cross a
+    /// `fullScreenCover` boundary, and the map reads the life list to plot its
+    /// species thumbnails.
     let store: LifeListStore
-    let onDateDismissed: () -> Void
-    let onLocationDismissed: () -> Void
-    let onDateConfirmed: () -> Void
-    let onBack: () -> Void
-    let onLocationConfirmed: (CLLocationCoordinate2D) -> Void
+    let onDismissed: () -> Void
+    let onSave: (CLLocationCoordinate2D) -> Void
 
     func body(content: Content) -> some View {
-        content
-            .sheet(isPresented: $showDate, onDismiss: onDateDismissed) {
-                ObservationDateSheet(
-                    date: $date,
-                    onCancel: { showDate = false },
-                    onConfirm: {
-                        onDateConfirmed()
-                        showDate = false
-                    }
-                )
-            }
-            .fullScreenCover(isPresented: $showLocation, onDismiss: onLocationDismissed) {
-                MapView(picker: MapView.LocationPicker(
-                    onBack: {
-                        onBack()
-                        showLocation = false
-                    },
-                    onConfirm: { coordinate in
-                        onLocationConfirmed(coordinate)
-                        showLocation = false
-                    }
-                ))
-                .environment(store)
-            }
+        content.sheet(isPresented: $showDate, onDismiss: {
+            // The map can only outlive the sheet if something went sideways;
+            // clear it so a re-entry starts on the date step.
+            showLocation = false
+            onDismissed()
+        }) {
+            ObservationDateSheet(
+                date: $date,
+                showLocationPicker: $showLocation,
+                store: store,
+                onCancel: { showDate = false },
+                onSave: { coordinate in
+                    onSave(coordinate)
+                    // Dismissing the sheet takes its presented cover with it, so
+                    // the map and the sheet leave together in one animation
+                    // rather than the map dropping onto a sheet that then slides
+                    // down after it.
+                    showDate = false
+                }
+            )
+        }
     }
 }
 
 /// Step one of the Life List tab's add flow: when did you see this bird?
 /// Defaults to today and can't be set into the future. Dismissible by swipe or
-/// by the leading Cancel button; the trailing checkmark moves on to the map.
+/// by the leading Cancel button; the trailing checkmark raises the map picker
+/// *over* this sheet, which stays mounted underneath for the whole detour.
 private struct ObservationDateSheet: View {
     @Binding var date: Date
+    @Binding var showLocationPicker: Bool
+    let store: LifeListStore
     let onCancel: () -> Void
-    let onConfirm: () -> Void
+    let onSave: (CLLocationCoordinate2D) -> Void
 
     var body: some View {
         NavigationStack {
@@ -894,13 +848,21 @@ private struct ObservationDateSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     // The system confirm role — a checkmark, tinted with the
                     // app's accent color.
-                    Button(role: .confirm) { onConfirm() }
+                    Button(role: .confirm) { showLocationPicker = true }
                 }
             }
         }
         .presentationDetents([.medium])
         // Hidden grab handle, matching the import sheet and the map's cards.
         .presentationDragIndicator(.hidden)
+        // Step two, layered on top of this sheet rather than replacing it.
+        .fullScreenCover(isPresented: $showLocationPicker) {
+            MapView(picker: MapView.LocationPicker(
+                onBack: { showLocationPicker = false },
+                onConfirm: onSave
+            ))
+            .environment(store)
+        }
     }
 }
 
