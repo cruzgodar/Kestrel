@@ -381,7 +381,12 @@ struct LifeListView: View {
             .allowsHitTesting(searchFieldTop > 0)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            BottomSearchField(text: $searchText, prompt: "Search or add species", horizontalInset: Self.searchFieldHorizontalInset)
+            BottomSearchField(
+                text: $searchText,
+                prompt: "Search or add species",
+                horizontalInset: Self.searchFieldHorizontalInset,
+                addFlowActive: pendingAdd != nil
+            )
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.frame(in: .global).minY
                 } action: { searchFieldTop = $0 }
@@ -404,8 +409,11 @@ struct LifeListView: View {
                         .foregroundStyle(showStarredOnly ? .white : .primary)
                         .frame(width: 28, height: 28)
                         .background {
+                            // The star blue, not the app accent: the filter
+                            // shows starred species, so it takes the color of
+                            // the stars it filters to.
                             Circle()
-                                .fill(Color.accentColor)
+                                .fill(Self.starButtonTint)
                                 .frame(
                                     width: showStarredOnly ? 36 : 28,
                                     height: showStarredOnly ? 36 : 28
@@ -964,6 +972,11 @@ private struct BottomSearchField: View {
     /// Symmetric horizontal inset, set by the parent so the field stays centered
     /// while its right edge lines up with the rightmost heading button.
     var horizontalInset: CGFloat = 10
+    /// True while the add flow (date sheet → map picker) owns the screen. Focus
+    /// is dropped when it goes up: SwiftUI restores first responder every time
+    /// one of the flow's presentations dismisses, so without this the keyboard
+    /// slides back up and straight down again between each step.
+    var addFlowActive: Bool = false
     @FocusState private var focused: Bool
     /// The capsule's own bounds, used to decide whether a lifted finger counts
     /// as a tap on it. See the gesture in `body`.
@@ -1087,6 +1100,13 @@ private struct BottomSearchField: View {
         // keyboard slides back up when the full-screen viewer is dismissed.
         .onChange(of: photoPresenter?.presented) { _, presented in
             if presented != nil { focused = false }
+        }
+        // Same idea for the add flow, but held for its whole duration: focus is
+        // dropped the moment the plus is tapped and stays dropped across the
+        // date-sheet ⇄ map hand-offs, so no step is preceded by the keyboard
+        // flashing up and back down.
+        .onChange(of: addFlowActive) { _, active in
+            if active { focused = false }
         }
     }
 }

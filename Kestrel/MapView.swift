@@ -56,14 +56,14 @@ struct MapView: View {
     /// Non-nil when the map is running as the life-list add flow's location
     /// picker rather than as the Map tab. The map itself is identical (same
     /// species thumbnails, same clustering); the picker adds a long-press to
-    /// drop a pin plus back/confirm chrome, and makes the existing annotations
-    /// display-only — a thumbnail's own coordinate is whatever cluster it
-    /// happens to represent at the current zoom, which is far too coarse to
-    /// stand in for "where I saw this bird."
+    /// drop a pin, a back button and a Save Observation button, and makes the
+    /// existing annotations display-only — a thumbnail's own coordinate is
+    /// whatever cluster it happens to represent at the current zoom, which is
+    /// far too coarse to stand in for "where I saw this bird."
     let picker: LocationPicker?
 
     /// Callbacks the location-picker mode reports through. `onConfirm` only
-    /// fires once a coordinate has been long-pressed and the checkmark tapped.
+    /// fires once a coordinate has been long-pressed and Save Observation tapped.
     struct LocationPicker {
         let onBack: () -> Void
         let onConfirm: (CLLocationCoordinate2D) -> Void
@@ -82,13 +82,51 @@ struct MapView: View {
     /// the toggle flips.
     private var settings = AppSettings.shared
 
-    /// The coordinate the user long-pressed, in picker mode. Marked on the map
-    /// and handed to `picker.onConfirm` when the checkmark is tapped.
-    @State private var pickedCoordinate: CLLocationCoordinate2D?
+    /// The pins the picker currently has on the map. Normally one — the chosen
+    /// location — but a fresh long press while a pin is already down appends the
+    /// new one and leaves the old in place for the length of a crossfade, so the
+    /// pin dissolves from the old spot to the new instead of sliding across the
+    /// map. `dropPin` schedules the stale entries' removal.
+    @State private var pickedPins: [PickedPin] = []
     /// Live touch point, recorded by a zero-distance drag that runs alongside
     /// the map's own gestures. `LongPressGesture` reports no location of its
     /// own, so this is what the long press converts into a coordinate.
     @State private var touchPoint: CGPoint = .zero
+
+    /// One dropped pin. Identity is per-drop rather than per-coordinate so a
+    /// re-pick mounts a *new* annotation (which fades in) alongside the old one
+    /// (which fades out) rather than moving the existing annotation's host.
+    private struct PickedPin: Identifiable {
+        let id = UUID()
+        let coordinate: CLLocationCoordinate2D
+    }
+
+    /// The coordinate Save Observation would commit — the newest pin, if any.
+    private var pickedCoordinate: CLLocationCoordinate2D? {
+        pickedPins.last?.coordinate
+    }
+
+    /// How long the pin takes to dissolve from its old spot to the new one.
+    private static let pinCrossfade: Double = 0.22
+    /// Gray for the Save Observation button before a location is chosen. Matches
+    /// the record button's locked (permission-denied) fill.
+    private static let saveLockedTint = Color(white: 0.45)
+
+    /// Records a long-pressed location. A pin already on the map isn't moved —
+    /// the new one is added on top and the old is left to fade out under it, then
+    /// dropped once the crossfade has played.
+    private func dropPin(at coordinate: CLLocationCoordinate2D) {
+        let pin = PickedPin(coordinate: coordinate)
+        pickedPins.append(pin)
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.pinCrossfade + 0.05) {
+            // Everything *before* this pin, so a third press mid-fade doesn't
+            // take the pin that superseded this one with it.
+            guard let idx = pickedPins.firstIndex(where: { $0.id == pin.id }), idx > 0 else {
+                return
+            }
+            pickedPins.removeSubrange(0..<idx)
+        }
+    }
 
     @State private var position: MapCameraPosition = .userLocation(
         fallback: .automatic
@@ -335,9 +373,15 @@ struct MapView: View {
                         }
                         .annotationTitles(.hidden)
                     }
-                    if let pickedCoordinate {
-                        Annotation("Chosen location", coordinate: pickedCoordinate, anchor: .center) {
-                            PickedLocationMarker()
+                    // Usually one pin; briefly two while a re-pick crossfades.
+                    // `anchor: .bottom` puts the pin's needle tip on the
+                    // coordinate rather than centering the whole glyph on it.
+                    ForEach(pickedPins) { pin in
+                        Annotation("Chosen location", coordinate: pin.coordinate, anchor: .bottom) {
+                            PickedLocationMarker(
+                                isCurrent: pin.id == pickedPins.last?.id,
+                                fadeDuration: Self.pinCrossfade
+                            )
                         }
                         .annotationTitles(.hidden)
                     }
@@ -362,9 +406,7 @@ struct MapView: View {
                                   let coord = mapProxy.convert(touchPoint, from: .local)
                             else { return }
                             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                            withAnimation(.easeOut(duration: 0.18)) {
-                                pickedCoordinate = coord
-                            }
+                            dropPin(at: coord)
                         },
                     isEnabled: picker != nil
                 )
@@ -461,45 +503,26 @@ struct MapView: View {
             }
             .ignoresSafeArea(edges: .bottom)
 
-            // Liquid-glass controls pinned to the top-right. The recenter button
-            // is always there (it replaces the stock MapUserLocationButton); in
-            // picker mode the confirm checkmark stacks above it.
-            VStack(spacing: 10) {
-                if let picker {
-                    GlassMapButton(
-                        systemImage: "checkmark",
-                        accessibility: "Use this location",
-                        // Dimmed on the glyph only while there's nothing to
-                        // confirm — fading the whole button would take the
-                        // glass circle with it and leave a floating checkmark.
-                        tint: .accentColor.opacity(pickedCoordinate == nil ? 0.3 : 1)
-                    ) {
-                        guard let pickedCoordinate else { return }
-                        picker.onConfirm(pickedCoordinate)
-                    }
-                    // Nothing to confirm until a location has been long-pressed.
-                    .disabled(pickedCoordinate == nil)
-                    .animation(.easeInOut(duration: 0.2), value: pickedCoordinate == nil)
-                }
-                GlassMapButton(
-                    systemImage: centeredOnUser ? "location.fill" : "location",
-                    accessibility: "Center on current location"
-                ) {
-                    Task {
-                        guard let coord = await LocationCache.shared.current() else { return }
-                        // Fill the icon on recenter; skip clearing it for the
-                        // duration of the recenter animation (the grace window).
-                        withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = true }
-                        recenterGraceUntil = Date.now + 0.7
-                        withAnimation(.easeInOut(duration: 0.45)) {
-                            position = .region(MKCoordinateRegion(
-                                center: CLLocationCoordinate2D(
-                                    latitude: coord.latitude,
-                                    longitude: coord.longitude
-                                ),
-                                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-                            ))
-                        }
+            // Liquid-glass recenter control pinned to the top-right, replacing
+            // the stock MapUserLocationButton.
+            GlassMapButton(
+                systemImage: centeredOnUser ? "location.fill" : "location",
+                accessibility: "Center on current location"
+            ) {
+                Task {
+                    guard let coord = await LocationCache.shared.current() else { return }
+                    // Fill the icon on recenter; skip clearing it for the
+                    // duration of the recenter animation (the grace window).
+                    withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = true }
+                    recenterGraceUntil = Date.now + 0.7
+                    withAnimation(.easeInOut(duration: 0.45)) {
+                        position = .region(MKCoordinateRegion(
+                            center: CLLocationCoordinate2D(
+                                latitude: coord.latitude,
+                                longitude: coord.longitude
+                            ),
+                            span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                        ))
                     }
                 }
             }
@@ -508,7 +531,7 @@ struct MapView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
 
             if let picker {
-                // Back to the date step. Top-leading, mirroring the confirm button.
+                // Back to the date step.
                 GlassMapButton(
                     systemImage: "chevron.left",
                     accessibility: "Back to the observation date"
@@ -519,18 +542,27 @@ struct MapView: View {
                 .padding(.leading, 12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-                // The instruction, parked along the bottom edge where it can't
-                // collide with either corner's controls. It stays up after a pin
-                // is dropped, since the same gesture re-picks.
-                Text("Long press to choose a location")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 12)
-                    .glassEffect(.regular, in: .capsule)
-                    .padding(.bottom, 20)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .allowsHitTesting(false)
+                // The commit action, in the Identify tab's record-button
+                // treatment (same style, same metrics, no icon) so the primary
+                // action of a screen reads the same everywhere in the app. Gray
+                // and inert until a location has been long-pressed, matching how
+                // the record button grays out when it can't record.
+                Button {
+                    guard let pickedCoordinate else { return }
+                    picker.onConfirm(pickedCoordinate)
+                } label: {
+                    Text("Save Observation")
+                        .font(.title3.weight(.semibold))
+                        .frame(height: 58)
+                        .padding(.horizontal, 28)
+                }
+                .buttonStyle(RecordButtonStyle(
+                    tint: pickedCoordinate == nil ? Self.saveLockedTint : .kestrelPurple
+                ))
+                .disabled(pickedCoordinate == nil)
+                .animation(.easeInOut(duration: 0.2), value: pickedCoordinate == nil)
+                .padding(.bottom, 20)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
         }
         .task {
@@ -1520,20 +1552,40 @@ private struct BirdMapThumbnail: View {
     }
 }
 
-/// The pin dropped by a long press in the map's location-picker mode. Sized and
-/// colored to stand apart from the species thumbnails it sits among — accent
-/// purple on white, centered exactly on the chosen coordinate.
+/// The pin dropped by a long press in the map's location-picker mode: the bare
+/// `mappin` glyph in solid purple, its needle tip sitting on the chosen
+/// coordinate (the annotation anchors it `.bottom`).
+///
+/// It owns its own fade because MapKit doesn't run SwiftUI insert/remove
+/// transitions on annotations (the same reason `FadingAnnotationContent` exists).
+/// A re-pick mounts a second marker at the new coordinate while this one is told
+/// it's no longer current, so the two crossfade in place instead of one pin
+/// sliding across the map.
 private struct PickedLocationMarker: View {
+    let isCurrent: Bool
+    let fadeDuration: Double
+
+    @State private var opacity: Double = 0
+
     var body: some View {
-        Image(systemName: "mappin.circle.fill")
-            .font(.system(size: 36))
-            .symbolRenderingMode(.palette)
-            .foregroundStyle(.white, Color.accentColor)
-            .background(Circle().fill(.white).padding(3))
-            .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
+        Image(systemName: "mappin")
+            .font(.system(size: 34, weight: .regular))
+            .foregroundStyle(Color.kestrelPurple)
+            .shadow(color: .black.opacity(0.25), radius: 2, y: 1)
             // MapKit measures the hosting view once from the content's intrinsic
             // size; without this the glyph can be clipped (see MapAnnotationContent).
             .fixedSize()
+            .opacity(opacity)
+            .onAppear {
+                withAnimation(.easeInOut(duration: fadeDuration)) {
+                    opacity = isCurrent ? 1 : 0
+                }
+            }
+            .onChange(of: isCurrent) { _, current in
+                withAnimation(.easeInOut(duration: fadeDuration)) {
+                    opacity = current ? 1 : 0
+                }
+            }
     }
 }
 
@@ -1560,17 +1612,13 @@ private final class CameraTracker {
 private struct GlassMapButton: View {
     let systemImage: String
     let accessibility: String
-    /// Overrides the default `.primary` glyph color. The location picker's
-    /// confirm checkmark uses the accent color so it reads as the affirmative
-    /// action rather than another neutral map control.
-    var tint: Color?
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(tint ?? .primary)
+                .foregroundStyle(.primary)
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: 22, height: 22)
                 .padding(11)
