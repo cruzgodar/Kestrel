@@ -764,7 +764,8 @@ private struct ImportInfoSheet: View {
 }
 
 /// Liquid-glass search field that sits in the bottom safe-area inset, just
-/// above the tab bar. Always expanded; tapping focuses the text field.
+/// above the tab bar. Always expanded; tapping anywhere on the capsule focuses
+/// the text field.
 private struct BottomSearchField: View {
     @Binding var text: String
     let prompt: String
@@ -772,6 +773,9 @@ private struct BottomSearchField: View {
     /// while its right edge lines up with the rightmost heading button.
     var horizontalInset: CGFloat = 10
     @FocusState private var focused: Bool
+    /// The capsule's own bounds, used to decide whether a lifted finger counts
+    /// as a tap on it. See the gesture in `body`.
+    @State private var capsuleBounds: CGRect = .zero
     /// Drives the full-screen photo viewer. When a species photo opens (e.g. the
     /// user taps a row's thumbnail while searching), we drop focus so the
     /// keyboard doesn't pop back up when the viewer is dismissed.
@@ -831,7 +835,35 @@ private struct BottomSearchField: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 13)
-            .glassEffect(.regular, in: .capsule)
+            .glassEffect(.regular.interactive(), in: .capsule)
+            // The whole capsule is the hit target, not just the text field's own
+            // bounds. Without this, only a direct hit on the (often narrow, and
+            // when empty, zero-width) `TextField` focused the field — taps on the
+            // magnifying glass, the padding, or the empty space right of a short
+            // query fell through and did nothing. `.contentShape` also keeps the
+            // gesture from claiming the corners outside the capsule.
+            .contentShape(.capsule)
+            // Focus when the finger lifts inside the capsule. Attached
+            // *simultaneously* so it recognizes alongside the text field's own
+            // recognizers rather than pre-empting them — as a plain `.gesture` it
+            // swallowed taps that landed on the field itself, which would leave the
+            // caret pinned to the end of the text instead of where the user tapped.
+            // A zero-distance drag rather than a tap so the touch is claimed on
+            // touch-down, which is when the interactive glass lights up.
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 0)
+                    .onEnded { value in
+                        // Only a lift inside the capsule counts; one that wandered
+                        // off is a cancel, matching how a system control behaves.
+                        guard capsuleBounds.contains(value.location) else { return }
+                        focused = true
+                    }
+            )
+            // The capsule's own bounds, so the drag above can tell a lift inside it
+            // from one that wandered off.
+            .onGeometryChange(for: CGRect.self) { proxy in
+                CGRect(origin: .zero, size: proxy.size)
+            } action: { capsuleBounds = $0 }
 
             // Standalone cancel-style button to the right of the capsule.
             // Action: clear text, drop focus, dismiss the keyboard.

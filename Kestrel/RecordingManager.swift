@@ -41,6 +41,10 @@ final class RecordingManager {
     /// the watch's own `minimumDuration` cutoff, below which it discards the walk
     /// without asking either.
     private var watchSessionStart: Date?
+    /// When the current phone-mic session started, used to tell a session that
+    /// ran long enough to count toward the review prompt from a tap-and-stop.
+    /// See `ReviewPrompt`.
+    private var localSessionStart: Date?
     /// Mirrors `WatchWorkoutManager.minimumDuration`: shorter than this and the
     /// watch throws the walk away regardless, so there's nothing to ask about.
     private static let minimumWorkoutDuration: TimeInterval = 15
@@ -627,6 +631,10 @@ final class RecordingManager {
         // (guarded by `watchRecording`, already false). Incoming audio from a
         // still-running watch is ignored once `watchRecording` is false.
         stopFromWatch()
+        // Ending a watch session from the phone's own stop button still counts as
+        // ending a session from the phone, so it can raise the review prompt.
+        // `stopFromWatch` above has already banked the session's length.
+        ReviewPrompt.requestIfDue()
     }
 
     func startLocally() async {
@@ -644,6 +652,9 @@ final class RecordingManager {
         // tap to be re-installed and audio to double-process.
         if pipeline.isRunning {
             isRecording = true
+            // The stop that preceded this already banked the elapsed time (see
+            // `stop`), so the resumed stretch is timed from here.
+            if localSessionStart == nil { localSessionStart = Date() }
             return
         }
 
@@ -683,6 +694,7 @@ final class RecordingManager {
         // Don't clear locationStatus — leave the previous filter visible until
         // refreshSpeciesFilter overwrites it, otherwise the text flickers.
         isRecording = true
+        localSessionStart = Date()
 
         // Mirror this phone-mic session onto the watch so its "now hearing"
         // screen shows the same birds, as though the watch were the source.
@@ -738,6 +750,17 @@ final class RecordingManager {
 
         guard isRecording else { return }
         isRecording = false
+
+        // Bank the session's length, then — since a stop that reaches here came
+        // from the phone (the stop button, or the idle notification's End
+        // Session action) — see whether the user has earned a review prompt.
+        // Order matters: recording first lets the session that crosses the
+        // threshold be the one that prompts.
+        if let start = localSessionStart {
+            ReviewPrompt.recordSession(duration: Date().timeIntervalSince(start))
+            localSessionStart = nil
+        }
+        ReviewPrompt.requestIfDue()
 
         // Tell the watch to drop its mirrored "now hearing" display.
         sendToWatch(["cmd": "phoneStop"])
@@ -828,6 +851,14 @@ final class RecordingManager {
         guard watchRecording else { return }
         watchRecording = false
         isRecording = false
+        // A watch-sourced session counts toward the review threshold like any
+        // other; only the prompt itself is phone-only, and that's raised by
+        // `stopWatchSession` (the phone-side stop) rather than here — this path
+        // also covers stops the watch or a watchdog initiated, where there's no
+        // one looking at the phone.
+        if let start = watchSessionStart {
+            ReviewPrompt.recordSession(duration: Date().timeIntervalSince(start))
+        }
         watchSessionStart = nil
         // The session is over however we got here — a watch-side stop, a
         // watchdog, a lost link. Any prompt still up is now asking about a walk

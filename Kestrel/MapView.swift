@@ -82,6 +82,32 @@ struct MapView: View {
     /// `centeredOnUser`, so the recenter animation's own camera callbacks don't
     /// immediately flip the freshly-filled button back to an outline.
     @State private var recenterGraceUntil: Date = .distantPast
+    /// A focus request that hasn't visibly landed yet, held so it can be
+    /// re-asserted rather than applied once and forgotten.
+    ///
+    /// This is what fixes "Show on Map opens the Map tab but leaves the camera
+    /// where I am." The first time the tab is opened after a launch, the map is
+    /// built with `position == .userLocation(fallback: .automatic)` and is still
+    /// resolving that when our `onAppear` write lands — the map is mid-layout
+    /// (zero-sized inside its `GeometryReader`) and MapKit is in follow mode, so
+    /// the first location fix arrives *after* the write and throws the camera
+    /// back onto the user. Every subsequent open finds the camera already
+    /// settled, which is why the bug only shows up once per launch. Holding the
+    /// request and re-asserting it on each camera settle makes the outcome
+    /// independent of who moved the camera last.
+    @State private var focusRequest: MapFocus?
+    /// When to stop re-asserting `focusRequest`. Kept short: long enough for the
+    /// initial location fix (the thing that overrides us) to land, short enough
+    /// that a pan of the user's own is never yanked back.
+    @State private var focusDeadline: Date = .distantPast
+    /// How long a focus request keeps re-asserting itself.
+    private static let focusReassertWindow: TimeInterval = 2
+    /// How close the camera center must land to count as "arrived", in degrees
+    /// — a tenth of the focus span, so an equivalent camera counts even when
+    /// MapKit rounds the region it actually applied.
+    private static let focusArrivalTolerance: Double = 0.002
+    /// The span a focus request zooms to.
+    private static let focusSpan = MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
     /// Discrete zoom level — `floor(log2(camera.distance) * 4)`. Each unit
     /// is roughly a quarter-octave. We only rebuild clusters when this
     /// crosses a step, which keeps the cluster set stable between fine
@@ -341,6 +367,11 @@ struct MapView: View {
                 .onMapCameraChange(frequency: .onEnd) { context in
                     cacheCamera(context)
                     commitVisibleEntries()
+                    // Whatever just moved the camera — us, a fling, or MapKit
+                    // resolving its initial user-location follow — check that an
+                    // outstanding focus request actually arrived, and re-assert it
+                    // if it didn't.
+                    reassertFocusIfNeeded(center: context.region.center)
                 }
                 .onAppear { viewSize = geo.size }
                 // Clusters before culling in every path (see handleCameraChange)
@@ -404,8 +435,21 @@ struct MapView: View {
         // Focus requests can arrive while the Map tab is already on screen
         // (pinpoint from a cluster card) or just before it appears (Show on Map
         // from another tab) — handle both.
-        .onChange(of: navigator?.pendingFocus) { _, _ in applyPendingFocus() }
-        .onAppear { applyPendingFocus() }
+        .onChange(of: navigator?.pendingFocus) { _, _ in applyPendingFocus(animated: true) }
+        .onAppear { applyPendingFocus(animated: false) }
+        // Second line of defense behind `reassertFocusIfNeeded`, which needs a
+        // camera-settle callback to fire before it can notice the camera went
+        // somewhere else. If the initial write is swallowed outright — the map
+        // still mid-mount, so nothing moves and nothing settles — no callback
+        // arrives at all, and the request would sit there unnoticed. Re-asserting
+        // once shortly after covers that; it's a no-op when the camera is already
+        // where it was asked to be.
+        .task(id: focusRequest?.token) {
+            guard focusRequest != nil else { return }
+            try? await Task.sleep(for: .milliseconds(700))
+            guard !Task.isCancelled, focusRequest != nil else { return }
+            reassertFocusIfNeeded(center: camera.lastCenter)
+        }
         // One sheet for both cards. Bound to `isPresented` (not `item`) so
         // re-pointing `mapCard` swaps the content live; `MapCardSheet` crossfades
         // between cards, keeps the map interactive behind it, and never dims it.
@@ -448,17 +492,52 @@ struct MapView: View {
         }
     }
 
-    /// Consumes a pending focus request from `MapNavigator`, animating the
-    /// camera to a tight region around the coordinate, then clears it.
-    private func applyPendingFocus() {
+    /// Consumes a pending focus request from `MapNavigator` and moves the camera
+    /// to a tight region around the coordinate. The request is held in
+    /// `focusRequest` until the camera is actually there — see that property for
+    /// why applying it once isn't enough.
+    ///
+    /// `animated` is false when the request arrives with the tab (the tab switch
+    /// is the transition; sliding the camera underneath it just wastes the move)
+    /// and true when it arrives while the map is already on screen.
+    private func applyPendingFocus(animated: Bool) {
         guard let focus = navigator?.pendingFocus else { return }
-        withAnimation(.easeInOut(duration: 0.45)) {
-            position = .region(MKCoordinateRegion(
-                center: focus.coordinate,
-                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-            ))
-        }
         navigator?.pendingFocus = nil
+        focusRequest = focus
+        focusDeadline = Date.now + Self.focusReassertWindow
+        moveCamera(to: focus, animated: animated)
+    }
+
+    /// Points the camera at a focus request's coordinate.
+    private func moveCamera(to focus: MapFocus, animated: Bool) {
+        let region = MKCoordinateRegion(center: focus.coordinate, span: Self.focusSpan)
+        if animated {
+            withAnimation(.easeInOut(duration: 0.45)) { position = .region(region) }
+        } else {
+            position = .region(region)
+        }
+    }
+
+    /// Called on every camera settle. Puts the camera back where it was asked to
+    /// be if something else moved it, and drops the request once the window has
+    /// passed.
+    ///
+    /// Deliberately *not* cleared the moment the camera arrives. On a cold open
+    /// of the Map tab the camera reaches the requested coordinate and is then
+    /// thrown to the user's own location a few frames later, when the location
+    /// fix that the map's initial `.userLocation` position was waiting on finally
+    /// lands. Treating that first arrival as success is exactly what let the
+    /// override stand — so the request outlives it and only expires on the clock.
+    private func reassertFocusIfNeeded(center: CLLocationCoordinate2D) {
+        guard let focus = focusRequest else { return }
+        guard Date.now <= focusDeadline else {
+            focusRequest = nil
+            return
+        }
+        let arrived = abs(center.latitude - focus.latitude) < Self.focusArrivalTolerance
+            && abs(center.longitude - focus.longitude) < Self.focusArrivalTolerance
+        guard !arrived else { return }
+        moveCamera(to: focus, animated: true)
     }
 
     // MARK: - Camera + clustering
