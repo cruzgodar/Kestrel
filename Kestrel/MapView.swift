@@ -861,7 +861,17 @@ struct MapView: View {
         // refresh (see `warmUpAnnotations`). Armed on the first rebuild that
         // produces clusters and not retried while a chain is already in flight;
         // the chain re-arms itself if it has to wait for annotations to settle.
-        if !next.isEmpty, !didWarmUpAnnotations, !warmUpScheduled {
+        // Both the warm-up and the rehydration exist purely to repair MapKit's
+        // cached annotation *hit areas*, and both work by unmounting the
+        // annotations and putting them straight back — which reads as every
+        // thumbnail fading out and in. The picker's annotations are display-only
+        // (see `handleAnnotationTap`), so there's no hit area worth repairing and
+        // the flicker is pure cost. The Map tab keeps both, where it only pays
+        // the warm-up once per launch; the picker mounts a fresh `MapView` every
+        // time it opens, so it would pay it on every open.
+        if picker != nil {
+            // Nothing more to do: the cluster set is already committed above.
+        } else if !next.isEmpty, !didWarmUpAnnotations, !warmUpScheduled {
             warmUpScheduled = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 warmUpAnnotations()
@@ -1570,14 +1580,29 @@ private struct BirdMapThumbnail: View {
 }
 
 /// Material Symbols' `add_location`, transcribed from its 24×24 path: a map-pin
-/// balloon with a plus knocked out of the head. SF Symbols has no equivalent
-/// (there's no `mappin.badge.plus`), so it's drawn directly.
+/// balloon with a plus in the head. SF Symbols has no equivalent (there's no
+/// `mappin.badge.plus`), so it's drawn directly.
+///
+/// The two halves are separate `part`s rather than one even-odd path, so the plus
+/// can be painted a solid color instead of being a hole — over a map, a knocked-out
+/// plus takes on whatever happens to be underneath it and stops reading as part of
+/// the pin.
 ///
 /// The path is authored in Material's 24×24 box but drawn to the *glyph's* tight
 /// bounds — x 5…19, y 2…22 — so the shape fills whatever frame it's given with
 /// no dead margin, and the balloon's tip lands exactly on the frame's bottom
-/// edge (which is what lets the annotation anchor it `.bottom`).
+/// edge (which is what lets the annotation anchor it `.bottom`). Both parts share
+/// that mapping, so stacking them lines them up.
 struct AddLocationShape: Shape {
+    enum Part {
+        /// The pin outline: circular head tapering to a point.
+        case balloon
+        /// The plus inside the head.
+        case plus
+    }
+
+    var part: Part = .balloon
+
     /// Width ÷ height of the tight glyph bounds. Callers size by height and take
     /// the width from this so the pin never stretches.
     static let aspectRatio: CGFloat = 14.0 / 20.0
@@ -1591,40 +1616,43 @@ struct AddLocationShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
 
-        // Balloon: `M12 2C8.14 2 5 5.14 5 9c0 5.25 7 13 7 13s7-7.75 7-13
-        // c0-3.86-3.14-7-7-7z`
-        path.move(to: CGPoint(x: 12, y: 2))
-        path.addCurve(
-            to: CGPoint(x: 5, y: 9),
-            control1: CGPoint(x: 8.14, y: 2),
-            control2: CGPoint(x: 5, y: 5.14)
-        )
-        path.addCurve(
-            to: CGPoint(x: 12, y: 22),
-            control1: CGPoint(x: 5, y: 14.25),
-            control2: CGPoint(x: 12, y: 22)
-        )
-        path.addCurve(
-            to: CGPoint(x: 19, y: 9),
-            control1: CGPoint(x: 12, y: 22),
-            control2: CGPoint(x: 19, y: 14.25)
-        )
-        path.addCurve(
-            to: CGPoint(x: 12, y: 2),
-            control1: CGPoint(x: 19, y: 5.14),
-            control2: CGPoint(x: 15.86, y: 2)
-        )
-        path.closeSubpath()
+        switch part {
+        case .balloon:
+            // `M12 2C8.14 2 5 5.14 5 9c0 5.25 7 13 7 13s7-7.75 7-13
+            // c0-3.86-3.14-7-7-7z`
+            path.move(to: CGPoint(x: 12, y: 2))
+            path.addCurve(
+                to: CGPoint(x: 5, y: 9),
+                control1: CGPoint(x: 8.14, y: 2),
+                control2: CGPoint(x: 5, y: 5.14)
+            )
+            path.addCurve(
+                to: CGPoint(x: 12, y: 22),
+                control1: CGPoint(x: 5, y: 14.25),
+                control2: CGPoint(x: 12, y: 22)
+            )
+            path.addCurve(
+                to: CGPoint(x: 19, y: 9),
+                control1: CGPoint(x: 12, y: 22),
+                control2: CGPoint(x: 19, y: 14.25)
+            )
+            path.addCurve(
+                to: CGPoint(x: 12, y: 2),
+                control1: CGPoint(x: 19, y: 5.14),
+                control2: CGPoint(x: 15.86, y: 2)
+            )
+            path.closeSubpath()
 
-        // Plus: `m4 8h-3v3h-2v-3H8V8h3V5h2v3h3v2z`, knocked out of the balloon by
-        // the even-odd fill the caller applies.
-        path.addLines([
-            CGPoint(x: 16, y: 10), CGPoint(x: 13, y: 10), CGPoint(x: 13, y: 13),
-            CGPoint(x: 11, y: 13), CGPoint(x: 11, y: 10), CGPoint(x: 8, y: 10),
-            CGPoint(x: 8, y: 8), CGPoint(x: 11, y: 8), CGPoint(x: 11, y: 5),
-            CGPoint(x: 13, y: 5), CGPoint(x: 13, y: 8), CGPoint(x: 16, y: 8),
-        ])
-        path.closeSubpath()
+        case .plus:
+            // `m4 8h-3v3h-2v-3H8V8h3V5h2v3h3v2z`
+            path.addLines([
+                CGPoint(x: 16, y: 10), CGPoint(x: 13, y: 10), CGPoint(x: 13, y: 13),
+                CGPoint(x: 11, y: 13), CGPoint(x: 11, y: 10), CGPoint(x: 8, y: 10),
+                CGPoint(x: 8, y: 8), CGPoint(x: 11, y: 8), CGPoint(x: 11, y: 5),
+                CGPoint(x: 13, y: 5), CGPoint(x: 13, y: 8), CGPoint(x: 16, y: 8),
+            ])
+            path.closeSubpath()
+        }
 
         let transform = CGAffineTransform(
             translationX: -Self.originX, y: -Self.originY
@@ -1657,10 +1685,10 @@ private struct PickedLocationMarker: View {
     private static let height: CGFloat = 36
 
     var body: some View {
-        AddLocationShape()
-            // Even-odd so the plus is knocked out of the balloon, as in the
-            // original icon, rather than filled over it.
-            .fill(Color.kestrelPurple, style: FillStyle(eoFill: true))
+        ZStack {
+            AddLocationShape(part: .balloon).fill(Color.kestrelPurple)
+            AddLocationShape(part: .plus).fill(.white)
+        }
             .frame(
                 width: Self.height * AddLocationShape.aspectRatio,
                 height: Self.height

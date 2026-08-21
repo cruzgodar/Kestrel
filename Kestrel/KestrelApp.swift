@@ -306,8 +306,9 @@ struct KestrelApp: App {
                 // list immediately (see `refreshRegionOnForeground`).
                 recordingManager.refreshRegionOnForeground()
                 // Discover photos added to the CDN since last time (throttled),
-                // so a growing photo set fills in without an app update.
-                discoverNewPhotosOnForeground()
+                // so a growing photo set fills in without an app update, and
+                // re-check any cached image whose freshness window has lapsed.
+                refreshPhotosOnForeground()
             } else if phase == .background {
                 // Queue the background photo prefetch + high-power update
                 // check for whenever iOS next grants us time.
@@ -338,19 +339,27 @@ struct KestrelApp: App {
     /// photo set on a fresh install — hence the throttle bypass while metadata is
     /// missing, which covers both a first launch and an upgrade from a build that
     /// still carried bundled metadata.
-    private func discoverNewPhotosOnForeground() {
-        guard RemoteSpeciesImageStore.shared.manifestCheckDue(minInterval: 6 * 3600)
-                || PhotoManifestStore.shared.needsMetadataBackfill else { return }
+    private func refreshPhotosOnForeground() {
         let lifeNames = lifeListStore.entries.map(\.scientificName)
+        let discoveryDue = RemoteSpeciesImageStore.shared.manifestCheckDue(minInterval: 6 * 3600)
+            || PhotoManifestStore.shared.needsMetadataBackfill
         Task {
-            let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: false)
-            guard result.newCount > 0 else { return }
-            RemoteSpeciesImageStore.shared.setProtectedSpecies(
-                RemoteSpeciesImageStore.launchTargets(lifeList: lifeNames)
-            )
-            RemoteSpeciesImageStore.shared.prefetchWake(
-                lifeList: lifeNames, nearby: RemoteSpeciesImageStore.nearbyNames()
-            )
+            if discoveryDue {
+                let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: false)
+                if result.newCount > 0 {
+                    RemoteSpeciesImageStore.shared.setProtectedSpecies(
+                        RemoteSpeciesImageStore.launchTargets(lifeList: lifeNames)
+                    )
+                    RemoteSpeciesImageStore.shared.prefetchWake(
+                        lifeList: lifeNames, nearby: RemoteSpeciesImageStore.nearbyNames()
+                    )
+                }
+            }
+            // Expire and re-check cached images a day after they were last
+            // confirmed. Unchanged photos cost a hash comparison, not a download,
+            // and a failed check leaves the cache exactly as it was — so this is
+            // safe to run on any connection. See `revalidateStaleImages`.
+            await RemoteSpeciesImageStore.shared.revalidateStaleImages()
         }
     }
 

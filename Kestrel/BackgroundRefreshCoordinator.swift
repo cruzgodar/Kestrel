@@ -149,6 +149,16 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
             // re-download changed ones.
             let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: true)
             Log.info("Image-update task: \(result.newCount) new, \(result.changedCount) changed")
+            // Then sweep anything whose one-day freshness window has lapsed but
+            // that the change diff didn't touch, so the whole cache gets
+            // re-confirmed even when the app is rarely foregrounded.
+            let revalidated = await RemoteSpeciesImageStore.shared.revalidateStaleImages()
+            if !revalidated.isEmpty {
+                Log.info(
+                    "Revalidation: \(revalidated.confirmed) confirmed, "
+                    + "\(revalidated.refreshed) refreshed, \(revalidated.failed) deferred"
+                )
+            }
             completion.complete(success: !Task.isCancelled)
         }
         completion.setExpirationHandler { op.cancel() }
