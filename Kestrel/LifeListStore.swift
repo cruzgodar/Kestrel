@@ -87,13 +87,15 @@ final class LifeListStore {
         return result.summary
     }
 
-    /// Adds a single species to the life list with `now` as the first-seen
-    /// date. No-op if the species is already in the list. Used by the
+    /// Adds a single species to the life list. Defaults to `now` as the
+    /// first-seen date; the Life List tab's add flow passes the date the user
+    /// picked instead. No-op if the species is already in the list. Used by the
     /// Identify tab's "swipe to add" gesture on detected birds.
     @discardableResult
     func add(
         scientificName: String,
         commonName: String,
+        firstSeen: Date = Date(),
         location: String? = nil,
         latitude: Double? = nil,
         longitude: Double? = nil
@@ -104,7 +106,7 @@ final class LifeListStore {
         let entry = LifeListEntry(
             scientificName: scientificName,
             commonName: commonName,
-            firstSeen: Date(),
+            firstSeen: firstSeen,
             firstLocation: location,
             firstLatitude: latitude,
             firstLongitude: longitude

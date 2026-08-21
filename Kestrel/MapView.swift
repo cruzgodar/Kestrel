@@ -53,12 +53,42 @@ struct MapFocus: Equatable {
 }
 
 struct MapView: View {
+    /// Non-nil when the map is running as the life-list add flow's location
+    /// picker rather than as the Map tab. The map itself is identical (same
+    /// species thumbnails, same clustering); the picker adds a long-press to
+    /// drop a pin plus back/confirm chrome, and makes the existing annotations
+    /// display-only — a thumbnail's own coordinate is whatever cluster it
+    /// happens to represent at the current zoom, which is far too coarse to
+    /// stand in for "where I saw this bird."
+    let picker: LocationPicker?
+
+    /// Callbacks the location-picker mode reports through. `onConfirm` only
+    /// fires once a coordinate has been long-pressed and the checkmark tapped.
+    struct LocationPicker {
+        let onBack: () -> Void
+        let onConfirm: (CLLocationCoordinate2D) -> Void
+    }
+
+    /// Spelled out because the synthesized memberwise initializer is private
+    /// (`settings` below is), so it isn't visible to the Life List tab.
+    init(picker: LocationPicker? = nil) {
+        self.picker = picker
+    }
+
     @Environment(LifeListStore.self) private var store
     @Environment(MapNavigator.self) private var navigator: MapNavigator?
     /// Drives whether repeat observations are plotted. `@Bindable` isn't needed
     /// (read-only here) but the `@Observable` model re-renders this view when
     /// the toggle flips.
     private var settings = AppSettings.shared
+
+    /// The coordinate the user long-pressed, in picker mode. Marked on the map
+    /// and handed to `picker.onConfirm` when the checkmark is tapped.
+    @State private var pickedCoordinate: CLLocationCoordinate2D?
+    /// Live touch point, recorded by a zero-distance drag that runs alongside
+    /// the map's own gestures. `LongPressGesture` reports no location of its
+    /// own, so this is what the long press converts into a coordinate.
+    @State private var touchPoint: CGPoint = .zero
 
     @State private var position: MapCameraPosition = .userLocation(
         fallback: .automatic
@@ -277,6 +307,10 @@ struct MapView: View {
     var body: some View {
         ZStack {
             GeometryReader { geo in
+                // `MapReader` is what turns the long press's touch point into a
+                // coordinate in picker mode. It's unconditional so the map's view
+                // identity doesn't depend on the mode.
+                MapReader { mapProxy in
                 // Rotation (and the 3D pitch that rides with it) is disabled —
                 // a birding map only ever wants north-up pan + zoom, and a
                 // stray two-finger twist that tilts/spins the map is pure
@@ -301,7 +335,39 @@ struct MapView: View {
                         }
                         .annotationTitles(.hidden)
                     }
+                    if let pickedCoordinate {
+                        Annotation("Chosen location", coordinate: pickedCoordinate, anchor: .center) {
+                            PickedLocationMarker()
+                        }
+                        .annotationTitles(.hidden)
+                    }
                 }
+                // Picker mode only: record the live touch point, then convert it
+                // when the press passes the long-press threshold. Two *simultaneous*
+                // gestures rather than a `.sequenced` pair — the map's own pan/zoom
+                // recognizers keep working alongside them, and a zero-distance drag
+                // reports its location on touch-down (a `LongPressGesture` reports
+                // none at all, and a sequenced drag only reports on lift).
+                // `LongPressGesture`'s default 10pt slop means a pan cancels it, so
+                // dragging the map never drops a pin.
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                        .onChanged { touchPoint = $0.location },
+                    isEnabled: picker != nil
+                )
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.4)
+                        .onEnded { _ in
+                            guard picker != nil,
+                                  let coord = mapProxy.convert(touchPoint, from: .local)
+                            else { return }
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                pickedCoordinate = coord
+                            }
+                        },
+                    isEnabled: picker != nil
+                )
                 .mapControls {
                     // The recenter control is provided as a custom glass button
                     // (see the top-trailing overlay) so it can stack beneath the
@@ -391,36 +457,81 @@ struct MapView: View {
                     rebuildClusters(animated: true, rehydrate: false)
                     updateVisibleEntries(force: true)
                 }
+                }
             }
             .ignoresSafeArea(edges: .bottom)
 
-            // Liquid-glass recenter control pinned to the top-right, in the same
-            // trailing slot the map-settings button used to share (settings now
-            // live in the More tab). Replaces the stock MapUserLocationButton.
-            GlassMapButton(
-                systemImage: centeredOnUser ? "location.fill" : "location",
-                accessibility: "Center on current location"
-            ) {
-                Task {
-                    guard let coord = await LocationCache.shared.current() else { return }
-                    // Fill the icon on recenter; skip clearing it for the
-                    // duration of the recenter animation (the grace window).
-                    withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = true }
-                    recenterGraceUntil = Date.now + 0.7
-                    withAnimation(.easeInOut(duration: 0.45)) {
-                        position = .region(MKCoordinateRegion(
-                            center: CLLocationCoordinate2D(
-                                latitude: coord.latitude,
-                                longitude: coord.longitude
-                            ),
-                            span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-                        ))
+            // Liquid-glass controls pinned to the top-right. The recenter button
+            // is always there (it replaces the stock MapUserLocationButton); in
+            // picker mode the confirm checkmark stacks above it.
+            VStack(spacing: 10) {
+                if let picker {
+                    GlassMapButton(
+                        systemImage: "checkmark",
+                        accessibility: "Use this location",
+                        // Dimmed on the glyph only while there's nothing to
+                        // confirm — fading the whole button would take the
+                        // glass circle with it and leave a floating checkmark.
+                        tint: .accentColor.opacity(pickedCoordinate == nil ? 0.3 : 1)
+                    ) {
+                        guard let pickedCoordinate else { return }
+                        picker.onConfirm(pickedCoordinate)
+                    }
+                    // Nothing to confirm until a location has been long-pressed.
+                    .disabled(pickedCoordinate == nil)
+                    .animation(.easeInOut(duration: 0.2), value: pickedCoordinate == nil)
+                }
+                GlassMapButton(
+                    systemImage: centeredOnUser ? "location.fill" : "location",
+                    accessibility: "Center on current location"
+                ) {
+                    Task {
+                        guard let coord = await LocationCache.shared.current() else { return }
+                        // Fill the icon on recenter; skip clearing it for the
+                        // duration of the recenter animation (the grace window).
+                        withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = true }
+                        recenterGraceUntil = Date.now + 0.7
+                        withAnimation(.easeInOut(duration: 0.45)) {
+                            position = .region(MKCoordinateRegion(
+                                center: CLLocationCoordinate2D(
+                                    latitude: coord.latitude,
+                                    longitude: coord.longitude
+                                ),
+                                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                            ))
+                        }
                     }
                 }
             }
             .padding(.top, 8)
             .padding(.trailing, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+
+            if let picker {
+                // Back to the date step. Top-leading, mirroring the confirm button.
+                GlassMapButton(
+                    systemImage: "chevron.left",
+                    accessibility: "Back to the observation date"
+                ) {
+                    picker.onBack()
+                }
+                .padding(.top, 8)
+                .padding(.leading, 12)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                // The instruction, parked along the bottom edge where it can't
+                // collide with either corner's controls. It stays up after a pin
+                // is dropped, since the same gesture re-picks.
+                Text("Long press to choose a location")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.bottom, 20)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .allowsHitTesting(false)
+            }
         }
         .task {
             // Never prompt for location here — permission is only ever requested
@@ -549,6 +660,9 @@ struct MapView: View {
     /// inside an already-open card, or presents a lone bird full-screen from the
     /// root. Shared by both the snapping and fading annotation content views.
     private func handleAnnotationTap(_ tappedInfo: RepInfo) {
+        // Display-only in picker mode: the thumbnails are there for orientation,
+        // and opening a card or a photo over the picker would be a dead end.
+        guard picker == nil else { return }
         // Mark this as an annotation tap so the map's simultaneous dismiss gesture
         // consumes it instead of dismissing the card.
         annotationTapConsumed = true
@@ -1406,6 +1520,23 @@ private struct BirdMapThumbnail: View {
     }
 }
 
+/// The pin dropped by a long press in the map's location-picker mode. Sized and
+/// colored to stand apart from the species thumbnails it sits among — accent
+/// purple on white, centered exactly on the chosen coordinate.
+private struct PickedLocationMarker: View {
+    var body: some View {
+        Image(systemName: "mappin.circle.fill")
+            .font(.system(size: 36))
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(.white, Color.accentColor)
+            .background(Circle().fill(.white).padding(3))
+            .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
+            // MapKit measures the hosting view once from the content's intrinsic
+            // size; without this the glyph can be clipped (see MapAnnotationContent).
+            .fixedSize()
+    }
+}
+
 // MARK: - Top-right glass controls
 
 /// A circular liquid-glass map control, matching the search field's glass
@@ -1429,13 +1560,17 @@ private final class CameraTracker {
 private struct GlassMapButton: View {
     let systemImage: String
     let accessibility: String
+    /// Overrides the default `.primary` glyph color. The location picker's
+    /// confirm checkmark uses the accent color so it reads as the affirmative
+    /// action rather than another neutral map control.
+    var tint: Color?
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(.primary)
+                .foregroundStyle(tint ?? .primary)
                 .contentTransition(.symbolEffect(.replace))
                 .frame(width: 22, height: 22)
                 .padding(11)
