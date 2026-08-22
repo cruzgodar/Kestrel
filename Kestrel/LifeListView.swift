@@ -31,6 +31,9 @@ struct LifeListView: View {
     /// save and a "there was nothing new to write" no-op, which want different
     /// headings.
     @State private var exportResultTitle = "Export Complete"
+    /// Progress of an in-flight CSV render, shared with the export sheet so it
+    /// can show a determinate bar over its own content.
+    @State private var exportProgress = ExportProgress()
     /// The species the user just swiped to delete — drives the confirmation
     /// dialog. Cleared on Cancel; the actual remove happens on confirm.
     @State private var pendingDeletion: LifeListEntry?
@@ -61,18 +64,9 @@ struct LifeListView: View {
     /// along with the date chosen so far. Non-nil for as long as the flow is on
     /// screen; the map is presented *over* the date sheet rather than in place
     /// of it, so both are torn down together when the flow ends.
-    @State private var pendingAdd: PendingAdd?
+    @State private var pendingAdd: PendingObservation?
     @State private var showAddDate = false
     @State private var showAddLocation = false
-
-    /// A species awaiting its observation date and location before it's written
-    /// to the life list. Nothing is stored until the location is confirmed, so
-    /// abandoning either step leaves the list untouched.
-    private struct PendingAdd {
-        let scientificName: String
-        let commonName: String
-        var date: Date
-    }
 
     /// Row item rendered by the list. Life-list entries are sorted ahead
     /// of catalog suggestions so adding a missing species feels like a
@@ -540,7 +534,9 @@ struct LifeListView: View {
             showResult: $showExportResult,
             resultTitle: $exportResultTitle,
             message: $exportMessage,
-            onExport: beginExport(scope:),
+            store: store,
+            progress: exportProgress,
+            onExport: { scope in Task { await beginExport(scope: scope) } },
             onExported: handleExport(_:)
         ))
         .alert(
@@ -802,7 +798,7 @@ struct LifeListView: View {
     /// the bird was seen, then where. Nothing is written to the store until the
     /// location step is confirmed.
     private func beginAdd(scientificName: String, commonName: String) {
-        pendingAdd = PendingAdd(
+        pendingAdd = PendingObservation(
             scientificName: scientificName,
             commonName: commonName,
             date: Date()
@@ -818,25 +814,15 @@ struct LifeListView: View {
         guard let pending = pendingAdd else { return }
         // The same flow serves both entry points: a catalog suggestion's plus
         // creates the entry, while Add Observation files another sighting under a
-        // species that's already on the list.
-        if store.contains(scientificName: pending.scientificName) {
-            store.addObservation(
-                scientificName: pending.scientificName,
-                date: pending.date,
-                location: name,
-                latitude: coordinate.latitude,
-                longitude: coordinate.longitude
-            )
-        } else {
-            store.add(
-                scientificName: pending.scientificName,
-                commonName: pending.commonName,
-                firstSeen: pending.date,
-                location: name,
-                latitude: coordinate.latitude,
-                longitude: coordinate.longitude
-            )
-        }
+        // species that's already on the list. `recordObservation` picks.
+        store.recordObservation(
+            scientificName: pending.scientificName,
+            commonName: pending.commonName,
+            date: pending.date,
+            location: name,
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude
+        )
     }
 
     /// Section divider between in-range and out-of-range search matches.
@@ -867,19 +853,31 @@ struct LifeListView: View {
     /// Builds the CSV for `scope` and raises the system save panel. An empty
     /// result short-circuits to the result alert instead — there is nothing to
     /// hand the file picker, and a blank .csv would only fail eBird's import.
-    private func beginExport(scope: LifeListStore.ExportScope) {
-        showExportInfo = false
-        let payload = store.makeEBirdExport(scope: scope)
-        guard payload.observationCount > 0 else {
-            exportResultTitle = "Nothing to Export"
-            exportMessage = scope == .newOnly
-                ? "Every sighting on your life list either came from an eBird import or has already been exported. Tap \u{201C}Export All Observations\u{201D} to include them anyway."
-                : "Your life list is empty, so there is nothing to export."
-            showExportResult = true
-            return
+    /// Builds the CSV for `scope`, then dismisses the sheet and raises the
+    /// system save panel. The sheet vets emptiness before calling this (see
+    /// `ExportInfoSheet.export`), so there is always at least one row here.
+    private func beginExport(scope: LifeListStore.ExportScope) async {
+        exportProgress.fraction = 0
+        // Reveal the progress card only if the render is still going a beat
+        // later. A short life list finishes inside a frame or two, and flashing
+        // a progress bar for one frame reads as a glitch.
+        let reveal = Task {
+            try? await Task.sleep(for: .milliseconds(180))
+            guard !Task.isCancelled else { return }
+            exportProgress.isVisible = true
         }
+        let payload = await store.makeEBirdExport(scope: scope, progress: exportProgress)
+        reveal.cancel()
+        if exportProgress.isVisible {
+            // It got far enough to appear, so hold it long enough to read
+            // rather than blinking out the instant the last row renders.
+            try? await Task.sleep(for: .milliseconds(320))
+            exportProgress.isVisible = false
+        }
+
         pendingExport = payload
         exportDocument = EBirdCSVDocument(data: payload.csv)
+        showExportInfo = false
         // Same one-runloop gap the import flow uses, so the dismissing sheet and
         // the save panel don't collide.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
@@ -996,13 +994,19 @@ private struct ExportPresentations: ViewModifier {
     @Binding var showResult: Bool
     @Binding var resultTitle: String
     @Binding var message: String?
+    /// The sheet reads observation counts off this to vet a scope before
+    /// starting, so "nothing to export" can be reported without tearing the
+    /// sheet down. Threaded rather than taken from the environment:
+    /// `@Observable` environment objects don't cross a sheet boundary.
+    let store: LifeListStore
+    let progress: ExportProgress
     let onExport: (LifeListStore.ExportScope) -> Void
     let onExported: (Result<URL, Error>) -> Void
 
     func body(content: Content) -> some View {
         content
             .sheet(isPresented: $showInfo) {
-                ExportInfoSheet(onExport: onExport)
+                ExportInfoSheet(store: store, progress: progress, onExport: onExport)
             }
             .fileExporter(
                 isPresented: $isExporting,
@@ -1020,7 +1024,17 @@ private struct ExportPresentations: ViewModifier {
     }
 }
 
-private struct AddFlowPresentations: ViewModifier {
+/// A species awaiting its observation date and location before it's written to
+/// the life list. Nothing is stored until the location is confirmed, so
+/// abandoning either step leaves the list untouched. Shared by both tabs' add
+/// flows — see `AddFlowPresentations`.
+struct PendingObservation {
+    let scientificName: String
+    let commonName: String
+    var date: Date
+}
+
+struct AddFlowPresentations: ViewModifier {
     @Binding var showDate: Bool
     @Binding var showLocation: Bool
     @Binding var date: Date
@@ -1060,7 +1074,7 @@ private struct AddFlowPresentations: ViewModifier {
 /// Defaults to today and can't be set into the future. Dismissible by swipe or
 /// by the leading Cancel button; the trailing checkmark raises the map picker
 /// *over* this sheet, which stays mounted underneath for the whole detour.
-private struct ObservationDateSheet: View {
+struct ObservationDateSheet: View {
     @Binding var date: Date
     @Binding var showLocationPicker: Bool
     let store: LifeListStore
@@ -1136,7 +1150,7 @@ private struct ObservationDateSheet: View {
 /// suggestion is only a starting point; the user is free to clear it, and an
 /// empty field saves the observation with no place name at all (which is what
 /// manual adds did before this step existed).
-private struct ObservationNameSheet: View {
+struct ObservationNameSheet: View {
     let coordinate: CLLocationCoordinate2D
     let store: LifeListStore
     let onCancel: () -> Void
@@ -1306,9 +1320,17 @@ private struct ImportInfoSheet: View {
 /// someone top up their eBird account every few months without duplicating
 /// their history.
 private struct ExportInfoSheet: View {
-    /// Invoked with the scope of whichever button was tapped. The caller
-    /// dismisses the sheet and raises the save panel.
+    /// Read for observation counts only — the sheet vets a scope before
+    /// starting so an empty result can be reported *here*, over the sheet,
+    /// rather than after tearing it down.
+    let store: LifeListStore
+    let progress: ExportProgress
+    /// Invoked with the scope of whichever button was tapped, once that scope
+    /// is known to produce at least one row.
     let onExport: (LifeListStore.ExportScope) -> Void
+
+    /// The scope whose export came back empty — drives the alert below.
+    @State private var emptyScope: LifeListStore.ExportScope?
 
     var body: some View {
         VStack(spacing: 24) {
@@ -1322,7 +1344,7 @@ private struct ExportInfoSheet: View {
                     .multilineTextAlignment(.center)
                 // Markdown so "eBird's import tool" renders as an inline
                 // tappable link, matching the import sheet's treatment.
-                Text(.init("You can export your sightings in eBird\u{2019}s Record format for [its import tool](https://ebird.org/import/upload.form). eBird does not check for duplicates, so it is recommended to export only new observations (i.e. observations made in Kestrel that you have never exported)."))
+                Text(.init("You can export your sightings in eBird's Record format for [its import tool](https://ebird.org/import/upload.form). eBird does not check for duplicate observations, so it is recommended to export only new observations."))
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
@@ -1339,7 +1361,7 @@ private struct ExportInfoSheet: View {
             // duplicate-risking one is deliberately the quieter button above.
             VStack(spacing: 12) {
                 Button {
-                    onExport(.everything)
+                    export(.everything)
                 } label: {
                     Text("Export All Observations")
                         .font(.title3.weight(.semibold))
@@ -1354,7 +1376,7 @@ private struct ExportInfoSheet: View {
                 .buttonStyle(NoDimButtonStyle())
 
                 Button {
-                    onExport(.newOnly)
+                    export(.newOnly)
                 } label: {
                     Text("Export New Observations")
                         .font(.title3.weight(.semibold))
@@ -1378,6 +1400,90 @@ private struct ExportInfoSheet: View {
         // copy gets truncated rather than wrapped.
         .presentationDetents([.fraction(0.62)])
         .presentationDragIndicator(.hidden)
+        // Dim + card over the sheet's own content while the CSV renders, rather
+        // than a second presentation on top of this one. Only ever on screen
+        // for a list big enough to take a moment (see `beginExport`).
+        .overlay {
+            if progress.isVisible {
+                ExportProgressCard(fraction: progress.fraction)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: progress.isVisible)
+        // Attached to the sheet, not the Life List behind it, so reporting an
+        // empty result leaves the sheet standing and the other button one tap
+        // away.
+        .alert(
+            "Nothing to Export",
+            isPresented: Binding(
+                get: { emptyScope != nil },
+                set: { if !$0 { emptyScope = nil } }
+            ),
+            presenting: emptyScope
+        ) { _ in
+            Button("OK", role: .cancel) { emptyScope = nil }
+        } message: { scope in
+            Text(emptyMessage(for: scope))
+        }
+    }
+
+    /// Vets the scope before handing off. An export that would write no rows
+    /// never reaches the save panel — a headerless empty .csv is a file eBird
+    /// rejects, and the reason it's empty is worth saying out loud.
+    private func export(_ scope: LifeListStore.ExportScope) {
+        guard store.observationCount(for: scope) > 0 else {
+            emptyScope = scope
+            return
+        }
+        onExport(scope)
+    }
+
+    private func emptyMessage(for scope: LifeListStore.ExportScope) -> String {
+        switch scope {
+        case .newOnly:
+            return "Every sighting on your life list either came from an eBird import or has already been exported. Tap \u{201C}Export All Observations\u{201D} to include them anyway."
+        case .everything:
+            return "Your life list is empty, so there is nothing to export."
+        }
+    }
+}
+
+/// Progress of an in-flight CSV render. A shared reference type rather than
+/// plain `@State` so the value can be handed to `LifeListStore` and updated
+/// from the render's detached task (this class is main-actor isolated by the
+/// project's default, which is what makes it safe to pass across).
+@Observable
+final class ExportProgress {
+    /// 0...1.
+    var fraction: Double = 0
+    /// Whether the card is on screen. Raised on a delay so a short life list —
+    /// which renders in a frame or two — never flashes one.
+    var isVisible = false
+}
+
+/// The card shown over the export sheet while its CSV renders.
+private struct ExportProgressCard: View {
+    let fraction: Double
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.18)
+                .ignoresSafeArea()
+            VStack(spacing: 14) {
+                Text("Preparing Export\u{2026}")
+                    .font(.headline)
+                ProgressView(value: fraction)
+                    .progressViewStyle(.linear)
+                    .tint(Color.accentColor)
+                Text("\(Int((fraction * 100).rounded()))%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 22)
+            .frame(maxWidth: 260)
+            .background(.regularMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+        }
     }
 }
 

@@ -77,8 +77,21 @@ nonisolated enum EBirdCSVExporter {
         ].joined(separator: "|")
     }
 
-    /// Renders `rows` as a headerless eBird Record Format CSV.
-    static func makeCSV(rows: [Row]) -> Payload {
+    /// How many rows are rendered between `onProgress` callbacks. Sized so a
+    /// large life list reports roughly 40-ish times over the whole run — often
+    /// enough that the bar moves smoothly, rarely enough that the reporting
+    /// itself doesn't dominate the work.
+    private static func progressStride(for count: Int) -> Int {
+        max(1, count / 40)
+    }
+
+    /// Renders `rows` as a headerless eBird Record Format CSV. `onProgress` is
+    /// called periodically with (rows rendered, total rows) — see
+    /// `progressStride`.
+    static func makeCSV(
+        rows: [Row],
+        onProgress: (Int, Int) -> Void = { _, _ in }
+    ) -> Payload {
         // Oldest first, so the file reads chronologically and eBird's import
         // review page walks forward through the user's birding history.
         let sorted = rows.sorted { a, b in
@@ -92,8 +105,10 @@ nonisolated enum EBirdCSVExporter {
         lines.reserveCapacity(sorted.count)
         var keys = Set<String>()
         var unnamed = 0
+        let total = sorted.count
+        let stride = progressStride(for: total)
 
-        for row in sorted {
+        for (index, row) in sorted.enumerated() {
             let observation = row.observation
             let (genus, species) = splitBinomial(row.scientificName)
             let named = observation.location?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -122,7 +137,10 @@ nonisolated enum EBirdCSVExporter {
             ]
             lines.append(fields.joined(separator: ","))
             keys.insert(key(scientificName: row.scientificName, observation: observation))
+            if (index + 1) % stride == 0 { onProgress(index + 1, total) }
         }
+        // Always land on 100%, whatever the stride left over.
+        onProgress(total, total)
 
         // Trailing newline so the last record is a complete line. eBird's parser
         // treats the first row as data — there is deliberately no header here.

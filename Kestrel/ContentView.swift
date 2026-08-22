@@ -1,4 +1,5 @@
 import Combine
+import CoreLocation
 import SwiftUI
 import UIKit
 
@@ -17,6 +18,12 @@ struct ContentView: View {
     private let ageTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
     /// A detection older than this (since last heard) drops below the header.
     private static let agingThreshold: TimeInterval = 60
+
+    /// The species partway through the add flow (pick a date, then a location).
+    /// Identical wiring to the Life List tab's — see `AddFlowPresentations`.
+    @State private var pendingAdd: PendingObservation?
+    @State private var showAddDate = false
+    @State private var showAddLocation = false
 
     /// Height of the trailing thumbnail on detection rows. Width follows at 4:3.
     private static let rowThumbnailHeight: CGFloat = 72
@@ -162,6 +169,19 @@ struct ContentView: View {
         .onReceive(ageTimer) { date in
             withAnimation(.easeInOut(duration: 0.3)) { now = date }
         }
+        // The add flow's date sheet → map picker → naming sheet, shared verbatim
+        // with the Life List tab.
+        .modifier(AddFlowPresentations(
+            showDate: $showAddDate,
+            showLocation: $showAddLocation,
+            date: Binding(
+                get: { pendingAdd?.date ?? Date() },
+                set: { pendingAdd?.date = $0 }
+            ),
+            store: lifeListStore,
+            onDismissed: { pendingAdd = nil },
+            onSave: commitPendingAdd(at:name:)
+        ))
         // Recording needs location access for the nearby-species filter; when a
         // start is refused for lack of it, offer a jump to Settings.
         .alert(
@@ -390,33 +410,16 @@ struct ContentView: View {
                             lifeListStore.remove(scientificName: detection.scientificName)
                             return
                         }
-                        let sci = detection.scientificName
-                        let com = detection.commonName
-                        // Tag the new entry with our current coordinate so
-                        // it shows up on the Map tab. Cache lookup is sync
-                        // when we already have a fix (the recording session
-                        // has been running, so `refreshSpeciesFilter`
-                        // populated it); falls back to an async fetch otherwise.
-                        let cached = (LocationCache.shared.lastLatitude,
-                                      LocationCache.shared.lastLongitude)
-                        if let lat = cached.0, let lon = cached.1 {
-                            lifeListStore.add(
-                                scientificName: sci,
-                                commonName: com,
-                                latitude: lat,
-                                longitude: lon
-                            )
-                        } else {
-                            lifeListStore.add(scientificName: sci, commonName: com)
-                            Task {
-                                guard let coord = await LocationCache.shared.current() else { return }
-                                lifeListStore.updateFirstLocation(
-                                    scientificName: sci,
-                                    latitude: coord.latitude,
-                                    longitude: coord.longitude
-                                )
-                            }
-                        }
+                        // Runs the same when → where → what's-it-called flow the
+                        // Life List tab uses. A live detection could be logged
+                        // here and now from the device's own fix, but that made
+                        // this the one add path that produced sightings with no
+                        // place name; going through the flow keeps every manual
+                        // add naming its location.
+                        beginAdd(
+                            scientificName: detection.scientificName,
+                            commonName: detection.commonName
+                        )
                     } label: {
                         Image(systemName: alreadyAdded ? "checkmark" : "plus")
                             .font(.body.weight(.semibold))
@@ -467,6 +470,49 @@ struct ContentView: View {
                         value: flashing
                     )
             }
+        )
+        // Every row, not just the ones showing a plus: a bird already on the
+        // life list still deserves today's sighting recorded. Matches the Life
+        // List tab's leading swipe, full swipe included — running the whole
+        // gesture only opens the flow, which backing out of undoes.
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                beginAdd(
+                    scientificName: detection.scientificName,
+                    commonName: detection.commonName
+                )
+            } label: {
+                Label("Add Observation", systemImage: "plus")
+            }
+            .tint(Self.recordTint)
+        }
+    }
+
+    // MARK: - Add flow
+
+    /// Opens the shared date → map → name flow for a detected species. Nothing
+    /// is written until the naming step is confirmed.
+    private func beginAdd(scientificName: String, commonName: String) {
+        pendingAdd = PendingObservation(
+            scientificName: scientificName,
+            commonName: commonName,
+            date: Date()
+        )
+        showAddDate = true
+    }
+
+    /// Writes the pending species at the chosen date, coordinate, and place
+    /// name — creating the life-list entry or filing another sighting under an
+    /// existing one, whichever applies.
+    private func commitPendingAdd(at coordinate: CLLocationCoordinate2D, name: String?) {
+        guard let pending = pendingAdd else { return }
+        lifeListStore.recordObservation(
+            scientificName: pending.scientificName,
+            commonName: pending.commonName,
+            date: pending.date,
+            location: name,
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude
         )
     }
 }

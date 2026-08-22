@@ -141,16 +141,27 @@ final class LifeListStore {
         return !exportedObservationKeys.contains(key)
     }
 
-    /// The row count a `.newOnly` export would produce.
-    var unexportedObservationCount: Int {
-        allExportRows.count(where: isNewToEBird)
+    /// How many rows an export of `scope` would produce. Drives the sheet's
+    /// "nothing to export" check before any work starts.
+    func observationCount(for scope: ExportScope) -> Int {
+        switch scope {
+        case .everything: return allExportRows.count
+        case .newOnly:    return allExportRows.count(where: isNewToEBird)
+        }
     }
 
-    /// Builds the eBird Record Format CSV for `scope`. Nothing is marked as
-    /// exported here — the caller does that via `markExported` only after the
-    /// file is actually saved, so a cancelled save panel doesn't quietly hide
-    /// those sightings from the next export.
-    func makeEBirdExport(scope: ExportScope) -> EBirdCSVExporter.Payload {
+    /// Builds the eBird Record Format CSV for `scope`, reporting completion
+    /// through `progress` as it goes. Rendering runs on a detached task: a life
+    /// list of any size is thousands of string joins, and doing that inline on
+    /// the main actor would freeze the sheet mid-tap.
+    ///
+    /// Nothing is marked as exported here — the caller does that via
+    /// `markExported` only after the file is actually saved, so a cancelled
+    /// save panel doesn't quietly hide those sightings from the next export.
+    func makeEBirdExport(
+        scope: ExportScope,
+        progress: ExportProgress? = nil
+    ) async -> EBirdCSVExporter.Payload {
         let rows: [EBirdCSVExporter.Row]
         switch scope {
         case .everything:
@@ -158,7 +169,13 @@ final class LifeListStore {
         case .newOnly:
             rows = allExportRows.filter(isNewToEBird)
         }
-        return EBirdCSVExporter.makeCSV(rows: rows)
+        return await Task.detached(priority: .userInitiated) {
+            EBirdCSVExporter.makeCSV(rows: rows) { done, total in
+                guard let progress else { return }
+                let fraction = total > 0 ? Double(done) / Double(total) : 1
+                Task { @MainActor in progress.fraction = fraction }
+            }
+        }.value
     }
 
     /// Records that these observations are now in eBird's hands, so the next
@@ -171,9 +188,13 @@ final class LifeListStore {
     }
 
     /// Adds a single species to the life list. Defaults to `now` as the
-    /// first-seen date; the Life List tab's add flow passes the date the user
-    /// picked instead. No-op if the species is already in the list. Used by the
-    /// Identify tab's "swipe to add" gesture on detected birds.
+    /// first-seen date; the add flow passes the date the user picked instead.
+    /// No-op if the species is already in the list.
+    ///
+    /// Both in-app tabs reach this through `recordObservation`. The one caller
+    /// that still uses it directly is the watch's add button, which has no way
+    /// to run the date → map → name flow from the wrist and so is the only
+    /// remaining source of sightings with no place name.
     @discardableResult
     func add(
         scientificName: String,
@@ -233,6 +254,38 @@ final class LifeListStore {
         // A promoted earlier sighting changes the entry's sort key.
         entries.sort(by: Self.ordersBefore)
         save()
+    }
+
+    /// The single write path for a manually recorded sighting: files it under
+    /// the species' existing entry, or creates the entry when this is the first
+    /// time it's been seen. Both tabs' add flows land here so the two can't
+    /// drift apart on what "add" means.
+    func recordObservation(
+        scientificName: String,
+        commonName: String,
+        date: Date,
+        location: String?,
+        latitude: Double?,
+        longitude: Double?
+    ) {
+        if contains(scientificName: scientificName) {
+            addObservation(
+                scientificName: scientificName,
+                date: date,
+                location: location,
+                latitude: latitude,
+                longitude: longitude
+            )
+        } else {
+            add(
+                scientificName: scientificName,
+                commonName: commonName,
+                firstSeen: date,
+                location: location,
+                latitude: latitude,
+                longitude: longitude
+            )
+        }
     }
 
     /// The place name of the nearest recorded observation to `coordinate`,
@@ -295,10 +348,12 @@ final class LifeListStore {
         return (entry.firstLocation, entry.firstSeen)
     }
 
-    /// Back-fills the first-seen coordinate on an existing entry. Used by
-    /// the manual-add flows when the device hadn't yet resolved a location
-    /// at the moment of the tap; the resolved fix arrives shortly after via
-    /// `LocationCache.current()` and is written here.
+    /// Back-fills the first-seen coordinate on an existing entry. Used by the
+    /// watch add path when the device hadn't yet resolved a location at the
+    /// moment of the tap; the resolved fix arrives shortly after via
+    /// `LocationCache.current()` and is written here. The in-app add flows
+    /// don't need it — their coordinate comes from the map picker, so it's
+    /// known before anything is written.
     func updateFirstLocation(scientificName: String, latitude: Double, longitude: Double) {
         guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {
             return
