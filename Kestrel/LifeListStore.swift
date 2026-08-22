@@ -117,6 +117,41 @@ final class LifeListStore {
         return true
     }
 
+    /// Records an *additional* sighting of a species already on the life list.
+    /// The new observation is folded in with the existing ones via
+    /// `LifeListEntry.make`, so an observation earlier than the current
+    /// `firstSeen` is promoted to the displayed first-seen fields and the old
+    /// one drops into `otherObservations`. Exact duplicates collapse, matching
+    /// re-import behavior. No-op if the species isn't on the list — the Life
+    /// List tab's add flow routes those through `add` instead.
+    func addObservation(
+        scientificName: String,
+        date: Date,
+        location: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil
+    ) {
+        guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {
+            return
+        }
+        let existing = entries[idx]
+        let added = LifeListEntry.Observation(
+            date: date,
+            location: location,
+            latitude: latitude,
+            longitude: longitude
+        )
+        entries[idx] = LifeListEntry.make(
+            scientificName: existing.scientificName,
+            commonName: existing.commonName,
+            isStarred: existing.isStarred,
+            observations: existing.allObservations + [added]
+        )
+        // A promoted earlier sighting changes the entry's sort key.
+        entries.sort(by: Self.ordersBefore)
+        save()
+    }
+
     /// Quick membership check by scientific name.
     func contains(scientificName: String) -> Bool {
         entries.contains(where: { $0.scientificName == scientificName })

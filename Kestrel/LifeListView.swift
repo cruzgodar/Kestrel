@@ -481,7 +481,7 @@ struct LifeListView: View {
             ),
             store: store,
             onDismissed: { pendingAdd = nil },
-            onSave: commitPendingAdd(at:)
+            onSave: commitPendingAdd(at:name:)
         ))
         .sheet(isPresented: $showImportInfo) {
             ImportInfoSheet {
@@ -611,6 +611,19 @@ struct LifeListView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
+        // Swiping the other way logs another sighting of a bird already on the
+        // list, through the same date → map → name flow the plus button uses.
+        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+            Button {
+                beginAdd(
+                    scientificName: entry.scientificName,
+                    commonName: entry.commonName
+                )
+            } label: {
+                Label("Add Again", systemImage: "plus")
+            }
+            .tint(Self.addButtonTint)
+        }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             // No `role: .destructive` — that role makes SwiftUI
             // pre-animate the row removal as soon as the button
@@ -622,6 +635,41 @@ struct LifeListView: View {
                 Label("Delete", systemImage: "trash")
             }
             .tint(.red)
+        }
+        // Haptic-touch menu: the same four things the row can do, gathered in
+        // one place for people who don't discover the swipes.
+        .contextMenu {
+            Button {
+                beginAdd(
+                    scientificName: entry.scientificName,
+                    commonName: entry.commonName
+                )
+            } label: {
+                Label("Add Again", systemImage: "plus")
+            }
+            Button {
+                store.setStarred(
+                    scientificName: entry.scientificName,
+                    isStarred: !entry.isStarred
+                )
+            } label: {
+                // Mirrors the row's own star button, which is a toggle.
+                Label(
+                    entry.isStarred ? "Unstar" : "Star",
+                    systemImage: entry.isStarred ? "star.slash" : "star"
+                )
+            }
+            Button {
+                presentPhoto(entry.scientificName)
+            } label: {
+                Label("View Image", systemImage: "photo")
+            }
+            // Routed through the same confirmation alert as the swipe.
+            Button(role: .destructive) {
+                pendingDeletion = entry
+            } label: {
+                Label("Delete", systemImage: "trash")
+            }
         }
     }
 
@@ -663,7 +711,7 @@ struct LifeListView: View {
                     .frame(width: 32, height: 32)
                     .background(Self.addButtonTint, in: Circle())
             }
-            .buttonStyle(NoDimButtonStyle())
+            .buttonStyle(GrowButtonStyle())
             .accessibilityLabel(
                 alreadyAdded
                     ? "Remove \(commonName) from Life List"
@@ -696,18 +744,33 @@ struct LifeListView: View {
         showAddDate = true
     }
 
-    /// Writes the pending species to the life list at the chosen date and
-    /// coordinate. Called from the map's Save Observation button; `pendingAdd`
-    /// is cleared when the flow's presentations come down right after.
-    private func commitPendingAdd(at coordinate: CLLocationCoordinate2D) {
+    /// Writes the pending species to the life list at the chosen date,
+    /// coordinate, and place name. Called from the naming sheet's confirm
+    /// button; `pendingAdd` is cleared when the flow's presentations come down
+    /// right after.
+    private func commitPendingAdd(at coordinate: CLLocationCoordinate2D, name: String?) {
         guard let pending = pendingAdd else { return }
-        store.add(
-            scientificName: pending.scientificName,
-            commonName: pending.commonName,
-            firstSeen: pending.date,
-            latitude: coordinate.latitude,
-            longitude: coordinate.longitude
-        )
+        // The same flow serves both entry points: a catalog suggestion's plus
+        // creates the entry, while Add Again files another sighting under a
+        // species that's already on the list.
+        if store.contains(scientificName: pending.scientificName) {
+            store.addObservation(
+                scientificName: pending.scientificName,
+                date: pending.date,
+                location: name,
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            )
+        } else {
+            store.add(
+                scientificName: pending.scientificName,
+                commonName: pending.commonName,
+                firstSeen: pending.date,
+                location: name,
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            )
+        }
     }
 
     /// Section divider between in-range and out-of-range search matches.
@@ -764,10 +827,27 @@ struct LifeListView: View {
 }
 
 /// ButtonStyle that doesn't dim or scale on press — used for the row
-/// star + add buttons so taps don't darken them.
+/// star buttons so taps don't darken them.
 struct NoDimButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
+    }
+}
+
+/// Press feedback for the purple add buttons: a brief grow + lighten, both on
+/// the same fast easeOut so they read as one motion. Deliberately identical to
+/// the Identify tab's record button (`RecordButtonStyle`), since these are the
+/// same "commit this bird" affordance at row scale.
+struct GrowButtonStyle: ButtonStyle {
+    /// How far the label grows while held. Defaults to the record button's 1.1;
+    /// wider labels want less.
+    var scale: CGFloat = 1.1
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? scale : 1.0)
+            .opacity(configuration.isPressed ? 0.85 : 1.0)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 
@@ -788,7 +868,7 @@ private struct AddFlowPresentations: ViewModifier {
     /// species thumbnails.
     let store: LifeListStore
     let onDismissed: () -> Void
-    let onSave: (CLLocationCoordinate2D) -> Void
+    let onSave: (CLLocationCoordinate2D, String?) -> Void
 
     func body(content: Content) -> some View {
         content.sheet(isPresented: $showDate, onDismiss: {
@@ -802,12 +882,12 @@ private struct AddFlowPresentations: ViewModifier {
                 showLocationPicker: $showLocation,
                 store: store,
                 onCancel: { showDate = false },
-                onSave: { coordinate in
-                    onSave(coordinate)
-                    // Dismissing the sheet takes its presented cover with it, so
-                    // the map and the sheet leave together in one animation
-                    // rather than the map dropping onto a sheet that then slides
-                    // down after it.
+                onSave: { coordinate, name in
+                    onSave(coordinate, name)
+                    // Dismissing the sheet takes its presented cover (and the
+                    // naming sheet above that) with it, so the whole stack
+                    // leaves in one animation rather than unwinding a step at
+                    // a time.
                     showDate = false
                 }
             )
@@ -824,7 +904,12 @@ private struct ObservationDateSheet: View {
     @Binding var showLocationPicker: Bool
     let store: LifeListStore
     let onCancel: () -> Void
-    let onSave: (CLLocationCoordinate2D) -> Void
+    let onSave: (CLLocationCoordinate2D, String?) -> Void
+
+    /// The pin the user dropped on the map, held while step three asks what to
+    /// call the place. Nothing is written until that sheet is confirmed.
+    @State private var pickedCoordinate: CLLocationCoordinate2D?
+    @State private var showNamePrompt = false
 
     var body: some View {
         NavigationStack {
@@ -859,9 +944,120 @@ private struct ObservationDateSheet: View {
         .fullScreenCover(isPresented: $showLocationPicker) {
             MapView(picker: MapView.LocationPicker(
                 onBack: { showLocationPicker = false },
-                onConfirm: onSave
+                onConfirm: { coordinate in
+                    pickedCoordinate = coordinate
+                    showNamePrompt = true
+                }
             ))
             .environment(store)
+            // Step three sits on top of the map the same way the map sits on
+            // top of the date sheet: dismissing it reveals the pin already
+            // dropped, so backing out of the name doesn't restart the flow.
+            .sheet(isPresented: $showNamePrompt) {
+                ObservationNameSheet(
+                    coordinate: pickedCoordinate ?? CLLocationCoordinate2D(),
+                    onCancel: { showNamePrompt = false },
+                    onSave: { name in
+                        guard let coordinate = pickedCoordinate else { return }
+                        onSave(coordinate, name)
+                    }
+                )
+            }
+        }
+    }
+}
+
+/// Step three of the add flow: what do you call this place? Opens with the
+/// keyboard already up and the field pre-filled with whatever `CLGeocoder`
+/// makes of the dropped pin — a park or landmark when the coordinate has one,
+/// otherwise the street or town. The suggestion is only a starting point; the
+/// user is free to clear it, and an empty field saves the observation with no
+/// place name at all (which is what manual adds did before this step existed).
+private struct ObservationNameSheet: View {
+    let coordinate: CLLocationCoordinate2D
+    let onCancel: () -> Void
+    let onSave: (String?) -> Void
+
+    @State private var name = ""
+    /// True while the reverse lookup is in flight, so the field can show it's
+    /// still working rather than looking like it came back empty.
+    @State private var isLookingUp = true
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                TextField("Place name", text: $name)
+                    .textFieldStyle(.plain)
+                    .font(.title3)
+                    .focused($focused)
+                    .submitLabel(.done)
+                    .onSubmit(save)
+                    .autocorrectionDisabled()
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .background(
+                        Color.primary.opacity(0.06),
+                        in: .rect(cornerRadius: 14, style: .continuous)
+                    )
+                    .overlay(alignment: .trailing) {
+                        if isLookingUp && name.isEmpty {
+                            ProgressView()
+                                .controlSize(.small)
+                                .padding(.trailing, 16)
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 24)
+            .frame(maxWidth: .infinity)
+            .navigationTitle("What do you call this place?")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(role: .cancel) { onCancel() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button(role: .confirm) { save() }
+                }
+            }
+        }
+        .presentationDetents([.medium])
+        // Hidden grab handle, matching every other sheet in this flow.
+        .presentationDragIndicator(.hidden)
+        .task {
+            focused = true
+            let suggestion = await Self.placeName(for: coordinate)
+            isLookingUp = false
+            // A slow lookup must never stomp on something the user has already
+            // typed, so the suggestion only lands in a still-empty field.
+            guard let suggestion, name.isEmpty else { return }
+            name = suggestion
+        }
+    }
+
+    private func save() {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        onSave(trimmed.isEmpty ? nil : trimmed)
+    }
+
+    /// The shortest human name for a coordinate: a named park or landmark if
+    /// the pin fell inside one, else the street, else the town. Returns `nil`
+    /// when the lookup fails or the device is offline — the field just stays
+    /// empty and the user types their own.
+    private static func placeName(for coordinate: CLLocationCoordinate2D) async -> String? {
+        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        do {
+            let placemarks = try await CLGeocoder().reverseGeocodeLocation(location)
+            guard let placemark = placemarks.first else { return nil }
+            return placemark.areasOfInterest?.first
+                ?? placemark.name
+                ?? placemark.locality
+                ?? placemark.subAdministrativeArea
+        } catch {
+            Log.error("ObservationNameSheet: reverse geocode failed — \(error)")
+            return nil
         }
     }
 }
