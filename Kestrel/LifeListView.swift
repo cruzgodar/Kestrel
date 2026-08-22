@@ -15,6 +15,22 @@ struct LifeListView: View {
     @State private var showImportInfo = false
     @State private var importMessage: String?
     @State private var showImportResult = false
+    /// Drives the explanatory export modal opened from the toolbar button. The
+    /// system save panel (`isExporting`) is launched from its bottom button,
+    /// mirroring the import flow.
+    @State private var showExportInfo = false
+    @State private var isExporting = false
+    /// The CSV built when the user tapped Export, held while the save panel is
+    /// up. Kept alongside `pendingExport` so a successful save can mark exactly
+    /// the observations in *this* file as exported.
+    @State private var exportDocument: EBirdCSVDocument?
+    @State private var pendingExport: EBirdCSVExporter.Payload?
+    @State private var exportMessage: String?
+    @State private var showExportResult = false
+    /// Title for the export result alert. The same alert reports a finished
+    /// save and a "there was nothing new to write" no-op, which want different
+    /// headings.
+    @State private var exportResultTitle = "Export Complete"
     /// The species the user just swiped to delete — drives the confirmation
     /// dialog. Cleared on Cancel; the actual remove happens on confirm.
     @State private var pendingDeletion: LifeListEntry?
@@ -414,6 +430,15 @@ struct LifeListView: View {
                 }
                 .accessibilityLabel("Import eBird CSV")
             }
+            ToolbarSpacer(.fixed, placement: .topBarTrailing)
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showExportInfo = true
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                }
+                .accessibilityLabel("Export eBird CSV")
+            }
             // Trailing spacer to nudge the whole pair in from the screen edge.
             // An `.offset` on the buttons themselves only slid the glyphs inside
             // their fixed Liquid Glass capsules (the capsules are positioned by
@@ -505,6 +530,19 @@ struct LifeListView: View {
         } message: { message in
             Text(message)
         }
+        // Bundled into one modifier for the same reason `AddFlowPresentations`
+        // is: this body's chain is already at the type-checker's budget, and
+        // three more presentations inline push it over.
+        .modifier(ExportPresentations(
+            showInfo: $showExportInfo,
+            isExporting: $isExporting,
+            document: $exportDocument,
+            showResult: $showExportResult,
+            resultTitle: $exportResultTitle,
+            message: $exportMessage,
+            onExport: beginExport(scope:),
+            onExported: handleExport(_:)
+        ))
         .alert(
             pendingDeletion.map { "Remove \($0.commonName) from your life list?" } ?? "",
             isPresented: Binding(
@@ -639,7 +677,7 @@ struct LifeListView: View {
                     commonName: entry.commonName
                 )
             } label: {
-                Label("Add Again", systemImage: "plus")
+                Label("Add Observation", systemImage: "plus")
             }
             .tint(Self.addButtonTint)
         }
@@ -672,7 +710,7 @@ struct LifeListView: View {
                 commonName: entry.commonName
             )
         } label: {
-            Label("Add Again", systemImage: "plus")
+            Label("Add Observation", systemImage: "plus")
         }
         Button {
             // The same single short tap the row's star button gives.
@@ -779,7 +817,7 @@ struct LifeListView: View {
     private func commitPendingAdd(at coordinate: CLLocationCoordinate2D, name: String?) {
         guard let pending = pendingAdd else { return }
         // The same flow serves both entry points: a catalog suggestion's plus
-        // creates the entry, while Add Again files another sighting under a
+        // creates the entry, while Add Observation files another sighting under a
         // species that's already on the list.
         if store.contains(scientificName: pending.scientificName) {
             store.addObservation(
@@ -824,6 +862,67 @@ struct LifeListView: View {
         }
         let n = store.entries.count
         return "\(n) species"
+    }
+
+    /// Builds the CSV for `scope` and raises the system save panel. An empty
+    /// result short-circuits to the result alert instead — there is nothing to
+    /// hand the file picker, and a blank .csv would only fail eBird's import.
+    private func beginExport(scope: LifeListStore.ExportScope) {
+        showExportInfo = false
+        let payload = store.makeEBirdExport(scope: scope)
+        guard payload.observationCount > 0 else {
+            exportResultTitle = "Nothing to Export"
+            exportMessage = scope == .newOnly
+                ? "Every sighting on your life list either came from an eBird import or has already been exported. Tap \u{201C}Export All Observations\u{201D} to include them anyway."
+                : "Your life list is empty, so there is nothing to export."
+            showExportResult = true
+            return
+        }
+        pendingExport = payload
+        exportDocument = EBirdCSVDocument(data: payload.csv)
+        // Same one-runloop gap the import flow uses, so the dismissing sheet and
+        // the save panel don't collide.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            isExporting = true
+        }
+    }
+
+    private func handleExport(_ result: Result<URL, Error>) {
+        defer {
+            pendingExport = nil
+            exportDocument = nil
+        }
+        switch result {
+        case .success:
+            guard let payload = pendingExport else { return }
+            exportResultTitle = "Export Complete"
+            // Only now are these sightings really in the user's hands, so only
+            // now do they count as exported.
+            store.markExported(payload.exportedKeys)
+            var parts = [
+                "Saved \(payload.observationCount) "
+                    + (payload.observationCount == 1 ? "observation" : "observations")
+                    + " of \(payload.speciesCount) "
+                    + (payload.speciesCount == 1 ? "species" : "species")
+                    + "."
+            ]
+            if payload.unnamedLocationCount > 0 {
+                parts.append(
+                    "\(payload.unnamedLocationCount) had no place name and will need a location picked during eBird\u{2019}s import cleanup."
+                )
+            }
+            if payload.exceedsEBirdSizeLimit {
+                parts.append(
+                    "Heads up: the file is over eBird\u{2019}s 1 MB import limit, so you\u{2019}ll need to split it before uploading."
+                )
+            }
+            exportMessage = parts.joined(separator: " ")
+            showExportResult = true
+        case .failure(let error):
+            exportResultTitle = "Export Failed"
+            exportMessage = error.localizedDescription
+            showExportResult = true
+        }
     }
 
     private func handleImport(_ result: Result<[URL], Error>) async {
@@ -887,6 +986,40 @@ struct GrowButtonStyle: ButtonStyle {
 /// sheet dismissal, and Back reveals the date sheet already sitting there rather
 /// than re-animating it in. `onDismissed` therefore fires once, when the whole
 /// flow ends, whichever way it ended.
+/// The export flow's three presentations — the explanatory sheet, the system
+/// save panel, and the result alert — lifted out of `LifeListView.body` to keep
+/// its modifier chain inside the type-checker's budget.
+private struct ExportPresentations: ViewModifier {
+    @Binding var showInfo: Bool
+    @Binding var isExporting: Bool
+    @Binding var document: EBirdCSVDocument?
+    @Binding var showResult: Bool
+    @Binding var resultTitle: String
+    @Binding var message: String?
+    let onExport: (LifeListStore.ExportScope) -> Void
+    let onExported: (Result<URL, Error>) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $showInfo) {
+                ExportInfoSheet(onExport: onExport)
+            }
+            .fileExporter(
+                isPresented: $isExporting,
+                document: document,
+                contentType: .commaSeparatedText,
+                defaultFilename: EBirdCSVExporter.defaultFilename()
+            ) { result in
+                onExported(result)
+            }
+            .alert(resultTitle, isPresented: $showResult, presenting: message) { _ in
+                Button("OK", role: .cancel) { }
+            } message: { message in
+                Text(message)
+            }
+    }
+}
+
 private struct AddFlowPresentations: ViewModifier {
     @Binding var showDate: Bool
     @Binding var showLocation: Bool
@@ -1125,7 +1258,7 @@ private struct ImportInfoSheet: View {
                     .multilineTextAlignment(.center)
                 // Markdown so "download your eBird data" renders as an inline
                 // tappable link to eBird's data-download page.
-                Text(.init("If you track the birds you've seen with eBird or Merlin, you can import them to Kestrel. First [download your eBird data](https://ebird.org/downloadMyData), then import the CSV file here."))
+                Text(.init("If you track the birds you\u{2019}ve seen with eBird or Merlin, you can import them to Kestrel. First [download your eBird data](https://ebird.org/downloadMyData), then import the CSV file here."))
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
@@ -1160,6 +1293,116 @@ private struct ImportInfoSheet: View {
         .presentationDetents([.medium])
         // Hidden grab handle to match the map's settings card (MapCardSheet).
         .presentationDragIndicator(.hidden)
+    }
+}
+
+/// Explanatory modal shown before exporting, the mirror of `ImportInfoSheet`.
+///
+/// It carries a warning the import side doesn't need: eBird's import tool does
+/// no deduplication whatsoever, so re-uploading records it already has creates a
+/// second copy of every one of them. Kestrel keeps a ledger of what it has
+/// already handed over (`LifeListStore.exportedObservationKeys`), which is what
+/// makes the "new observations only" choice below possible — and what lets
+/// someone top up their eBird account every few months without duplicating
+/// their history.
+private struct ExportInfoSheet: View {
+    /// Invoked with the scope of whichever button was tapped. The caller
+    /// dismisses the sheet and raises the save panel.
+    let onExport: (LifeListStore.ExportScope) -> Void
+
+    var body: some View {
+        VStack(spacing: 24) {
+            VStack(spacing: 16) {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 44, weight: .regular))
+                    .foregroundStyle(Color.accentColor)
+                    .padding(.top, 8)
+                Text("Export Your Life List")
+                    .font(.title2.weight(.bold))
+                    .multilineTextAlignment(.center)
+                // Markdown so "eBird's import tool" renders as an inline
+                // tappable link, matching the import sheet's treatment.
+                Text(.init("You can export your sightings in eBird\u{2019}s Record format for [its import tool](https://ebird.org/import/upload.form). eBird does not check for duplicates, so it is recommended to export only new observations (i.e. observations made in Kestrel that you have never exported)."))
+                    .font(.body)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                    .tint(.accentColor)
+            }
+            .padding(.horizontal, 28)
+
+            Spacer(minLength: 0)
+
+            // Two destinations rather than a picker plus one button, so each
+            // tap is a single decision. The recommended option takes the
+            // accent-colored bottom slot — the one the thumb lands on and the
+            // one the import sheet trained the eye to look for — and the
+            // duplicate-risking one is deliberately the quieter button above.
+            VStack(spacing: 12) {
+                Button {
+                    onExport(.everything)
+                } label: {
+                    Text("Export All Observations")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .frame(height: 26)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background {
+                            Capsule(style: .continuous).fill(Color.primary.opacity(0.08))
+                        }
+                }
+                .buttonStyle(NoDimButtonStyle())
+
+                Button {
+                    onExport(.newOnly)
+                } label: {
+                    Text("Export New Observations")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .frame(height: 26)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 16)
+                        .background { Capsule(style: .continuous).fill(Color.accentColor) }
+                }
+                .buttonStyle(NoDimButtonStyle())
+            }
+            .padding(.horizontal, 28)
+            .padding(.bottom, 12)
+        }
+        .padding(.top, 32)
+        // Full sheet width at the outermost level, for the same reason the
+        // import sheet pins it — see the comment there.
+        .frame(maxWidth: .infinity)
+        // Taller than the import sheet's `.medium`: this one carries a second
+        // button and a longer explanation, and at `.medium` the last line of
+        // copy gets truncated rather than wrapped.
+        .presentationDetents([.fraction(0.62)])
+        .presentationDragIndicator(.hidden)
+    }
+}
+
+/// Minimal `FileDocument` wrapper so `.fileExporter` can hand the already-built
+/// CSV bytes to the system save panel. Write-only in practice — the read
+/// initializer exists solely to satisfy the protocol; importing goes through
+/// `EBirdCSVParser` instead.
+nonisolated struct EBirdCSVDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.commaSeparatedText] }
+
+    var data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let contents = configuration.file.regularFileContents else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        data = contents
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }
 

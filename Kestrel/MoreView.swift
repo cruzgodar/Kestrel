@@ -52,7 +52,7 @@ struct MoreView: View {
             } header: {
                 Text("Timeout After No Detections")
             } footer: {
-                Text("After Kestrel doesn't hear any birds for some time, it can send a notification asking whether to end the session to save battery life.")
+                Text("After Kestrel doesn\u{2019}t hear any birds for some time, it can send a notification asking whether to end the session to save battery life.")
             }
 
             // A single soft haptic for the everyday birds that otherwise buzz
@@ -308,23 +308,23 @@ struct MoreView: View {
     }
 
     private static let intro = markdown(
-        "Kestrel listens for birds in the background so you can focus on the nature around you. It uses Cornell Lab's BirdNET model to identify birds by their songs and calls, and when it hears one that you have starred in your life list or have never seen before, it notifies you. That lets you keep your focus off of your phone, with confidence that you'll know when a bird you care about is nearby. All processing happens on-device, all audio is deleted immediately (i.e. within a few seconds of being recorded), and [the source code is freely available.](https://github.com/cruzgodar/Kestrel)"
+        "Kestrel listens for birds in the background so you can focus on the nature around you. It uses Cornell Lab\u{2019}s BirdNET model to identify birds by their songs and calls, and when it hears one that you have starred in your life list or have never seen before, it notifies you. That lets you keep your focus off of your phone, with confidence that you\u{2019}ll know when a bird you care about is nearby. All processing happens on-device, all audio is deleted immediately (i.e. within a few seconds of being recorded), and [the source code is freely available.](https://github.com/cruzgodar/Kestrel)"
     )
 
     private static let watch = markdown(
-        "On Apple Watch, Kestrel can log your birding walk as a workout. That uses the watch's microphone, and so your phone can stay in your pocket. Since audio is processed on your phone, you must keep it with you to use Kestrel."
+        "On Apple Watch, Kestrel can log your birding walk as a workout. That uses the watch\u{2019}s microphone, and so your phone can stay in your pocket. Since audio is processed on your phone, you must keep it with you to use Kestrel."
     )
     
     private static let images = markdown(
-        "Kestrel uses freely-available (creative commons) images. Currently, the 1000 most common species have images, but more are coming soon!"
+        "Kestrel uses freely-available (creative commons) images. Currently, over 1000 species have images, and more are coming soon!"
     )
 
     private static let importing = markdown(
-        "If you use eBird or Merlin to track your observations, it's a good idea to periodically import your eBird life list into Kestrel to keep its life list and map up-to-date."
+        "If you use eBird or Merlin to track your observations, it\u{2019}s a good idea to periodically import your eBird life list into Kestrel to keep its life list and map up-to-date. You can also export your observations back into eBird."
     )
 
     private static let aboutMe =
-        "I'm a web developer and college math teacher, and most of my work focuses on mathematical art and illustration, as well as thoughtful and high-quality teaching. I've found myself hopelessly into birding on the side, though, and Kestrel is my idea of an ideal companion app that can be used independently or in conjunction with eBird and Merlin. You can see more of my work at [cruzgodar.com](https://cruzgodar.com) or reach me at [me@cruzgodar.com](mailto:me@cruzgodar.com) with bug reports or feature suggestions. Thank you for using Kestrel! –Cruz"
+        "I\u{2019}m a web developer and college math teacher, and most of my work focuses on mathematical art and illustration, as well as thoughtful and high-quality teaching. I\u{2019}ve found myself hopelessly into birding on the side, though, and Kestrel is my idea of an ideal companion app that can be used independently or in conjunction with eBird and Merlin. You can see more of my work at [cruzgodar.com](https://cruzgodar.com) or reach me at [me@cruzgodar.com](mailto:me@cruzgodar.com) with bug reports or feature suggestions. Thank you for using Kestrel! –Cruz"
 }
 
 #Preview {

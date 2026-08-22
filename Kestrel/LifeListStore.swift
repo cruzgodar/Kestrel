@@ -32,6 +32,29 @@ final class LifeListStore {
     /// with this set for the UI; this set is the source of truth.
     private(set) var starredNames: Set<String> = []
 
+    /// Identity keys (see `EBirdCSVExporter.key`) of every observation that has
+    /// already been written into an eBird export file. Persisted separately
+    /// from the life list, like `starredNames`, so it survives a
+    /// wipe-and-reimport — re-importing a CSV you already sent to eBird must not
+    /// make those sightings look new again.
+    ///
+    /// This set exists because eBird's import tool does **no** deduplication:
+    /// uploading the same records twice creates a second set of checklists.
+    /// Remembering what has been handed over is the only way to let someone
+    /// export repeatedly without duplicating their history.
+    private(set) var exportedObservationKeys: Set<String> = []
+
+    /// Which observations an export should cover.
+    nonisolated enum ExportScope {
+        /// Only sightings eBird can't already have: recorded in Kestrel rather
+        /// than imported from an eBird CSV, and not covered by a previous
+        /// export. The safe choice for a repeat upload.
+        case newOnly
+        /// Every sighting on the life list, whatever its provenance and
+        /// whether or not it has been exported before.
+        case everything
+    }
+
     init() {
         if let saved = Self.loadStars() {
             starredNames = saved
@@ -47,6 +70,7 @@ final class LifeListStore {
             starredNames = Set(entries.lazy.filter(\.isStarred).map(\.scientificName))
             saveStars()
         }
+        exportedObservationKeys = Self.loadExportedKeys()
     }
 
     /// Reads the CSV at `url`, parses it as an eBird export, and merges into the life list.
@@ -86,6 +110,64 @@ final class LifeListStore {
         )
 
         return result.summary
+    }
+
+    // MARK: eBird export
+
+    /// Every sighting on the life list, flattened into one row per observation
+    /// and paired with its species. The unit of an eBird record is a single
+    /// observation, not a species, so repeat sightings each get their own row.
+    private var allExportRows: [EBirdCSVExporter.Row] {
+        entries.flatMap { entry in
+            entry.allObservations.map {
+                EBirdCSVExporter.Row(
+                    scientificName: entry.scientificName,
+                    commonName: entry.commonName,
+                    observation: $0
+                )
+            }
+        }
+    }
+
+    /// Whether a sighting belongs in a `.newOnly` export. Two ways eBird can
+    /// already have it: it came *from* eBird on an import, or a previous export
+    /// handed it over.
+    private func isNewToEBird(_ row: EBirdCSVExporter.Row) -> Bool {
+        guard !row.observation.isImported else { return false }
+        let key = EBirdCSVExporter.key(
+            scientificName: row.scientificName,
+            observation: row.observation
+        )
+        return !exportedObservationKeys.contains(key)
+    }
+
+    /// The row count a `.newOnly` export would produce.
+    var unexportedObservationCount: Int {
+        allExportRows.count(where: isNewToEBird)
+    }
+
+    /// Builds the eBird Record Format CSV for `scope`. Nothing is marked as
+    /// exported here — the caller does that via `markExported` only after the
+    /// file is actually saved, so a cancelled save panel doesn't quietly hide
+    /// those sightings from the next export.
+    func makeEBirdExport(scope: ExportScope) -> EBirdCSVExporter.Payload {
+        let rows: [EBirdCSVExporter.Row]
+        switch scope {
+        case .everything:
+            rows = allExportRows
+        case .newOnly:
+            rows = allExportRows.filter(isNewToEBird)
+        }
+        return EBirdCSVExporter.makeCSV(rows: rows)
+    }
+
+    /// Records that these observations are now in eBird's hands, so the next
+    /// `.newOnly` export skips them. Call only on a successful save.
+    func markExported(_ keys: Set<String>) {
+        let before = exportedObservationKeys.count
+        exportedObservationKeys.formUnion(keys)
+        guard exportedObservationKeys.count != before else { return }
+        saveExportedKeys()
     }
 
     /// Adds a single species to the life list. Defaults to `now` as the
@@ -317,7 +399,9 @@ final class LifeListStore {
                     date: row.date,
                     location: row.location,
                     latitude: row.latitude,
-                    longitude: row.longitude
+                    longitude: row.longitude,
+                    // Came from eBird, so the eBird export must not send it back.
+                    isImported: true
                 )
             )
             if let existing = commonBySci[sci] {
@@ -394,6 +478,32 @@ final class LifeListStore {
         return dir.appendingPathComponent("starred_species.json")
     }
 
+    /// Separate file for the eBird export ledger, decoupled from the life list
+    /// for the same reason the stars are: it has to outlive a wipe-and-reimport.
+    private static func exportedKeysURL() throws -> URL {
+        let dir = try FileManager.default.url(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        )
+        return dir.appendingPathComponent("exported_observations.json")
+    }
+
+    /// Loads the export ledger. An absent file simply means nothing has been
+    /// exported yet, so an empty set is the right answer.
+    private static func loadExportedKeys() -> Set<String> {
+        do {
+            let url = try exportedKeysURL()
+            guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode(Set<String>.self, from: data)
+        } catch {
+            Log.error("LifeListStore: export ledger load failed — \(error)")
+            return []
+        }
+    }
+
     /// Loads the persisted star set. Returns `nil` (not empty) when the file
     /// has never been written, so `init` can tell "no stars" apart from
     /// "pre-feature install, migrate from the entries."
@@ -416,6 +526,23 @@ final class LifeListStore {
     /// viewer's star button stalling on tap). A serial queue keeps writes ordered
     /// so a later save can't land before an earlier one.
     private static let ioQueue = DispatchQueue(label: "com.kestrel.lifelist.io", qos: .utility)
+
+    /// Mirrors `saveStars`: snapshot on the main actor, encode + write on the
+    /// serial IO queue so a large ledger never hitches the UI.
+    private func saveExportedKeys() {
+        let snapshot = exportedObservationKeys.sorted()
+        Self.ioQueue.async {
+            do {
+                let url = try Self.exportedKeysURL()
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                let data = try encoder.encode(snapshot)
+                try data.write(to: url, options: .atomic)
+            } catch {
+                Log.error("LifeListStore: export ledger save failed — \(error)")
+            }
+        }
+    }
 
     private func saveStars() {
         // Snapshot on the main actor (cheap value copy), then encode + write off it.

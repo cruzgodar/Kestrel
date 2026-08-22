@@ -11,6 +11,11 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
     /// the Life List view; consumed by the Map tab.
     var firstLatitude: Double?
     var firstLongitude: Double?
+    /// Provenance of the displayed first sighting — see
+    /// `Observation.isImported`. Stored out here for the same reason
+    /// `firstLocation` is: the earliest observation's fields live on the entry
+    /// rather than in `otherObservations`.
+    var firstIsImported: Bool = false
     /// User-toggled "alert me" flag. Starred species fire notifications when
     /// heard, get blue row + spectrogram highlighting in the Identify tab,
     /// and skip the full-width image treatment reserved for unseen species.
@@ -33,6 +38,60 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         var location: String?
         var latitude: Double?
         var longitude: Double?
+        /// True when this sighting arrived on an eBird CSV import rather than
+        /// being recorded in Kestrel. The eBird export skips these: they came
+        /// *from* eBird, so handing them back would duplicate records the
+        /// account already has.
+        var isImported: Bool = false
+
+        /// Everything that makes two records the *same* sighting. Deliberately
+        /// excludes `isImported`, which is provenance rather than identity — a
+        /// bird added by hand and later restated by an import is one
+        /// observation, not two.
+        nonisolated struct Identity: Hashable {
+            let date: Date
+            let location: String?
+            let latitude: Double?
+            let longitude: Double?
+        }
+
+        var identity: Identity {
+            Identity(date: date, location: location, latitude: latitude, longitude: longitude)
+        }
+
+        init(
+            date: Date,
+            location: String? = nil,
+            latitude: Double? = nil,
+            longitude: Double? = nil,
+            isImported: Bool = false
+        ) {
+            self.date = date
+            self.location = location
+            self.latitude = latitude
+            self.longitude = longitude
+            self.isImported = isImported
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case date, location, latitude, longitude, isImported
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            date      = try c.decode(Date.self, forKey: .date)
+            location  = try c.decodeIfPresent(String.self, forKey: .location)
+            latitude  = try c.decodeIfPresent(Double.self, forKey: .latitude)
+            longitude = try c.decodeIfPresent(Double.self, forKey: .longitude)
+            // Sightings persisted before provenance was tracked default to
+            // *imported*. Nearly all of them are — seeding the list from an
+            // eBird export is the intended onboarding — and the two failure
+            // modes aren't symmetric: wrongly calling one Kestrel-native
+            // duplicates a record in eBird, which is the whole thing this flag
+            // exists to prevent, while wrongly calling one imported just means
+            // reaching for "Export All Observations" once.
+            isImported = try c.decodeIfPresent(Bool.self, forKey: .isImported) ?? true
+        }
     }
 
     /// Every sighting of this species, earliest included: the displayed
@@ -44,7 +103,8 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
             date: firstSeen,
             location: firstLocation,
             latitude: firstLatitude,
-            longitude: firstLongitude
+            longitude: firstLongitude,
+            isImported: firstIsImported
         )] + otherObservations
     }
 
@@ -61,8 +121,24 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         isStarred: Bool,
         observations: [Observation]
     ) -> LifeListEntry {
-        var seen = Set<Observation>()
-        let deduped = observations.filter { seen.insert($0).inserted }
+        // Collapse by identity rather than by whole-value equality so the same
+        // sighting recorded twice with different provenance still merges. The
+        // flags OR together: if any copy came from an import, eBird has it.
+        var byIdentity: [Observation.Identity: Observation] = [:]
+        var order: [Observation.Identity] = []
+        for observation in observations {
+            let identity = observation.identity
+            guard var existing = byIdentity[identity] else {
+                byIdentity[identity] = observation
+                order.append(identity)
+                continue
+            }
+            if observation.isImported && !existing.isImported {
+                existing.isImported = true
+                byIdentity[identity] = existing
+            }
+        }
+        let deduped = order.compactMap { byIdentity[$0] }
         let sorted = deduped.sorted { a, b in
             if a.date != b.date { return a.date < b.date }
             func completeness(_ o: Observation) -> Int {
@@ -78,6 +154,7 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
             firstLocation: first?.location,
             firstLatitude: first?.latitude,
             firstLongitude: first?.longitude,
+            firstIsImported: first?.isImported ?? false,
             isStarred: isStarred,
             otherObservations: Array(sorted.dropFirst())
         )
@@ -88,6 +165,7 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
     enum CodingKeys: String, CodingKey {
         case scientificName, commonName, firstSeen
         case firstLocation, firstLatitude, firstLongitude
+        case firstIsImported
         case isStarred
         case otherObservations
     }
@@ -99,6 +177,7 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         firstLocation: String? = nil,
         firstLatitude: Double? = nil,
         firstLongitude: Double? = nil,
+        firstIsImported: Bool = false,
         isStarred: Bool = false,
         otherObservations: [Observation] = []
     ) {
@@ -108,6 +187,7 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         self.firstLocation = firstLocation
         self.firstLatitude = firstLatitude
         self.firstLongitude = firstLongitude
+        self.firstIsImported = firstIsImported
         self.isStarred = isStarred
         self.otherObservations = otherObservations
     }
@@ -120,6 +200,9 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         self.firstLocation  = try c.decodeIfPresent(String.self, forKey: .firstLocation)
         self.firstLatitude  = try c.decodeIfPresent(Double.self, forKey: .firstLatitude)
         self.firstLongitude = try c.decodeIfPresent(Double.self, forKey: .firstLongitude)
+        // Legacy rows default to imported — same reasoning as
+        // `Observation.init(from:)`.
+        self.firstIsImported = try c.decodeIfPresent(Bool.self, forKey: .firstIsImported) ?? true
         self.isStarred      = try c.decodeIfPresent(Bool.self,   forKey: .isStarred) ?? false
         self.otherObservations = try c.decodeIfPresent([Observation].self, forKey: .otherObservations) ?? []
     }
