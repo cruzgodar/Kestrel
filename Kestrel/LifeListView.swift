@@ -551,6 +551,12 @@ struct LifeListView: View {
     @ViewBuilder
     private func existingRow(entry: LifeListEntry) -> some View {
         HStack(spacing: 12) {
+            // The name and its caption are a menu button: a tap drops the same
+            // actions the row's haptic-touch menu offers. Only this region —
+            // the star and the thumbnail keep their own single-tap actions.
+            Menu {
+                rowMenu(entry: entry)
+            } label: {
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.commonName)
                     .font(.headline)
@@ -572,7 +578,16 @@ struct LifeListView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
-            Spacer()
+            // Stretch the tap target to the full row height (set by the
+            // trailing thumbnail) so taps beside the text still register.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            }
+            // Plain, so the menu label renders as row text rather than picking
+            // up the accent color and the button press dimming.
+            .buttonStyle(.plain)
+            .foregroundStyle(.primary)
+            .accessibilityLabel("Actions for \(entry.commonName)")
             Button {
                 // A single short tap to confirm the star toggled.
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -613,7 +628,11 @@ struct LifeListView: View {
         .listRowSeparator(.hidden)
         // Swiping the other way logs another sighting of a bird already on the
         // list, through the same date → map → name flow the plus button uses.
-        .swipeActions(edge: .leading, allowsFullSwipe: false) {
+        // Full swipe is on here (and deliberately off for delete): running the
+        // whole gesture just opens the add flow, which is undoable by backing
+        // out, whereas a full-swipe delete would be a destructive action taken
+        // without ever touching the button.
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
                 beginAdd(
                     scientificName: entry.scientificName,
@@ -636,40 +655,49 @@ struct LifeListView: View {
             }
             .tint(.red)
         }
-        // Haptic-touch menu: the same four things the row can do, gathered in
-        // one place for people who don't discover the swipes.
+        // Haptic touch anywhere on the row raises the same menu the name taps
+        // open, so the gesture works over the thumbnail and star too.
         .contextMenu {
-            Button {
-                beginAdd(
-                    scientificName: entry.scientificName,
-                    commonName: entry.commonName
-                )
-            } label: {
-                Label("Add Again", systemImage: "plus")
-            }
-            Button {
-                store.setStarred(
-                    scientificName: entry.scientificName,
-                    isStarred: !entry.isStarred
-                )
-            } label: {
-                // Mirrors the row's own star button, which is a toggle.
-                Label(
-                    entry.isStarred ? "Unstar" : "Star",
-                    systemImage: entry.isStarred ? "star.slash" : "star"
-                )
-            }
-            Button {
-                presentPhoto(entry.scientificName)
-            } label: {
-                Label("View Image", systemImage: "photo")
-            }
-            // Routed through the same confirmation alert as the swipe.
-            Button(role: .destructive) {
-                pendingDeletion = entry
-            } label: {
-                Label("Delete", systemImage: "trash")
-            }
+            rowMenu(entry: entry)
+        }
+    }
+
+    /// The four things a life-list row can do. Shared verbatim by the name's
+    /// tap menu and the row's haptic-touch menu so the two can never drift.
+    @ViewBuilder
+    private func rowMenu(entry: LifeListEntry) -> some View {
+        Button {
+            beginAdd(
+                scientificName: entry.scientificName,
+                commonName: entry.commonName
+            )
+        } label: {
+            Label("Add Again", systemImage: "plus")
+        }
+        Button {
+            // The same single short tap the row's star button gives.
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            store.setStarred(
+                scientificName: entry.scientificName,
+                isStarred: !entry.isStarred
+            )
+        } label: {
+            // Mirrors the row's own star button, which is a toggle.
+            Label(
+                entry.isStarred ? "Unstar" : "Star",
+                systemImage: entry.isStarred ? "star.slash" : "star"
+            )
+        }
+        Button {
+            presentPhoto(entry.scientificName)
+        } label: {
+            Label("View Image", systemImage: "photo")
+        }
+        // Routed through the same confirmation alert as the swipe.
+        Button(role: .destructive) {
+            pendingDeletion = entry
+        } label: {
+            Label("Delete", systemImage: "trash")
         }
     }
 
@@ -956,6 +984,9 @@ private struct ObservationDateSheet: View {
             .sheet(isPresented: $showNamePrompt) {
                 ObservationNameSheet(
                     coordinate: pickedCoordinate ?? CLLocationCoordinate2D(),
+                    // Threaded down for the same reason the map gets it:
+                    // `@Observable` environment objects don't cross a sheet.
+                    store: store,
                     onCancel: { showNamePrompt = false },
                     onSave: { name in
                         guard let coordinate = pickedCoordinate else { return }
@@ -968,13 +999,13 @@ private struct ObservationDateSheet: View {
 }
 
 /// Step three of the add flow: what do you call this place? Opens with the
-/// keyboard already up and the field pre-filled with whatever `CLGeocoder`
-/// makes of the dropped pin — a park or landmark when the coordinate has one,
-/// otherwise the street or town. The suggestion is only a starting point; the
-/// user is free to clear it, and an empty field saves the observation with no
-/// place name at all (which is what manual adds did before this step existed).
+/// keyboard already up and the field pre-filled — see `defaultName`. The
+/// suggestion is only a starting point; the user is free to clear it, and an
+/// empty field saves the observation with no place name at all (which is what
+/// manual adds did before this step existed).
 private struct ObservationNameSheet: View {
     let coordinate: CLLocationCoordinate2D
+    let store: LifeListStore
     let onCancel: () -> Void
     let onSave: (String?) -> Void
 
@@ -1012,7 +1043,7 @@ private struct ObservationNameSheet: View {
             }
             .padding(.top, 24)
             .frame(maxWidth: .infinity)
-            .navigationTitle("What do you call this place?")
+            .navigationTitle("Choose a short place name")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -1028,7 +1059,7 @@ private struct ObservationNameSheet: View {
         .presentationDragIndicator(.hidden)
         .task {
             focused = true
-            let suggestion = await Self.placeName(for: coordinate)
+            let suggestion = await defaultName()
             isLookingUp = false
             // A slow lookup must never stomp on something the user has already
             // typed, so the suggestion only lands in a still-empty field.
@@ -1038,24 +1069,35 @@ private struct ObservationNameSheet: View {
     }
 
     private func save() {
+        // Two-pulse confirmation, moved here from the map's Save Observation
+        // button: this is the tap that actually writes the sighting.
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         onSave(trimmed.isEmpty ? nil : trimmed)
     }
 
-    /// The shortest human name for a coordinate: a named park or landmark if
-    /// the pin fell inside one, else the street, else the town. Returns `nil`
-    /// when the lookup fails or the device is offline — the field just stays
-    /// empty and the user types their own.
-    private static func placeName(for coordinate: CLLocationCoordinate2D) async -> String? {
+    /// A mile. Close enough that two pins are almost certainly the same
+    /// birding spot under the name the user already gave it.
+    private static let reuseRadius: CLLocationDistance = 1609.344
+
+    /// What the field starts out holding. A place the user has already named
+    /// within a mile wins outright — their own wording for a patch beats
+    /// anything a geocoder produces, and it keeps repeat visits to one spot
+    /// filed under one name. Failing that, the pin is somewhere new, so the
+    /// default is just the town: broad enough to be true wherever in it the
+    /// pin landed, and short enough to type over.
+    private func defaultName() async -> String? {
+        if let nearby = store.nearestObservationName(to: coordinate, within: Self.reuseRadius) {
+            return nearby
+        }
         let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
         do {
             let placemarks = try await CLGeocoder().reverseGeocodeLocation(location)
             guard let placemark = placemarks.first else { return nil }
-            return placemark.areasOfInterest?.first
-                ?? placemark.name
-                ?? placemark.locality
-                ?? placemark.subAdministrativeArea
+            return placemark.locality ?? placemark.subAdministrativeArea
         } catch {
+            // Offline or rate-limited: leave the field empty and let the user
+            // type their own rather than guessing.
             Log.error("ObservationNameSheet: reverse geocode failed — \(error)")
             return nil
         }

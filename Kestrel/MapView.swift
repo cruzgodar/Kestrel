@@ -563,9 +563,10 @@ struct MapView: View {
                     // reads the same everywhere in the app.
                     Button {
                         guard let pickedCoordinate else { return }
-                        // Two-pulse confirmation — the same haptic the app uses
-                        // when a starred bird lands.
-                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                        // No haptic here — the map is the middle step of the add
+                        // flow, and the confirmation pulse belongs on the step
+                        // that actually writes the observation (the naming
+                        // sheet), not on one that just moves the flow along.
                         picker.onConfirm(pickedCoordinate)
                     } label: {
                         Text("Save Observation")

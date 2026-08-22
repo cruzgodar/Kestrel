@@ -1,3 +1,4 @@
+import CoreLocation
 import Foundation
 import Observation
 
@@ -150,6 +151,36 @@ final class LifeListStore {
         // A promoted earlier sighting changes the entry's sort key.
         entries.sort(by: Self.ordersBefore)
         save()
+    }
+
+    /// The place name of the nearest recorded observation to `coordinate`,
+    /// within `meters`. Drives the naming step's default: a spot you've already
+    /// named is almost certainly the same spot you're pinning again, and
+    /// reusing your own wording beats a reverse-geocoded street address.
+    /// Scans every observation of every species — the life list is at most a
+    /// few thousand entries, so this stays well under a frame.
+    func nearestObservationName(
+        to coordinate: CLLocationCoordinate2D,
+        within meters: CLLocationDistance
+    ) -> String? {
+        let target = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        var best: (distance: CLLocationDistance, name: String)?
+        for entry in entries {
+            for observation in entry.allObservations {
+                guard let latitude = observation.latitude,
+                      let longitude = observation.longitude,
+                      let name = observation.location,
+                      !name.isEmpty else { continue }
+                let distance = target.distance(
+                    from: CLLocation(latitude: latitude, longitude: longitude)
+                )
+                guard distance <= meters else { continue }
+                if best == nil || distance < best!.distance {
+                    best = (distance, name)
+                }
+            }
+        }
+        return best?.name
     }
 
     /// Quick membership check by scientific name.
