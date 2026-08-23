@@ -109,7 +109,18 @@ struct LifeListView: View {
             return Self.scoreMatch(hay, needle: needle, allowFuzzy: needle.count >= 3) != nil
         }
 
-        let rows = lifeMatches.map { SearchRow.existing($0) } + asyncSuggestions
+        // Drop any suggestion the life list has since caught up with. The
+        // background scan already excludes life-list species, but it runs behind
+        // a debounce — without this filter a bird added mid-search renders twice
+        // (as its new life-list row *and* as the stale suggestion) until the
+        // rescan lands. Filtering here makes the swap happen on the same frame
+        // the observation is written.
+        let onList = Set(store.entries.map(\.scientificName))
+        let fresh = asyncSuggestions.filter { row in
+            guard case .suggestion(let sci, _) = row else { return true }
+            return !onList.contains(sci)
+        }
+        let rows = lifeMatches.map { SearchRow.existing($0) } + fresh
         return Self.partitionByRange(rows, allowed: allowedIndices)
     }
 
@@ -448,10 +459,11 @@ struct LifeListView: View {
         // the range filter has loaded, so suggestions re-rank for proximity
         // once the cached set arrives mid-search.
         //
-        // The life-list size is in the id too: `computeSuggestions` excludes
-        // birds already on the list, so adding one mid-search has to drop its
-        // suggestion row — otherwise the bird renders twice, once as the stale
-        // suggestion and once as the new life-list match.
+        // The life-list size is in the id too, so the scan re-runs after an add
+        // and tops the list back up to a full twenty suggestions. It is *not*
+        // what stops the added bird from rendering twice — that's handled on the
+        // same frame by the filter in `visibleRows`, since this scan only lands
+        // after the debounce.
         .task(id: "\(searchText)|\(allowedIndices != nil)|\(store.entries.count)") {
             let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !q.isEmpty else {
@@ -537,7 +549,7 @@ struct LifeListView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Are you sure you want to permanently remove all \(store.entries.count) observations from your life list? This cannot be undone. Your stars will be preserved if you re-add the species later.")
+            Text("Are you sure you want to permanently remove all \(store.totalObservationCount) observations of \(store.entries.count) species from your life list? This cannot be undone. Your stars will be preserved if you re-add the species later.")
         }
         }
     }
@@ -700,9 +712,6 @@ struct LifeListView: View {
     /// so the tap is "I've seen this" rather than "alert me on this."
     @ViewBuilder
     private func suggestionRow(scientificName: String, commonName: String) -> some View {
-        // Once added this session the row keeps its place but swaps the plus for
-        // a checkmark, mirroring the Identify tab's add affordance.
-        let alreadyAdded = store.contains(scientificName: scientificName)
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(commonName)
@@ -713,22 +722,17 @@ struct LifeListView: View {
                     .italic()
             }
             Spacer()
-            AddGlyphButton(isAdded: alreadyAdded) {
-                // Tapping the checkmark undoes the add; the symbol-replace
-                // transition reverse-animates back to a plus.
-                if alreadyAdded {
-                    store.removeLatestObservation(scientificName: scientificName)
-                    return
-                }
+            // Always a plus, never a checkmark: a suggestion row is by
+            // definition a bird that isn't on the list yet, and confirming the
+            // add flow puts it there — at which point the row is replaced by the
+            // species' real life-list row on the same frame (see `visibleRows`).
+            // There is no in-between state for a checkmark to describe.
+            AddGlyphButton(isAdded: false) {
                 // A Life List add is a bird the user is recalling, so it asks
                 // when, then where, before writing anything. See `beginAdd`.
                 beginAdd(scientificName: scientificName, commonName: commonName)
             }
-            .accessibilityLabel(
-                alreadyAdded
-                    ? "Remove \(commonName) from Life List"
-                    : "Add \(commonName) to Life List"
-            )
+            .accessibilityLabel("Add \(commonName) to Life List")
             SpeciesThumbnail(scientificName: scientificName, height: Self.rowThumbnailHeight, onTap: {
                 // Suggestions are part of what's on screen, so they're part of
                 // the swipe list too (see `presentPhoto`).
@@ -861,6 +865,8 @@ struct LifeListView: View {
     }
 
     private func handleExport(_ result: Result<URL, Error>) {
+        // Cleared by the cancellation path below, which has nothing to report.
+        var shouldReportResult = true
         defer {
             pendingExport = nil
             pendingExportScope = nil
@@ -870,13 +876,18 @@ struct LifeListView: View {
             // before the alert goes up — an alert raised from a view that's on
             // its way out never appears.
             showExportInfo = false
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                showExportResult = true
+            if shouldReportResult {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    showExportResult = true
+                }
             }
         }
         switch result {
         case .success:
-            guard let payload = pendingExport else { return }
+            guard let payload = pendingExport else {
+                shouldReportResult = false
+                return
+            }
             exportResultTitle = "Export Complete"
             // Only a saved `.newOnly` file counts as handing observations over.
             // Two conditions, both required: the save actually happened (so a
@@ -896,9 +907,9 @@ struct LifeListView: View {
                     + (payload.speciesCount == 1 ? "species" : "species")
                     + "."
             ]
-            if payload.unnamedLocationCount > 0 {
+            if payload.unplaceableCount > 0 {
                 parts.append(
-                    "\(payload.unnamedLocationCount) had no place name and will need a location picked during eBird\u{2019}s import cleanup."
+                    "\(payload.unplaceableCount) had no location recorded at all and will need one picked during eBird\u{2019}s import cleanup."
                 )
             }
             if payload.exceedsEBirdSizeLimit {
@@ -908,9 +919,29 @@ struct LifeListView: View {
             }
             exportMessage = parts.joined(separator: " ")
         case .failure(let error):
+            // Backing out of the save panel arrives here as `userCancelled`,
+            // not as a real error. Reporting it would pop an "Export Failed"
+            // alert carrying a raw Cocoa error string for what was a deliberate
+            // choice, so it's swallowed and the sheet simply closes.
+            guard !Self.isUserCancellation(error) else {
+                shouldReportResult = false
+                return
+            }
             exportResultTitle = "Export Failed"
             exportMessage = error.localizedDescription
         }
+    }
+
+    /// Whether a file-picker error is really the user backing out. Both pickers
+    /// report a cancel through their failure path rather than a separate
+    /// callback, so both have to tell the two apart.
+    private static func isUserCancellation(_ error: Error) -> Bool {
+        if (error as? CocoaError)?.code == .userCancelled { return true }
+        // Domain checked as well as code: 3072 means "cancelled" only in Cocoa's
+        // domain, and a bare code comparison would swallow an unrelated failure
+        // that happened to share the number.
+        let nsError = error as NSError
+        return nsError.domain == NSCocoaErrorDomain && nsError.code == NSUserCancelledError
     }
 
     private func handleImport(_ result: Result<[URL], Error>) async {
@@ -935,6 +966,8 @@ struct LifeListView: View {
             }
             showImportResult = true
         case .failure(let error):
+            // A cancelled picker is a choice, not an error — say nothing.
+            guard !Self.isUserCancellation(error) else { return }
             importMessage = "File picker error: \(error.localizedDescription)"
             showImportResult = true
         }

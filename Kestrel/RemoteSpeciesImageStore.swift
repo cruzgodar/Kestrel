@@ -518,6 +518,13 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         /// Left stale: the manifest or an image download failed, or the slug is no
         /// longer published. Their cached bytes are untouched and retried later.
         var failed = 0
+        /// Species this pass learned about for the first time. A revalidation
+        /// fetches the same manifest the discovery check does, so it can be the
+        /// one that first sees a newly published photo — and once it has
+        /// recorded that slug's hash, discovery will never report it as new
+        /// again. Surfacing it here is what keeps those species from missing
+        /// their prefetch and trickling in one lazy load at a time.
+        var discoveredSlugs: [String] = []
 
         var isEmpty: Bool { confirmed == 0 && refreshed == 0 && failed == 0 }
     }
@@ -560,9 +567,10 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         UserDefaults.standard.set(now, forKey: Self.lastManifestCheckKey)
         // Same bookkeeping the discovery check does — newly published species get
         // their hash + attribution recorded, and credit fixes propagate.
-        PhotoManifestStore.shared.apply(remote, includeChanged: false)
+        let applied = PhotoManifestStore.shared.apply(remote, includeChanged: false)
 
         var result = RevalidationResult()
+        result.discoveredSlugs = applied.newSlugs
         var confirmed: [String] = []
         var advanced: [String: String] = [:]
         for slug in stale {

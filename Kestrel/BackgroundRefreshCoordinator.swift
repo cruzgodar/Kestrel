@@ -156,7 +156,8 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
             if !revalidated.isEmpty {
                 Log.info(
                     "Revalidation: \(revalidated.confirmed) confirmed, "
-                    + "\(revalidated.refreshed) refreshed, \(revalidated.failed) deferred"
+                    + "\(revalidated.refreshed) refreshed, \(revalidated.failed) deferred, "
+                    + "\(revalidated.discoveredSlugs.count) newly published"
                 )
             }
             completion.complete(success: !Task.isCancelled)
@@ -169,7 +170,11 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
     /// Resolves whether the current path is a satisfied, unmetered (Wi-Fi/wired)
     /// connection. Used to keep the high-power image refresh off cellular.
     static func isOnUnmeteredNetwork() async -> Bool {
-        final class Box: @unchecked Sendable {
+        // `nonisolated` as well as `@unchecked Sendable`: the project is
+        // MainActor-by-default, so without it this box is main-actor isolated
+        // and the path handler — which runs on its own queue — can't touch it.
+        // The lock is what actually makes the flag safe.
+        nonisolated final class Box: @unchecked Sendable {
             let lock = NSLock()
             var resumed = false
         }

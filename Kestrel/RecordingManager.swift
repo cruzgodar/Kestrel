@@ -116,14 +116,6 @@ final class RecordingManager {
     /// of being frozen to a snapshot.
     private(set) var starredNames: Set<String> = []
 
-    /// Scientific names the user added to the life list *from the watch* during
-    /// the current session. The life-list snapshot stays frozen for the session
-    /// (so a bird the user added keeps its purple "new species" treatment and
-    /// add button on the watch), so this separate set is what suppresses a
-    /// repeat notification/haptic for a bird the user has already added. Reset
-    /// at the start of every session.
-    private var watchAddedThisSession: Set<String> = []
-
     /// Pushed from `KestrelApp`'s tab + scene-phase observers. When false,
     /// new-species events fire a local notification instead of relying on
     /// the in-app UI.
@@ -688,7 +680,6 @@ final class RecordingManager {
         lastHapticAt = [:]
         lastWatchDisplaySci = nil
         lastWatchDisplayAt = nil
-        watchAddedThisSession = []
         spectrogram.reset()
         refreshLifeListFromStore()
         // Don't clear locationStatus — leave the previous filter visible until
@@ -812,7 +803,6 @@ final class RecordingManager {
         lastHapticAt = [:]
         lastWatchDisplaySci = nil
         lastWatchDisplayAt = nil
-        watchAddedThisSession = []
         watchWindowBuffer.removeAll(keepingCapacity: true)
         watchLastSample = 0
         spectrogram.reset()
@@ -1171,45 +1161,6 @@ final class RecordingManager {
         starredNames = scientificNames
     }
 
-    /// Adds a bird to the life list in response to the watch's add button.
-    /// Persists it via the store (back-filling the first-seen coordinate the
-    /// same way the in-app add flows do) and records it in
-    /// `watchAddedThisSession` so it won't re-notify/buzz this session. The
-    /// life-list snapshot stays frozen, so the watch keeps showing it as a new
-    /// species with the add button in its checkmark state.
-    func addBirdToLifeListFromWatch(commonName: String, scientificName: String) {
-        guard let store = lifeListStore else { return }
-        watchAddedThisSession.insert(scientificName)
-        if let lat = LocationCache.shared.lastLatitude,
-           let lon = LocationCache.shared.lastLongitude {
-            store.add(
-                scientificName: scientificName,
-                commonName: commonName,
-                latitude: lat,
-                longitude: lon
-            )
-        } else {
-            store.add(scientificName: scientificName, commonName: commonName)
-            Task {
-                guard let coord = await LocationCache.shared.current() else { return }
-                store.updateFirstLocation(
-                    scientificName: scientificName,
-                    latitude: coord.latitude,
-                    longitude: coord.longitude
-                )
-            }
-        }
-    }
-
-    /// Undoes a watch-initiated add (second tap of the add button). Takes back
-    /// the sighting it filed and clears the species' notify/haptic suppression,
-    /// so it's treated as a fresh new species again if heard later.
-    func removeBirdFromLifeListFromWatch(scientificName: String) {
-        guard let store = lifeListStore else { return }
-        watchAddedThisSession.remove(scientificName)
-        store.removeLatestObservation(scientificName: scientificName)
-    }
-
     private func merge(_ results: [Detection]) {
         // Flash any repeat match (regardless of confidence change), but
         // enforce a per-species cooldown so the same row doesn't strobe on
@@ -1262,11 +1213,7 @@ final class RecordingManager {
             // once; a bird that goes silent and returns re-fires.
             let isStarred = starredNames.contains(d.scientificName)
             let isNew = !lifeListSnapshot.contains(d.scientificName)
-            // A bird the user already added from the watch this session stays a
-            // "new species" for display (frozen snapshot) but shouldn't buzz or
-            // notify again — they've acknowledged it.
-            let alreadyAdded = watchAddedThisSession.contains(d.scientificName)
-            if (isStarred || isNew) && !alreadyAdded {
+            if isStarred || isNew {
                 let reason: SpeciesNotifications.Reason = isStarred ? .starred : .newSpecies
                 let last = lastHeardAt[d.scientificName]
                 if last == nil || now.timeIntervalSince(last!) >= notifyCooldown {

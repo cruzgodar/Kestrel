@@ -24,9 +24,9 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
     /// Every sighting of this species *other than* the earliest one (which is
     /// the one surfaced via `firstSeen` / `first*` and shown in the UI). On an
     /// eBird import each CSV row becomes one observation; the earliest is
-    /// promoted to the displayed fields and the rest are kept here. Drives the
-    /// optional "Show repeat observations on map" mode; otherwise unused by the
-    /// Life List UI, which only ever displays the earliest sighting.
+    /// promoted to the displayed fields and the rest are kept here. Every one of
+    /// them is plotted on the map and listed by the observation pickers; the Life
+    /// List's own rows only ever display the earliest.
     var otherObservations: [Observation] = []
 
     var id: String { scientificName }
@@ -58,6 +58,12 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         var identity: Identity {
             Identity(date: date, location: location, latitude: latitude, longitude: longitude)
         }
+
+        /// Whether this sighting can be put on a map. False for anything logged
+        /// before coordinates were recorded, and for eBird rows whose Latitude /
+        /// Longitude columns were blank — the UI hides its map affordances for
+        /// those rather than offering a tap that goes nowhere.
+        var hasCoordinate: Bool { latitude != nil && longitude != nil }
 
         init(
             date: Date,

@@ -1,4 +1,5 @@
 import CoreLocation
+import MapKit
 import SwiftUI
 
 extension Color {
@@ -369,10 +370,18 @@ struct ObservationNameSheet: View {
             return nearby
         }
         let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        // `MKReverseGeocodingRequest` rather than `CLGeocoder`, which iOS 26
+        // deprecated. `cityName` is the direct replacement for the placemark's
+        // `locality` — the town on its own, with no state or street attached,
+        // which is what a short place name wants. `cityWithContext` is the
+        // fallback rather than `fullAddress`: out in a county with no
+        // incorporated town, "Tompkins County, NY" is still a place a person
+        // recognizes, whereas a street address is noise to type over.
+        guard let request = MKReverseGeocodingRequest(location: location) else { return nil }
         do {
-            let placemarks = try await CLGeocoder().reverseGeocodeLocation(location)
-            guard let placemark = placemarks.first else { return nil }
-            return placemark.locality ?? placemark.subAdministrativeArea
+            let items = try await request.mapItems
+            guard let address = items.first?.addressRepresentations else { return nil }
+            return address.cityName ?? address.cityWithContext
         } catch {
             // Offline or rate-limited: leave the field empty and let the user
             // type their own rather than guessing.
@@ -385,18 +394,38 @@ struct ObservationNameSheet: View {
 // MARK: - Add / edit / delete, as one piece of state
 
 /// A pending "which sighting did you mean?" question, raised when an Edit or a
-/// Delete aimed at a whole species finds more than one sighting on record.
+/// Delete finds more than one sighting the affordance could have meant.
 struct ObservationChoice: Identifiable {
+    /// Fresh per question rather than derived from the species, so two questions
+    /// that differ only in `limitedTo` — the same bird asked about at two
+    /// different places on the map — can never be mistaken for the same sheet.
+    let id = UUID()
     let scientificName: String
     let commonName: String
     /// Which question is being asked. Both raise the same list of sightings;
     /// only the title and what a tap does differ.
     let isDeleting: Bool
-
-    var id: String { (isDeleting ? "d-" : "e-") + scientificName }
+    /// The sightings this question is about, when the affordance stood for only
+    /// some of the species' history. A map thumbnail collapses every repeat
+    /// sighting at one spot into one image, and it can only sensibly ask about
+    /// those — offering a sighting from the other side of the country under a
+    /// pin the user long-pressed here would be a non sequitur. `nil` means the
+    /// question is about the species as a whole, which is what a life-list row
+    /// or the photo viewer asks.
+    let limitedTo: Set<LifeListEntry.Observation.Identity>?
 
     var title: String {
         isDeleting ? "Delete which observation?" : "Edit which observation?"
+    }
+
+    /// The sightings to offer, read live off `store` so a delete drops its row
+    /// from the list standing behind the confirmation. The restriction is
+    /// applied to that live read rather than to a frozen copy, so a sighting
+    /// that no longer exists simply falls out.
+    func observations(in store: LifeListStore) -> [LifeListEntry.Observation] {
+        let all = store.observations(for: scientificName)
+        guard let limitedTo else { return all }
+        return all.filter { limitedTo.contains($0.identity) }
     }
 }
 
@@ -448,16 +477,31 @@ final class ObservationActions {
     /// seen once has only one sighting the request could mean, so that one is
     /// edited outright; with several on record the user is asked which.
     func edit(scientificName: String, commonName: String, in store: LifeListStore) {
-        let observations = store.observations(for: scientificName)
-        if observations.count > 1 {
-            choice = ObservationChoice(
-                scientificName: scientificName,
-                commonName: commonName,
-                isDeleting: false
-            )
-        } else if let only = observations.first {
-            edit(scientificName: scientificName, commonName: commonName, observation: only)
-        }
+        resolve(
+            scientificName: scientificName,
+            commonName: commonName,
+            observations: store.observations(for: scientificName),
+            limited: false,
+            isDeleting: false
+        )
+    }
+
+    /// Edits "this bird" where the affordance stands for only *part* of its
+    /// history — a map thumbnail, which collapses every repeat sighting at one
+    /// spot into a single image. The question, if one has to be asked, covers
+    /// exactly those sightings and no others.
+    func edit(
+        scientificName: String,
+        commonName: String,
+        among observations: [LifeListEntry.Observation]
+    ) {
+        resolve(
+            scientificName: scientificName,
+            commonName: commonName,
+            observations: observations,
+            limited: true,
+            isDeleting: false
+        )
     }
 
     /// Deletes one known sighting, after a confirmation.
@@ -475,15 +519,54 @@ final class ObservationActions {
 
     /// Deletes "this bird", the mirror of the species-scoped `edit` above.
     func delete(scientificName: String, commonName: String, in store: LifeListStore) {
-        let observations = store.observations(for: scientificName)
+        resolve(
+            scientificName: scientificName,
+            commonName: commonName,
+            observations: store.observations(for: scientificName),
+            limited: false,
+            isDeleting: true
+        )
+    }
+
+    /// Deletes from a partial set of sightings — the mirror of `edit(among:)`.
+    func delete(
+        scientificName: String,
+        commonName: String,
+        among observations: [LifeListEntry.Observation]
+    ) {
+        resolve(
+            scientificName: scientificName,
+            commonName: commonName,
+            observations: observations,
+            limited: true,
+            isDeleting: true
+        )
+    }
+
+    /// The shared body of the four calls above: one candidate is acted on
+    /// outright, several raise the question, none is a no-op. `limited` says
+    /// whether `observations` is the species' whole history (in which case the
+    /// chooser re-reads it live) or a subset the caller picked out.
+    private func resolve(
+        scientificName: String,
+        commonName: String,
+        observations: [LifeListEntry.Observation],
+        limited: Bool,
+        isDeleting: Bool
+    ) {
         if observations.count > 1 {
             choice = ObservationChoice(
                 scientificName: scientificName,
                 commonName: commonName,
-                isDeleting: true
+                isDeleting: isDeleting,
+                limitedTo: limited ? Set(observations.map(\.identity)) : nil
             )
         } else if let only = observations.first {
-            delete(scientificName: scientificName, commonName: commonName, observation: only)
+            if isDeleting {
+                delete(scientificName: scientificName, commonName: commonName, observation: only)
+            } else {
+                edit(scientificName: scientificName, commonName: commonName, observation: only)
+            }
         }
     }
 }
@@ -588,8 +671,9 @@ private struct ObservationChoiceSheet: View {
         ObservationPickerSheet(
             title: choice.title,
             // Read live off the store so a delete that leaves the species
-            // standing updates the list behind the confirmation.
-            observations: store.observations(for: choice.scientificName),
+            // standing updates the list behind the confirmation — narrowed to
+            // the sightings the question is actually about (see `limitedTo`).
+            observations: choice.observations(in: store),
             onSelect: { observation in
                 if choice.isDeleting {
                     pendingDelete = PendingObservationDelete(
@@ -607,7 +691,13 @@ private struct ObservationChoiceSheet: View {
             }
         )
         .observationFlow($draft, store: store, onCommit: onFinished)
-        .observationDeleteConfirmation($pendingDelete, store: store, onDeleted: onFinished)
+        .observationDeleteConfirmation($pendingDelete, store: store, onDeleted: {
+            // Only step aside once there is nothing left to choose between.
+            // Clearing out several stray sightings is one visit to this list,
+            // not one visit per sighting — the list behind the confirmation is
+            // read live off the store, so the deleted row is already gone.
+            if choice.observations(in: store).isEmpty { onFinished() }
+        })
     }
 }
 
@@ -653,25 +743,25 @@ struct ObservationPickerSheet: View {
     let observations: [LifeListEntry.Observation]
     /// Tapping a row.
     let onSelect: (LifeListEntry.Observation) -> Void
+    /// Whether a row can be tapped at all. Defaults to yes; the full-screen
+    /// viewer, whose tap takes the sighting to the map, says no for one without
+    /// coordinates rather than offering a tap that would do nothing.
+    var canSelect: (LifeListEntry.Observation) -> Bool = { _ in true }
     /// Trailing-swipe Edit. `nil` leaves the rows without swipe actions.
     var onEdit: ((LifeListEntry.Observation) -> Void)? = nil
     /// Trailing-swipe Delete, alongside Edit.
     var onDelete: ((LifeListEntry.Observation) -> Void)? = nil
 
+    /// Closes the sheet from the back button. Works for every host: this view is
+    /// always the sheet's root content, so dismissing it clears whichever
+    /// binding presented it.
+    @Environment(\.dismiss) private var dismiss
+
     var body: some View {
         NavigationStack {
             List {
                 ForEach(observations, id: \.identity) { observation in
-                    Button {
-                        onSelect(observation)
-                    } label: {
-                        ObservationRowLabel(observation: observation)
-                            .font(.body)
-                            .foregroundStyle(.primary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
+                    row(for: observation)
                     // Trailing actions are laid out from the trailing edge
                     // inward in declaration order, so Delete goes first to put
                     // Edit on its left — the same pairing (and the same colors)
@@ -699,9 +789,43 @@ struct ObservationPickerSheet: View {
             .listStyle(.plain)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                // The grab handle is hidden on every sheet in this flow, so
+                // without this the only way out of the list is a swipe nobody is
+                // told about. A toolbar button picks up the same tinted Liquid
+                // Glass treatment as the flow's other sheets' controls, and sits
+                // in the same top-left slot their Cancel does.
+                ToolbarItem(placement: .topBarLeading) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "chevron.backward")
+                    }
+                    .accessibilityLabel("Back")
+                }
+            }
         }
         .presentationDetents([.medium, .large])
         // Hidden grab handle, matching every other sheet in the app.
         .presentationDragIndicator(.hidden)
+    }
+
+    /// One sighting. A row the caller has marked unselectable is plain content
+    /// rather than a `Button`, so it neither highlights on touch nor offers a tap
+    /// that would go nowhere; its swipe actions still work.
+    @ViewBuilder
+    private func row(for observation: LifeListEntry.Observation) -> some View {
+        let label = ObservationRowLabel(observation: observation)
+            .font(.body)
+            .foregroundStyle(.primary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        if canSelect(observation) {
+            Button {
+                onSelect(observation)
+            } label: {
+                label.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            label
+        }
     }
 }

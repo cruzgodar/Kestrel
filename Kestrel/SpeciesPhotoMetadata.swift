@@ -8,7 +8,10 @@ import Foundation
 /// `RemoteSpeciesImageStore` derives each size's URL from the slug and a
 /// jsDelivr base — so this holds only the crediting/licensing info an entry
 /// needs: photographer, license, and the source page for verification.
-struct SpeciesPhotoInfo: Decodable {
+/// `nonisolated` for the same reason `SpeciesPhotoMetadata` is: it is read and
+/// persisted from the off-main manifest paths, and the project's default
+/// isolation would otherwise pin this plain value type to the main actor.
+nonisolated struct SpeciesPhotoInfo: Decodable {
     /// Photographer / contributor name, when the source page exposed one.
     let credit: String?
     /// License string as published at the source (e.g. "CC BY-SA 4.0", "CC0").
@@ -117,7 +120,9 @@ struct SpeciesPhotoInfo: Decodable {
     }
 }
 
-private extension String {
+/// `nonisolated` so the attribution strings above — built off the main actor
+/// while a manifest is applied — can use it.
+private nonisolated extension String {
     var nilIfEmpty: String? { isEmpty ? nil : self }
 }
 

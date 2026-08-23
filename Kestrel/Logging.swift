@@ -9,7 +9,10 @@ import os
 /// Messages are interpolated by the caller into a `String` first, so any value
 /// type works unchanged; the whole line is logged `.public` since none of it is
 /// user-private (these are framework errors and lifecycle notes).
-enum Log {
+/// `nonisolated` so the many off-main callers (audio pipeline, image store,
+/// background refresh) can log without an actor hop — the project is
+/// MainActor-by-default, and `Logger` is already `Sendable`.
+nonisolated enum Log {
     private static let logger = Logger(subsystem: "com.cruzgodar.Kestrel", category: "app")
 
     static func error(_ message: String) {

@@ -362,21 +362,34 @@ struct KestrelApp: App {
         Task {
             if discoveryDue {
                 let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: false)
-                if result.newCount > 0 {
-                    RemoteSpeciesImageStore.shared.setProtectedSpecies(
-                        RemoteSpeciesImageStore.launchTargets(lifeList: lifeNames)
-                    )
-                    RemoteSpeciesImageStore.shared.prefetchWake(
-                        lifeList: lifeNames, nearby: RemoteSpeciesImageStore.nearbyNames()
-                    )
-                }
+                if result.newCount > 0 { prefetchPhotos(lifeList: lifeNames) }
             }
             // Expire and re-check cached images a day after they were last
             // confirmed. Unchanged photos cost a hash comparison, not a download,
             // and a failed check leaves the cache exactly as it was — so this is
             // safe to run on any connection. See `revalidateStaleImages`.
-            await RemoteSpeciesImageStore.shared.revalidateStaleImages()
+            let revalidated = await RemoteSpeciesImageStore.shared.revalidateStaleImages()
+            // Revalidation fetches the same manifest discovery does, so it can be
+            // the pass that first sees a newly published species — and it records
+            // that slug's hash, which means the discovery branch above will never
+            // call it new. Prefetch here too, or those photos would only ever
+            // arrive one lazy load at a time.
+            if !revalidated.discoveredSlugs.isEmpty {
+                prefetchPhotos(lifeList: lifeNames)
+            }
         }
+    }
+
+    /// Protects the species worth keeping from the image cache's size cap, then
+    /// warms their thumbnails and medium images. Shared by both paths that can
+    /// turn up newly published photos.
+    private func prefetchPhotos(lifeList names: [String]) {
+        RemoteSpeciesImageStore.shared.setProtectedSpecies(
+            RemoteSpeciesImageStore.launchTargets(lifeList: names)
+        )
+        RemoteSpeciesImageStore.shared.prefetchWake(
+            lifeList: names, nearby: RemoteSpeciesImageStore.nearbyNames()
+        )
     }
 
     /// Closes the photo viewer and takes the Map tab to a coordinate. Shared by

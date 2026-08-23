@@ -22,10 +22,12 @@ nonisolated enum EBirdCSVExporter {
         let csv: Data
         let speciesCount: Int
         let observationCount: Int
-        /// Observations that carried no place name — exported with a
-        /// coordinate-derived or placeholder name, and needing a manual pick
-        /// during eBird's "Fix Locations" step.
-        let unnamedLocationCount: Int
+        /// Observations eBird cannot place at all: no place name *and* no
+        /// coordinates, so they export under a placeholder name and need a
+        /// location picked by hand during eBird's "Fix Locations" step. A
+        /// sighting with coordinates but no name is not counted — it exports
+        /// under its own "lat, lon" and eBird maps it without help.
+        let unplaceableCount: Int
         /// Identity keys of every observation in this file. Handed back to
         /// `LifeListStore.markExported` only after a successful save.
         let exportedKeys: Set<String>
@@ -104,15 +106,16 @@ nonisolated enum EBirdCSVExporter {
         var lines: [String] = []
         lines.reserveCapacity(sorted.count)
         var keys = Set<String>()
-        var unnamed = 0
+        var unplaceable = 0
         let total = sorted.count
         let stride = progressStride(for: total)
 
         for (index, row) in sorted.enumerated() {
             let observation = row.observation
             let (genus, species) = splitBinomial(row.scientificName)
-            let named = observation.location?.trimmingCharacters(in: .whitespacesAndNewlines)
-            if named == nil || named?.isEmpty == true { unnamed += 1 }
+            // Counted the same way `locationName(for:)` decides to fall back to
+            // the placeholder, so the tally can't drift from the file.
+            if locationName(for: observation) == unplaceableLocation { unplaceable += 1 }
 
             let fields: [String] = [
                 sanitize(eBirdCommonName(row.commonName)),      // Common Name
@@ -149,7 +152,7 @@ nonisolated enum EBirdCSVExporter {
             csv: Data(text.utf8),
             speciesCount: Set(sorted.map(\.scientificName)).count,
             observationCount: sorted.count,
-            unnamedLocationCount: unnamed,
+            unplaceableCount: unplaceable,
             exportedKeys: keys
         )
     }
@@ -182,8 +185,13 @@ nonisolated enum EBirdCSVExporter {
         if let lat = observation.latitude, let lon = observation.longitude {
             return String(format: "%.5f, %.5f", lat, lon)
         }
-        return "Unspecified location"
+        return unplaceableLocation
     }
+
+    /// Stand-in name for a sighting with neither a place name nor coordinates —
+    /// the only rows the user has to resolve by hand on eBird's side, and what
+    /// `Payload.unplaceableCount` counts.
+    private static let unplaceableLocation = "Unspecified location"
 
     private static func coordinate(_ value: Double?) -> String {
         guard let value else { return "" }

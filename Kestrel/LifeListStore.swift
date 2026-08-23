@@ -129,16 +129,33 @@ final class LifeListStore {
         }
     }
 
+    /// The export ledger's key for one sighting. Wrapped so the export check and
+    /// the edit path (which has to carry a key forward, see `replaceObservation`)
+    /// can't drift apart on how a sighting is identified.
+    private static func exportKey(
+        scientificName: String,
+        observation: LifeListEntry.Observation
+    ) -> String {
+        EBirdCSVExporter.key(scientificName: scientificName, observation: observation)
+    }
+
     /// Whether a sighting belongs in a `.newOnly` export. Two ways eBird can
     /// already have it: it came *from* eBird on an import, or a previous export
     /// handed it over.
     private func isNewToEBird(_ row: EBirdCSVExporter.Row) -> Bool {
         guard !row.observation.isImported else { return false }
-        let key = EBirdCSVExporter.key(
+        let key = Self.exportKey(
             scientificName: row.scientificName,
             observation: row.observation
         )
         return !exportedObservationKeys.contains(key)
+    }
+
+    /// Every recorded sighting on the life list, counted. A species contributes
+    /// one per observation, not one flat — which is what "N observations" has to
+    /// mean anywhere the user is told how much they are about to lose.
+    var totalObservationCount: Int {
+        entries.reduce(0) { $0 + 1 + $1.otherObservations.count }
     }
 
     /// How many rows an export of `scope` would produce. Drives the sheet's
@@ -191,10 +208,9 @@ final class LifeListStore {
     /// first-seen date; the add flow passes the date the user picked instead.
     /// No-op if the species is already in the list.
     ///
-    /// Both in-app tabs reach this through `recordObservation`. The one caller
-    /// that still uses it directly is the watch's add button, which has no way
-    /// to run the date → map → name flow from the wrist and so is the only
-    /// remaining source of sightings with no place name.
+    /// Reached only through `recordObservation`: every add in the app runs the
+    /// date → map → name flow first, so every sighting Kestrel records of
+    /// its own carries a place name.
     @discardableResult
     func add(
         scientificName: String,
@@ -213,7 +229,13 @@ final class LifeListStore {
             firstSeen: firstSeen,
             firstLocation: location,
             firstLatitude: latitude,
-            firstLongitude: longitude
+            firstLongitude: longitude,
+            // `starredNames` is the source of truth and outlives the entry: it
+            // survives a wipe-and-reimport, a "Delete All Entries", and deleting
+            // a species' last observation. Re-adding a bird that is still
+            // starred therefore has to come back starred, or the row shows an
+            // empty star while the classifier goes on alerting for it.
+            isStarred: starredNames.contains(scientificName)
         )
         entries.append(entry)
         entries.sort(by: Self.ordersBefore)
@@ -348,21 +370,6 @@ final class LifeListStore {
         return (entry.firstLocation, entry.firstSeen)
     }
 
-    /// Back-fills the first-seen coordinate on an existing entry. Used by the
-    /// watch add path when the device hadn't yet resolved a location at the
-    /// moment of the tap; the resolved fix arrives shortly after via
-    /// `LocationCache.current()` and is written here. The in-app add flows
-    /// don't need it — their coordinate comes from the map picker, so it's
-    /// known before anything is written.
-    func updateFirstLocation(scientificName: String, latitude: Double, longitude: Double) {
-        guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {
-            return
-        }
-        entries[idx].firstLatitude = latitude
-        entries[idx].firstLongitude = longitude
-        save()
-    }
-
     /// Sets or clears the "alert me" star. Writes through to the persistent
     /// `starredNames` set (so it survives a wipe-and-reimport) and mirrors the
     /// flag onto the entry, if present, for the UI.
@@ -420,6 +427,13 @@ final class LifeListStore {
     /// `isImported` rides along from the replaced observation: an edited eBird
     /// row still corresponds to a record that account already holds, so it must
     /// not start looking new to "Export New Observations."
+    ///
+    /// The export ledger entry rides along for the same reason. The ledger is
+    /// keyed on the sighting's date, place, and coordinates (see
+    /// `EBirdCSVExporter.key`), so correcting any of them would otherwise orphan
+    /// the old key and make an already-uploaded sighting look new again — and
+    /// eBird, which does no deduplication, would take the next export's copy as
+    /// a second record rather than as a correction.
     func replaceObservation(
         scientificName: String,
         original: LifeListEntry.Observation.Identity,
@@ -435,14 +449,23 @@ final class LifeListStore {
         var remaining = existing.allObservations
         guard let hit = remaining.firstIndex(where: { $0.identity == original }) else { return }
         let wasImported = remaining[hit].isImported
+        let wasExported = exportedObservationKeys.contains(
+            Self.exportKey(scientificName: scientificName, observation: remaining[hit])
+        )
         remaining.remove(at: hit)
-        remaining.append(LifeListEntry.Observation(
+        let replacement = LifeListEntry.Observation(
             date: date,
             location: location,
             latitude: latitude,
             longitude: longitude,
             isImported: wasImported
-        ))
+        )
+        remaining.append(replacement)
+        if wasExported {
+            markExported([
+                Self.exportKey(scientificName: scientificName, observation: replacement)
+            ])
+        }
         entries[idx] = LifeListEntry.make(
             scientificName: existing.scientificName,
             commonName: existing.commonName,
@@ -600,7 +623,7 @@ final class LifeListStore {
 
     // MARK: Persistence
 
-    private static func storeURL() throws -> URL {
+    private nonisolated static func storeURL() throws -> URL {
         let dir = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -612,7 +635,7 @@ final class LifeListStore {
 
     /// Separate file for the starred ("alert me") set, intentionally decoupled
     /// from `life_list.json` so the stars outlive a wipe-and-reimport.
-    private static func starsURL() throws -> URL {
+    private nonisolated static func starsURL() throws -> URL {
         let dir = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -624,7 +647,7 @@ final class LifeListStore {
 
     /// Separate file for the eBird export ledger, decoupled from the life list
     /// for the same reason the stars are: it has to outlive a wipe-and-reimport.
-    private static func exportedKeysURL() throws -> URL {
+    private nonisolated static func exportedKeysURL() throws -> URL {
         let dir = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,

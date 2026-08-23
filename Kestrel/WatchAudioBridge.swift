@@ -123,19 +123,6 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
             Task { @MainActor in manager.answerWatchPing() }
         case "stopUnexpected":
             Task { @MainActor in manager.stopFromWatchUnexpectedly() }
-        case "addToLifeList":
-            if let common = payload["lifeListCommon"] as? String,
-               let sci = payload["lifeListSci"] as? String {
-                Task { @MainActor in
-                    manager.addBirdToLifeListFromWatch(commonName: common, scientificName: sci)
-                }
-            }
-        case "removeFromLifeList":
-            if let sci = payload["lifeListSci"] as? String {
-                Task { @MainActor in
-                    manager.removeBirdFromLifeListFromWatch(scientificName: sci)
-                }
-            }
         default:
             break
         }

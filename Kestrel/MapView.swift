@@ -3,11 +3,11 @@ import MapKit
 import SwiftUI
 import UIKit
 
-/// A single plotted point on the map. Usually one per life-list entry (its
-/// first sighting), but with "Show repeat observations on map" enabled an
-/// entry contributes one point per stored observation, so the same species can
-/// appear at several locations. `id` is unique per point; `scientificName`
-/// stays the species key used for photo lookups.
+/// A single plotted point on the map. An entry contributes one point per
+/// stored observation — its earliest plus every repeat that carries
+/// coordinates — so the same species can appear at several locations. `id` is
+/// unique per point; `scientificName` stays the species key used for photo
+/// lookups.
 struct MapPoint: Identifiable, Hashable {
     let id: String
     let scientificName: String
@@ -89,8 +89,9 @@ struct MapView: View {
         let onConfirm: (CLLocationCoordinate2D) -> Void
     }
 
-    /// Spelled out because the synthesized memberwise initializer is private
-    /// (`settings` below is), so it isn't visible to the Life List tab.
+    /// Spelled out because the view's other stored properties are private, which
+    /// makes the synthesized memberwise initializer private too — and so
+    /// invisible to the add flow that presents the picker.
     init(picker: LocationPicker? = nil) {
         self.picker = picker
     }
@@ -303,20 +304,19 @@ struct MapView: View {
     /// whole life list.
     private static let visibleBufferFactor: Double = 1.5
 
-    /// Currently-visible cluster reps, keyed by scientific name. Every
-    /// life-list entry with a coordinate gets its own persistent
-    /// Annotation; this dict says which of those annotations should be
+    /// Currently-visible cluster reps, keyed by the representative point's
+    /// `MapPoint.id` (a species can hold several). Every plotted observation
+    /// gets its own persistent Annotation; this dict says which of those should be
     /// opaque (and tappable) right now. State-driven opacity changes
     /// animate cleanly inside MapKit's hosted SwiftUI view, even though
     /// insert/remove transitions do not — that's the workaround for the
     /// "annotations never fade" problem.
     @State private var visibleReps: [String: RepInfo] = [:]
 
-    /// The single bottom card currently presented — either a multi-bird cluster
-    /// or the map-options settings. Both share one `.sheet(isPresented:)` so that
-    /// switching from one to the other (or from one cluster to another) swaps the
-    /// sheet's content live, rather than dismissing the old card and waiting for
-    /// it to close before presenting the new one. The native sheet is what keeps
+    /// The bottom card currently presented — a multi-bird cluster. Bound through
+    /// one `.sheet(isPresented:)` so that switching from one cluster to another
+    /// swaps the sheet's content live, rather than dismissing the old card and
+    /// waiting for it to close before presenting the new one. The native sheet is what keeps
     /// the card's corners concentric with the device's display radius and its
     /// layering correct; the content crossfades on a swap (see `MapCardSheet`),
     /// the map stays live behind it, and a tap on the empty map dismisses it.
@@ -506,8 +506,8 @@ struct MapView: View {
                 )
                 .mapControls {
                     // The recenter control is provided as a custom glass button
-                    // (see the top-trailing overlay) so it can stack beneath the
-                    // map-settings button; only the compass stays a map control.
+                    // (see the top-trailing overlay) so it matches the picker's
+                    // back button; only the compass stays a map control.
                     MapCompass()
                 }
                 // A single tap on the empty map dismisses whatever card is open.
@@ -859,22 +859,24 @@ struct MapView: View {
         }
     }
 
-    /// The haptic-touch menu a *lone* thumbnail raises — the same four actions
-    /// a species row offers anywhere else in the app. Multi-bird stacks don't
+    /// The haptic-touch menu a *lone* thumbnail raises — the same actions a
+    /// species row offers anywhere else in the app. Multi-*bird* stacks don't
     /// get one: the menu would have no single bird to act on, and their tap
     /// already opens a card where each bird has its own.
     @ViewBuilder
     private func annotationMenu(for info: RepInfo) -> some View {
         // The same sighting a tap would open — for a stack of repeat
         // observations of one bird, its earliest.
-        let point = BirdCluster(
+        let cluster = BirdCluster(
             representative: info.representative,
             coordinate: info.coordinate,
             others: info.others
-        ).uniqueByEarliest.first ?? info.representative
+        )
+        let point = cluster.uniqueByEarliest.first ?? info.representative
         MapPointMenu(
             point: point,
             store: store,
+            sightings: cluster.sightings(of: point.scientificName),
             actions: actions,
             onViewImage: {
                 if mapCard != nil {
@@ -959,7 +961,7 @@ struct MapView: View {
     /// clears every annotation and restores it, which reads as all the groups
     /// flickering off and back on. It's only actually needed for the pinch-zoom
     /// path, where a host stays mounted (same id) but its content's footprint
-    /// changes and MapKit keeps the stale hit area. The life-list / settings / size
+    /// changes and MapKit keeps the stale hit area. The life-list / view-size
     /// paths instead force a fresh `updateVisibleEntries`, which mounts any changed
     /// host with its content already present (correct hit area) — so they pass
     /// `rehydrate: false` and don't flicker.
@@ -1033,7 +1035,7 @@ struct MapView: View {
             // those, leaving the stable hosts untouched.
             //
             // Skipped (`rehydrate == false`) for non-zoom rebuilds (life-list,
-            // settings, size): those are paired with a forced `updateVisibleEntries`
+            // view size): those are paired with a forced `updateVisibleEntries`
             // that already mounts changed hosts with content present.
             let changedIDs = Set(next.keys).subtracting(oldReps.keys)
             if !changedIDs.isEmpty {
@@ -1165,12 +1167,22 @@ struct MapView: View {
 /// or one cell of a cluster card. Wraps `SpeciesRowMenu` so the map can't drift
 /// from the lists' wording, symbols, or order.
 ///
-/// Unlike a life-list row, a map thumbnail *is* one sighting, so Edit and Delete
-/// never have to ask which one is meant. Delete drops that sighting alone; the
-/// species leaves the life list only when it was the last one on record.
+/// A map thumbnail usually *is* one sighting, in which case Edit and Delete act
+/// on it outright — no "which one did you mean?" for a pin that can only mean
+/// one thing. But repeat sightings of one bird at one spot collapse into a
+/// single thumbnail (see `BirdCluster.uniqueByEarliest`), and there the pin
+/// stands for several: acting on the representative alone would silently touch
+/// only the earliest and leave the thumbnail sitting there looking untouched.
+/// Those ask — over a list holding just the sightings pinned *here*, since a
+/// sighting from the other side of the country is not something this pin could
+/// have meant. Delete is always one sighting either way; the species leaves the
+/// life list only when it was the last on record.
 private struct MapPointMenu: View {
     let point: MapPoint
     let store: LifeListStore
+    /// Every sighting the thumbnail this menu belongs to stands for — one for a
+    /// lone pin, several for a stack of repeat visits to the same spot.
+    let sightings: [LifeListEntry.Observation]
     /// Where Edit, Add, and Delete are routed — the host attaches the matching
     /// `observationActions` so the flow, the chooser, and the delete
     /// confirmation all present from the right place.
@@ -1180,11 +1192,13 @@ private struct MapPointMenu: View {
     var body: some View {
         let starred = store.starredNames.contains(point.scientificName)
         SpeciesRowMenu(
+            // `among:` handles both shapes: a lone sighting is acted on
+            // directly, and a stack raises the chooser over exactly these.
             onEdit: {
                 actions.edit(
                     scientificName: point.scientificName,
                     commonName: point.commonName,
-                    observation: point.observation
+                    among: sightings
                 )
             },
             onAddObservation: {
@@ -1203,7 +1217,7 @@ private struct MapPointMenu: View {
                 actions.delete(
                     scientificName: point.scientificName,
                     commonName: point.commonName,
-                    observation: point.observation
+                    among: sightings
                 )
             }
         )
@@ -1473,9 +1487,19 @@ struct BirdCluster: Identifiable, Hashable {
         return earliest.values.sorted(by: Self.ordersBefore)
     }
 
+    /// Every sighting of `scientificName` pinned in this cluster — i.e. all the
+    /// ones the single thumbnail `uniqueByEarliest` produces for that species
+    /// actually stands for. More than one means the thumbnail is a stack, and
+    /// acting on its representative alone would quietly touch only the earliest
+    /// of them; this is the list its menu asks over instead (see
+    /// `MapPointMenu`).
+    func sightings(of scientificName: String) -> [LifeListEntry.Observation] {
+        all.lazy.filter { $0.scientificName == scientificName }.map(\.observation)
+    }
+
     /// Deterministic "newest first" ordering with stable tiebreakers, so equal
     /// dates never reorder. Also used to pick the kept point per species above.
-    static func ordersBefore(_ a: MapPoint, _ b: MapPoint) -> Bool {
+    nonisolated static func ordersBefore(_ a: MapPoint, _ b: MapPoint) -> Bool {
         if a.date != b.date { return a.date > b.date }
         if a.scientificName != b.scientificName { return a.scientificName < b.scientificName }
         return a.id < b.id
@@ -1494,17 +1518,16 @@ struct BirdCluster: Identifiable, Hashable {
 
 // MARK: - The shared map card (native sheet)
 
-/// Hosts both map cards inside one native sheet. The sheet itself stays mounted
-/// while `card` changes, so the body just crossfades between the cluster grid and
-/// the settings pane (keyed by `card.id`) instead of tearing the sheet down and
-/// re-presenting it — that's the in-place swap the user sees when tapping a
-/// second cluster, or the gear, while a card is already open.
+/// Hosts the map's bottom card inside one native sheet. The sheet itself stays
+/// mounted while `card` changes, so the body just crossfades between clusters
+/// (keyed by `card.id`) instead of tearing the sheet down and re-presenting it —
+/// that's the in-place swap the user sees when tapping a second cluster while a
+/// card is already open.
 ///
-/// Presentation modifiers are applied here (once, uniformly) rather than per
-/// card, so *both* cards get the frosted, non-dimming, background-interactive
-/// treatment: the map stays live behind either one, you can tap another bird /
-/// the gear to swap, and a tap on the empty map dismisses (handled by the map's
-/// own tap gesture in `MapView`).
+/// Presentation modifiers are applied here, once, so the card is frosted,
+/// non-dimming and background-interactive: the map stays live behind it, you can
+/// tap another bird to swap, and a tap on the empty map dismisses (handled by
+/// the map's own tap gesture in `MapView`).
 private struct MapCardSheet: View {
     let card: MapView.MapCard?
     /// Passed explicitly (not read from the environment) so it can be re-injected
@@ -1613,8 +1636,8 @@ private struct MapCardSheet: View {
                 }
             }
         )
-        // Crossfade whenever the card identity changes (cluster→cluster,
-        // cluster→settings, …). The sheet host is unaffected; only the contents
+        // Crossfade whenever the card identity changes (cluster→cluster). The
+        // sheet host is unaffected; only the contents
         // animate, so the swap reads as a smooth dissolve rather than a snap.
         .animation(.easeInOut(duration: 0.14), value: card?.id)
         // Layered over the card rather than replacing it, the same way the
@@ -1716,6 +1739,7 @@ private struct MapCardSheet: View {
                             MapPointMenu(
                                 point: point,
                                 store: store,
+                                sightings: cluster.sightings(of: point.scientificName),
                                 actions: actions,
                                 onViewImage: { openPhoto(for: point, in: cluster) }
                             )
@@ -2022,7 +2046,7 @@ private struct PickedLocationMarker: View {
 // MARK: - Top-right glass controls
 
 /// A circular liquid-glass map control, matching the search field's glass
-/// buttons. Used for the map-settings and recenter buttons.
+/// buttons. Used for the recenter button and the picker's back button.
 /// Plain (non-`@Observable`) holder for the map's per-frame camera bookkeeping.
 /// Stored as a single `@State` reference on `MapView`; mutating its properties
 /// does not invalidate the view, so the `.continuous` camera callback can record

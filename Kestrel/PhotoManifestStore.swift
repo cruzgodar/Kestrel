@@ -7,7 +7,9 @@ import Foundation
 /// about the photo set is bundled — this manifest is the app's only knowledge of
 /// which species have photos and who took them, which is what lets the set (and
 /// its attribution) be corrected or extended without an App Store submission.
-struct PhotoManifest: Decodable, Sendable {
+/// `nonisolated`: decoded on whichever thread the fetch came back on, never the
+/// main actor.
+nonisolated struct PhotoManifest: Decodable, Sendable {
     struct Entry: Decodable, Sendable {
         let hash: String
         let credit: String?
@@ -252,8 +254,10 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     }
 }
 
-/// On-disk shape for the persisted local manifest state.
-private struct LocalSnapshot: Codable {
+/// On-disk shape for the persisted local manifest state. `nonisolated` because
+/// it is encoded on the store's own persist queue and decoded during `init`,
+/// neither of which is the main actor.
+private nonisolated struct LocalSnapshot: Codable {
     let hashes: [String: String]
     let metadata: [String: CodableInfo]
     /// Optional so snapshots written before per-slug freshness existed still
@@ -264,7 +268,7 @@ private struct LocalSnapshot: Codable {
 
 /// Codable mirror of `SpeciesPhotoInfo` (which is decode-only from JSON) so the
 /// metadata overlay can round-trip through the persisted snapshot.
-private struct CodableInfo: Codable {
+private nonisolated struct CodableInfo: Codable {
     let credit: String?
     let license: String?
     let pageURL: String?
@@ -282,7 +286,7 @@ private struct CodableInfo: Codable {
     }
 }
 
-private extension PhotoManifest.Entry {
+private nonisolated extension PhotoManifest.Entry {
     var info: SpeciesPhotoInfo {
         SpeciesPhotoInfo(credit: credit, license: license, pageURL: pageURL, code: code)
     }

@@ -456,6 +456,11 @@ struct SpeciesPhotoFullScreen: View {
                 onSelect: { observation in
                     onShowObservationOnMap?(observation)
                 },
+                // A tap takes the sighting to the map, which needs a coordinate.
+                // Rows without one stay plain rather than offering a dead tap.
+                canSelect: { observation in
+                    onShowObservationOnMap != nil && observation.hasCoordinate
+                },
                 onEdit: { observation in
                     listActions.edit(
                         scientificName: item.scientificName,
@@ -569,10 +574,6 @@ struct SpeciesPhotoFullScreen: View {
         .accessibilityLabel("Back")
     }
 
-    /// Blue used for a filled "alert me" star — matched to the Life List tab's
-    /// star tint so the same bird reads the same in both places.
-    private static let starTint = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
-
     /// Whether this bird has a sighting the menu could edit or delete. A map pin
     /// carries its own; a species-scoped item has to have something on record.
     private func hasSighting(_ item: SpeciesPhotoItem) -> Bool {
@@ -596,7 +597,14 @@ struct SpeciesPhotoFullScreen: View {
                         commonName: commonName(for: item)
                     )
                 },
-                star: (starred, {
+                // Only for a bird actually on the life list. Starring is
+                // "alert me about this one again", which belongs to a bird
+                // you've recorded — and a catalog species opened straight from
+                // Life List search has no row anywhere to show the star on or
+                // to take it back off, so offering it here would strand a
+                // setting the user couldn't find again. Same rule the Identify
+                // tab's detection rows follow.
+                star: actionable ? (starred, {
                     // A single short tap to confirm the star toggled, matching
                     // the Life List tab's star button.
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -604,13 +612,18 @@ struct SpeciesPhotoFullScreen: View {
                         scientificName: item.scientificName,
                         isStarred: !starred
                     )
-                }),
+                }) : nil,
                 onDelete: actionable ? { deleteSighting(of: item) } : nil
             )
         } label: {
             Image(systemName: "ellipsis")
                 .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(starred ? Self.starTint : .white)
+                // Always white, never tinted for the star. This is a menu
+                // button, not a star toggle: coloring it blue made it read as a
+                // control whose state you could change by tapping it, when
+                // tapping only opens a menu. The star's own state is stated
+                // plainly inside that menu, which is where it belongs.
+                .foregroundStyle(.white)
                 .frame(width: 22, height: 22)
                 .padding(13)
                 .glassEffect(.regular.interactive(), in: .circle)
@@ -708,6 +721,11 @@ struct SpeciesPhotoFullScreen: View {
     ) -> some View {
         let place = observation?.location ?? item.placeName
         let date = observation?.date ?? item.dateFound
+        // Whether "Show on Map" has anywhere to go. The host's callback quietly
+        // does nothing for a sighting logged without coordinates (an eBird row
+        // with no lat/lon), so without this check the place name would render as
+        // an accent-colored link that swallows the tap.
+        let mappable = onShowOnMap != nil && (observation ?? item.observation)?.hasCoordinate == true
         if let date {
             // Place (accent-colored, the map link) + date stacked together. When
             // the map action is available the *whole block* — place, date, and a
@@ -722,7 +740,7 @@ struct SpeciesPhotoFullScreen: View {
                     }
                     .font(.subheadline)
                     .multilineTextAlignment(.center)
-                    .foregroundStyle(onShowOnMap != nil ? Color.accentColor : Color.white)
+                    .foregroundStyle(mappable ? Color.accentColor : Color.white)
                 }
                 Text(date, format: .dateTime.year().month(.abbreviated).day())
                     .font(.subheadline)
@@ -730,7 +748,7 @@ struct SpeciesPhotoFullScreen: View {
                     .foregroundStyle(.white)
             }
 
-            if let onShowOnMap {
+            if let onShowOnMap, mappable {
                 Button { onShowOnMap(item) } label: {
                     block
                         // Generous hit area: padding around the whole place+date

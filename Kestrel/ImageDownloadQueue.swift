@@ -6,7 +6,11 @@ import Foundation
 /// photo base that holds this size's pre-rendered JPEGs (see
 /// `scripts/build_species_photos.py`): `thumb` is 300 px tall (lists, map pins,
 /// the watch's "now hearing" screen), `hero` is 900 px tall.
-enum ImageSize: Sendable {
+/// `nonisolated` as well as `Sendable`: the project is MainActor-by-default, so
+/// without it even this plain enum's synthesized `Equatable` / `Hashable`
+/// conformances are main-actor isolated, and the off-main download paths that
+/// compare sizes can't use them.
+nonisolated enum ImageSize: Sendable {
     case thumb
     case medium
 
