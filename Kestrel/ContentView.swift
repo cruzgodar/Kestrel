@@ -322,6 +322,7 @@ struct ContentView: View {
                     detectionRow(for: detection, lifeListNames: lifeListNames)
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                 }
                 if !aged.isEmpty {
                     Text("Over a minute ago")
@@ -338,6 +339,7 @@ struct ContentView: View {
                         detectionRow(for: detection, lifeListNames: lifeListNames)
                             .listRowInsets(EdgeInsets())
                             .listRowSeparator(.hidden)
+                            .listRowBackground(Color.clear)
                     }
                 }
             }
@@ -357,6 +359,10 @@ struct ContentView: View {
 
     // Faint blue persistent tint for starred species (alert-me list).
     private static let starredTint = Color(hue: 215.0 / 360.0, saturation: 0.5, brightness: 1.0)
+
+    /// How far a row's tint extends past its own leading edge — see the
+    /// `.background` in `detectionRow`. Wider than any swipe can travel.
+    private static let swipeTintOverhang: CGFloat = 600
 
     /// The Identify empty-state description with "starred birds" on a blue pill
     /// and "those not on your life list" on a purple pill, matching the row
@@ -443,13 +449,10 @@ struct ContentView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // The tint is the row's *background*, not part of its content. It used
-        // to live in a `.background` inside the content — which kept it glued
-        // to the row through a diagonal scroll rubberband, but meant a swiped
-        // row slid its own color away with it and exposed bare white behind,
-        // and left the system nothing to apply its swipe treatment to. As a
-        // row background it slides correctly and picks up the same rounding
-        // and darkening the Life List's rows get.
+        // .background lives *inside* the row's content view, so it stays
+        // glued to the row through any scroll rubberband. Using
+        // .listRowBackground would let the rubberband expose a sliver of
+        // the system background when swiping diagonally.
         .background(
             ZStack {
                 Self.recordHighlight
@@ -463,10 +466,13 @@ struct ContentView: View {
                         value: flashing
                     )
             }
+            // Overhang past the row's leading edge. A leading swipe slides the
+            // whole content view aside, and the plain window background behind
+            // the list shows through the space it vacated — a white slab over a
+            // tinted row. Extending the tint well past the edge means the
+            // vacated space is still the row's own color.
+            .padding(.leading, -Self.swipeTintOverhang)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .padding(.horizontal, 10)
-        .padding(.vertical, 3)
         // Every row, not just the ones showing a plus: a bird already on the
         // life list still deserves today's sighting recorded. Matches the Life
         // List tab's leading swipe, full swipe included — running the whole

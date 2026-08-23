@@ -26,6 +26,13 @@ nonisolated final class SpectrogramRenderer: @unchecked Sendable {
     /// How many columns the most-recent BirdNET window covers (3 s / hop), clipped.
     static let highlightSpan: Int = min((48_000 * 3) / hop, columnCount)
 
+    /// A pump gap longer than this means the display link was paused — the user
+    /// left the Identify tab or backgrounded the app — rather than the app
+    /// merely dropping frames. Comfortably above the ~0.16 s the existing
+    /// burst-rebase treats as a system hiccup, and short enough that any real
+    /// tab switch is caught.
+    static let pauseGapThreshold: CFTimeInterval = 0.35
+
     // MARK: Storage (ring-buffer order)
 
     private let lock = NSLock()
@@ -33,6 +40,9 @@ nonisolated final class SpectrogramRenderer: @unchecked Sendable {
     private var pumpAnchorTime: CFTimeInterval = 0
     private var pumpAnchorColumn: Int = 0
     private var totalColumnsGenerated: Int = 0
+    /// `displayTime` of the previous pump, or 0 before the first one. Used to
+    /// notice that the display link was paused — see `pauseGapThreshold`.
+    private var lastPumpTime: CFTimeInterval = 0
     /// RGBA8 columns laid out side-by-side in *ring* order. `writeColumn` is the
     /// position of the next column to write; the column at `writeColumn` is the
     /// oldest in display order.
@@ -144,6 +154,7 @@ nonisolated final class SpectrogramRenderer: @unchecked Sendable {
         writeColumn = 0
         pumpAnchorTime = 0
         pumpAnchorColumn = 0
+        lastPumpTime = 0
         totalColumnsGenerated = 0
         for i in 0..<columnTintKind.count { columnTintKind[i] = 0 }
         tintGeneration &+= 1
@@ -168,6 +179,24 @@ nonisolated final class SpectrogramRenderer: @unchecked Sendable {
     /// into uniform per-frame motion.
     func pumpColumns(at displayTime: CFTimeInterval) {
         lock.lock(); defer { lock.unlock() }
+
+        // The display link is paused whenever the Identify tab is off screen or
+        // the app is inactive, so a long silence here means the user was away —
+        // audio kept being captured, but nothing was drawn. Resuming without
+        // accounting for that splices the columns from before the absence flush
+        // against the ones after it, so a spectrogram from ten minutes ago reads
+        // as continuous with what's happening now. Draw the absence instead: one
+        // blank column per column-time missed, and discard the ~1 s of audio
+        // buffered during it, which belongs to the gap rather than to now.
+        if lastPumpTime != 0, displayTime - lastPumpTime > Self.pauseGapThreshold {
+            insertBlankColumnsLocked(seconds: displayTime - lastPumpTime)
+            pending.removeAll(keepingCapacity: true)
+            // Re-anchor pacing on the next pump that actually has audio, the
+            // same way a fresh session does.
+            pumpAnchorTime = 0
+        }
+        lastPumpTime = displayTime
+
         // Anchor on the first pump that has audio.
         if pumpAnchorTime == 0 {
             guard pending.count >= Self.fftSize else { return }
@@ -204,6 +233,51 @@ nonisolated final class SpectrogramRenderer: @unchecked Sendable {
         case lifer = 1
         case needsAdd = 2
         case starred = 3
+    }
+
+    /// Advances the ring by `seconds` worth of empty columns, representing time
+    /// that passed with nothing drawn. Caller holds the lock.
+    private func insertBlankColumnsLocked(seconds: CFTimeInterval) {
+        let count = Int(seconds * Self.columnsPerSecond)
+        guard count > 0 else { return }
+
+        // Longer than the whole visible history: every column on screen is part
+        // of the gap, so clear the buffer outright rather than writing 720+
+        // columns one at a time. Same 4-byte RGBA pattern `reset` uses.
+        if count >= Self.columnCount {
+            var pattern: UInt32 = 0xFF00_0000
+            ringPixels.withUnsafeMutableBufferPointer { bp in
+                if let base = bp.baseAddress {
+                    memset_pattern4(base, &pattern, bp.count)
+                }
+            }
+            for i in 0..<columnTintKind.count { columnTintKind[i] = 0 }
+            tintGeneration &+= 1
+        } else {
+            for _ in 0..<count { writeBlankColumnLocked() }
+        }
+        totalColumnsGenerated += count
+        cachedImage = nil
+        cachedImageWriteCol = -1
+    }
+
+    /// Writes one silent column at `writeColumn` and advances. Silence is the
+    /// same all-zero luminance `reset` fills with, so a gap is indistinguishable
+    /// from a freshly-cleared spectrogram.
+    private func writeBlankColumnLocked() {
+        let xOffset = writeColumn * 4
+        for y in 0..<Self.displayBins {
+            let idx = y * rowBytes + xOffset
+            ringPixels[idx + 0] = 0
+            ringPixels[idx + 1] = 0
+            ringPixels[idx + 2] = 0
+            ringPixels[idx + 3] = 255
+        }
+        if columnTintKind[writeColumn] != 0 {
+            columnTintKind[writeColumn] = 0
+            tintGeneration &+= 1
+        }
+        writeColumn = (writeColumn + 1) % Self.columnCount
     }
 
     /// Retroactively tints the most-recent `highlightSpan` columns. The tint
