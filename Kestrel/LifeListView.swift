@@ -546,7 +546,7 @@ struct LifeListView: View {
             onExported: handleExport(_:)
         ))
         .alert(
-            pendingDeletion.map { "Remove \($0.commonName) from your life list?" } ?? "",
+            pendingDeletion.map { "Remove all \($0.commonName) observations from your life list? You can remove an individual observation from the map." } ?? "",
             isPresented: Binding(
                 get: { pendingDeletion != nil },
                 set: { if !$0 { pendingDeletion = nil } }
@@ -570,7 +570,7 @@ struct LifeListView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Are you sure you want to permanently remove all \(store.entries.count) species from your life list? This cannot be undone. Your stars will be preserved if you re-add the species later.")
+            Text("Are you sure you want to permanently remove all \(store.entries.count) observations from your life list? This cannot be undone. Your stars will be preserved if you re-add the species later.")
         }
         }
     }
@@ -591,12 +591,10 @@ struct LifeListView: View {
     @ViewBuilder
     private func existingRow(entry: LifeListEntry) -> some View {
         HStack(spacing: 12) {
-            // The name and its caption are a menu button: a tap drops the same
-            // actions the row's haptic-touch menu offers. Only this region —
-            // the star and the thumbnail keep their own single-tap actions.
-            Menu {
-                rowMenu(entry: entry)
-            } label: {
+            // Plain text, not a button: the row's actions are reached by
+            // haptic touch anywhere on the row (see `.contextMenu` below), so
+            // the name has no tap action of its own. The star and the
+            // thumbnail keep theirs.
             VStack(alignment: .leading, spacing: 2) {
                 Text(entry.commonName)
                     .font(.headline)
@@ -618,16 +616,11 @@ struct LifeListView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
-            // Stretch the tap target to the full row height (set by the
-            // trailing thumbnail) so taps beside the text still register.
+            // Stretch to the full row height (set by the trailing thumbnail)
+            // so a haptic touch beside the text still lands on the row.
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            }
-            // Plain, so the menu label renders as row text rather than picking
-            // up the accent color and the button press dimming.
-            .buttonStyle(.plain)
             .foregroundStyle(.primary)
-            .accessibilityLabel("Actions for \(entry.commonName)")
             Button {
                 // A single short tap to confirm the star toggled.
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -695,49 +688,28 @@ struct LifeListView: View {
             }
             .tint(.red)
         }
-        // Haptic touch anywhere on the row raises the same menu the name taps
-        // open, so the gesture works over the thumbnail and star too.
+        // Haptic touch anywhere on the row raises its actions — over the
+        // thumbnail and star as well as the name.
         .contextMenu {
-            rowMenu(entry: entry)
-        }
-    }
-
-    /// The four things a life-list row can do. Shared verbatim by the name's
-    /// tap menu and the row's haptic-touch menu so the two can never drift.
-    @ViewBuilder
-    private func rowMenu(entry: LifeListEntry) -> some View {
-        Button {
-            beginAdd(
-                scientificName: entry.scientificName,
-                commonName: entry.commonName
+            SpeciesRowMenu(
+                onAddObservation: {
+                    beginAdd(
+                        scientificName: entry.scientificName,
+                        commonName: entry.commonName
+                    )
+                },
+                star: (entry.isStarred, {
+                    // The same single short tap the row's star button gives.
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    store.setStarred(
+                        scientificName: entry.scientificName,
+                        isStarred: !entry.isStarred
+                    )
+                }),
+                onViewImage: { presentPhoto(entry.scientificName) },
+                // Routed through the same confirmation alert as the swipe.
+                onDelete: { pendingDeletion = entry }
             )
-        } label: {
-            Label("Add Observation", systemImage: "plus")
-        }
-        Button {
-            // The same single short tap the row's star button gives.
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            store.setStarred(
-                scientificName: entry.scientificName,
-                isStarred: !entry.isStarred
-            )
-        } label: {
-            // Mirrors the row's own star button, which is a toggle.
-            Label(
-                entry.isStarred ? "Unstar" : "Star",
-                systemImage: entry.isStarred ? "star.slash" : "star"
-            )
-        }
-        Button {
-            presentPhoto(entry.scientificName)
-        } label: {
-            Label("View Image", systemImage: "photo")
-        }
-        // Routed through the same confirmation alert as the swipe.
-        Button(role: .destructive) {
-            pendingDeletion = entry
-        } label: {
-            Label("Delete", systemImage: "trash")
         }
     }
 
@@ -796,6 +768,17 @@ struct LifeListView: View {
                 Label("Add Observation", systemImage: "plus")
             }
             .tint(Self.addButtonTint)
+        }
+        // Same haptic-touch menu the life-list rows carry, minus the two
+        // actions a suggestion has nothing to apply them to: there is no entry
+        // to delete, and no bird on the list yet to be alerted about.
+        .contextMenu {
+            SpeciesRowMenu(
+                onAddObservation: {
+                    beginAdd(scientificName: scientificName, commonName: commonName)
+                },
+                onViewImage: { presentPhoto(scientificName) }
+            )
         }
     }
 

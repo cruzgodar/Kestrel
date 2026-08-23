@@ -6,6 +6,10 @@ import UIKit
 struct ContentView: View {
     @Environment(RecordingManager.self) private var manager
     @Environment(LifeListStore.self) private var lifeListStore
+    /// Drives the full-screen viewer for the row menu's View Image. Detection
+    /// rows open it on the one bird, matching what tapping their hero image
+    /// already does.
+    @Environment(SpeciesPhotoPresenter.self) private var photoPresenter: SpeciesPhotoPresenter?
 
     /// Measured width of the record-button row, used to compute how far the
     /// stop button must slide left from center to reach the leading edge.
@@ -546,6 +550,34 @@ struct ContentView: View {
                 Label("Add Observation", systemImage: "plus")
             }
             .tint(Self.recordTint)
+        }
+        // The same haptic-touch menu the Life List rows carry, minus Delete —
+        // a detection isn't a life-list entry, and the bird being heard right
+        // now is the last thing to offer to remove.
+        //
+        // Star only appears once the bird is actually on the life list
+        // (`alreadyAdded`, the live store membership rather than the frozen
+        // session snapshot): starring is "alert me about this bird again",
+        // which belongs to a bird you've recorded, not to every stranger the
+        // classifier turns up. Add it first and the item appears.
+        .contextMenu {
+            SpeciesRowMenu(
+                onAddObservation: {
+                    beginAdd(
+                        scientificName: detection.scientificName,
+                        commonName: detection.commonName
+                    )
+                },
+                star: alreadyAdded ? (isStarred, {
+                    // The same single short tap the life-list star gives.
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    lifeListStore.setStarred(
+                        scientificName: detection.scientificName,
+                        isStarred: !isStarred
+                    )
+                }) : nil,
+                onViewImage: { photoPresenter?.present(detection.scientificName) }
+            )
         }
     }
 
