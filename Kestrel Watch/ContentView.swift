@@ -235,15 +235,6 @@ struct ContentView: View {
                     .opacity(idling ? 1 : 0)
                     .allowsHitTesting(false)
 
-                addButton(size: Self.cornerButtonSize)
-                    // `interButtonGap` to the right of the stop button, same row.
-                    .position(x: cornerC + 2 * r + Self.interButtonGap, y: cornerC)
-                    // Visible only while recording a bird that was new to the
-                    // life list at session start; fades with the rest of the
-                    // content.
-                    .opacity(showAddButton ? 1 : 0)
-                    .allowsHitTesting(showAddButton)
-
                 // Resume / Discard / Save, drawn directly on the screen rather
                 // than in a sheet so the buttons can morph into and out of the
                 // record control instead of sliding a modal over it. All three
@@ -622,40 +613,6 @@ struct ContentView: View {
             case .resume:  break  // Resume is the record control (`resumeBirding`)
             }
         }
-    }
-
-    // MARK: - Add to life list button
-
-    /// Whether the add-to-life-list button is shown: only while recording and
-    /// only for a bird that was *not* on the life list at the start of this
-    /// listening session. The phone freezes its life-list snapshot per session,
-    /// so a bird's `.newSpecies` highlight (and thus this button) stays constant
-    /// for the whole session even after the user adds it — the button just
-    /// flips to its checkmark state.
-    private var showAddButton: Bool {
-        session.isRecording && session.lastBird?.highlight == .newSpecies
-    }
-
-    /// A circle matching the stop button in size and color, carrying the same
-    /// plus → checkmark add-to-life-list affordance as the phone's Identify and
-    /// life-list rows (`symbolEffect(.replace)`), including tap-to-undo. The
-    /// checkmark state is remembered for the whole session, so re-hearing an
-    /// already-added bird shows the checkmark without re-adding. `size` matches
-    /// the (shrunk) stop button.
-    private func addButton(size: CGFloat) -> some View {
-        let added = session.isCurrentBirdAdded
-        return Button {
-            session.toggleCurrentBirdLifeList()
-        } label: {
-            Image(systemName: added ? "checkmark" : "plus")
-                .font(.system(size: size * Self.cornerGlyphRatio, weight: .bold))
-                .foregroundStyle(.white)
-                .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
-                .frame(width: size, height: size)
-                .background(Circle().fill(Self.recordTint))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(added ? "Remove from life list" : "Add to life list")
     }
 
     // MARK: - Corner button geometry

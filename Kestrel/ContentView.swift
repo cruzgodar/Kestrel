@@ -322,7 +322,6 @@ struct ContentView: View {
                     detectionRow(for: detection, lifeListNames: lifeListNames)
                         .listRowInsets(EdgeInsets())
                         .listRowSeparator(.hidden)
-                        .listRowBackground(Color.clear)
                 }
                 if !aged.isEmpty {
                     Text("Over a minute ago")
@@ -339,7 +338,6 @@ struct ContentView: View {
                         detectionRow(for: detection, lifeListNames: lifeListNames)
                             .listRowInsets(EdgeInsets())
                             .listRowSeparator(.hidden)
-                            .listRowBackground(Color.clear)
                     }
                 }
             }
@@ -403,7 +401,7 @@ struct ContentView: View {
                     .font(.headline)
                 Spacer()
                 if needsLifeListAdd {
-                    Button {
+                    AddGlyphButton(isAdded: alreadyAdded) {
                         // Tapping the checkmark undoes the add; the symbol-
                         // replace transition reverse-animates back to a plus.
                         if alreadyAdded {
@@ -420,15 +418,7 @@ struct ContentView: View {
                             scientificName: detection.scientificName,
                             commonName: detection.commonName
                         )
-                    } label: {
-                        Image(systemName: alreadyAdded ? "checkmark" : "plus")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
-                            .frame(width: 32, height: 32)
-                            .background(Self.recordTint, in: Circle())
                     }
-                    .buttonStyle(NoDimButtonStyle())
                     .accessibilityLabel(
                         alreadyAdded
                             ? "Remove \(detection.commonName) from Life List"
@@ -453,10 +443,13 @@ struct ContentView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // .background lives *inside* the row's content view, so it stays
-        // glued to the row through any scroll rubberband. Using
-        // .listRowBackground would let the rubberband expose a sliver of
-        // the system background when swiping diagonally.
+        // The tint is the row's *background*, not part of its content. It used
+        // to live in a `.background` inside the content — which kept it glued
+        // to the row through a diagonal scroll rubberband, but meant a swiped
+        // row slid its own color away with it and exposed bare white behind,
+        // and left the system nothing to apply its swipe treatment to. As a
+        // row background it slides correctly and picks up the same rounding
+        // and darkening the Life List's rows get.
         .background(
             ZStack {
                 Self.recordHighlight
@@ -471,6 +464,9 @@ struct ContentView: View {
                     )
             }
         )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 3)
         // Every row, not just the ones showing a plus: a bird already on the
         // life list still deserves today's sighting recorded. Matches the Life
         // List tab's leading swipe, full swipe included — running the whole
@@ -504,7 +500,7 @@ struct ContentView: View {
     /// Writes the pending species at the chosen date, coordinate, and place
     /// name — creating the life-list entry or filing another sighting under an
     /// existing one, whichever applies.
-    private func commitPendingAdd(at coordinate: CLLocationCoordinate2D, name: String?) {
+    private func commitPendingAdd(at coordinate: CLLocationCoordinate2D, name: String) {
         guard let pending = pendingAdd else { return }
         lifeListStore.recordObservation(
             scientificName: pending.scientificName,

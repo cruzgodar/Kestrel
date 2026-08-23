@@ -753,27 +753,17 @@ struct LifeListView: View {
                     .italic()
             }
             Spacer()
-            Button {
+            AddGlyphButton(isAdded: alreadyAdded) {
                 // Tapping the checkmark undoes the add; the symbol-replace
                 // transition reverse-animates back to a plus.
                 if alreadyAdded {
                     store.remove(scientificName: scientificName)
                     return
                 }
-                // Unlike the Identify tab's plus (which logs here and now, from
-                // a live detection), a Life List add is a bird the user is
-                // recalling — so it asks when, then where, before writing
-                // anything. See `beginAdd`.
+                // A Life List add is a bird the user is recalling, so it asks
+                // when, then where, before writing anything. See `beginAdd`.
                 beginAdd(scientificName: scientificName, commonName: commonName)
-            } label: {
-                Image(systemName: alreadyAdded ? "checkmark" : "plus")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(.white)
-                    .contentTransition(.symbolEffect(.replace, options: .speed(2.6)))
-                    .frame(width: 32, height: 32)
-                    .background(Self.addButtonTint, in: Circle())
             }
-            .buttonStyle(GrowButtonStyle())
             .accessibilityLabel(
                 alreadyAdded
                     ? "Remove \(commonName) from Life List"
@@ -790,6 +780,17 @@ struct LifeListView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
+        // Redundant with the plus button sitting right there, but every other
+        // row in the app adds by swiping and muscle memory shouldn't stop at
+        // the search results.
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                beginAdd(scientificName: scientificName, commonName: commonName)
+            } label: {
+                Label("Add Observation", systemImage: "plus")
+            }
+            .tint(Self.addButtonTint)
+        }
     }
 
     // MARK: - Two-step add flow
@@ -810,7 +811,7 @@ struct LifeListView: View {
     /// coordinate, and place name. Called from the naming sheet's confirm
     /// button; `pendingAdd` is cleared when the flow's presentations come down
     /// right after.
-    private func commitPendingAdd(at coordinate: CLLocationCoordinate2D, name: String?) {
+    private func commitPendingAdd(at coordinate: CLLocationCoordinate2D, name: String) {
         guard let pending = pendingAdd else { return }
         // The same flow serves both entry points: a catalog suggestion's plus
         // creates the entry, while Add Observation files another sighting under a
@@ -877,18 +878,25 @@ struct LifeListView: View {
 
         pendingExport = payload
         exportDocument = EBirdCSVDocument(data: payload.csv)
-        showExportInfo = false
-        // Same one-runloop gap the import flow uses, so the dismissing sheet and
-        // the save panel don't collide.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            isExporting = true
-        }
+        // The sheet stays up and the save panel comes up over it, so backing
+        // out of the picker lands back on the two buttons rather than on the
+        // Life List. `.fileExporter` is attached to the sheet's own content for
+        // exactly this reason — see `ExportInfoSheet`.
+        isExporting = true
     }
 
     private func handleExport(_ result: Result<URL, Error>) {
         defer {
             pendingExport = nil
             exportDocument = nil
+            // The picker was presented from the export sheet, so the sheet is
+            // still standing underneath. Drop it, then let it finish leaving
+            // before the alert goes up — an alert raised from a view that's on
+            // its way out never appears.
+            showExportInfo = false
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                showExportResult = true
+            }
         }
         switch result {
         case .success:
@@ -915,11 +923,9 @@ struct LifeListView: View {
                 )
             }
             exportMessage = parts.joined(separator: " ")
-            showExportResult = true
         case .failure(let error):
             exportResultTitle = "Export Failed"
             exportMessage = error.localizedDescription
-            showExportResult = true
         }
     }
 
@@ -1006,15 +1012,14 @@ private struct ExportPresentations: ViewModifier {
     func body(content: Content) -> some View {
         content
             .sheet(isPresented: $showInfo) {
-                ExportInfoSheet(store: store, progress: progress, onExport: onExport)
-            }
-            .fileExporter(
-                isPresented: $isExporting,
-                document: document,
-                contentType: .commaSeparatedText,
-                defaultFilename: EBirdCSVExporter.defaultFilename()
-            ) { result in
-                onExported(result)
+                ExportInfoSheet(
+                    store: store,
+                    progress: progress,
+                    isExporting: $isExporting,
+                    document: document,
+                    onExport: onExport,
+                    onExported: onExported
+                )
             }
             .alert(resultTitle, isPresented: $showResult, presenting: message) { _ in
                 Button("OK", role: .cancel) { }
@@ -1043,7 +1048,7 @@ struct AddFlowPresentations: ViewModifier {
     /// species thumbnails.
     let store: LifeListStore
     let onDismissed: () -> Void
-    let onSave: (CLLocationCoordinate2D, String?) -> Void
+    let onSave: (CLLocationCoordinate2D, String) -> Void
 
     func body(content: Content) -> some View {
         content.sheet(isPresented: $showDate, onDismiss: {
@@ -1079,7 +1084,7 @@ struct ObservationDateSheet: View {
     @Binding var showLocationPicker: Bool
     let store: LifeListStore
     let onCancel: () -> Void
-    let onSave: (CLLocationCoordinate2D, String?) -> Void
+    let onSave: (CLLocationCoordinate2D, String) -> Void
 
     /// The pin the user dropped on the map, held while step three asks what to
     /// call the place. Nothing is written until that sheet is confirmed.
@@ -1147,14 +1152,15 @@ struct ObservationDateSheet: View {
 
 /// Step three of the add flow: what do you call this place? Opens with the
 /// keyboard already up and the field pre-filled — see `defaultName`. The
-/// suggestion is only a starting point; the user is free to clear it, and an
-/// empty field saves the observation with no place name at all (which is what
-/// manual adds did before this step existed).
+/// suggestion is only a starting point and the user is free to type over it,
+/// but it can't be left blank: confirm stays disabled until the field holds
+/// something. Every sighting Kestrel records itself therefore carries a place
+/// name, which is what the eBird export needs to place it.
 struct ObservationNameSheet: View {
     let coordinate: CLLocationCoordinate2D
     let store: LifeListStore
     let onCancel: () -> Void
-    let onSave: (String?) -> Void
+    let onSave: (String) -> Void
 
     @State private var name = ""
     /// True while the reverse lookup is in flight, so the field can show it's
@@ -1198,6 +1204,7 @@ struct ObservationNameSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(role: .confirm) { save() }
+                        .disabled(trimmedName.isEmpty)
                 }
             }
         }
@@ -1215,12 +1222,20 @@ struct ObservationNameSheet: View {
         }
     }
 
+    /// What confirm would actually store. Also gates the button and the
+    /// keyboard's return key — a field holding only spaces is empty.
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func save() {
+        // Belt and braces alongside the disabled confirm: `.onSubmit` fires on
+        // the return key, which stays live even while the button is disabled.
+        guard !trimmedName.isEmpty else { return }
         // Two-pulse confirmation, moved here from the map's Save Observation
         // button: this is the tap that actually writes the sighting.
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        onSave(trimmed.isEmpty ? nil : trimmed)
+        onSave(trimmedName)
     }
 
     /// A mile. Close enough that two pins are almost certainly the same
@@ -1325,9 +1340,15 @@ private struct ExportInfoSheet: View {
     /// rather than after tearing it down.
     let store: LifeListStore
     let progress: ExportProgress
+    /// The system save panel is presented from *this* sheet rather than from
+    /// the Life List, so it layers over the buttons instead of making them
+    /// leave first — cancelling the picker lands back here.
+    @Binding var isExporting: Bool
+    let document: EBirdCSVDocument?
     /// Invoked with the scope of whichever button was tapped, once that scope
     /// is known to produce at least one row.
     let onExport: (LifeListStore.ExportScope) -> Void
+    let onExported: (Result<URL, Error>) -> Void
 
     /// The scope whose export came back empty — drives the alert below.
     @State private var emptyScope: LifeListStore.ExportScope?
@@ -1342,7 +1363,7 @@ private struct ExportInfoSheet: View {
                 Text("Export Your Life List")
                     .font(.title2.weight(.bold))
                     .multilineTextAlignment(.center)
-                // Markdown so "eBird's import tool" renders as an inline
+                // Markdown so the import-tool phrase renders as an inline
                 // tappable link, matching the import sheet's treatment.
                 Text(.init("You can export your sightings in eBird's Record format for [its import tool](https://ebird.org/import/upload.form). eBird does not check for duplicate observations, so it is recommended to export only new observations."))
                     .font(.body)
@@ -1400,6 +1421,14 @@ private struct ExportInfoSheet: View {
         // copy gets truncated rather than wrapped.
         .presentationDetents([.fraction(0.62)])
         .presentationDragIndicator(.hidden)
+        .fileExporter(
+            isPresented: $isExporting,
+            document: document,
+            contentType: .commaSeparatedText,
+            defaultFilename: EBirdCSVExporter.defaultFilename()
+        ) { result in
+            onExported(result)
+        }
         // Dim + card over the sheet's own content while the CSV renders, rather
         // than a second presentation on top of this one. Only ever on screen
         // for a list big enough to take a moment (see `beginExport`).
