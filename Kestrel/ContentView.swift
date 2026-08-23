@@ -28,6 +28,13 @@ struct ContentView: View {
     /// Height of the trailing thumbnail on detection rows. Width follows at 4:3.
     private static let rowThumbnailHeight: CGFloat = 72
 
+    /// Height of the spectrogram strip pinned above the results while recording.
+    private static let spectrogramHeight: CGFloat = 80
+    /// Height of the blank, non-swipeable spacer row that sits above every
+    /// detection row (see `topSpacerRow`). Adjust to change how far the first
+    /// real row sits from the top of the list.
+    private static let topSpacerRowHeight: CGFloat = 24
+
     /// Diameter of the circular stop button.
     private static let stopButtonDiameter: CGFloat = 56
     /// How far the stop button is nudged right from the leading edge.
@@ -39,6 +46,23 @@ struct ContentView: View {
         Self.stopButtonRightInset + Self.stopButtonDiameter / 2 - bottomBarWidth / 2
     }
 
+    /// Top inset for the results list.
+    ///
+    /// Reserved only when the spectrogram is up *and* there are real rows to
+    /// scroll — the empty filler renders through the overlay and shouldn't get
+    /// shoved down.
+    ///
+    /// Short by `topSpacerRowHeight`, deliberately: the list leads with a blank
+    /// spacer row (see `topSpacerRow`), and pulling the list up by exactly that
+    /// much parks the spacer *behind* the spectrogram, which is opaque and drawn
+    /// over it. The first detection row then sits flush against the strip's
+    /// bottom edge while the spacer still does its job. Clamped so an oversized
+    /// spacer can't push the list up past the strip and out from under it.
+    private var listTopPadding: CGFloat {
+        guard manager.isRecording, !manager.detections.isEmpty else { return 0 }
+        return max(0, Self.spectrogramHeight - Self.topSpacerRowHeight)
+    }
+
     var body: some View {
         ZStack(alignment: .top) {
             // Results fill the entire screen and scroll under both the floating
@@ -46,16 +70,13 @@ struct ContentView: View {
             // keeps the final rows reachable above the button.
             resultsView
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                // Reserve 80pt at the top for the spectrogram only when
-                // there are real rows to scroll; the empty filler renders
-                // through the overlay and shouldn't get shoved down.
-                .padding(.top, (manager.isRecording && !manager.detections.isEmpty) ? 80 : 0)
+                .padding(.top, listTopPadding)
                 .animation(.easeOut(duration: 0.15), value: manager.isRecording)
                 .animation(.easeOut(duration: 0.15), value: manager.detections.isEmpty)
 
             if manager.isRecording {
                 SpectrogramView(renderer: manager.spectrogram)
-                    .frame(height: 80)
+                    .frame(height: Self.spectrogramHeight)
                     .frame(maxWidth: .infinity)
                     .clipped()
                     // Small Apple Watch glyph in the top-left while the watch
@@ -318,6 +339,7 @@ struct ContentView: View {
             // re-render, added up).
             let lifeListNames = Set(lifeListStore.entries.map(\.scientificName))
             List {
+                topSpacerRow
                 ForEach(recent) { detection in
                     detectionRow(for: detection, lifeListNames: lifeListNames)
                         .listRowInsets(EdgeInsets())
@@ -344,6 +366,12 @@ struct ContentView: View {
                 }
             }
             .listStyle(.plain)
+            // `topSpacerRow` is only as tall as `topSpacerRowHeight` says. Left
+            // at SwiftUI's default minimum row height (44pt) it would hold a
+            // wide blank band open even at height 0. Every detection row is far
+            // taller than any minimum, so dropping the floor to 0 changes
+            // nothing else in this list.
+            .environment(\.defaultMinListRowHeight, 0)
             .scrollContentBackground(.hidden)
             .scrollBounceBehavior(.basedOnSize)
             // Inset the scrollable content so the last rows can be scrolled
@@ -355,6 +383,19 @@ struct ContentView: View {
             // isn't affected when the spectrogram appears above it.
             Color.clear
         }
+    }
+
+    /// Blank first row, `topSpacerRowHeight` tall. A row rather than padding on
+    /// the list, so the separation is part of the scrolling content and travels
+    /// with it. Carries no `swipeActions` and no hit testing, so it can't be
+    /// swiped, tapped, or selected — it exists only to hold space.
+    private var topSpacerRow: some View {
+        Color.clear
+            .frame(height: Self.topSpacerRowHeight)
+            .allowsHitTesting(false)
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
     }
 
     // Faint blue persistent tint for starred species (alert-me list).

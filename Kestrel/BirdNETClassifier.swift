@@ -60,7 +60,15 @@ actor BirdNETClassifier {
 
         if ORTIsCoreMLExecutionProviderAvailable() {
             do {
-                try options.appendCoreMLExecutionProvider(withOptionsV2: ["MLComputeUnits": "ALL"])
+                // `ModelCacheDirectory` is not an optimization — without it the
+                // EP compiles the model into a new temp directory per session
+                // and deletes it only on a clean close, which a background-audio
+                // app that gets killed rarely gets to do. See `CoreMLModelCache`.
+                var coreML = ["MLComputeUnits": "ALL"]
+                if let cache = CoreMLModelCache.directory(forModel: "birdnet") {
+                    coreML["ModelCacheDirectory"] = cache
+                }
+                try options.appendCoreMLExecutionProvider(withOptionsV2: coreML)
             } catch {
                 Log.warning("BirdNET: CoreML EP unavailable (\(error)), falling back to CPU")
             }

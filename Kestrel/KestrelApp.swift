@@ -116,6 +116,14 @@ struct KestrelApp: App {
     enum AppTab: Hashable { case identify, lifeList, map, settings }
 
     init() {
+        // Sweep the compiled CoreML models that pre-`CoreMLModelCache` builds
+        // left in tmp on every kill — gigabytes on a device that has been
+        // recording for a while. Detached and low priority: it walks tmp, and
+        // nothing at launch waits on it.
+        Task.detached(priority: .background) {
+            CoreMLModelCache.purgeLegacyTempModels()
+        }
+
         let manager = RecordingManager()
         // Kick off BirdNET + geo-model loading in the background as soon as
         // the app launches, so the first Start Recording tap is instant.

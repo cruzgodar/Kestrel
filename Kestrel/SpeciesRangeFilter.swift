@@ -28,7 +28,12 @@ actor SpeciesRangeFilter {
         try options.setIntraOpNumThreads(1)
         try options.setGraphOptimizationLevel(.all)
         if ORTIsCoreMLExecutionProviderAvailable() {
-            try? options.appendCoreMLExecutionProvider(withOptionsV2: ["MLComputeUnits": "ALL"])
+            // Same leaked-temp-model story as BirdNET — see `CoreMLModelCache`.
+            var coreML = ["MLComputeUnits": "ALL"]
+            if let cache = CoreMLModelCache.directory(forModel: "birdnet_data_model") {
+                coreML["ModelCacheDirectory"] = cache
+            }
+            try? options.appendCoreMLExecutionProvider(withOptionsV2: coreML)
         }
         self.env = env
         self.session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)

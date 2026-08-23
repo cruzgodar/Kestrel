@@ -1351,6 +1351,12 @@ final class RecordingManager {
 
         // Sort by lastSeen so the most recently heard species is always at
         // the top. Reorder is animated so rows visibly slide into place.
+        //
+        // Filming this on the *simulator* shows the list's top going blank for
+        // the length of the animation, on every merge. It does not reproduce on
+        // device, so it's a simulator rendering artifact — don't "fix" it by
+        // dropping the animation, which only trades a real behavior for a fake
+        // bug.
         withAnimation(.easeInOut(duration: 0.3)) {
             detections = detectionMap.values.sorted { $0.lastSeen > $1.lastSeen }
         }
