@@ -62,8 +62,10 @@ struct MapView: View {
     /// far too coarse to stand in for "where I saw this bird."
     let picker: LocationPicker?
 
-    /// Callbacks the location-picker mode reports through. `onConfirm` only
-    /// fires once a coordinate has been long-pressed and Save Observation tapped.
+    /// Callbacks the location-picker mode reports through. `onConfirm` fires
+    /// when Save Observation is tapped, carrying whatever location is pinned —
+    /// the current location the picker opens on, or wherever the user
+    /// long-pressed instead.
     struct LocationPicker {
         let onBack: () -> Void
         let onConfirm: (CLLocationCoordinate2D) -> Void
@@ -88,6 +90,9 @@ struct MapView: View {
     /// pin dissolves from the old spot to the new instead of sliding across the
     /// map. `dropPin` schedules the stale entries' removal.
     @State private var pickedPins: [PickedPin] = []
+    /// Set when the picker's default pin could not be taken from a location
+    /// fix, so the next camera settle supplies it instead — see `seedPickerPin`.
+    @State private var pickerWantsCameraSeed = false
     /// Live touch point, recorded by a zero-distance drag that runs alongside
     /// the map's own gestures. `LongPressGesture` reports no location of its
     /// own, so this is what the long press converts into a coordinate.
@@ -106,12 +111,58 @@ struct MapView: View {
         pickedPins.last?.coordinate
     }
 
+    /// What Save Observation commits. Normally the dropped pin; the camera's
+    /// own center covers the sliver of time before the default pin is seeded
+    /// (see `seedPickerPin`), so the always-visible button is never a dead tap
+    /// once the map has drawn a frame. `lastSpan` is the "camera has reported
+    /// at least once" flag — without it `lastCenter` is still its (0, 0)
+    /// placeholder.
+    private var committableCoordinate: CLLocationCoordinate2D? {
+        if let pickedCoordinate { return pickedCoordinate }
+        guard camera.lastSpan != nil else { return nil }
+        return camera.lastCenter
+    }
+
     /// How long the pin takes to dissolve from its old spot to the new one.
     private static let pinCrossfade: Double = 0.22
 
-    /// Whether a pin is down — drives the crossfade between the long-press
-    /// instruction and the Save Observation button.
-    private var hasPickedLocation: Bool { !pickedPins.isEmpty }
+    /// Drops the picker's default pin — the current location — so the flow
+    /// always opens with a location already chosen and Save Observation always
+    /// means something. Run once from the view's `.task`.
+    ///
+    /// When there is no fix to be had (access never granted, or the request
+    /// times out) the camera's own center stands in: whatever the map settled
+    /// on is the best "here" available. That center may not exist yet — the
+    /// `.task` runs before the map has reported a camera — so this hands the
+    /// job to `seedPickerPinFromCamera`, which the next camera settle calls.
+    private func seedPickerPin() async {
+        guard picker != nil, pickedPins.isEmpty else { return }
+        let status = CLLocationManager().authorizationStatus
+        let authorized = status == .authorizedWhenInUse || status == .authorizedAlways
+        // Never prompts: `current()` only resolves a fix, and only when access
+        // has already been granted elsewhere (the first Start Recording).
+        let fix = authorized ? await LocationCache.shared.current() : nil
+        // The await can take seconds to time out, and a long press in the
+        // meantime is the user's own choice of location — never overwrite it.
+        guard picker != nil, pickedPins.isEmpty else { return }
+        guard let fix else {
+            // No fix. Fall back to the camera, either the one it has already
+            // settled on or the next one it reports.
+            pickerWantsCameraSeed = true
+            seedPickerPinFromCamera(camera.lastSpan == nil ? nil : camera.lastCenter)
+            return
+        }
+        dropPin(at: CLLocationCoordinate2D(latitude: fix.latitude, longitude: fix.longitude))
+    }
+
+    /// The camera-center half of `seedPickerPin`, called on every camera settle.
+    /// Does nothing until the location fix has been given up on, and nothing
+    /// once any pin is down.
+    private func seedPickerPinFromCamera(_ center: CLLocationCoordinate2D?) {
+        guard picker != nil, pickerWantsCameraSeed, pickedPins.isEmpty, let center else { return }
+        pickerWantsCameraSeed = false
+        dropPin(at: center)
+    }
 
     /// Records a long-pressed location. A pin already on the map isn't moved —
     /// the new one is added on top and the old is left to fade out under it, then
@@ -476,6 +527,10 @@ struct MapView: View {
                 .onMapCameraChange(frequency: .onEnd) { context in
                     cacheCamera(context)
                     commitVisibleEntries()
+                    // Last resort for the picker's default pin: with no location
+                    // fix available, wherever the camera settled is the best
+                    // "here" we have. A no-op once a pin is down.
+                    seedPickerPinFromCamera(context.region.center)
                     // Whatever just moved the camera — us, a fling, or MapKit
                     // resolving its initial user-location follow — check that an
                     // outstanding focus request actually arrived, and re-assert it
@@ -543,42 +598,46 @@ struct MapView: View {
                 .padding(.leading, 12)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
 
-                // One slot along the bottom edge holding both states, stacked
-                // and crossfaded rather than swapped: the instruction until a
-                // location is chosen, then the commit button. Both are always
-                // mounted so the change is a dissolve in place, with hit-testing
-                // following the visible one.
-                ZStack {
-                    Text("Long press to choose a location")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
-                        .glassEffect(.regular, in: .capsule)
-                        .opacity(hasPickedLocation ? 0 : 1)
-                        .allowsHitTesting(false)
+                // Standing instruction across the top, in the row the back and
+                // recenter buttons occupy: same 8pt top inset and the same 44pt
+                // height as a `GlassMapButton`, so the three read as one row of
+                // controls. Inset past both buttons' widths (12pt margin + 44pt
+                // button) so a long line can never run under them.
+                Text("Long press to choose a location")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .padding(.horizontal, 18)
+                    .frame(height: GlassMapButton.diameter)
+                    .glassEffect(.regular, in: .capsule)
+                    .allowsHitTesting(false)
+                    .padding(.top, 8)
+                    .padding(.horizontal, 68)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
-                    // The Identify tab's record-button treatment (same style,
-                    // same metrics, no icon) so the primary action of a screen
-                    // reads the same everywhere in the app.
-                    Button {
-                        guard let pickedCoordinate else { return }
-                        // No haptic here — the map is the middle step of the add
-                        // flow, and the confirmation pulse belongs on the step
-                        // that actually writes the observation (the naming
-                        // sheet), not on one that just moves the flow along.
-                        picker.onConfirm(pickedCoordinate)
-                    } label: {
-                        Text("Save Observation")
-                            .font(.title3.weight(.semibold))
-                            .frame(height: 58)
-                            .padding(.horizontal, 28)
-                    }
-                    .buttonStyle(RecordButtonStyle(tint: .kestrelPurple))
-                    .opacity(hasPickedLocation ? 1 : 0)
-                    .allowsHitTesting(hasPickedLocation)
+                // The commit button stands the whole time the picker is up —
+                // there is no "nothing chosen yet" state to wait out, since the
+                // picker opens with the current location already pinned (see
+                // `seedPickerPin`) and a long press only moves that pin.
+                //
+                // The Identify tab's record-button treatment (same style, same
+                // metrics, no icon) so the primary action of a screen reads the
+                // same everywhere in the app.
+                Button {
+                    guard let coordinate = committableCoordinate else { return }
+                    // No haptic here — the map is the middle step of the add
+                    // flow, and the confirmation pulse belongs on the step
+                    // that actually writes the observation (the naming
+                    // sheet), not on one that just moves the flow along.
+                    picker.onConfirm(coordinate)
+                } label: {
+                    Text("Save Observation")
+                        .font(.title3.weight(.semibold))
+                        .frame(height: 58)
+                        .padding(.horizontal, 28)
                 }
-                .animation(.easeInOut(duration: 0.16), value: hasPickedLocation)
+                .buttonStyle(RecordButtonStyle(tint: .kestrelPurple))
                 .padding(.bottom, 20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
@@ -592,6 +651,9 @@ struct MapView: View {
             if status == .authorizedWhenInUse || status == .authorizedAlways {
                 _ = await LocationCache.shared.current()
             }
+            // Picker mode opens with the current location already chosen — the
+            // same warmed fix, so this costs nothing extra.
+            await seedPickerPin()
         }
         // Focus requests can arrive while the Map tab is already on screen
         // (pinpoint from a cluster card) or just before it appears (Show on Map
@@ -1737,14 +1799,20 @@ private struct GlassMapButton: View {
     let accessibility: String
     let action: () -> Void
 
+    private static let glyphBox: CGFloat = 22
+    private static let glyphInset: CGFloat = 11
+    /// Outer size of the glass circle. Public to the file so the picker's
+    /// instruction capsule can match the buttons it shares the top row with.
+    static let diameter: CGFloat = glyphBox + glyphInset * 2
+
     var body: some View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.system(size: 20, weight: .medium))
                 .foregroundStyle(.primary)
                 .contentTransition(.symbolEffect(.replace))
-                .frame(width: 22, height: 22)
-                .padding(11)
+                .frame(width: Self.glyphBox, height: Self.glyphBox)
+                .padding(Self.glyphInset)
                 .glassEffect(.regular.interactive(), in: .circle)
                 .contentShape(Circle())
         }

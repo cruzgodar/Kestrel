@@ -401,10 +401,6 @@ struct ContentView: View {
     // Faint blue persistent tint for starred species (alert-me list).
     private static let starredTint = Color(hue: 215.0 / 360.0, saturation: 0.5, brightness: 1.0)
 
-    /// How far a row's tint extends past its own leading edge — see the
-    /// `.background` in `detectionRow`. Wider than any swipe can travel.
-    private static let swipeTintOverhang: CGFloat = 600
-
     /// The Identify empty-state description with "starred birds" on a blue pill
     /// and "those not on your life list" on a purple pill, matching the row
     /// backgrounds those two kinds of detection get.
@@ -418,6 +414,30 @@ struct ContentView: View {
             .init(" and "),
             .init("those not on your life list.", highlight: HighlightedText.addHighlight),
         ]
+    }
+
+    /// The row's persistent tint plus its flash, as one stack: purple for a
+    /// bird not yet on the life list, blue for a starred one, and the flash
+    /// pulse over whichever of those applies.
+    @ViewBuilder
+    private func rowTint(
+        needsLifeListAdd: Bool,
+        isStarred: Bool,
+        flashing: Bool,
+        flashColor: Color
+    ) -> some View {
+        ZStack {
+            Self.recordHighlight
+                .opacity(needsLifeListAdd ? 0.35 : 0)
+            Self.starredTint
+                .opacity(!needsLifeListAdd && isStarred ? 0.35 : 0)
+            flashColor
+                .opacity(flashing ? 0.25 : 0)
+                .animation(
+                    flashing ? nil : .easeOut(duration: 0.5),
+                    value: flashing
+                )
+        }
     }
 
     private func detectionRow(for detection: Detection, lifeListNames: Set<String>) -> some View {
@@ -494,25 +514,23 @@ struct ContentView: View {
         // glued to the row through any scroll rubberband. Using
         // .listRowBackground would let the rubberband expose a sliver of
         // the system background when swiping diagonally.
+        //
+        // No overhang past the leading edge. An earlier version extended the
+        // tint 600pt to the left so a leading swipe never exposed the window
+        // background in the strip the content view vacated — but the content
+        // view draws *over* the swipe buttons, and that strip is exactly where
+        // Add Observation is revealed, so the tint washed the button's purple
+        // out to a blend of button and row. A matching `.listRowBackground`
+        // was tried as a way to keep the strip tinted *under* the button and
+        // does not paint there either, so the strip is simply the button's own
+        // color now.
         .background(
-            ZStack {
-                Self.recordHighlight
-                    .opacity(needsLifeListAdd ? 0.35 : 0)
-                Self.starredTint
-                    .opacity(!needsLifeListAdd && isStarred ? 0.35 : 0)
-                flashColor
-                    .opacity(flashing ? 0.25 : 0)
-                    .animation(
-                        flashing ? nil : .easeOut(duration: 0.5),
-                        value: flashing
-                    )
-            }
-            // Overhang past the row's leading edge. A leading swipe slides the
-            // whole content view aside, and the plain window background behind
-            // the list shows through the space it vacated — a white slab over a
-            // tinted row. Extending the tint well past the edge means the
-            // vacated space is still the row's own color.
-            .padding(.leading, -Self.swipeTintOverhang)
+            rowTint(
+                needsLifeListAdd: needsLifeListAdd,
+                isStarred: isStarred,
+                flashing: flashing,
+                flashColor: flashColor
+            )
         )
         // Every row, not just the ones showing a plus: a bird already on the
         // life list still deserves today's sighting recorded. Matches the Life

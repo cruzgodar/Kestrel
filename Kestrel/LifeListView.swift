@@ -25,6 +25,9 @@ struct LifeListView: View {
     /// the observations in *this* file as exported.
     @State private var exportDocument: EBirdCSVDocument?
     @State private var pendingExport: EBirdCSVExporter.Payload?
+    /// The scope `pendingExport` was built for. Only a `.newOnly` save marks
+    /// its observations as exported — see `handleExport`.
+    @State private var pendingExportScope: LifeListStore.ExportScope?
     @State private var exportMessage: String?
     @State private var showExportResult = false
     /// Title for the export result alert. The same alert reports a finished
@@ -424,7 +427,10 @@ struct LifeListView: View {
                 }
                 .accessibilityLabel("Import eBird CSV")
             }
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
+            // No `ToolbarSpacer` between import and export: a spacer is what
+            // breaks the Liquid Glass capsule, so leaving it out is what joins
+            // the two into one. They are the same operation in two directions,
+            // and they read as a pair rather than as two unrelated controls.
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showExportInfo = true
@@ -877,6 +883,7 @@ struct LifeListView: View {
         }
 
         pendingExport = payload
+        pendingExportScope = scope
         exportDocument = EBirdCSVDocument(data: payload.csv)
         // The sheet stays up and the save panel comes up over it, so backing
         // out of the picker lands back on the two buttons rather than on the
@@ -888,6 +895,7 @@ struct LifeListView: View {
     private func handleExport(_ result: Result<URL, Error>) {
         defer {
             pendingExport = nil
+            pendingExportScope = nil
             exportDocument = nil
             // The picker was presented from the export sheet, so the sheet is
             // still standing underneath. Drop it, then let it finish leaving
@@ -902,9 +910,17 @@ struct LifeListView: View {
         case .success:
             guard let payload = pendingExport else { return }
             exportResultTitle = "Export Complete"
-            // Only now are these sightings really in the user's hands, so only
-            // now do they count as exported.
-            store.markExported(payload.exportedKeys)
+            // Only a saved `.newOnly` file counts as handing observations over.
+            // Two conditions, both required: the save actually happened (so a
+            // cancelled picker doesn't hide anything from the next export), and
+            // the scope was Export New. Exporting everything is a "give me the
+            // whole list" operation — a backup, a re-upload, a file for
+            // something other than eBird — and treating it as a handover would
+            // silently empty out Export New, which is the one thing the user
+            // relies on to not duplicate their eBird history.
+            if pendingExportScope == .newOnly {
+                store.markExported(payload.exportedKeys)
+            }
             var parts = [
                 "Saved \(payload.observationCount) "
                     + (payload.observationCount == 1 ? "observation" : "observations")
@@ -1365,7 +1381,7 @@ private struct ExportInfoSheet: View {
                     .multilineTextAlignment(.center)
                 // Markdown so the import-tool phrase renders as an inline
                 // tappable link, matching the import sheet's treatment.
-                Text(.init("You can export your sightings in eBird's Record format for [its import tool](https://ebird.org/import/upload.form). eBird does not check for duplicate observations, so it is recommended to export only new observations."))
+                Text(.init("You can export all your observations as a backup or to [import to eBird](https://ebird.org/import/upload.form). Since eBird doesn\u{2019}t check for duplicates, choose Export New Observations to include only the observations made since your last export."))
                     .font(.body)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)

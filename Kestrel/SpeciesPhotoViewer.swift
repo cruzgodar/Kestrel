@@ -587,7 +587,7 @@ struct SpeciesPhotoFullScreen: View {
             } else {
                 // No photo for this species yet — reassure the user one is coming,
                 // in the same slot the attribution would occupy.
-                Text("Photo coming soon")
+                Text("Photo coming soon!")
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.85))
                     .multilineTextAlignment(.center)
