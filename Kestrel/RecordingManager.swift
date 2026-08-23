@@ -1201,13 +1201,13 @@ final class RecordingManager {
         }
     }
 
-    /// Undoes a watch-initiated add (second tap of the add button). Removes the
-    /// species from the store and clears its notify/haptic suppression, so it's
-    /// treated as a fresh new species again if heard later.
+    /// Undoes a watch-initiated add (second tap of the add button). Takes back
+    /// the sighting it filed and clears the species' notify/haptic suppression,
+    /// so it's treated as a fresh new species again if heard later.
     func removeBirdFromLifeListFromWatch(scientificName: String) {
         guard let store = lifeListStore else { return }
         watchAddedThisSession.remove(scientificName)
-        store.remove(scientificName: scientificName)
+        store.removeLatestObservation(scientificName: scientificName)
     }
 
     private func merge(_ results: [Detection]) {

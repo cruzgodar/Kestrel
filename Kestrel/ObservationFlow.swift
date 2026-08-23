@@ -382,6 +382,235 @@ struct ObservationNameSheet: View {
     }
 }
 
+// MARK: - Add / edit / delete, as one piece of state
+
+/// A pending "which sighting did you mean?" question, raised when an Edit or a
+/// Delete aimed at a whole species finds more than one sighting on record.
+struct ObservationChoice: Identifiable {
+    let scientificName: String
+    let commonName: String
+    /// Which question is being asked. Both raise the same list of sightings;
+    /// only the title and what a tap does differ.
+    let isDeleting: Bool
+
+    var id: String { (isDeleting ? "d-" : "e-") + scientificName }
+
+    var title: String {
+        isDeleting ? "Delete which observation?" : "Edit which observation?"
+    }
+}
+
+/// One recorded sighting awaiting its delete confirmation. Every delete in the
+/// app funnels through this so the wording can't drift — and so no tap ever
+/// removes a sighting without being asked twice.
+struct PendingObservationDelete: Identifiable {
+    let scientificName: String
+    let commonName: String
+    let observation: LifeListEntry.Observation
+
+    var id: String { scientificName + "|" + observation.summaryText }
+}
+
+/// The three things any Add / Edit / Delete affordance in the app can be
+/// partway through, bundled so a host declares one piece of state and attaches
+/// one modifier instead of four. Every menu, swipe action, and button that acts
+/// on a sighting drives one of these.
+@MainActor
+@Observable
+final class ObservationActions {
+    /// A sighting being written — new or edited. See `observationFlow`.
+    var draft: ObservationDraft?
+    /// A "which sighting did you mean?" question awaiting an answer.
+    var choice: ObservationChoice?
+    /// A sighting awaiting its delete confirmation.
+    var pendingDelete: PendingObservationDelete?
+
+    /// Files a new sighting of a species.
+    func add(scientificName: String, commonName: String) {
+        draft = .adding(scientificName: scientificName, commonName: commonName)
+    }
+
+    /// Edits one known sighting.
+    func edit(
+        scientificName: String,
+        commonName: String,
+        observation: LifeListEntry.Observation
+    ) {
+        draft = .editing(
+            scientificName: scientificName,
+            commonName: commonName,
+            observation: observation
+        )
+    }
+
+    /// Edits "this bird", from somewhere that stands for the species rather than
+    /// for one of its sightings — a life-list row, the full-screen viewer. A bird
+    /// seen once has only one sighting the request could mean, so that one is
+    /// edited outright; with several on record the user is asked which.
+    func edit(scientificName: String, commonName: String, in store: LifeListStore) {
+        let observations = store.observations(for: scientificName)
+        if observations.count > 1 {
+            choice = ObservationChoice(
+                scientificName: scientificName,
+                commonName: commonName,
+                isDeleting: false
+            )
+        } else if let only = observations.first {
+            edit(scientificName: scientificName, commonName: commonName, observation: only)
+        }
+    }
+
+    /// Deletes one known sighting, after a confirmation.
+    func delete(
+        scientificName: String,
+        commonName: String,
+        observation: LifeListEntry.Observation
+    ) {
+        pendingDelete = PendingObservationDelete(
+            scientificName: scientificName,
+            commonName: commonName,
+            observation: observation
+        )
+    }
+
+    /// Deletes "this bird", the mirror of the species-scoped `edit` above.
+    func delete(scientificName: String, commonName: String, in store: LifeListStore) {
+        let observations = store.observations(for: scientificName)
+        if observations.count > 1 {
+            choice = ObservationChoice(
+                scientificName: scientificName,
+                commonName: commonName,
+                isDeleting: true
+            )
+        } else if let only = observations.first {
+            delete(scientificName: scientificName, commonName: commonName, observation: only)
+        }
+    }
+}
+
+extension View {
+    /// Installs the presentations behind `actions`: the date → map → name flow,
+    /// the "which sighting?" chooser, and the delete confirmation. Attach it
+    /// wherever a menu or swipe action drives an `ObservationActions`.
+    /// `store` is optional only because the full-screen viewer reads it from the
+    /// environment, where it can be absent (previews); with no store there is
+    /// nothing any of these presentations could act on, so they simply aren't
+    /// installed.
+    func observationActions(_ actions: ObservationActions, store: LifeListStore?) -> some View {
+        modifier(ObservationActionsModifier(actions: actions, store: store))
+    }
+}
+
+private struct ObservationActionsModifier: ViewModifier {
+    @Bindable var actions: ObservationActions
+    let store: LifeListStore?
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if let store {
+            content
+                .observationFlow($actions.draft, store: store)
+                .sheet(item: $actions.choice) { choice in
+                    ObservationChoiceSheet(
+                        choice: choice,
+                        store: store,
+                        onFinished: { actions.choice = nil }
+                    )
+                }
+                .observationDeleteConfirmation($actions.pendingDelete, store: store)
+        } else {
+            content
+        }
+    }
+}
+
+extension View {
+    /// The one delete confirmation in the app for a single sighting. Split out
+    /// of `observationActions` so the chooser sheet — which has to raise its own,
+    /// over itself — can use exactly the same alert.
+    func observationDeleteConfirmation(
+        _ pending: Binding<PendingObservationDelete?>,
+        store: LifeListStore,
+        onDeleted: (() -> Void)? = nil
+    ) -> some View {
+        modifier(ObservationDeleteConfirmation(pending: pending, store: store, onDeleted: onDeleted))
+    }
+}
+
+private struct ObservationDeleteConfirmation: ViewModifier {
+    @Binding var pending: PendingObservationDelete?
+    let store: LifeListStore
+    let onDeleted: (() -> Void)?
+
+    func body(content: Content) -> some View {
+        content.alert(
+            // No `role: .destructive` on the *entry* into this alert anywhere in
+            // the app — see the life-list row's swipe — but the confirm itself is
+            // destructive and reads as such.
+            pending.map { "Delete this \($0.commonName) observation?" } ?? "",
+            isPresented: Binding(
+                get: { pending != nil },
+                set: { if !$0 { pending = nil } }
+            ),
+            presenting: pending
+        ) { target in
+            Button("Delete", role: .destructive) {
+                store.removeObservation(
+                    scientificName: target.scientificName,
+                    identity: target.observation.identity
+                )
+                pending = nil
+                onDeleted?()
+            }
+            Button("Cancel", role: .cancel) { pending = nil }
+        } message: { target in
+            Text(target.observation.summaryText)
+        }
+    }
+}
+
+/// The chooser's contents. Both the edit flow and the delete confirmation are
+/// presented from *here* rather than from whatever raised the chooser, so the
+/// chooser stays standing underneath: backing out of either lands back on the
+/// list of sightings instead of dumping the user out entirely.
+private struct ObservationChoiceSheet: View {
+    let choice: ObservationChoice
+    /// Threaded down for the usual reason — `@Observable` environment objects
+    /// don't cross a sheet boundary.
+    let store: LifeListStore
+    /// The chosen action went through; put the chooser away.
+    let onFinished: () -> Void
+
+    @State private var draft: ObservationDraft?
+    @State private var pendingDelete: PendingObservationDelete?
+
+    var body: some View {
+        ObservationPickerSheet(
+            title: choice.title,
+            // Read live off the store so a delete that leaves the species
+            // standing updates the list behind the confirmation.
+            observations: store.observations(for: choice.scientificName),
+            onSelect: { observation in
+                if choice.isDeleting {
+                    pendingDelete = PendingObservationDelete(
+                        scientificName: choice.scientificName,
+                        commonName: choice.commonName,
+                        observation: observation
+                    )
+                } else {
+                    draft = .editing(
+                        scientificName: choice.scientificName,
+                        commonName: choice.commonName,
+                        observation: observation
+                    )
+                }
+            }
+        )
+        .observationFlow($draft, store: store, onCommit: onFinished)
+        .observationDeleteConfirmation($pendingDelete, store: store, onDeleted: onFinished)
+    }
+}
+
 // MARK: - Picking one sighting out of several
 
 extension LifeListEntry.Observation {

@@ -5,7 +5,6 @@ import Observation
 /// MainActor isolation) so the nonisolated persisted-value readers can
 /// reference them without an actor hop.
 private nonisolated enum SettingsKeys {
-    static let showRepeatObservations = "settings.showRepeatObservationsOnMap"
     static let noBirdTimeout = "settings.noBirdTimeout"
     static let hapticForAllBirds = "settings.hapticForAllBirds"
 }
@@ -55,17 +54,6 @@ final class AppSettings {
         }
     }
 
-    /// When enabled (the default), the Map tab plots every stored sighting of
-    /// each species, not just the earliest one — so a bird imported with many
-    /// eBird observations drops a pin at each location. The extra observations
-    /// are always stored on import regardless; this just controls whether
-    /// they're mapped.
-    var showRepeatObservationsOnMap: Bool {
-        didSet {
-            defaults.set(showRepeatObservationsOnMap, forKey: SettingsKeys.showRepeatObservations)
-        }
-    }
-
     /// When enabled, Kestrel plays a single subtle haptic whenever it identifies a
     /// bird that's already on the user's life list and isn't starred — the birds
     /// that otherwise buzz nothing (new species and starred birds have their own,
@@ -81,8 +69,6 @@ final class AppSettings {
     private let defaults = UserDefaults.standard
 
     private init() {
-        // Defaults to on.
-        showRepeatObservationsOnMap = defaults.object(forKey: SettingsKeys.showRepeatObservations) as? Bool ?? true
         // Defaults to 30 minutes.
         let storedTimeout = defaults.object(forKey: SettingsKeys.noBirdTimeout) as? Int
         noBirdTimeout = storedTimeout.flatMap(NoBirdTimeout.init(rawValue:)) ?? .thirtyMinutes

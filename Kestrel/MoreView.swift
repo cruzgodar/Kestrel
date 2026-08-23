@@ -67,16 +67,6 @@ struct MoreView: View {
                 Text("Play haptics for all birds, rather than only starred or non-lifer ones.")
             }
 
-            // Moved here from the Map tab's old settings card.
-            Section {
-                Toggle(
-                    "Show Repeat Observations on Map",
-                    isOn: $settings.showRepeatObservationsOnMap
-                )
-            } footer: {
-                Text("Show every recorded observation of a species on the map, rather than only the earliest.")
-            }
-
             aboutSection
         }
         .listStyle(.insetGrouped)

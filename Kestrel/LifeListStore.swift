@@ -484,13 +484,14 @@ final class LifeListStore {
         save()
     }
 
-    /// Removes a species from the life list. No-op if it isn't present.
-    func remove(scientificName: String) {
-        guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {
-            return
-        }
-        entries.remove(at: idx)
-        save()
+    /// Undoes an add: drops the species' most recent sighting, which is the one
+    /// an add button has just filed. Deliberately *not* a "remove this species"
+    /// call — nothing outside "Delete All Entries" wipes a bird's whole history,
+    /// so an undo on a bird that turns out to have other sightings on record
+    /// takes back only its own. The entry itself goes when that was the last.
+    func removeLatestObservation(scientificName: String) {
+        guard let latest = observations(for: scientificName).first else { return }
+        removeObservation(scientificName: scientificName, identity: latest.identity)
     }
 
     func removeAll() {

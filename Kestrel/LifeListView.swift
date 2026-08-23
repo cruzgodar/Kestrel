@@ -37,9 +37,6 @@ struct LifeListView: View {
     /// Progress of an in-flight CSV render, shared with the export sheet so it
     /// can show a determinate bar over its own content.
     @State private var exportProgress = ExportProgress()
-    /// The species the user just swiped to delete — drives the confirmation
-    /// dialog. Cleared on Cancel; the actual remove happens on confirm.
-    @State private var pendingDeletion: LifeListEntry?
     /// Drives the "clear all entries" confirmation dialog.
     @State private var showClearAllConfirmation = false
     @State private var showStarredOnly = false
@@ -63,23 +60,10 @@ struct LifeListView: View {
     /// typing or when the query is too short to bother scanning 6,500
     /// species.
     @State private var asyncSuggestions: [SearchRow] = []
-    /// The sighting partway through the date → map → name flow, whether it is
-    /// being added or edited. Non-nil for as long as the flow is on screen; see
-    /// `observationFlow`.
-    @State private var pendingObservation: ObservationDraft?
-    /// The entry whose sightings the user is choosing between, and what they
-    /// intend to do with the one they pick. Only ever set for a species with
-    /// more than one sighting on record — with a single sighting there is
-    /// nothing to choose, so Edit and Delete act on it directly.
-    @State private var observationChoice: ObservationChoice?
-
-    /// A pending "which sighting did you mean?" question. Both Edit and Delete
-    /// raise the same list; `isDeleting` says which one asked.
-    struct ObservationChoice: Identifiable {
-        let entry: LifeListEntry
-        let isDeleting: Bool
-        var id: String { (isDeleting ? "d-" : "e-") + entry.scientificName }
-    }
+    /// Everything the rows' add / edit / delete affordances can be partway
+    /// through — the date → map → name flow, the "which sighting?" chooser, and
+    /// the delete confirmation. See `observationActions`.
+    @State private var actions = ObservationActions()
 
     /// Row item rendered by the list. Life-list entries are sorted ahead
     /// of catalog suggestions so adding a missing species feels like a
@@ -389,7 +373,7 @@ struct LifeListView: View {
                 text: $searchText,
                 prompt: "Search or add species",
                 horizontalInset: Self.searchFieldHorizontalInset,
-                addFlowActive: pendingObservation != nil
+                addFlowActive: actions.draft != nil
             )
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.frame(in: .global).minY
@@ -503,17 +487,10 @@ struct LifeListView: View {
             }.value
             allowedIndices = allowed
         }
-        // The add/edit flow's presentations, bundled into one modifier rather
-        // than chained inline: this body's modifier chain is already long
-        // enough that two more presentations push the type-checker past its
-        // budget.
-        .observationFlow($pendingObservation, store: store)
-        // The "which sighting did you mean?" chooser, raised by Edit or Delete
-        // on a species with more than one on record.
-        .modifier(ObservationChoicePresentation(
-            choice: $observationChoice,
-            store: store
-        ))
+        // The add / edit / delete presentations, bundled into one modifier
+        // rather than chained inline: this body's modifier chain is already long
+        // enough that three more push the type-checker past its budget.
+        .observationActions(actions, store: store)
         .sheet(isPresented: $showImportInfo) {
             ImportInfoSheet {
                 // Dismiss the modal, then launch the system file picker on the
@@ -551,22 +528,6 @@ struct LifeListView: View {
             onExport: { scope in Task { await beginExport(scope: scope) } },
             onExported: handleExport(_:)
         ))
-        .alert(
-            pendingDeletion.map { "Remove \($0.commonName) from your life list?" } ?? "",
-            isPresented: Binding(
-                get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
-            ),
-            presenting: pendingDeletion
-        ) { entry in
-            Button("Delete", role: .destructive) {
-                store.remove(scientificName: entry.scientificName)
-                pendingDeletion = nil
-            }
-            Button("Cancel", role: .cancel) {
-                pendingDeletion = nil
-            }
-        }
         .alert(
             "Delete your entire life list?",
             isPresented: $showClearAllConfirmation
@@ -712,6 +673,7 @@ struct LifeListView: View {
         // thumbnail and star as well as the name.
         .contextMenu {
             SpeciesRowMenu(
+                onEdit: { requestEdit(entry) },
                 onAddObservation: {
                     beginAdd(
                         scientificName: entry.scientificName,
@@ -755,7 +717,7 @@ struct LifeListView: View {
                 // Tapping the checkmark undoes the add; the symbol-replace
                 // transition reverse-animates back to a plus.
                 if alreadyAdded {
-                    store.remove(scientificName: scientificName)
+                    store.removeLatestObservation(scientificName: scientificName)
                     return
                 }
                 // A Life List add is a bird the user is recalling, so it asks
@@ -814,41 +776,28 @@ struct LifeListView: View {
     /// suggestion's plus creates the entry, while Add Observation files another
     /// sighting under a species that's already on the list.
     private func beginAdd(scientificName: String, commonName: String) {
-        pendingObservation = .adding(scientificName: scientificName, commonName: commonName)
-    }
-
-    /// Re-opens the flow on an existing sighting, every step pre-set to what it
-    /// currently holds.
-    private func beginEdit(entry: LifeListEntry, observation: LifeListEntry.Observation) {
-        pendingObservation = .editing(
-            scientificName: entry.scientificName,
-            commonName: entry.commonName,
-            observation: observation
-        )
+        actions.add(scientificName: scientificName, commonName: commonName)
     }
 
     /// Edit, from a row that stands for the whole species. A bird seen once has
     /// only one sighting the row could mean, so that one is edited outright;
     /// with several on record the user is asked which.
     private func requestEdit(_ entry: LifeListEntry) {
-        let observations = entry.allObservations
-        if observations.count > 1 {
-            observationChoice = ObservationChoice(entry: entry, isDeleting: false)
-        } else if let only = observations.first {
-            beginEdit(entry: entry, observation: only)
-        }
+        actions.edit(
+            scientificName: entry.scientificName,
+            commonName: entry.commonName,
+            in: store
+        )
     }
 
-    /// Delete, from a row that stands for the whole species. Mirrors
-    /// `requestEdit`: one sighting means the row *is* that sighting, so the
-    /// existing "remove this bird" confirmation applies; several means asking
-    /// which one to drop.
+    /// Delete, the mirror of `requestEdit` — and never a "remove this bird"
+    /// either way: what it deletes is one sighting, after a confirmation.
     private func requestDelete(_ entry: LifeListEntry) {
-        if entry.allObservations.count > 1 {
-            observationChoice = ObservationChoice(entry: entry, isDeleting: true)
-        } else {
-            pendingDeletion = entry
-        }
+        actions.delete(
+            scientificName: entry.scientificName,
+            commonName: entry.commonName,
+            in: store
+        )
     }
 
     /// Section divider between in-range and out-of-range search matches.
@@ -988,81 +937,6 @@ struct LifeListView: View {
         case .failure(let error):
             importMessage = "File picker error: \(error.localizedDescription)"
             showImportResult = true
-        }
-    }
-}
-
-/// The Life List tab's "which sighting did you mean?" chooser. Raised by Edit
-/// or Delete on a species with more than one sighting on record, where a row
-/// standing for the whole species can't say which one the user meant.
-private struct ObservationChoicePresentation: ViewModifier {
-    @Binding var choice: LifeListView.ObservationChoice?
-    let store: LifeListStore
-
-    func body(content: Content) -> some View {
-        content.sheet(item: $choice) { choice in
-            ObservationChoiceSheet(
-                choice: choice,
-                store: store,
-                onFinished: { self.choice = nil }
-            )
-        }
-    }
-}
-
-/// The chooser's contents. Both the edit flow and the delete confirmation are
-/// presented from *here* rather than from the Life List, so the chooser stays
-/// standing underneath: backing out of either lands back on the list of
-/// sightings instead of dumping the user out to the tab.
-private struct ObservationChoiceSheet: View {
-    let choice: LifeListView.ObservationChoice
-    /// Threaded down for the usual reason — `@Observable` environment objects
-    /// don't cross a sheet boundary.
-    let store: LifeListStore
-    /// The chosen action went through; put the chooser away.
-    let onFinished: () -> Void
-
-    @State private var draft: ObservationDraft?
-    @State private var pendingDelete: LifeListEntry.Observation?
-
-    var body: some View {
-        ObservationPickerSheet(
-            title: "Edit/Delete Which Observation?",
-            // Read live off the store so a delete that leaves the species
-            // standing updates the list behind the confirmation.
-            observations: store.observations(for: choice.entry.scientificName),
-            onSelect: { observation in
-                if choice.isDeleting {
-                    pendingDelete = observation
-                } else {
-                    draft = .editing(
-                        scientificName: choice.entry.scientificName,
-                        commonName: choice.entry.commonName,
-                        observation: observation
-                    )
-                }
-            }
-        )
-        .observationFlow($draft, store: store, onCommit: onFinished)
-        .alert(
-            "Remove this \(choice.entry.commonName) observation?",
-            isPresented: Binding(
-                get: { pendingDelete != nil },
-                set: { if !$0 { pendingDelete = nil } }
-            ),
-            presenting: pendingDelete
-        ) { observation in
-            Button("Delete", role: .destructive) {
-                store.removeObservation(
-                    scientificName: choice.entry.scientificName,
-                    identity: observation.identity
-                )
-                pendingDelete = nil
-                onFinished()
-            }
-            Button("Cancel", role: .cancel) { pendingDelete = nil }
-        } message: { observation in
-            Text(observation.summaryText)
         }
     }
 }

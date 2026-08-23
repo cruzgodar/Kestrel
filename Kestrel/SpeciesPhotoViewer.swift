@@ -15,6 +15,10 @@ struct SpeciesPhotoItem: Identifiable, Equatable {
     /// pin leaves it off: that pin is one sighting, and its place and date are
     /// the ones to show.
     var showsAllObservations: Bool = false
+    /// The one recorded sighting this item stands for, when it was opened from a
+    /// map pin. `nil` on a species-scoped item, whose Edit and Delete ask which
+    /// sighting they mean.
+    var observation: LifeListEntry.Observation? = nil
     var id: String { scientificName }
 }
 
@@ -165,8 +169,12 @@ struct SpeciesPhotoFullScreen: View {
     /// Drives the sheet listing every recorded sighting of the current bird,
     /// raised by the info panel's "N Observations" row.
     @State private var showObservationList = false
-    /// A sighting being re-recorded from that list's Edit swipe.
-    @State private var editDraft: ObservationDraft?
+    /// Add / edit / delete driven by the top-right menu. Separate from the
+    /// observation list's own (`listActions`), which lives inside that sheet so
+    /// its presentations layer over it rather than under it.
+    @State private var actions = ObservationActions()
+    /// The same, for the observation list's swipe actions.
+    @State private var listActions = ObservationActions()
 
     /// Blank gutter (in points) shown between birds while paging horizontally,
     /// matching the iOS Photos app. Bump this to widen or tighten the gap.
@@ -412,7 +420,23 @@ struct SpeciesPhotoFullScreen: View {
         .sheet(isPresented: $showObservationList) {
             observationListSheet
         }
+        // Everything the top-right menu can start.
+        .observationActions(actions, store: lifeListStore)
+        // A delete that leaves one sighting standing makes the list redundant —
+        // the info panel goes back to printing that sighting's place and date —
+        // so the sheet steps aside rather than sitting there titled
+        // "1 Observations".
+        .onChange(of: currentObservationCount) { _, count in
+            if count < 2 { showObservationList = false }
         }
+        }
+    }
+
+    /// How many sightings the bird on screen has on record. Drives the
+    /// auto-dismiss above; 0 for a map-opened viewer, which never shows the list.
+    private var currentObservationCount: Int {
+        guard let item = currentItem else { return 0 }
+        return observations(for: item).count
     }
 
     /// Contents of the observation-list sheet. Only ever reachable with a store
@@ -425,28 +449,29 @@ struct SpeciesPhotoFullScreen: View {
             ObservationPickerSheet(
                 title: "\(observations.count) Observations",
                 observations: observations,
+                // The sheet is deliberately *not* dismissed first: closing the
+                // viewer takes the sheet standing on it down in the same
+                // animation, so the two leave together instead of the list
+                // sliding away and the photo following it a beat later.
                 onSelect: { observation in
-                    showObservationList = false
                     onShowObservationOnMap?(observation)
                 },
                 onEdit: { observation in
-                    editDraft = .editing(
+                    listActions.edit(
                         scientificName: item.scientificName,
                         commonName: commonName(for: item),
                         observation: observation
                     )
                 },
                 onDelete: { observation in
-                    store.removeObservation(
+                    listActions.delete(
                         scientificName: item.scientificName,
-                        identity: observation.identity
+                        commonName: commonName(for: item),
+                        observation: observation
                     )
-                    // One sighting left is no longer a list worth standing in
-                    // for the info panel's single place-and-date line.
-                    if observations.count <= 2 { showObservationList = false }
                 }
             )
-            .observationFlow($editDraft, store: store)
+            .observationActions(listActions, store: store)
         }
     }
 
@@ -474,7 +499,7 @@ struct SpeciesPhotoFullScreen: View {
                     HStack {
                         backButton
                         Spacer()
-                        starButton(for: item)
+                        menuButton(for: item)
                     }
                 }
                 .padding(.top, topInset + 8)
@@ -548,19 +573,42 @@ struct SpeciesPhotoFullScreen: View {
     /// star tint so the same bird reads the same in both places.
     private static let starTint = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
 
-    /// Top-right star toggle for the current bird's "alert me" state. Identical to
-    /// `backButton` apart from position and icon: a white outline star when the
-    /// species isn't starred, a filled blue star when it is. Writes through to the
-    /// life-list store's starred set (which persists even for a non-lifer).
-    private func starButton(for item: SpeciesPhotoItem) -> some View {
+    /// Whether this bird has a sighting the menu could edit or delete. A map pin
+    /// carries its own; a species-scoped item has to have something on record.
+    private func hasSighting(_ item: SpeciesPhotoItem) -> Bool {
+        guard let store = lifeListStore else { return false }
+        if item.observation != nil { return true }
+        return !store.observations(for: item.scientificName).isEmpty
+    }
+
+    /// Top-right menu for the current bird — the same actions every species row
+    /// in the app offers, minus View Image, which is what this screen already
+    /// is. Identical to `backButton` apart from position and glyph.
+    private func menuButton(for item: SpeciesPhotoItem) -> some View {
         let starred = lifeListStore?.starredNames.contains(item.scientificName) ?? false
-        return Button {
-            // A single short tap to confirm the star toggled, matching the Life
-            // List tab's star button.
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            lifeListStore?.setStarred(scientificName: item.scientificName, isStarred: !starred)
+        let actionable = hasSighting(item)
+        return Menu {
+            SpeciesRowMenu(
+                onEdit: actionable ? { editSighting(of: item) } : nil,
+                onAddObservation: {
+                    actions.add(
+                        scientificName: item.scientificName,
+                        commonName: commonName(for: item)
+                    )
+                },
+                star: (starred, {
+                    // A single short tap to confirm the star toggled, matching
+                    // the Life List tab's star button.
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    lifeListStore?.setStarred(
+                        scientificName: item.scientificName,
+                        isStarred: !starred
+                    )
+                }),
+                onDelete: actionable ? { deleteSighting(of: item) } : nil
+            )
         } label: {
-            Image(systemName: starred ? "star.fill" : "star")
+            Image(systemName: "ellipsis")
                 .font(.system(size: 20, weight: .semibold))
                 .foregroundStyle(starred ? Self.starTint : .white)
                 .frame(width: 22, height: 22)
@@ -568,8 +616,45 @@ struct SpeciesPhotoFullScreen: View {
                 .glassEffect(.regular.interactive(), in: .circle)
                 .contentShape(Circle())
         }
-        .buttonStyle(NoDimButtonStyle())
-        .accessibilityLabel(starred ? "Remove alert star" : "Alert me when heard")
+        .accessibilityLabel("More actions")
+    }
+
+    /// Edit from the menu. A map pin knows exactly which sighting it stands for;
+    /// a species-scoped item asks, unless there is only one to mean.
+    private func editSighting(of item: SpeciesPhotoItem) {
+        guard let store = lifeListStore else { return }
+        if let observation = item.observation {
+            actions.edit(
+                scientificName: item.scientificName,
+                commonName: commonName(for: item),
+                observation: observation
+            )
+        } else {
+            actions.edit(
+                scientificName: item.scientificName,
+                commonName: commonName(for: item),
+                in: store
+            )
+        }
+    }
+
+    /// Delete from the menu, the mirror of `editSighting` — and always one
+    /// sighting, after a confirmation.
+    private func deleteSighting(of item: SpeciesPhotoItem) {
+        guard let store = lifeListStore else { return }
+        if let observation = item.observation {
+            actions.delete(
+                scientificName: item.scientificName,
+                commonName: commonName(for: item),
+                observation: observation
+            )
+        } else {
+            actions.delete(
+                scientificName: item.scientificName,
+                commonName: commonName(for: item),
+                in: store
+            )
+        }
     }
 
     /// Every recorded sighting of this bird, newest first — but only for a

@@ -464,7 +464,7 @@ struct ContentView: View {
                         // Tapping the checkmark undoes the add; the symbol-
                         // replace transition reverse-animates back to a plus.
                         if alreadyAdded {
-                            lifeListStore.remove(scientificName: detection.scientificName)
+                            lifeListStore.removeLatestObservation(scientificName: detection.scientificName)
                             return
                         }
                         // Runs the same when → where → what's-it-called flow the

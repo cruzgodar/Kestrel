@@ -23,6 +23,18 @@ struct MapPoint: Identifiable, Hashable {
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
+
+    /// The recorded sighting this point plots. A map point carries a date, a
+    /// place, and coordinates — exactly what identifies an observation — so the
+    /// menus and the full-screen viewer can act on it directly.
+    var observation: LifeListEntry.Observation {
+        LifeListEntry.Observation(
+            date: date,
+            location: location,
+            latitude: latitude,
+            longitude: longitude
+        )
+    }
 }
 
 /// Carries a request to focus the Map tab on a specific coordinate. Set from
@@ -85,10 +97,6 @@ struct MapView: View {
 
     @Environment(LifeListStore.self) private var store
     @Environment(MapNavigator.self) private var navigator: MapNavigator?
-    /// Drives whether repeat observations are plotted. `@Bindable` isn't needed
-    /// (read-only here) but the `@Observable` model re-renders this view when
-    /// the toggle flips.
-    private var settings = AppSettings.shared
 
     /// The pins the picker currently has on the map. Normally one — the chosen
     /// location — but a fresh long press while a pin is already down appends the
@@ -331,11 +339,11 @@ struct MapView: View {
     /// doesn't also dismiss it. A boolean token rather than a timestamp — see
     /// the dismiss gesture for why.
     @State private var annotationTapConsumed = false
-    /// A sighting partway through the add flow, started from a thumbnail's
-    /// haptic-touch menu. Presented from its own layer in the ZStack rather than
-    /// from the map itself, which already presents the bottom card — one view
-    /// can only host one sheet.
-    @State private var pendingObservation: ObservationDraft?
+    /// Add / edit / delete started from a pinned thumbnail's haptic-touch menu.
+    /// Presented from its own layer in the ZStack rather than from the map
+    /// itself, which already presents the bottom card — one view can only host
+    /// one sheet.
+    @State private var actions = ObservationActions()
 
     /// The bottom card the map can show — a multi-bird cluster. Routed through a
     /// single sheet (see `mapCard`) so re-targeting it never tears the sheet down.
@@ -391,12 +399,11 @@ struct MapView: View {
         )
     }
 
-    /// All map points to plot. Always includes each species' earliest sighting
-    /// (its displayed `first*` fields); when the setting is on, each stored
-    /// repeat observation with coordinates contributes an additional point.
+    /// All map points to plot: every recorded sighting that carries coordinates.
+    /// That's each species' earliest one (its displayed `first*` fields) plus a
+    /// point for each stored repeat, so a bird seen in five places pins all five.
     private var mapPoints: [MapPoint] {
         var points: [MapPoint] = []
-        let showRepeats = settings.showRepeatObservationsOnMap
         for entry in store.entries {
             if let lat = entry.firstLatitude, let lon = entry.firstLongitude {
                 points.append(MapPoint(
@@ -409,7 +416,6 @@ struct MapView: View {
                     longitude: lon
                 ))
             }
-            guard showRepeats else { continue }
             for (i, obs) in entry.otherObservations.enumerated() {
                 guard let lat = obs.latitude, let lon = obs.longitude else { continue }
                 points.append(MapPoint(
@@ -585,12 +591,6 @@ struct MapView: View {
                     rebuildClusters(animated: true, rehydrate: false)
                     updateVisibleEntries(force: true)
                 }
-                // Flipping the repeat-observations setting changes the point
-                // set, so rebuild the culled annotations and clusters.
-                .onChange(of: settings.showRepeatObservationsOnMap) { _, _ in
-                    rebuildClusters(animated: true, rehydrate: false)
-                    updateVisibleEntries(force: true)
-                }
                 }
             }
             .ignoresSafeArea(edges: .bottom)
@@ -622,12 +622,12 @@ struct MapView: View {
             .padding(.trailing, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
 
-            // Zero-size host for the add/edit flow raised by a thumbnail's menu.
-            // It can't hang off the map itself, which already presents the
+            // Zero-size host for the presentations a thumbnail's menu raises.
+            // They can't hang off the map itself, which already presents the
             // bottom card.
             Color.clear
                 .frame(width: 0, height: 0)
-                .observationFlow($pendingObservation, store: store)
+                .observationActions(actions, store: store)
 
             if let picker {
                 // Back to the date step.
@@ -752,7 +752,10 @@ struct MapView: View {
                 items: [SpeciesPhotoItem(
                     scientificName: point.scientificName,
                     placeName: point.location,
-                    dateFound: point.date
+                    dateFound: point.date,
+                    // A pin *is* one sighting, so the viewer's menu can edit or
+                    // delete it without asking which.
+                    observation: point.observation
                 )]
             )
             // Re-inject the store so the viewer's star toggle resolves it — see the
@@ -817,13 +820,15 @@ struct MapView: View {
     /// Handles a tap on a map annotation: opens a multi-bird card, swaps the photo
     /// inside an already-open card, or presents a lone bird full-screen from the
     /// root. Shared by both the snapping and fading annotation content views.
-    private func handleAnnotationTap(_ tappedInfo: RepInfo) {
+    private func handleAnnotationTap(_ tappedInfo: RepInfo, fromTap: Bool = true) {
         // Display-only in picker mode: the thumbnails are there for orientation,
         // and opening a card or a photo over the picker would be a dead end.
         guard picker == nil else { return }
         // Mark this as an annotation tap so the map's simultaneous dismiss gesture
-        // consumes it instead of dismissing the card.
-        annotationTapConsumed = true
+        // consumes it instead of dismissing the card. Only for a real tap: a long
+        // press fires no tap gesture, so a flag set here would sit there and
+        // swallow the user's *next* tap on the empty map.
+        if fromTap { annotationTapConsumed = true }
         // Multi-bird stacks open (or swap to) a card.
         if tappedInfo.count > 1 {
             mapCard = .cluster(BirdCluster(
@@ -870,12 +875,7 @@ struct MapView: View {
         MapPointMenu(
             point: point,
             store: store,
-            onAddObservation: {
-                pendingObservation = .adding(
-                    scientificName: point.scientificName,
-                    commonName: point.commonName
-                )
-            },
+            actions: actions,
             onViewImage: {
                 if mapCard != nil {
                     sheetPhoto = .lone(point)
@@ -1162,21 +1162,37 @@ struct MapView: View {
 }
 
 /// The haptic-touch menu behind a single bird on the map — a pinned thumbnail
-/// or one cell of a cluster card. Wraps `SpeciesRowMenu` (so the map can't drift
-/// from the lists' wording, symbols, or order) and supplies the two actions it
-/// can answer on its own: the star, and a delete that drops *this* sighting
-/// rather than the whole species. The species itself leaves the life list only
-/// when the sighting deleted was its last.
+/// or one cell of a cluster card. Wraps `SpeciesRowMenu` so the map can't drift
+/// from the lists' wording, symbols, or order.
+///
+/// Unlike a life-list row, a map thumbnail *is* one sighting, so Edit and Delete
+/// never have to ask which one is meant. Delete drops that sighting alone; the
+/// species leaves the life list only when it was the last one on record.
 private struct MapPointMenu: View {
     let point: MapPoint
     let store: LifeListStore
-    let onAddObservation: () -> Void
+    /// Where Edit, Add, and Delete are routed — the host attaches the matching
+    /// `observationActions` so the flow, the chooser, and the delete
+    /// confirmation all present from the right place.
+    let actions: ObservationActions
     let onViewImage: () -> Void
 
     var body: some View {
         let starred = store.starredNames.contains(point.scientificName)
         SpeciesRowMenu(
-            onAddObservation: onAddObservation,
+            onEdit: {
+                actions.edit(
+                    scientificName: point.scientificName,
+                    commonName: point.commonName,
+                    observation: point.observation
+                )
+            },
+            onAddObservation: {
+                actions.add(
+                    scientificName: point.scientificName,
+                    commonName: point.commonName
+                )
+            },
             star: (starred, {
                 // The same single short tap every other star in the app gives.
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -1184,14 +1200,10 @@ private struct MapPointMenu: View {
             }),
             onViewImage: onViewImage,
             onDelete: {
-                store.removeObservation(
+                actions.delete(
                     scientificName: point.scientificName,
-                    identity: LifeListEntry.Observation.Identity(
-                        date: point.date,
-                        location: point.location,
-                        latitude: point.latitude,
-                        longitude: point.longitude
-                    )
+                    commonName: point.commonName,
+                    observation: point.observation
                 )
             }
         )
@@ -1222,7 +1234,9 @@ private struct FadingAnnotationContent<Menu: View>: View {
     let point: MapPoint
     let info: MapView.RepInfo?
     let thumbSize: CGSize
-    let onTap: (MapView.RepInfo) -> Void
+    /// Opens the annotation. The flag says whether the interaction was a tap —
+    /// false for the long press, which the map's tap-to-dismiss never sees.
+    let onTap: (MapView.RepInfo, Bool) -> Void
     /// False in picker mode, where the thumbnails are there for orientation
     /// only and every action on the menu would be a dead end.
     let menuEnabled: Bool
@@ -1254,14 +1268,27 @@ private struct FadingAnnotationContent<Menu: View>: View {
                 )
                 .contentShape(Rectangle())
                 .opacity(opacity)
-                .onTapGesture {
-                    onTap(rendered)
-                }
                 // Only a lone bird gets a menu — see `MapView.annotationMenu`.
                 if menuEnabled && rendered.count == 1 {
-                    content.contextMenu { menu(rendered) }
-                } else {
                     content
+                        .onTapGesture { onTap(rendered, true) }
+                        .contextMenu { menu(rendered) }
+                } else {
+                    // A stack of several has no single bird a menu could act on,
+                    // so a press there does what a tap does and opens the card
+                    // rather than reading as a dead gesture. Both gestures are
+                    // recognized in UIKit: SwiftUI's own `LongPressGesture`
+                    // never fires inside a MapKit annotation (MapKit's
+                    // recognizers win the press outright), which is also why the
+                    // lone thumbnail's menu has to be a `.contextMenu`.
+                    content.overlay {
+                        AnnotationPressCatcher(
+                            onTap: { onTap(rendered, true) },
+                            // Not a tap, so the map's own tap-to-dismiss gesture
+                            // has nothing to consume — see `handleAnnotationTap`.
+                            onPress: { onTap(rendered, false) }
+                        )
+                    }
                 }
             }
         }
@@ -1296,6 +1323,71 @@ private struct FadingAnnotationContent<Menu: View>: View {
             } completion: {
                 rendered = nil
             }
+        }
+    }
+}
+
+/// Transparent hit-testing layer that reports a tap and a long press through
+/// UIKit recognizers of its own. Used by multi-bird annotations, where a SwiftUI
+/// `LongPressGesture` never fires — see the call site.
+private struct AnnotationPressCatcher: UIViewRepresentable {
+    let onTap: () -> Void
+    let onPress: () -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.addGestureRecognizer(
+            UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tapped))
+        )
+        let press = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.pressed(_:))
+        )
+        press.minimumPressDuration = 0.4
+        // MapKit's own recognizers are watching the same touch; let ours run
+        // alongside them rather than being arbitrated away.
+        press.delegate = context.coordinator
+        press.cancelsTouchesInView = false
+        view.addGestureRecognizer(press)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.onTap = onTap
+        context.coordinator.onPress = onPress
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(onTap: onTap, onPress: onPress) }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var onTap: () -> Void
+        var onPress: () -> Void
+
+        init(onTap: @escaping () -> Void, onPress: @escaping () -> Void) {
+            self.onTap = onTap
+            self.onPress = onPress
+        }
+
+        nonisolated func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+
+        @objc func tapped() {
+            onTap()
+        }
+
+        @objc func pressed(_ gesture: UILongPressGestureRecognizer) {
+            // `.began` — the press has passed its threshold and the finger is
+            // still down, which is when a context menu would have appeared.
+            guard gesture.state == .began else { return }
+            // The same pulse the system plays when a context menu opens, so the
+            // press feels acknowledged rather than silently different.
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            onPress()
         }
     }
 }
@@ -1432,10 +1524,10 @@ private struct MapCardSheet: View {
     /// Whether dismissing the current photo should also close the card. Tracked
     /// here because `onDismiss` can't read the (already-cleared) `photo` item.
     @State private var closeCardOnPhotoDismiss = false
-    /// A sighting partway through the add flow, started from a grid cell's
-    /// haptic-touch menu. Hosted here rather than on the map so it layers over
-    /// the card instead of making it leave first.
-    @State private var draft: ObservationDraft?
+    /// Add / edit / delete started from a grid cell's haptic-touch menu. Hosted
+    /// here rather than on the map so its presentations layer over the card
+    /// instead of making it leave first.
+    @State private var actions = ObservationActions()
     /// Current detent. A multi-bird cluster can be pulled up to `.large` to see
     /// every bird.
     @State private var detent: PresentationDetent = .medium
@@ -1527,7 +1619,7 @@ private struct MapCardSheet: View {
         .animation(.easeInOut(duration: 0.14), value: card?.id)
         // Layered over the card rather than replacing it, the same way the
         // full-screen photo is.
-        .observationFlow($draft, store: store)
+        .observationActions(actions, store: store)
         .presentationDetents(detents, selection: $detent)
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card — this is what
@@ -1559,7 +1651,8 @@ private struct MapCardSheet: View {
                         SpeciesPhotoItem(
                             scientificName: $0.scientificName,
                             placeName: $0.location,
-                            dateFound: $0.date
+                            dateFound: $0.date,
+                            observation: $0.observation
                         )
                     },
                     initialIndex: startIndex,
@@ -1580,7 +1673,8 @@ private struct MapCardSheet: View {
                     items: [SpeciesPhotoItem(
                         scientificName: point.scientificName,
                         placeName: point.location,
-                        dateFound: point.date
+                        dateFound: point.date,
+                        observation: point.observation
                     )]
                 )
                 .environment(store)
@@ -1617,17 +1711,12 @@ private struct MapCardSheet: View {
                         .onTapGesture {
                             openPhoto(for: point, in: cluster)
                         }
-                        // The same four actions a pinned thumbnail offers.
+                        // The same actions a pinned thumbnail offers.
                         .contextMenu {
                             MapPointMenu(
                                 point: point,
                                 store: store,
-                                onAddObservation: {
-                                    draft = .adding(
-                                        scientificName: point.scientificName,
-                                        commonName: point.commonName
-                                    )
-                                },
+                                actions: actions,
                                 onViewImage: { openPhoto(for: point, in: cluster) }
                             )
                         }
