@@ -396,6 +396,94 @@ final class LifeListStore {
         if changed { save() }
     }
 
+    /// Every recorded sighting of a species, newest first. Drives the pickers
+    /// that ask *which* observation to act on — the full-screen viewer's
+    /// observation list, and the Life List tab's edit/delete choosers — so all
+    /// of them order and label sightings identically.  Empty for a species
+    /// that isn't on the list.
+    func observations(for scientificName: String) -> [LifeListEntry.Observation] {
+        guard let entry = entries.first(where: { $0.scientificName == scientificName }) else {
+            return []
+        }
+        return entry.allObservations.sorted { a, b in
+            if a.date != b.date { return a.date > b.date }
+            return (a.location ?? "") < (b.location ?? "")
+        }
+    }
+
+    /// Rewrites one recorded sighting in place: the observation matching
+    /// `original` is dropped and a new one with the given date/place takes its
+    /// spot. The entry is rebuilt through `LifeListEntry.make`, so editing the
+    /// earliest sighting to a later date correctly promotes whichever sighting
+    /// is now earliest into the displayed `first*` fields.
+    ///
+    /// `isImported` rides along from the replaced observation: an edited eBird
+    /// row still corresponds to a record that account already holds, so it must
+    /// not start looking new to "Export New Observations."
+    func replaceObservation(
+        scientificName: String,
+        original: LifeListEntry.Observation.Identity,
+        date: Date,
+        location: String?,
+        latitude: Double?,
+        longitude: Double?
+    ) {
+        guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {
+            return
+        }
+        let existing = entries[idx]
+        var remaining = existing.allObservations
+        guard let hit = remaining.firstIndex(where: { $0.identity == original }) else { return }
+        let wasImported = remaining[hit].isImported
+        remaining.remove(at: hit)
+        remaining.append(LifeListEntry.Observation(
+            date: date,
+            location: location,
+            latitude: latitude,
+            longitude: longitude,
+            isImported: wasImported
+        ))
+        entries[idx] = LifeListEntry.make(
+            scientificName: existing.scientificName,
+            commonName: existing.commonName,
+            isStarred: existing.isStarred,
+            observations: remaining
+        )
+        // The edit may have moved the entry's earliest sighting, which is its
+        // sort key.
+        entries.sort(by: Self.ordersBefore)
+        save()
+    }
+
+    /// Removes a single recorded sighting. The species itself drops off the
+    /// life list when the sighting removed was its last one — a bird with no
+    /// observations left is a bird that was never seen.
+    func removeObservation(
+        scientificName: String,
+        identity: LifeListEntry.Observation.Identity
+    ) {
+        guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {
+            return
+        }
+        let existing = entries[idx]
+        var remaining = existing.allObservations
+        guard let hit = remaining.firstIndex(where: { $0.identity == identity }) else { return }
+        remaining.remove(at: hit)
+        guard !remaining.isEmpty else {
+            entries.remove(at: idx)
+            save()
+            return
+        }
+        entries[idx] = LifeListEntry.make(
+            scientificName: existing.scientificName,
+            commonName: existing.commonName,
+            isStarred: existing.isStarred,
+            observations: remaining
+        )
+        entries.sort(by: Self.ordersBefore)
+        save()
+    }
+
     /// Removes a species from the life list. No-op if it isn't present.
     func remove(scientificName: String) {
         guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {

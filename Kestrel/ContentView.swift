@@ -24,10 +24,8 @@ struct ContentView: View {
     private static let agingThreshold: TimeInterval = 60
 
     /// The species partway through the add flow (pick a date, then a location).
-    /// Identical wiring to the Life List tab's — see `AddFlowPresentations`.
-    @State private var pendingAdd: PendingObservation?
-    @State private var showAddDate = false
-    @State private var showAddLocation = false
+    /// Identical wiring to the Life List tab's — see `observationFlow`.
+    @State private var pendingObservation: ObservationDraft?
 
     /// Height of the trailing thumbnail on detection rows. Width follows at 4:3.
     private static let rowThumbnailHeight: CGFloat = 72
@@ -196,17 +194,7 @@ struct ContentView: View {
         }
         // The add flow's date sheet → map picker → naming sheet, shared verbatim
         // with the Life List tab.
-        .modifier(AddFlowPresentations(
-            showDate: $showAddDate,
-            showLocation: $showAddLocation,
-            date: Binding(
-                get: { pendingAdd?.date ?? Date() },
-                set: { pendingAdd?.date = $0 }
-            ),
-            store: lifeListStore,
-            onDismissed: { pendingAdd = nil },
-            onSave: commitPendingAdd(at:name:)
-        ))
+        .observationFlow($pendingObservation, store: lifeListStore)
         // Recording needs location access for the nearby-species filter; when a
         // start is refused for lack of it, offer a jump to Settings.
         .alert(
@@ -586,27 +574,7 @@ struct ContentView: View {
     /// Opens the shared date → map → name flow for a detected species. Nothing
     /// is written until the naming step is confirmed.
     private func beginAdd(scientificName: String, commonName: String) {
-        pendingAdd = PendingObservation(
-            scientificName: scientificName,
-            commonName: commonName,
-            date: Date()
-        )
-        showAddDate = true
-    }
-
-    /// Writes the pending species at the chosen date, coordinate, and place
-    /// name — creating the life-list entry or filing another sighting under an
-    /// existing one, whichever applies.
-    private func commitPendingAdd(at coordinate: CLLocationCoordinate2D, name: String) {
-        guard let pending = pendingAdd else { return }
-        lifeListStore.recordObservation(
-            scientificName: pending.scientificName,
-            commonName: pending.commonName,
-            date: pending.date,
-            location: name,
-            latitude: coordinate.latitude,
-            longitude: coordinate.longitude
-        )
+        pendingObservation = .adding(scientificName: scientificName, commonName: commonName)
     }
 }
 

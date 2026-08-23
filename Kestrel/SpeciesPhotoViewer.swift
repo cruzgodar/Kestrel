@@ -8,6 +8,13 @@ struct SpeciesPhotoItem: Identifiable, Equatable {
     let scientificName: String
     var placeName: String? = nil
     var dateFound: Date? = nil
+    /// Whether this item stands for the species as a whole rather than for one
+    /// particular sighting. Set by the Life List (and the Identify tab), where a
+    /// bird is one row no matter how many times it has been seen, so the info
+    /// panel summarizes *every* recorded sighting. A viewer opened from a map
+    /// pin leaves it off: that pin is one sighting, and its place and date are
+    /// the ones to show.
+    var showsAllObservations: Bool = false
     var id: String { scientificName }
 }
 
@@ -93,6 +100,9 @@ struct SpeciesPhotoFullScreen: View {
     /// map. `nil` makes the place name non-interactive (and is the case for the
     /// Identify tab / lone map pins).
     var onShowOnMap: ((SpeciesPhotoItem) -> Void)? = nil
+    /// Action for a row tapped in the observation list — focus the map on that
+    /// particular sighting. `nil` makes the rows non-interactive.
+    var onShowObservationOnMap: ((LifeListEntry.Observation) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
     /// Drives the top-right star toggle. Optional so previews without a store
@@ -152,6 +162,11 @@ struct SpeciesPhotoFullScreen: View {
     /// sliding up and the light app shows behind the bar (which read as the slow,
     /// mistimed black→white crossfade). Matches the stock Music app's now-playing.
     @State private var cardCoveredStatusBar = false
+    /// Drives the sheet listing every recorded sighting of the current bird,
+    /// raised by the info panel's "N Observations" row.
+    @State private var showObservationList = false
+    /// A sighting being re-recorded from that list's Edit swipe.
+    @State private var editDraft: ObservationDraft?
 
     /// Blank gutter (in points) shown between birds while paging horizontally,
     /// matching the iOS Photos app. Bump this to widen or tighten the gap.
@@ -176,11 +191,13 @@ struct SpeciesPhotoFullScreen: View {
         items: [SpeciesPhotoItem],
         initialIndex: Int = 0,
         mapButtonTitle: String? = nil,
-        onShowOnMap: ((SpeciesPhotoItem) -> Void)? = nil
+        onShowOnMap: ((SpeciesPhotoItem) -> Void)? = nil,
+        onShowObservationOnMap: ((LifeListEntry.Observation) -> Void)? = nil
     ) {
         self.items = items
         self.mapButtonTitle = mapButtonTitle
         self.onShowOnMap = onShowOnMap
+        self.onShowObservationOnMap = onShowObservationOnMap
         _scrolledID = State(initialValue: min(max(initialIndex, 0), max(items.count - 1, 0)))
     }
 
@@ -389,6 +406,47 @@ struct SpeciesPhotoFullScreen: View {
         // horizontal paging. Disabled while zoomed so a downward pan of the
         // photo doesn't dismiss.
         .simultaneousGesture(dismissDrag)
+        // The "N Observations" list, and the edit flow it can raise. Presented
+        // from the viewer itself so both open over the photo rather than making
+        // it leave first.
+        .sheet(isPresented: $showObservationList) {
+            observationListSheet
+        }
+        }
+    }
+
+    /// Contents of the observation-list sheet. Only ever reachable with a store
+    /// in the environment and more than one sighting on record — the row that
+    /// opens it is drawn from exactly that.
+    @ViewBuilder
+    private var observationListSheet: some View {
+        if let item = currentItem, let store = lifeListStore {
+            let observations = observations(for: item)
+            ObservationPickerSheet(
+                title: "\(observations.count) Observations",
+                observations: observations,
+                onSelect: { observation in
+                    showObservationList = false
+                    onShowObservationOnMap?(observation)
+                },
+                onEdit: { observation in
+                    editDraft = .editing(
+                        scientificName: item.scientificName,
+                        commonName: commonName(for: item),
+                        observation: observation
+                    )
+                },
+                onDelete: { observation in
+                    store.removeObservation(
+                        scientificName: item.scientificName,
+                        identity: observation.identity
+                    )
+                    // One sighting left is no longer a list worth standing in
+                    // for the info panel's single place-and-date line.
+                    if observations.count <= 2 { showObservationList = false }
+                }
+            )
+            .observationFlow($editDraft, store: store)
         }
     }
 
@@ -514,54 +572,109 @@ struct SpeciesPhotoFullScreen: View {
         .accessibilityLabel(starred ? "Remove alert star" : "Alert me when heard")
     }
 
-    /// Bottom details — place (a blue, tappable link to the map), date, and photo
-    /// attribution — in a liquid-glass panel. Non-link text is white like the
-    /// name; the panel's width is capped for a generous margin from the edges.
+    /// Every recorded sighting of this bird, newest first — but only for a
+    /// species-scoped item (see `SpeciesPhotoItem.showsAllObservations`). A
+    /// viewer opened from a map pin stands for that one sighting, so it keeps
+    /// showing the place and date it was opened with instead.
+    private func observations(for item: SpeciesPhotoItem) -> [LifeListEntry.Observation] {
+        guard item.showsAllObservations else { return [] }
+        return lifeListStore?.observations(for: item.scientificName) ?? []
+    }
+
+    /// The sighting section of the info panel. A bird seen once shows where and
+    /// when, linked to the map; a bird seen several times shows the count
+    /// instead and hands the individual sightings to a sheet — there is no one
+    /// place and date to print, and listing them all would swamp the panel.
+    @ViewBuilder
+    private func sightingSection(
+        for item: SpeciesPhotoItem,
+        observations: [LifeListEntry.Observation]
+    ) -> some View {
+        if observations.count > 1 {
+            Button {
+                showObservationList = true
+            } label: {
+                HStack(spacing: 4) {
+                    Text("\(observations.count) Observations")
+                    Image(systemName: "chevron.forward")
+                        .font(.footnote.weight(.semibold))
+                }
+                .font(.subheadline)
+                .foregroundStyle(Color.accentColor)
+                // The same generous hit area the single place-and-date line gets.
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(NoDimButtonStyle())
+            .accessibilityLabel("\(observations.count) observations")
+        } else {
+            singleSighting(for: item, observation: observations.first)
+        }
+    }
+
+    /// Place + date for a bird with one sighting to its name. The values come
+    /// from the store when the item is species-scoped (so an edit or a delete
+    /// shows through immediately) and from the item itself otherwise.
+    @ViewBuilder
+    private func singleSighting(
+        for item: SpeciesPhotoItem,
+        observation: LifeListEntry.Observation?
+    ) -> some View {
+        let place = observation?.location ?? item.placeName
+        let date = observation?.date ?? item.dateFound
+        if let date {
+            // Place (accent-colored, the map link) + date stacked together. When
+            // the map action is available the *whole block* — place, date, and a
+            // little padding around them — is one button, so the tap target is
+            // generous rather than just the place-name text.
+            let block = VStack(spacing: 3) {
+                if let place, !place.isEmpty {
+                    // Tight spacing keeps the pin close to the place name.
+                    HStack(spacing: 4) {
+                        Text(place)
+                        Image(systemName: "mappin.circle")
+                    }
+                    .font(.subheadline)
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(onShowOnMap != nil ? Color.accentColor : Color.white)
+                }
+                Text(date, format: .dateTime.year().month(.abbreviated).day())
+                    .font(.subheadline)
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+            }
+
+            if let onShowOnMap {
+                Button { onShowOnMap(item) } label: {
+                    block
+                        // Generous hit area: padding around the whole place+date
+                        // block (plus the date text itself) so taps near it land.
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(NoDimButtonStyle())
+                .accessibilityLabel(mapButtonTitle ?? "Show on Map")
+            } else {
+                block
+            }
+        }
+    }
+
+    /// Bottom details — the sighting (place and date, or a link to the full list
+    /// when there are several) and the photo attribution — in a liquid-glass
+    /// panel. Non-link text is white like the name; the panel's width is capped
+    /// for a generous margin from the edges.
     private func infoPanel(for item: SpeciesPhotoItem, screenWidth: CGFloat) -> some View {
         VStack(spacing: 12) {
-            if let dateFound = item.dateFound {
-                // Place (blue, the map link) + date stacked together. When the map
-                // action is available the *whole block* — place, date, and a little
-                // padding around them — is one button, so the tap target is generous
-                // rather than just the place-name text.
-                let block = VStack(spacing: 3) {
-                    if let place = item.placeName, !place.isEmpty {
-                        // Tight spacing keeps the pin close to the place name.
-                        HStack(spacing: 4) {
-                            Text(place)
-                            Image(systemName: "mappin.circle")
-                        }
-                        .font(.subheadline)
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(onShowOnMap != nil ? Color.blue : Color.white)
-                    }
-                    Text(dateFound, format: .dateTime.year().month(.abbreviated).day())
-                        .font(.subheadline)
-                        .monospacedDigit()
-                        .foregroundStyle(.white)
-                }
-
-                if let onShowOnMap {
-                    Button { onShowOnMap(item) } label: {
-                        block
-                            // Generous hit area: padding around the whole place+date
-                            // block (plus the date text itself) so taps near it land.
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(NoDimButtonStyle())
-                    .accessibilityLabel(mapButtonTitle ?? "Show on Map")
-                } else {
-                    block
-                }
-            }
+            sightingSection(for: item, observations: observations(for: item))
 
             if let info = info(for: item) {
                 // The whole attribution block (credit text + the "View source"
                 // line) is the tap target, so taps anywhere on the credit open the
-                // photo's source page — but only the "View source" line is colored
-                // blue; the attribution above it stays white.
+                // photo's source page — but only the "View source" line takes the
+                // accent color; the attribution above it stays white.
                 let attributionBlock = VStack(spacing: 4) {
                     Text(info.attributionWithLicense)
                         .font(.caption2)
@@ -570,7 +683,7 @@ struct SpeciesPhotoFullScreen: View {
                     if info.sourceURL != nil {
                         Text("View source")
                             .font(.caption2.weight(.semibold))
-                            .foregroundStyle(.blue)
+                            .foregroundStyle(Color.accentColor)
                     }
                 }
                 .padding(.horizontal, 4)

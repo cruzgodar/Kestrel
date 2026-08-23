@@ -63,13 +63,23 @@ struct LifeListView: View {
     /// typing or when the query is too short to bother scanning 6,500
     /// species.
     @State private var asyncSuggestions: [SearchRow] = []
-    /// The species partway through the add flow (pick a date, then a location),
-    /// along with the date chosen so far. Non-nil for as long as the flow is on
-    /// screen; the map is presented *over* the date sheet rather than in place
-    /// of it, so both are torn down together when the flow ends.
-    @State private var pendingAdd: PendingObservation?
-    @State private var showAddDate = false
-    @State private var showAddLocation = false
+    /// The sighting partway through the date → map → name flow, whether it is
+    /// being added or edited. Non-nil for as long as the flow is on screen; see
+    /// `observationFlow`.
+    @State private var pendingObservation: ObservationDraft?
+    /// The entry whose sightings the user is choosing between, and what they
+    /// intend to do with the one they pick. Only ever set for a species with
+    /// more than one sighting on record — with a single sighting there is
+    /// nothing to choose, so Edit and Delete act on it directly.
+    @State private var observationChoice: ObservationChoice?
+
+    /// A pending "which sighting did you mean?" question. Both Edit and Delete
+    /// raise the same list; `isDeleting` says which one asked.
+    struct ObservationChoice: Identifiable {
+        let entry: LifeListEntry
+        let isDeleting: Bool
+        var id: String { (isDeleting ? "d-" : "e-") + entry.scientificName }
+    }
 
     /// Row item rendered by the list. Life-list entries are sorted ahead
     /// of catalog suggestions so adding a missing species feels like a
@@ -379,7 +389,7 @@ struct LifeListView: View {
                 text: $searchText,
                 prompt: "Search or add species",
                 horizontalInset: Self.searchFieldHorizontalInset,
-                addFlowActive: pendingAdd != nil
+                addFlowActive: pendingObservation != nil
             )
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.frame(in: .global).minY
@@ -493,20 +503,16 @@ struct LifeListView: View {
             }.value
             allowedIndices = allowed
         }
-        // The two-step add flow's presentations. Bundled into one modifier
-        // rather than chained inline: this body's modifier chain is already
-        // long enough that two more presentations push the type-checker past
-        // its budget.
-        .modifier(AddFlowPresentations(
-            showDate: $showAddDate,
-            showLocation: $showAddLocation,
-            date: Binding(
-                get: { pendingAdd?.date ?? Date() },
-                set: { pendingAdd?.date = $0 }
-            ),
-            store: store,
-            onDismissed: { pendingAdd = nil },
-            onSave: commitPendingAdd(at:name:)
+        // The add/edit flow's presentations, bundled into one modifier rather
+        // than chained inline: this body's modifier chain is already long
+        // enough that two more presentations push the type-checker past its
+        // budget.
+        .observationFlow($pendingObservation, store: store)
+        // The "which sighting did you mean?" chooser, raised by Edit or Delete
+        // on a species with more than one on record.
+        .modifier(ObservationChoicePresentation(
+            choice: $observationChoice,
+            store: store
         ))
         .sheet(isPresented: $showImportInfo) {
             ImportInfoSheet {
@@ -546,7 +552,7 @@ struct LifeListView: View {
             onExported: handleExport(_:)
         ))
         .alert(
-            pendingDeletion.map { "Remove all \($0.commonName) observations from your life list? You can remove an individual observation from the map." } ?? "",
+            pendingDeletion.map { "Remove \($0.commonName) from your life list?" } ?? "",
             isPresented: Binding(
                 get: { pendingDeletion != nil },
                 set: { if !$0 { pendingDeletion = nil } }
@@ -657,6 +663,11 @@ struct LifeListView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // The whole row opens the bird, not just its thumbnail. The star button
+        // sits inside this shape but is a `Button`, so it claims its own taps
+        // before they reach here.
+        .contentShape(Rectangle())
+        .onTapGesture { presentPhoto(entry.scientificName) }
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
         // Swiping the other way logs another sighting of a bird already on the
@@ -676,17 +687,26 @@ struct LifeListView: View {
             }
             .tint(Self.addButtonTint)
         }
+        // Trailing actions are laid out from the trailing edge inward in
+        // declaration order, so Delete goes first to leave Edit sitting on its
+        // left.
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             // No `role: .destructive` — that role makes SwiftUI
             // pre-animate the row removal as soon as the button
             // is tapped, which is what causes the rows below to
             // slide up before the user has even confirmed.
             Button {
-                pendingDeletion = entry
+                requestDelete(entry)
             } label: {
                 Label("Delete", systemImage: "trash")
             }
             .tint(.red)
+            Button {
+                requestEdit(entry)
+            } label: {
+                Label("Edit", systemImage: "pencil")
+            }
+            .tint(.kestrelEditGreen)
         }
         // Haptic touch anywhere on the row raises its actions — over the
         // thumbnail and star as well as the name.
@@ -707,8 +727,8 @@ struct LifeListView: View {
                     )
                 }),
                 onViewImage: { presentPhoto(entry.scientificName) },
-                // Routed through the same confirmation alert as the swipe.
-                onDelete: { pendingDeletion = entry }
+                // Routed through the same chooser / confirmation as the swipe.
+                onDelete: { requestDelete(entry) }
             )
         }
     }
@@ -756,6 +776,10 @@ struct LifeListView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
+        // Same whole-row tap the life-list rows carry; the add button claims
+        // its own taps.
+        .contentShape(Rectangle())
+        .onTapGesture { presentPhoto(scientificName) }
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
         // Redundant with the plus button sitting right there, but every other
@@ -782,37 +806,49 @@ struct LifeListView: View {
         }
     }
 
-    // MARK: - Two-step add flow
+    // MARK: - Add / edit / delete
 
-    /// Starts the Life List tab's add flow for a catalog suggestion: ask when
-    /// the bird was seen, then where. Nothing is written to the store until the
-    /// location step is confirmed.
+    /// Starts the add flow for a species: ask when the bird was seen, then
+    /// where. Nothing is written to the store until the naming step is
+    /// confirmed. The same flow serves both entry points — a catalog
+    /// suggestion's plus creates the entry, while Add Observation files another
+    /// sighting under a species that's already on the list.
     private func beginAdd(scientificName: String, commonName: String) {
-        pendingAdd = PendingObservation(
-            scientificName: scientificName,
-            commonName: commonName,
-            date: Date()
-        )
-        showAddDate = true
+        pendingObservation = .adding(scientificName: scientificName, commonName: commonName)
     }
 
-    /// Writes the pending species to the life list at the chosen date,
-    /// coordinate, and place name. Called from the naming sheet's confirm
-    /// button; `pendingAdd` is cleared when the flow's presentations come down
-    /// right after.
-    private func commitPendingAdd(at coordinate: CLLocationCoordinate2D, name: String) {
-        guard let pending = pendingAdd else { return }
-        // The same flow serves both entry points: a catalog suggestion's plus
-        // creates the entry, while Add Observation files another sighting under a
-        // species that's already on the list. `recordObservation` picks.
-        store.recordObservation(
-            scientificName: pending.scientificName,
-            commonName: pending.commonName,
-            date: pending.date,
-            location: name,
-            latitude: coordinate.latitude,
-            longitude: coordinate.longitude
+    /// Re-opens the flow on an existing sighting, every step pre-set to what it
+    /// currently holds.
+    private func beginEdit(entry: LifeListEntry, observation: LifeListEntry.Observation) {
+        pendingObservation = .editing(
+            scientificName: entry.scientificName,
+            commonName: entry.commonName,
+            observation: observation
         )
+    }
+
+    /// Edit, from a row that stands for the whole species. A bird seen once has
+    /// only one sighting the row could mean, so that one is edited outright;
+    /// with several on record the user is asked which.
+    private func requestEdit(_ entry: LifeListEntry) {
+        let observations = entry.allObservations
+        if observations.count > 1 {
+            observationChoice = ObservationChoice(entry: entry, isDeleting: false)
+        } else if let only = observations.first {
+            beginEdit(entry: entry, observation: only)
+        }
+    }
+
+    /// Delete, from a row that stands for the whole species. Mirrors
+    /// `requestEdit`: one sighting means the row *is* that sighting, so the
+    /// existing "remove this bird" confirmation applies; several means asking
+    /// which one to drop.
+    private func requestDelete(_ entry: LifeListEntry) {
+        if entry.allObservations.count > 1 {
+            observationChoice = ObservationChoice(entry: entry, isDeleting: true)
+        } else {
+            pendingDeletion = entry
+        }
     }
 
     /// Section divider between in-range and out-of-range search matches.
@@ -956,6 +992,81 @@ struct LifeListView: View {
     }
 }
 
+/// The Life List tab's "which sighting did you mean?" chooser. Raised by Edit
+/// or Delete on a species with more than one sighting on record, where a row
+/// standing for the whole species can't say which one the user meant.
+private struct ObservationChoicePresentation: ViewModifier {
+    @Binding var choice: LifeListView.ObservationChoice?
+    let store: LifeListStore
+
+    func body(content: Content) -> some View {
+        content.sheet(item: $choice) { choice in
+            ObservationChoiceSheet(
+                choice: choice,
+                store: store,
+                onFinished: { self.choice = nil }
+            )
+        }
+    }
+}
+
+/// The chooser's contents. Both the edit flow and the delete confirmation are
+/// presented from *here* rather than from the Life List, so the chooser stays
+/// standing underneath: backing out of either lands back on the list of
+/// sightings instead of dumping the user out to the tab.
+private struct ObservationChoiceSheet: View {
+    let choice: LifeListView.ObservationChoice
+    /// Threaded down for the usual reason — `@Observable` environment objects
+    /// don't cross a sheet boundary.
+    let store: LifeListStore
+    /// The chosen action went through; put the chooser away.
+    let onFinished: () -> Void
+
+    @State private var draft: ObservationDraft?
+    @State private var pendingDelete: LifeListEntry.Observation?
+
+    var body: some View {
+        ObservationPickerSheet(
+            title: "Edit/Delete Which Observation?",
+            // Read live off the store so a delete that leaves the species
+            // standing updates the list behind the confirmation.
+            observations: store.observations(for: choice.entry.scientificName),
+            onSelect: { observation in
+                if choice.isDeleting {
+                    pendingDelete = observation
+                } else {
+                    draft = .editing(
+                        scientificName: choice.entry.scientificName,
+                        commonName: choice.entry.commonName,
+                        observation: observation
+                    )
+                }
+            }
+        )
+        .observationFlow($draft, store: store, onCommit: onFinished)
+        .alert(
+            "Remove this \(choice.entry.commonName) observation?",
+            isPresented: Binding(
+                get: { pendingDelete != nil },
+                set: { if !$0 { pendingDelete = nil } }
+            ),
+            presenting: pendingDelete
+        ) { observation in
+            Button("Delete", role: .destructive) {
+                store.removeObservation(
+                    scientificName: choice.entry.scientificName,
+                    identity: observation.identity
+                )
+                pendingDelete = nil
+                onFinished()
+            }
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { observation in
+            Text(observation.summaryText)
+        }
+    }
+}
+
 /// ButtonStyle that doesn't dim or scale on press — used for the row
 /// star buttons so taps don't darken them.
 struct NoDimButtonStyle: ButtonStyle {
@@ -982,13 +1093,6 @@ struct GrowButtonStyle: ButtonStyle {
 }
 
 
-/// The Life List tab's add flow, as a single modifier. Only *one* presentation
-/// hangs off the list: the date sheet. The map picker is presented from inside
-/// that sheet (see `ObservationDateSheet`), so it slides up over a sheet that
-/// stays put — the checkmark shows the map immediately instead of waiting out a
-/// sheet dismissal, and Back reveals the date sheet already sitting there rather
-/// than re-animating it in. `onDismissed` therefore fires once, when the whole
-/// flow ends, whichever way it ended.
 /// The export flow's three presentations — the explanatory sheet, the system
 /// save panel, and the result alert — lifted out of `LifeListView.body` to keep
 /// its modifier chain inside the type-checker's budget.
@@ -1028,242 +1132,6 @@ private struct ExportPresentations: ViewModifier {
     }
 }
 
-/// A species awaiting its observation date and location before it's written to
-/// the life list. Nothing is stored until the location is confirmed, so
-/// abandoning either step leaves the list untouched. Shared by both tabs' add
-/// flows — see `AddFlowPresentations`.
-struct PendingObservation {
-    let scientificName: String
-    let commonName: String
-    var date: Date
-}
-
-struct AddFlowPresentations: ViewModifier {
-    @Binding var showDate: Bool
-    @Binding var showLocation: Bool
-    @Binding var date: Date
-    /// Threaded down to the map: `@Observable` environment objects don't cross a
-    /// `fullScreenCover` boundary, and the map reads the life list to plot its
-    /// species thumbnails.
-    let store: LifeListStore
-    let onDismissed: () -> Void
-    let onSave: (CLLocationCoordinate2D, String) -> Void
-
-    func body(content: Content) -> some View {
-        content.sheet(isPresented: $showDate, onDismiss: {
-            // The map can only outlive the sheet if something went sideways;
-            // clear it so a re-entry starts on the date step.
-            showLocation = false
-            onDismissed()
-        }) {
-            ObservationDateSheet(
-                date: $date,
-                showLocationPicker: $showLocation,
-                store: store,
-                onCancel: { showDate = false },
-                onSave: { coordinate, name in
-                    onSave(coordinate, name)
-                    // Dismissing the sheet takes its presented cover (and the
-                    // naming sheet above that) with it, so the whole stack
-                    // leaves in one animation rather than unwinding a step at
-                    // a time.
-                    showDate = false
-                }
-            )
-        }
-    }
-}
-
-/// Step one of the Life List tab's add flow: when did you see this bird?
-/// Defaults to today and can't be set into the future. Dismissible by swipe or
-/// by the leading Cancel button; the trailing checkmark raises the map picker
-/// *over* this sheet, which stays mounted underneath for the whole detour.
-struct ObservationDateSheet: View {
-    @Binding var date: Date
-    @Binding var showLocationPicker: Bool
-    let store: LifeListStore
-    let onCancel: () -> Void
-    let onSave: (CLLocationCoordinate2D, String) -> Void
-
-    /// The pin the user dropped on the map, held while step three asks what to
-    /// call the place. Nothing is written until that sheet is confirmed.
-    @State private var pickedCoordinate: CLLocationCoordinate2D?
-    @State private var showNamePrompt = false
-
-    var body: some View {
-        NavigationStack {
-            // A wheel rather than the graphical calendar: the calendar's month
-            // grid doesn't fit a medium detent alongside the title bar.
-            DatePicker(
-                "Observation date",
-                selection: $date,
-                in: ...Date(),
-                displayedComponents: .date
-            )
-            .datePickerStyle(.wheel)
-            .labelsHidden()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .navigationTitle("When did you see this bird?")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(role: .cancel) { onCancel() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    // The system confirm role — a checkmark, tinted with the
-                    // app's accent color.
-                    Button(role: .confirm) { showLocationPicker = true }
-                }
-            }
-        }
-        .presentationDetents([.medium])
-        // Hidden grab handle, matching the import sheet and the map's cards.
-        .presentationDragIndicator(.hidden)
-        // Step two, layered on top of this sheet rather than replacing it.
-        .fullScreenCover(isPresented: $showLocationPicker) {
-            MapView(picker: MapView.LocationPicker(
-                onBack: { showLocationPicker = false },
-                onConfirm: { coordinate in
-                    pickedCoordinate = coordinate
-                    showNamePrompt = true
-                }
-            ))
-            .environment(store)
-            // Step three sits on top of the map the same way the map sits on
-            // top of the date sheet: dismissing it reveals the pin already
-            // dropped, so backing out of the name doesn't restart the flow.
-            .sheet(isPresented: $showNamePrompt) {
-                ObservationNameSheet(
-                    coordinate: pickedCoordinate ?? CLLocationCoordinate2D(),
-                    // Threaded down for the same reason the map gets it:
-                    // `@Observable` environment objects don't cross a sheet.
-                    store: store,
-                    onCancel: { showNamePrompt = false },
-                    onSave: { name in
-                        guard let coordinate = pickedCoordinate else { return }
-                        onSave(coordinate, name)
-                    }
-                )
-            }
-        }
-    }
-}
-
-/// Step three of the add flow: what do you call this place? Opens with the
-/// keyboard already up and the field pre-filled — see `defaultName`. The
-/// suggestion is only a starting point and the user is free to type over it,
-/// but it can't be left blank: confirm stays disabled until the field holds
-/// something. Every sighting Kestrel records itself therefore carries a place
-/// name, which is what the eBird export needs to place it.
-struct ObservationNameSheet: View {
-    let coordinate: CLLocationCoordinate2D
-    let store: LifeListStore
-    let onCancel: () -> Void
-    let onSave: (String) -> Void
-
-    @State private var name = ""
-    /// True while the reverse lookup is in flight, so the field can show it's
-    /// still working rather than looking like it came back empty.
-    @State private var isLookingUp = true
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                TextField("Place name", text: $name)
-                    .textFieldStyle(.plain)
-                    .font(.title3)
-                    .focused($focused)
-                    .submitLabel(.done)
-                    .onSubmit(save)
-                    .autocorrectionDisabled()
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
-                    .background(
-                        Color.primary.opacity(0.06),
-                        in: .rect(cornerRadius: 14, style: .continuous)
-                    )
-                    .overlay(alignment: .trailing) {
-                        if isLookingUp && name.isEmpty {
-                            ProgressView()
-                                .controlSize(.small)
-                                .padding(.trailing, 16)
-                        }
-                    }
-                    .padding(.horizontal, 20)
-                Spacer(minLength: 0)
-            }
-            .padding(.top, 24)
-            .frame(maxWidth: .infinity)
-            .navigationTitle("Choose a short place name")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(role: .cancel) { onCancel() }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button(role: .confirm) { save() }
-                        .disabled(trimmedName.isEmpty)
-                }
-            }
-        }
-        .presentationDetents([.medium])
-        // Hidden grab handle, matching every other sheet in this flow.
-        .presentationDragIndicator(.hidden)
-        .task {
-            focused = true
-            let suggestion = await defaultName()
-            isLookingUp = false
-            // A slow lookup must never stomp on something the user has already
-            // typed, so the suggestion only lands in a still-empty field.
-            guard let suggestion, name.isEmpty else { return }
-            name = suggestion
-        }
-    }
-
-    /// What confirm would actually store. Also gates the button and the
-    /// keyboard's return key — a field holding only spaces is empty.
-    private var trimmedName: String {
-        name.trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private func save() {
-        // Belt and braces alongside the disabled confirm: `.onSubmit` fires on
-        // the return key, which stays live even while the button is disabled.
-        guard !trimmedName.isEmpty else { return }
-        // Two-pulse confirmation, moved here from the map's Save Observation
-        // button: this is the tap that actually writes the sighting.
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
-        onSave(trimmedName)
-    }
-
-    /// A mile. Close enough that two pins are almost certainly the same
-    /// birding spot under the name the user already gave it.
-    private static let reuseRadius: CLLocationDistance = 1609.344
-
-    /// What the field starts out holding. A place the user has already named
-    /// within a mile wins outright — their own wording for a patch beats
-    /// anything a geocoder produces, and it keeps repeat visits to one spot
-    /// filed under one name. Failing that, the pin is somewhere new, so the
-    /// default is just the town: broad enough to be true wherever in it the
-    /// pin landed, and short enough to type over.
-    private func defaultName() async -> String? {
-        if let nearby = store.nearestObservationName(to: coordinate, within: Self.reuseRadius) {
-            return nearby
-        }
-        let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        do {
-            let placemarks = try await CLGeocoder().reverseGeocodeLocation(location)
-            guard let placemark = placemarks.first else { return nil }
-            return placemark.locality ?? placemark.subAdministrativeArea
-        } catch {
-            // Offline or rate-limited: leave the field empty and let the user
-            // type their own rather than guessing.
-            Log.error("ObservationNameSheet: reverse geocode failed — \(error)")
-            return nil
-        }
-    }
-}
 
 /// Explanatory modal shown before importing. Describes the eBird/Merlin
 /// workflow (with an inline link to download the data) and offers an import

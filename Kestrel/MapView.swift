@@ -67,6 +67,12 @@ struct MapView: View {
     /// the current location the picker opens on, or wherever the user
     /// long-pressed instead.
     struct LocationPicker {
+        /// Where the picker opens with its pin already dropped, and the camera
+        /// already there. Non-nil when the flow is editing a sighting, so the
+        /// map opens on the place it was recorded rather than on wherever the
+        /// user happens to be standing now. `nil` falls back to the current
+        /// location — see `seedPickerPin`.
+        var initialCoordinate: CLLocationCoordinate2D? = nil
         let onBack: () -> Void
         let onConfirm: (CLLocationCoordinate2D) -> Void
     }
@@ -153,6 +159,28 @@ struct MapView: View {
             return
         }
         dropPin(at: CLLocationCoordinate2D(latitude: fix.latitude, longitude: fix.longitude))
+    }
+
+    /// Drops the pin an *edit* opens with. Split out of `seedPickerPin` and run
+    /// before it, because it needs no location fix and so must not sit behind
+    /// one: the warm-up `seedPickerPin` waits on can take seconds to give up,
+    /// and the pin for a place we already know belongs on screen immediately.
+    ///
+    /// The camera move goes through the same held-and-re-asserted focus request
+    /// the Map tab uses, because it faces the same race: the map is still
+    /// resolving its initial `.userLocation` position, and the fix that lands a
+    /// moment later would otherwise throw the camera back onto the user.
+    private func seedPickerPinFromEdit() {
+        guard let initial = picker?.initialCoordinate, pickedPins.isEmpty else { return }
+        dropPin(at: initial)
+        let focus = MapFocus(
+            latitude: initial.latitude,
+            longitude: initial.longitude,
+            token: UUID()
+        )
+        focusRequest = focus
+        focusDeadline = Date.now + Self.focusReassertWindow
+        moveCamera(to: focus, animated: false)
     }
 
     /// The camera-center half of `seedPickerPin`, called on every camera settle.
@@ -303,6 +331,11 @@ struct MapView: View {
     /// doesn't also dismiss it. A boolean token rather than a timestamp — see
     /// the dismiss gesture for why.
     @State private var annotationTapConsumed = false
+    /// A sighting partway through the add flow, started from a thumbnail's
+    /// haptic-touch menu. Presented from its own layer in the ZStack rather than
+    /// from the map itself, which already presents the bottom card — one view
+    /// can only host one sheet.
+    @State private var pendingObservation: ObservationDraft?
 
     /// The bottom card the map can show — a multi-bird cluster. Routed through a
     /// single sheet (see `mapCard`) so re-targeting it never tears the sheet down.
@@ -420,7 +453,10 @@ struct MapView: View {
                                 point: point,
                                 info: visibleReps[point.id],
                                 thumbSize: Self.thumbSize,
-                                onTap: handleAnnotationTap
+                                onTap: handleAnnotationTap,
+                                // Display-only in picker mode, menu included.
+                                menuEnabled: picker == nil,
+                                menu: annotationMenu
                             )
                         }
                         .annotationTitles(.hidden)
@@ -586,6 +622,13 @@ struct MapView: View {
             .padding(.trailing, 12)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
 
+            // Zero-size host for the add/edit flow raised by a thumbnail's menu.
+            // It can't hang off the map itself, which already presents the
+            // bottom card.
+            Color.clear
+                .frame(width: 0, height: 0)
+                .observationFlow($pendingObservation, store: store)
+
             if let picker {
                 // Back to the date step.
                 GlassMapButton(
@@ -643,6 +686,9 @@ struct MapView: View {
             }
         }
         .task {
+            // An edit already knows where its pin goes, so it is dropped before
+            // the location warm-up below rather than behind it.
+            seedPickerPinFromEdit()
             // Never prompt for location here — permission is only ever requested
             // at the first Start Recording. If access is already granted, warm a
             // fix so the recenter button and user dot work immediately; otherwise
@@ -806,6 +852,38 @@ struct MapView: View {
                 presentedSinglePoint = point
             }
         }
+    }
+
+    /// The haptic-touch menu a *lone* thumbnail raises — the same four actions
+    /// a species row offers anywhere else in the app. Multi-bird stacks don't
+    /// get one: the menu would have no single bird to act on, and their tap
+    /// already opens a card where each bird has its own.
+    @ViewBuilder
+    private func annotationMenu(for info: RepInfo) -> some View {
+        // The same sighting a tap would open — for a stack of repeat
+        // observations of one bird, its earliest.
+        let point = BirdCluster(
+            representative: info.representative,
+            coordinate: info.coordinate,
+            others: info.others
+        ).uniqueByEarliest.first ?? info.representative
+        MapPointMenu(
+            point: point,
+            store: store,
+            onAddObservation: {
+                pendingObservation = .adding(
+                    scientificName: point.scientificName,
+                    commonName: point.commonName
+                )
+            },
+            onViewImage: {
+                if mapCard != nil {
+                    sheetPhoto = .lone(point)
+                } else {
+                    presentedSinglePoint = point
+                }
+            }
+        )
     }
 
     private func cacheCamera(_ context: MapCameraUpdateContext) {
@@ -1083,6 +1161,43 @@ struct MapView: View {
     }
 }
 
+/// The haptic-touch menu behind a single bird on the map — a pinned thumbnail
+/// or one cell of a cluster card. Wraps `SpeciesRowMenu` (so the map can't drift
+/// from the lists' wording, symbols, or order) and supplies the two actions it
+/// can answer on its own: the star, and a delete that drops *this* sighting
+/// rather than the whole species. The species itself leaves the life list only
+/// when the sighting deleted was its last.
+private struct MapPointMenu: View {
+    let point: MapPoint
+    let store: LifeListStore
+    let onAddObservation: () -> Void
+    let onViewImage: () -> Void
+
+    var body: some View {
+        let starred = store.starredNames.contains(point.scientificName)
+        SpeciesRowMenu(
+            onAddObservation: onAddObservation,
+            star: (starred, {
+                // The same single short tap every other star in the app gives.
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                store.setStarred(scientificName: point.scientificName, isStarred: !starred)
+            }),
+            onViewImage: onViewImage,
+            onDelete: {
+                store.removeObservation(
+                    scientificName: point.scientificName,
+                    identity: LifeListEntry.Observation.Identity(
+                        date: point.date,
+                        location: point.location,
+                        latitude: point.latitude,
+                        longitude: point.longitude
+                    )
+                )
+            }
+        )
+    }
+}
+
 // MARK: - Per-annotation fading wrapper
 //
 // MapKit's annotation host (a UIKit `MKAnnotationView` wrapping a
@@ -1094,11 +1209,25 @@ struct MapView: View {
 // content renders, fading in/out via a local opacity state. The `rendered` mirror
 // keeps the content mounted through the fade-out so the tween is actually visible
 // before the view collapses.
-private struct FadingAnnotationContent: View {
+/// Duration of the thumbnail fade-in / fade-out. Change this one value to make
+/// the fade faster or slower. Kept brisk so thumbnails appear/disappear snappily
+/// rather than lingering. A file-level constant rather than a static on
+/// `FadingAnnotationContent`, which is generic over its menu content and so can't
+/// carry stored statics.
+private enum AnnotationFade {
+    static let duration: Double = 0.12
+}
+
+private struct FadingAnnotationContent<Menu: View>: View {
     let point: MapPoint
     let info: MapView.RepInfo?
     let thumbSize: CGSize
     let onTap: (MapView.RepInfo) -> Void
+    /// False in picker mode, where the thumbnails are there for orientation
+    /// only and every action on the menu would be a dead end.
+    let menuEnabled: Bool
+    /// The haptic-touch menu, built only for a thumbnail standing for one bird.
+    @ViewBuilder let menu: (MapView.RepInfo) -> Menu
 
     /// Mirror of `info` lagged behind by the fade-out animation. While the fade is
     /// running, `info` is already nil but `rendered` still holds the previous value
@@ -1107,10 +1236,6 @@ private struct FadingAnnotationContent: View {
     @State private var rendered: MapView.RepInfo?
     @State private var opacity: Double = 0
 
-    /// Duration of the thumbnail fade-in / fade-out. Change this one value to make
-    /// the fade faster or slower. Kept brisk so thumbnails appear/disappear snappily
-    /// rather than lingering.
-    private static let fadeDuration: Double = 0.12
     /// False until the first `info` resolution after this view mounts. Lets us
     /// distinguish a genuine first appearance (or a hit-test rehydration remount,
     /// which destroys + recreates this view) — which should settle to its final
@@ -1122,7 +1247,7 @@ private struct FadingAnnotationContent: View {
     var body: some View {
         Group {
             if let rendered {
-                MapAnnotationContent(
+                let content = MapAnnotationContent(
                     point: point,
                     clusterCount: rendered.count,
                     thumbSize: thumbSize
@@ -1131,6 +1256,12 @@ private struct FadingAnnotationContent: View {
                 .opacity(opacity)
                 .onTapGesture {
                     onTap(rendered)
+                }
+                // Only a lone bird gets a menu — see `MapView.annotationMenu`.
+                if menuEnabled && rendered.count == 1 {
+                    content.contextMenu { menu(rendered) }
+                } else {
+                    content
                 }
             }
         }
@@ -1154,13 +1285,13 @@ private struct FadingAnnotationContent: View {
             rendered = newInfo
             if wasOff {
                 opacity = 0
-                withAnimation(.easeInOut(duration: Self.fadeDuration)) {
+                withAnimation(.easeInOut(duration: AnnotationFade.duration)) {
                     opacity = 1
                 }
             }
             // Already visible: just refresh the count, no fade needed.
         } else if rendered != nil {
-            withAnimation(.easeInOut(duration: Self.fadeDuration)) {
+            withAnimation(.easeInOut(duration: AnnotationFade.duration)) {
                 opacity = 0
             } completion: {
                 rendered = nil
@@ -1301,6 +1432,10 @@ private struct MapCardSheet: View {
     /// Whether dismissing the current photo should also close the card. Tracked
     /// here because `onDismiss` can't read the (already-cleared) `photo` item.
     @State private var closeCardOnPhotoDismiss = false
+    /// A sighting partway through the add flow, started from a grid cell's
+    /// haptic-touch menu. Hosted here rather than on the map so it layers over
+    /// the card instead of making it leave first.
+    @State private var draft: ObservationDraft?
     /// Current detent. A multi-bird cluster can be pulled up to `.large` to see
     /// every bird.
     @State private var detent: PresentationDetent = .medium
@@ -1390,6 +1525,9 @@ private struct MapCardSheet: View {
         // cluster→settings, …). The sheet host is unaffected; only the contents
         // animate, so the swap reads as a smooth dissolve rather than a snap.
         .animation(.easeInOut(duration: 0.14), value: card?.id)
+        // Layered over the card rather than replacing it, the same way the
+        // full-screen photo is.
+        .observationFlow($draft, store: store)
         .presentationDetents(detents, selection: $detent)
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card — this is what
@@ -1450,6 +1588,14 @@ private struct MapCardSheet: View {
         }
     }
 
+    /// Opens the full-screen viewer over every bird in the card so the photo can
+    /// be swiped between them, starting on `point`.
+    private func openPhoto(for point: MapPoint, in cluster: BirdCluster) {
+        let points = cluster.uniqueByEarliest
+        let idx = points.firstIndex(of: point) ?? 0
+        photo = .pinpoint(points: points, index: idx)
+    }
+
     private func clusterGrid(_ cluster: BirdCluster) -> some View {
         // Read the card's width so the grid can size its columns to fill the row
         // exactly (no centered slack), keeping the edge thumbnails flush at
@@ -1469,11 +1615,21 @@ private struct MapCardSheet: View {
                             cornerRadius: thumbCornerRadius
                         )
                         .onTapGesture {
-                            // Open the viewer over every bird in the card so the
-                            // photo can be swiped between them, starting here.
-                            let points = cluster.uniqueByEarliest
-                            let idx = points.firstIndex(of: point) ?? 0
-                            photo = .pinpoint(points: points, index: idx)
+                            openPhoto(for: point, in: cluster)
+                        }
+                        // The same four actions a pinned thumbnail offers.
+                        .contextMenu {
+                            MapPointMenu(
+                                point: point,
+                                store: store,
+                                onAddObservation: {
+                                    draft = .adding(
+                                        scientificName: point.scientificName,
+                                        commonName: point.commonName
+                                    )
+                                },
+                                onViewImage: { openPhoto(for: point, in: cluster) }
+                            )
                         }
                     }
                 }

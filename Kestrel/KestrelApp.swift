@@ -269,7 +269,10 @@ struct KestrelApp: App {
                 return SpeciesPhotoItem(
                     scientificName: name,
                     placeName: observation?.location,
-                    dateFound: observation?.date
+                    dateFound: observation?.date,
+                    // These birds stand for themselves, not for one sighting, so
+                    // the panel summarizes every sighting on record.
+                    showsAllObservations: true
                 )
             }
             SpeciesPhotoFullScreen(
@@ -280,9 +283,14 @@ struct KestrelApp: App {
                     guard let coord = lifeListStore.firstObservationCoordinate(
                         for: item.scientificName
                     ) else { return }
-                    photoPresenter.presented = nil
-                    selectedTab = .map
-                    mapNavigator.focus(latitude: coord.latitude, longitude: coord.longitude)
+                    showOnMap(latitude: coord.latitude, longitude: coord.longitude)
+                },
+                // A sighting picked out of the observation list goes to *its*
+                // coordinate rather than the species' earliest.
+                onShowObservationOnMap: { observation in
+                    guard let latitude = observation.latitude,
+                          let longitude = observation.longitude else { return }
+                    showOnMap(latitude: latitude, longitude: longitude)
                 }
             )
             // Re-inject the store: with the Observation framework, `.environment`
@@ -369,6 +377,15 @@ struct KestrelApp: App {
             // safe to run on any connection. See `revalidateStaleImages`.
             await RemoteSpeciesImageStore.shared.revalidateStaleImages()
         }
+    }
+
+    /// Closes the photo viewer and takes the Map tab to a coordinate. Shared by
+    /// the viewer's place-name link and its observation list, which differ only
+    /// in which sighting's coordinate they hand over.
+    private func showOnMap(latitude: Double, longitude: Double) {
+        photoPresenter.presented = nil
+        selectedTab = .map
+        mapNavigator.focus(latitude: latitude, longitude: longitude)
     }
 
     private func updateSpectrogramVisibility() {
