@@ -98,6 +98,23 @@ struct LifeListView: View {
         return store.entries.filter { starredSnapshot.contains($0.scientificName) }
     }
 
+    /// The rows on screen: life-list entries (narrowed by the starred filter and
+    /// the query) followed by catalog suggestions for the query.
+    ///
+    /// The starred filter and search deliberately do *not* compose. `base` is
+    /// filtered to the starred snapshot, but `asyncSuggestions` isn't touched —
+    /// so searching with the filter on surfaces catalog species that aren't
+    /// starred (they can't be; a bird off the life list has nothing to star)
+    /// while hiding life-list birds that aren't. Those birds fall out of
+    /// `lifeMatches` here and are excluded from the suggestion scan by
+    /// `lifeNames`, so they appear nowhere, under a subtitle still reading
+    /// "Filtered to N starred species".
+    ///
+    /// Left as is on purpose: the filter's job is to narrow *your list*, and
+    /// searching is how you add a bird that isn't on it yet — suppressing
+    /// suggestions while filtering would make the filter a mode you had to leave
+    /// before you could add anything. Worth knowing about before reading the
+    /// subtitle as a description of everything below it.
     private var visibleRows: [SearchRow] {
         let base = displayedEntries
         let q = trimmedSearch
@@ -530,7 +547,7 @@ struct LifeListView: View {
         } message: { message in
             Text(message)
         }
-        // Bundled into one modifier for the same reason `AddFlowPresentations`
+        // Bundled into one modifier for the same reason `observationActions`
         // is: this body's chain is already at the type-checker's budget, and
         // three more presentations inline push it over.
         .modifier(ExportPresentations(
@@ -833,12 +850,13 @@ struct LifeListView: View {
         return "\(n) species"
     }
 
-    /// Builds the CSV for `scope` and raises the system save panel. An empty
-    /// result short-circuits to the result alert instead — there is nothing to
-    /// hand the file picker, and a blank .csv would only fail eBird's import.
-    /// Builds the CSV for `scope`, then dismisses the sheet and raises the
-    /// system save panel. The sheet vets emptiness before calling this (see
-    /// `ExportInfoSheet.export`), so there is always at least one row here.
+    /// Builds the CSV for `scope` and raises the system save panel over the
+    /// export sheet, which stays up underneath while the picker is running. The
+    /// sheet vets emptiness before calling this (see `ExportInfoSheet.export`),
+    /// so there is always at least one row to write here.
+    ///
+    /// The sheet does not survive the picker, however it ends: `handleExport`
+    /// drops it on every path, cancellation included.
     private func beginExport(scope: LifeListStore.ExportScope) async {
         exportProgress.fraction = 0
         // Reveal the progress card only if the render is still going a beat
@@ -861,10 +879,11 @@ struct LifeListView: View {
         pendingExport = payload
         pendingExportScope = scope
         exportDocument = EBirdCSVDocument(data: payload.csv)
-        // The sheet stays up and the save panel comes up over it, so backing
-        // out of the picker lands back on the two buttons rather than on the
-        // Life List. `.fileExporter` is attached to the sheet's own content for
-        // exactly this reason — see `ExportInfoSheet`.
+        // The sheet stays up and the save panel comes up over it, rather than
+        // the sheet leaving first and the picker following it a beat later.
+        // `.fileExporter` is attached to the sheet's own content for exactly
+        // that reason — see `ExportInfoSheet`. The sheet is then dropped by
+        // `handleExport` whichever way the picker ends.
         isExporting = true
     }
 
@@ -981,23 +1000,6 @@ struct LifeListView: View {
 struct NoDimButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-    }
-}
-
-/// Press feedback for the purple add buttons: a brief grow + lighten, both on
-/// the same fast easeOut so they read as one motion. Deliberately identical to
-/// the Identify tab's record button (`RecordButtonStyle`), since these are the
-/// same "commit this bird" affordance at row scale.
-struct GrowButtonStyle: ButtonStyle {
-    /// How far the label grows while held. Defaults to the record button's 1.1;
-    /// wider labels want less.
-    var scale: CGFloat = 1.1
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .scaleEffect(configuration.isPressed ? scale : 1.0)
-            .opacity(configuration.isPressed ? 0.85 : 1.0)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
     }
 }
 

@@ -16,7 +16,7 @@ struct ContentView: View {
     @State private var bottomBarWidth: CGFloat = 0
 
     /// Clock re-sampled on a timer so detection rows visibly migrate below the
-    /// "More Than a Minute Ago" header as they age past one minute, even when no
+    /// "Over a minute ago" header as they age past one minute, even when no
     /// new detection arrives to re-sort the list.
     @State private var now = Date()
     private let ageTimer = Timer.publish(every: 5, on: .main, in: .common).autoconnect()
@@ -187,7 +187,7 @@ struct ContentView: View {
         .onChange(of: lifeListStore.starredNames, initial: true) { _, new in
             manager.updateStarred(new)
         }
-        // Re-sample the clock so rows slide below the "More Than a Minute Ago"
+        // Re-sample the clock so rows slide below the "Over a minute ago"
         // header as they age, animating the migration.
         .onReceive(ageTimer) { date in
             withAnimation(.easeInOut(duration: 0.3)) { now = date }

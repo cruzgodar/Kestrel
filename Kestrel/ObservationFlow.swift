@@ -165,9 +165,12 @@ struct ObservationDateSheet: View {
     /// Where the map opens with its pin already down — the sighting's current
     /// location on an edit, `nil` for a new one.
     var initialCoordinate: CLLocationCoordinate2D? = nil
-    /// What the naming step starts out holding, used only while the pin is still
-    /// on `initialCoordinate` — move it somewhere else and the old name stops
-    /// describing the place, so the suggestion is worked out afresh.
+    /// What the naming step starts out holding: the sighting's recorded place
+    /// name on an edit. It stops applying once the pin is deliberately moved off
+    /// `initialCoordinate` — the old name no longer describes the place, so the
+    /// suggestion is worked out afresh. A sighting that never had coordinates
+    /// has no such spot to be moved off of, and keeps its name regardless; see
+    /// `nameSuggestion`.
     var initialName: String? = nil
     let onCancel: () -> Void
     let onSave: (CLLocationCoordinate2D, String) -> Void
@@ -186,10 +189,18 @@ struct ObservationDateSheet: View {
 
     /// The name to pre-fill step three with: the recorded one while the pin is
     /// still where the edit found it, and nothing once it's been moved.
+    ///
+    /// An edit that opened with *no* coordinate keeps the name whatever the pin
+    /// does. Plenty of sightings carry a place name and no lat/lon — eBird rows
+    /// whose Latitude/Longitude columns were blank or absent, and anything
+    /// logged before coordinates were recorded — and for those there is no
+    /// original spot the pin could have been moved away from. Testing the moved
+    /// distance against a coordinate that doesn't exist is what used to throw
+    /// the name away: opening Edit on such a sighting just to correct its date
+    /// silently replaced the user's own wording with a reverse-geocoded town.
     private var nameSuggestion: String? {
-        guard let initialName, let initialCoordinate, let picked = pickedCoordinate else {
-            return nil
-        }
+        guard let initialName else { return nil }
+        guard let initialCoordinate, let picked = pickedCoordinate else { return initialName }
         let a = CLLocation(latitude: initialCoordinate.latitude, longitude: initialCoordinate.longitude)
         let b = CLLocation(latitude: picked.latitude, longitude: picked.longitude)
         return a.distance(from: b) <= Self.sameSpotTolerance ? initialName : nil
@@ -227,7 +238,16 @@ struct ObservationDateSheet: View {
         // Step two, layered on top of this sheet rather than replacing it.
         .fullScreenCover(isPresented: $showLocationPicker) {
             MapView(picker: MapView.LocationPicker(
-                initialCoordinate: initialCoordinate,
+                // A pin already dropped wins over the one the flow opened with:
+                // backing out of the naming sheet and then out of the map, and
+                // coming back through the checkmark, mounts a *fresh* map, and
+                // seeding it from `initialCoordinate` would throw away the spot
+                // the user picked (or, on an add, re-seed from wherever they are
+                // now). The date wheel already survives this detour; the pin
+                // should too. `nameSuggestion` still measures against
+                // `initialCoordinate`, so re-entering the map doesn't make a
+                // moved pin look unmoved.
+                initialCoordinate: pickedCoordinate ?? initialCoordinate,
                 onBack: { showLocationPicker = false },
                 onConfirm: { coordinate in
                     pickedCoordinate = coordinate
@@ -764,8 +784,23 @@ struct ObservationPickerSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                ForEach(observations, id: \.identity) { observation in
-                    row(for: observation)
+                // Keyed on position, *not* on `Observation.Identity`. Two
+                // sightings are allowed to share an identity: every path where
+                // the user writes a record passes `dedupe: false` to
+                // `LifeListEntry.make` precisely so an edit can't make one
+                // vanish by colliding with a sibling — correcting an imported
+                // sighting's date onto a same-place neighbor's date produces
+                // exactly that collision. A `ForEach` with duplicate ids renders
+                // only one of the pair and misroutes the other's swipe actions,
+                // so the duplicate would become invisible and unreachable in the
+                // one list that exists to tell sightings apart.
+                //
+                // Indices shift under a delete, which `List` reads as the last
+                // row leaving and the rest changing content. That's correct
+                // here: the rows carry no local state, and the list is read live
+                // off the store, so it re-renders from scratch either way.
+                ForEach(Array(observations.enumerated()), id: \.offset) { item in
+                    row(for: item.element)
                     // Trailing actions are laid out from the trailing edge
                     // inward in declaration order, so Delete goes first to put
                     // Edit on its left — the same pairing (and the same colors)
@@ -773,7 +808,7 @@ struct ObservationPickerSheet: View {
                     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                         if let onDelete {
                             Button {
-                                onDelete(observation)
+                                onDelete(item.element)
                             } label: {
                                 Label("Delete", systemImage: "trash")
                             }
@@ -781,7 +816,7 @@ struct ObservationPickerSheet: View {
                         }
                         if let onEdit {
                             Button {
-                                onEdit(observation)
+                                onEdit(item.element)
                             } label: {
                                 Label("Edit", systemImage: "pencil")
                             }

@@ -429,6 +429,15 @@ struct SpeciesPhotoFullScreen: View {
         .onChange(of: currentObservationCount) { _, count in
             if count < 2 { showObservationList = false }
         }
+        // A viewer opened from a map pin stands for exactly one sighting. Delete
+        // that sighting from the menu and there is nothing left for this screen
+        // to be *of* — the pin behind it is already gone, and the chrome would go
+        // on captioning the photo with a place and date that no longer describe
+        // anything. Leave the same way the close button does, which also takes
+        // the card down when this was opened over one (see `MapCardSheet`).
+        .onChange(of: currentSightingWasDeleted) { _, deleted in
+            if deleted { dismissViewer() }
+        }
         }
     }
 
@@ -437,6 +446,18 @@ struct SpeciesPhotoFullScreen: View {
     private var currentObservationCount: Int {
         guard let item = currentItem else { return 0 }
         return observations(for: item).count
+    }
+
+    /// Whether the one sighting the current page stands for has been removed
+    /// from the store. Only ever true for a pin-scoped item — a species-scoped
+    /// one has the rest of its history to fall back on, and `sightingSection`
+    /// handles it going empty. Always false with no store (previews).
+    private var currentSightingWasDeleted: Bool {
+        guard let item = currentItem,
+              let observation = item.observation,
+              let store = lifeListStore else { return false }
+        return !store.observations(for: item.scientificName)
+            .contains { $0.identity == observation.identity }
     }
 
     /// Contents of the observation-list sheet. Only ever reachable with a store
@@ -706,6 +727,16 @@ struct SpeciesPhotoFullScreen: View {
             }
             .buttonStyle(NoDimButtonStyle())
             .accessibilityLabel("\(observations.count) observations")
+        } else if item.showsAllObservations && observations.isEmpty {
+            // Species-scoped with nothing on record: either a bird that was
+            // never seen, or one whose last sighting was just deleted from the
+            // menu above. `singleSighting` would fall back to the item's own
+            // `placeName` / `dateFound`, which were captured when the viewer
+            // opened — for the delete case that's a place and date describing a
+            // record that no longer exists, printed as though it still did. A
+            // never-seen bird has both nil anyway, so this only ever removes
+            // something stale.
+            EmptyView()
         } else {
             singleSighting(for: item, observation: observations.first)
         }

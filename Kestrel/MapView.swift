@@ -2045,8 +2045,6 @@ private struct PickedLocationMarker: View {
 
 // MARK: - Top-right glass controls
 
-/// A circular liquid-glass map control, matching the search field's glass
-/// buttons. Used for the recenter button and the picker's back button.
 /// Plain (non-`@Observable`) holder for the map's per-frame camera bookkeeping.
 /// Stored as a single `@State` reference on `MapView`; mutating its properties
 /// does not invalidate the view, so the `.continuous` camera callback can record
@@ -2063,6 +2061,8 @@ private final class CameraTracker {
     var lastFilterSpan: MKCoordinateSpan?
 }
 
+/// A circular liquid-glass map control, matching the search field's glass
+/// buttons. Used for the recenter button and the picker's back button.
 private struct GlassMapButton: View {
     let systemImage: String
     let accessibility: String
@@ -2089,8 +2089,6 @@ private struct GlassMapButton: View {
         .accessibilityLabel(accessibility)
     }
 }
-
-// MARK: - Map options card
 
 #Preview {
     MapView()
