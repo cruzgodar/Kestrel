@@ -428,14 +428,23 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// knows — the single entry point for discovering photos added or changed on
     /// the CDN, no app update required. Call off the main actor.
     ///
-    /// Always records **new** species (hash + metadata) so they immediately become
-    /// downloadable + attributable; the caller then prefetches whichever of them
-    /// are nearby / on the life list. **Changed** species are only acted on when
-    /// `includeChanged` is set (the high-power, Wi-Fi + power pass): their stale
-    /// bytes are dropped and the sizes previously on disk re-pulled. On the
-    /// cellular / foreground path (`includeChanged: false`) changed photos are
-    /// left for a later high-power pass, so metered data isn't spent re-fetching
-    /// images the user already has.
+    /// Every fetch records the manifest's metadata in full, so credits and
+    /// licenses are always current and no species is left unattributed (and
+    /// therefore invisible — see `isAttributed`). **New** species also have their
+    /// hash recorded immediately, which is what makes them downloadable; the
+    /// caller then prefetches whichever of them are nearby / on the life list.
+    ///
+    /// **Changed** species are only re-pulled when `includeChanged` is set (the
+    /// high-power, Wi-Fi + power pass). On the cellular / foreground path they are
+    /// reported and left alone, so metered data isn't spent re-fetching images the
+    /// user already has, and a later high-power pass still sees them as changed.
+    ///
+    /// A refresh is all-or-nothing and non-destructive: the replacement bytes are
+    /// downloaded and only then written over the old ones, and the slug's hash
+    /// advances only once they have. A failure leaves the species with the photo
+    /// it had and still marked as changed, rather than with no photo and a hash
+    /// saying it is up to date — which is what dropping the bytes up front and
+    /// advancing the hash in the same breath used to produce.
     ///
     /// Returns how many species were newly discovered / refreshed.
     @discardableResult
@@ -447,41 +456,51 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         }
         UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastManifestCheckKey)
 
-        let applied = PhotoManifestStore.shared.apply(remote, includeChanged: includeChanged)
+        let applied = PhotoManifestStore.shared.apply(remote)
+        discardWithdrawn(applied.removedSlugs)
         var result = PhotoUpdateResult(newCount: applied.newSlugs.count)
 
-        if includeChanged {
-            for slug in applied.changedSlugs {
-                let hadThumb = FileManager.default.fileExists(atPath: thumbFileURL(forSlug: slug).path)
-                let hadMedium = FileManager.default.fileExists(atPath: fileURL(forSlug: slug).path)
-                // Drop the stale bytes first so the re-download can't short-circuit
-                // on "already on disk" and a failed refresh leaves nothing stale.
-                invalidateDiskImages(slug: slug)
-                var ok = true
-                if hadThumb { ok = await redownload(slug: slug, size: .thumb) && ok }
-                if hadMedium { ok = await redownload(slug: slug, size: .medium) && ok }
-                if ok { result.changedCount += 1 }
+        guard includeChanged else { return result }
+
+        var advanced: [String: String] = [:]
+        for slug in applied.changedSlugs {
+            guard let published = remote.files[slug]?.hash else { continue }
+            if await refreshCachedSizes(slug: slug) {
+                advanced[slug] = published
+                result.changedCount += 1
+            } else if !hasCachedBytes(slug: slug) {
+                // Nothing cached to go stale, so there is nothing to protect and
+                // no download to get wrong: record the new hash and let the next
+                // lazy load fetch the new photo.
+                advanced[slug] = published
             }
         }
+        PhotoManifestStore.shared.markValidated([], advancedHashes: advanced)
         return result
     }
 
-    /// Force-fetches one size from the network (bypassing the "already on disk"
-    /// short-circuit, which the caller has already cleared) and persists it.
-    /// Returns whether the bytes landed.
-    private func redownload(slug: String, size: ImageSize) async -> Bool {
-        guard let url = Self.assetURL(slug: slug, folder: size.folder),
-              let data = await download(url),
-              UIImage(data: data) != nil else {
-            return false
-        }
-        try? data.write(to: fileURL(forSlug: slug, size: size), options: .atomic)
-        return true
+    /// Whether either persisted size of a slug is on disk.
+    private func hasCachedBytes(slug: String) -> Bool {
+        let fm = FileManager.default
+        return fm.fileExists(atPath: thumbFileURL(forSlug: slug).path)
+            || fm.fileExists(atPath: fileURL(forSlug: slug).path)
+    }
+
+    /// Deletes the cached bytes of species the published manifest has stopped
+    /// listing. Their attribution went with the manifest entry, so they can no
+    /// longer be shown (see `isAttributed`) and the files are dead weight — and
+    /// leaving them would keep `cachedSlugs()` handing the revalidation pass slugs
+    /// it can never confirm.
+    private func discardWithdrawn(_ slugs: [String]) {
+        guard !slugs.isEmpty else { return }
+        for slug in slugs { invalidateDiskImages(slug: slug) }
+        Log.info("Photo set: \(slugs.count) species withdrawn upstream, cached bytes dropped")
     }
 
     /// Drops a species' cached bytes across the persisted tiers and their
-    /// in-memory caches, so the next access re-downloads. Used by the update
-    /// refresh when a photo's hash changes.
+    /// in-memory caches. Used by `discardWithdrawn` when a photo leaves the
+    /// published set — the one case where deleting is right, because without the
+    /// manifest entry there is no license to show the bytes under.
     private func invalidateDiskImages(slug: String) {
         let fm = FileManager.default
         try? fm.removeItem(at: thumbFileURL(forSlug: slug))
@@ -514,9 +533,13 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         var confirmed = 0
         /// Re-downloaded because the published hash had moved on.
         var refreshed = 0
-        /// Left stale: the manifest or an image download failed, or the slug is no
-        /// longer published. Their cached bytes are untouched and retried later.
+        /// Left stale: the manifest or an image download failed. Their cached
+        /// bytes are untouched and retried later.
         var failed = 0
+        /// Dropped because the published set no longer carries them. Not a
+        /// failure — nothing will ever confirm them, so they stop being counted
+        /// against the cache.
+        var withdrawn = 0
         /// Species this pass learned about for the first time. A revalidation
         /// fetches the same manifest the discovery check does, so it can be the
         /// one that first sees a newly published photo — and once it has
@@ -525,7 +548,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         /// their prefetch and trickling in one lazy load at a time.
         var discoveredSlugs: [String] = []
 
-        var isEmpty: Bool { confirmed == 0 && refreshed == 0 && failed == 0 }
+        var isEmpty: Bool { confirmed == 0 && refreshed == 0 && failed == 0 && withdrawn == 0 }
     }
 
     /// Re-checks every cached image whose freshness window has lapsed.
@@ -566,7 +589,8 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         UserDefaults.standard.set(now, forKey: Self.lastManifestCheckKey)
         // Same bookkeeping the discovery check does — newly published species get
         // their hash + attribution recorded, and credit fixes propagate.
-        let applied = PhotoManifestStore.shared.apply(remote, includeChanged: false)
+        let applied = PhotoManifestStore.shared.apply(remote)
+        discardWithdrawn(applied.removedSlugs)
 
         var result = RevalidationResult()
         result.discoveredSlugs = applied.newSlugs
@@ -574,9 +598,11 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         var advanced: [String: String] = [:]
         for slug in stale {
             guard let published = remote.files[slug]?.hash else {
-                // No longer in the published set. Keep the bytes — the photo may
-                // be back — and leave the slug stale so it's re-checked.
-                result.failed += 1
+                // Withdrawn from the published set: `apply` has already dropped
+                // its hash, metadata and stamp, and `discardWithdrawn` its bytes.
+                // Nothing left to revalidate, and it isn't a failure — the photo
+                // is simply gone.
+                result.withdrawn += 1
                 continue
             }
             if PhotoManifestStore.shared.recordedHash(forSlug: slug) == published {

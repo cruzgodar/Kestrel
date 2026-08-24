@@ -25,16 +25,37 @@ struct ObservationDraft: Identifiable {
     let id = UUID()
     let scientificName: String
     let commonName: String
+    /// Midnight UTC on the day the bird was seen, like every stored sighting —
+    /// see `ObservationDate`. The date picker converts to and from the device's
+    /// own calendar at its own edge; nothing else in the flow does.
     var date: Date
     /// The observation being rewritten, or `nil` when filing a new one.
     var editing: LifeListEntry.Observation.Identity?
     /// Where the map picker opens with its pin already down. `nil` falls back to
-    /// the current location, which is what a new sighting wants.
+    /// the current location, which is what a new sighting wants — *unless*
+    /// `allowsMissingCoordinate` says otherwise.
     var coordinate: CLLocationCoordinate2D?
     /// What the naming step's field starts out holding. `nil` lets that step
     /// work out its own suggestion (a nearby place you've already named, else
     /// the town).
     var placeName: String?
+
+    /// Whether this flow may finish without a coordinate — and therefore whether
+    /// the map opens with *no* pin instead of one on the user's current location.
+    ///
+    /// True only when editing a sighting that never had coordinates: an eBird row
+    /// whose Latitude/Longitude columns were blank, or anything logged before
+    /// Kestrel recorded them. Those are exactly the records where seeding the
+    /// current location is wrong — opening Edit on a 2019 sighting to correct its
+    /// date would silently move it to wherever the phone is standing now, and
+    /// drop a pin there on the map, with no undo. The pin is only ever added by a
+    /// deliberate long press.
+    ///
+    /// Derived rather than stored so it cannot drift from the two facts it means:
+    /// there is a sighting being rewritten, and it has no coordinate to open on.
+    /// A *new* sighting has no coordinate either, and does want the current
+    /// location — hence the `editing` half.
+    var allowsMissingCoordinate: Bool { editing != nil && coordinate == nil }
 
     /// A new sighting of `scientificName`, opening on today with no location
     /// chosen yet.
@@ -42,7 +63,10 @@ struct ObservationDraft: Identifiable {
         ObservationDraft(
             scientificName: scientificName,
             commonName: commonName,
-            date: Date()
+            // Today as the device reckons it, pinned to midnight UTC. `Date()`
+            // would carry a wall-clock time that lands on the wrong UTC day for
+            // anyone far enough east or west.
+            date: ObservationDate.today
         )
     }
 
@@ -113,6 +137,7 @@ private struct ObservationFlowModifier: ViewModifier {
                 store: store,
                 initialCoordinate: presented.coordinate,
                 initialName: presented.placeName,
+                allowsMissingCoordinate: presented.allowsMissingCoordinate,
                 onCancel: { draft = nil },
                 onSave: { coordinate, name in
                     commit(coordinate: coordinate, name: name)
@@ -130,7 +155,12 @@ private struct ObservationFlowModifier: ViewModifier {
     /// Writes the finished draft. An edit rewrites the sighting it started from;
     /// anything else is filed as a new one, creating the species' life-list entry
     /// if this is the first time it's been seen.
-    private func commit(coordinate: CLLocationCoordinate2D, name: String) {
+    ///
+    /// A `nil` coordinate is a real answer, not a failure: it means the flow was
+    /// editing a sighting that never had one and the user didn't add one (see
+    /// `ObservationDraft.allowsMissingCoordinate`). The sighting keeps its place
+    /// name and stays off the map, which is what it was.
+    private func commit(coordinate: CLLocationCoordinate2D?, name: String?) {
         guard let draft else { return }
         if let editing = draft.editing {
             store.replaceObservation(
@@ -138,8 +168,8 @@ private struct ObservationFlowModifier: ViewModifier {
                 original: editing,
                 date: draft.date,
                 location: name,
-                latitude: coordinate.latitude,
-                longitude: coordinate.longitude
+                latitude: coordinate?.latitude,
+                longitude: coordinate?.longitude
             )
         } else {
             store.recordObservation(
@@ -147,8 +177,8 @@ private struct ObservationFlowModifier: ViewModifier {
                 commonName: draft.commonName,
                 date: draft.date,
                 location: name,
-                latitude: coordinate.latitude,
-                longitude: coordinate.longitude
+                latitude: coordinate?.latitude,
+                longitude: coordinate?.longitude
             )
         }
     }
@@ -172,8 +202,12 @@ struct ObservationDateSheet: View {
     /// has no such spot to be moved off of, and keeps its name regardless; see
     /// `nameSuggestion`.
     var initialName: String? = nil
+    /// Passed straight through to the map: with it set, the picker opens with no
+    /// pin and Save Observation commits `nil` unless one is deliberately dropped.
+    /// See `ObservationDraft.allowsMissingCoordinate`.
+    var allowsMissingCoordinate: Bool = false
     let onCancel: () -> Void
-    let onSave: (CLLocationCoordinate2D, String) -> Void
+    let onSave: (CLLocationCoordinate2D?, String?) -> Void
 
     /// Raises step two. Owned here rather than by the caller so the map can
     /// never outlive the sheet it was presented from.
@@ -206,13 +240,27 @@ struct ObservationDateSheet: View {
         return a.distance(from: b) <= Self.sameSpotTolerance ? initialName : nil
     }
 
+    /// The wheel's own value, in the device's time zone.
+    ///
+    /// `DatePicker` renders in local time, and a sighting is stored at midnight
+    /// UTC (see `ObservationDate`) — so handing it the stored value directly
+    /// would show the day before or after for anyone off UTC. This converts at
+    /// the one boundary where it matters and writes the canonical form back, so
+    /// the day the user spins to is the day that ends up on the record.
+    private var pickerDate: Binding<Date> {
+        Binding(
+            get: { ObservationDate.picker(for: date) },
+            set: { date = ObservationDate.canonical($0) }
+        )
+    }
+
     var body: some View {
         NavigationStack {
             // A wheel rather than the graphical calendar: the calendar's month
             // grid doesn't fit a medium detent alongside the title bar.
             DatePicker(
                 "Observation date",
-                selection: $date,
+                selection: pickerDate,
                 in: ...Date(),
                 displayedComponents: .date
             )
@@ -248,6 +296,9 @@ struct ObservationDateSheet: View {
                 // `initialCoordinate`, so re-entering the map doesn't make a
                 // moved pin look unmoved.
                 initialCoordinate: pickedCoordinate ?? initialCoordinate,
+                // An edit of a sighting that never had coordinates opens with no
+                // pin at all, and can be confirmed without one.
+                seedsCurrentLocation: !allowsMissingCoordinate,
                 onBack: { showLocationPicker = false },
                 onConfirm: { coordinate in
                     pickedCoordinate = coordinate
@@ -260,15 +311,18 @@ struct ObservationDateSheet: View {
             // dropped, so backing out of the name doesn't restart the flow.
             .sheet(isPresented: $showNamePrompt) {
                 ObservationNameSheet(
-                    coordinate: pickedCoordinate ?? CLLocationCoordinate2D(),
+                    // Optional, and deliberately not defaulted to (0, 0): a nil
+                    // coordinate means the sighting is staying without one, which
+                    // the naming step needs to know so it doesn't reverse-geocode
+                    // the Gulf of Guinea.
+                    coordinate: pickedCoordinate,
                     // Threaded down for the same reason the map gets it:
                     // `@Observable` environment objects don't cross a sheet.
                     store: store,
                     initialName: nameSuggestion,
                     onCancel: { showNamePrompt = false },
                     onSave: { name in
-                        guard let coordinate = pickedCoordinate else { return }
-                        onSave(coordinate, name)
+                        onSave(pickedCoordinate, name)
                     }
                 )
             }
@@ -278,19 +332,28 @@ struct ObservationDateSheet: View {
 
 /// Step three of the flow: what do you call this place? Opens with the keyboard
 /// already up and the field pre-filled — see `defaultName`. The suggestion is
-/// only a starting point and the user is free to type over it, but it can't be
-/// left blank: confirm stays disabled until the field holds something. Every
-/// sighting Kestrel records therefore carries a place name, which is what the
-/// eBird export needs to place it.
+/// only a starting point and the user is free to type over it, but it can't
+/// normally be left blank: confirm stays disabled until the field holds
+/// something. Every sighting Kestrel records therefore carries a place name,
+/// which is what the eBird export needs to place it.
+///
+/// The one exception is a sighting with no coordinate either — see
+/// `nameIsRequired`.
 struct ObservationNameSheet: View {
-    let coordinate: CLLocationCoordinate2D
+    /// Where the sighting is pinned, or `nil` when it is staying without a
+    /// coordinate (see `ObservationDraft.allowsMissingCoordinate`). With no
+    /// coordinate there is nothing to look a name up *from*, so the field simply
+    /// opens on whatever the sighting is already called.
+    let coordinate: CLLocationCoordinate2D?
     let store: LifeListStore
     /// The name this place already has, when the flow is editing a sighting
     /// whose pin hasn't moved. Wins over every other suggestion — it's the
     /// user's own wording for the very spot being re-saved.
     var initialName: String? = nil
     let onCancel: () -> Void
-    let onSave: (String) -> Void
+    /// `nil` when the field was left empty, which is only permitted for a
+    /// sighting that has no coordinate either — see `nameIsRequired`.
+    let onSave: (String?) -> Void
 
     @State private var name = ""
     /// True while the reverse lookup is in flight, so the field can show it's
@@ -326,7 +389,7 @@ struct ObservationNameSheet: View {
             }
             .padding(.top, 24)
             .frame(maxWidth: .infinity)
-            .navigationTitle("Choose a short place name")
+            .navigationTitle(nameIsRequired ? "Choose a short place name" : "Name this place?")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -334,7 +397,7 @@ struct ObservationNameSheet: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button(role: .confirm) { save() }
-                        .disabled(trimmedName.isEmpty)
+                        .disabled(nameIsRequired && trimmedName.isEmpty)
                 }
             }
         }
@@ -348,6 +411,12 @@ struct ObservationNameSheet: View {
             if let initialName, !initialName.isEmpty {
                 isLookingUp = false
                 if name.isEmpty { name = initialName }
+                return
+            }
+            // No coordinate to work from either. Nothing is in flight, so don't
+            // sit there spinning a progress view over an empty field.
+            guard coordinate != nil else {
+                isLookingUp = false
                 return
             }
             let suggestion = await defaultName()
@@ -365,14 +434,26 @@ struct ObservationNameSheet: View {
         name.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    /// Whether the field has to be filled in before this sheet can be confirmed.
+    ///
+    /// Normally yes: a sighting with a coordinate but no name exports to eBird
+    /// under a bare "lat, lon", and a person's own wording for the patch is worth
+    /// asking for. But a sighting with *neither* — the handful written by v1.0's
+    /// Identify-tab add when no location fix was available — would otherwise be
+    /// impossible to edit at all: opening Edit just to correct its date would
+    /// stop on an empty field with a disabled checkmark and no way forward. Those
+    /// stay as they are unless the user chooses to fill something in, which is
+    /// the same promise the map step makes about their missing coordinate.
+    private var nameIsRequired: Bool { coordinate != nil }
+
     private func save() {
         // Belt and braces alongside the disabled confirm: `.onSubmit` fires on
         // the return key, which stays live even while the button is disabled.
-        guard !trimmedName.isEmpty else { return }
+        guard !nameIsRequired || !trimmedName.isEmpty else { return }
         // Two-pulse confirmation, moved here from the map's Save Observation
         // button: this is the tap that actually writes the sighting.
         UINotificationFeedbackGenerator().notificationOccurred(.success)
-        onSave(trimmedName)
+        onSave(trimmedName.isEmpty ? nil : trimmedName)
     }
 
     /// A mile. Close enough that two pins are almost certainly the same
@@ -386,6 +467,7 @@ struct ObservationNameSheet: View {
     /// default is just the town: broad enough to be true wherever in it the
     /// pin landed, and short enough to type over.
     private func defaultName() async -> String? {
+        guard let coordinate else { return nil }
         if let nearby = store.nearestObservationName(to: coordinate, within: Self.reuseRadius) {
             return nearby
         }
@@ -731,7 +813,7 @@ extension LifeListEntry.Observation {
     /// The same "Place • Date" description as `ObservationRowLabel`, as a plain
     /// string — for the places that can only take text, like an alert's message.
     var summaryText: String {
-        let day = date.formatted(.dateTime.year().month(.abbreviated).day())
+        let day = ObservationDate.dayString(date)
         guard let place = location, !place.isEmpty else { return day }
         return "\(place) • \(day)"
     }
@@ -750,7 +832,7 @@ struct ObservationRowLabel: View {
                 Text("•")
                     .foregroundStyle(.secondary)
             }
-            Text(observation.date, format: .dateTime.year().month(.abbreviated).day())
+            Text(observation.date, format: ObservationDate.dayStyle)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
         }

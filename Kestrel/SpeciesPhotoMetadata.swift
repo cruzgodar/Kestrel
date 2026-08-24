@@ -134,7 +134,7 @@ private nonisolated extension String {
 /// attribution or swapping a photo would mean an App Store submission; with the
 /// manifest as the only source, publishing to the photo repo is the whole
 /// update. The cost is that a fresh install knows about no photos until its
-/// first manifest fetch (see `KestrelApp.discoverNewPhotosOnForeground`), which
+/// first manifest fetch (see `KestrelApp.refreshPhotosOnForeground`), which
 /// costs nothing in practice: the images are remote too, so an install that
 /// can't reach the network has no photos to attribute either way.
 ///

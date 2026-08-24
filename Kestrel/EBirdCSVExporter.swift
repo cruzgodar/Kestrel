@@ -63,8 +63,14 @@ nonisolated enum EBirdCSVExporter {
     /// observations have already been sent to eBird. Coordinates are rounded to
     /// five decimals (~1 m) so a float round-trip through JSON can't make the
     /// same sighting look new on the next export.
+    ///
+    /// The day component is rendered in **UTC** (`ObservationDate.isoDay`), which
+    /// is the whole point of storing sightings at midnight UTC: keyed on the
+    /// device's local day instead, flying to a different UTC offset moved every
+    /// evening sighting's key onto the next day, the ledger stopped recognizing
+    /// it, and the next "Export New Observations" handed eBird a second copy.
     static func key(scientificName: String, observation: LifeListEntry.Observation) -> String {
-        let date = keyDateFormatter.string(from: observation.date)
+        let date = ObservationDate.isoDay(observation.date)
         let location = observation.location ?? ""
         func coord(_ value: Double?) -> String {
             guard let value else { return "" }
@@ -126,7 +132,7 @@ nonisolated enum EBirdCSVExporter {
                 sanitize(locationName(for: observation)),       // Location Name
                 coordinate(observation.latitude),               // Latitude
                 coordinate(observation.longitude),              // Longitude
-                dateFormatter.string(from: observation.date),   // Date
+                ObservationDate.eBirdDay(observation.date),     // Date
                 "",                                             // Start Time
                 "",                                             // State/Province
                 "",                                             // Country Code
@@ -233,28 +239,14 @@ nonisolated enum EBirdCSVExporter {
 
     // MARK: Formatters
 
-    /// eBird requires `MM/dd/yyyy`. Fixed locale so a device set to a
-    /// non-Gregorian calendar or a different region can't emit anything else.
-    private static let dateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
-        f.calendar = Calendar(identifier: .gregorian)
-        f.dateFormat = "MM/dd/yyyy"
-        return f
-    }()
-
-    /// Day-resolution key: two sightings of a species at one place on one day
-    /// are the same eBird record regardless of the stored clock time.
-    private static let keyDateFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
-        f.calendar = Calendar(identifier: .gregorian)
-        f.dateFormat = "yyyy-MM-dd"
-        return f
-    }()
-
+    /// Both of this file's sighting-date renderings — the CSV's `MM/dd/yyyy`
+    /// Date column and the ledger key's `yyyy-MM-dd` day — live on
+    /// `ObservationDate`, in UTC, alongside the invariant that puts every stored
+    /// sighting at midnight UTC. There is deliberately no local-time formatter
+    /// here for either.
+    ///
+    /// The filename stamp below is the exception, and stays local: it names the
+    /// day the user is saving the file on, not the day a bird was seen.
     private static let filenameDateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.locale = Locale(identifier: "en_US_POSIX")

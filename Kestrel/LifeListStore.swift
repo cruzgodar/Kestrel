@@ -6,9 +6,20 @@ import Observation
 @MainActor
 final class LifeListStore {
     nonisolated struct ImportSummary {
+        /// Species that weren't on the life list before this import.
         let added: Int
+        /// Species already on the list that the import actually changed — a new
+        /// sighting filed under them, or an earlier one that displaced the
+        /// displayed first-seen fields.
         let updated: Int
+        /// Species the CSV mentioned that it had nothing new to say about.
         let skipped: Int
+        /// Sightings written across all of the above. Counted because a re-import
+        /// of a CSV that has gone on accumulating is overwhelmingly *new
+        /// observations of species you already have* — which the species-level
+        /// tallies alone report as "already known", so the summary read as though
+        /// nothing had happened while the map quietly grew pins.
+        let newObservations: Int
     }
 
     private(set) var entries: [LifeListEntry] = []
@@ -354,6 +365,15 @@ final class LifeListStore {
         return best?.name
     }
 
+    /// The common name the life list stores for a species, or `nil` when the
+    /// species isn't on it. Prefer this over `SpeciesCatalog`'s name anywhere a
+    /// recorded sighting is being named: an imported entry keeps eBird's wording,
+    /// and a menu or confirmation that silently swapped in the catalog's would be
+    /// naming a different bird than the row the user came from.
+    func commonName(for scientificName: String) -> String? {
+        entries.first(where: { $0.scientificName == scientificName })?.commonName
+    }
+
     /// Quick membership check by scientific name.
     func contains(scientificName: String) -> Bool {
         entries.contains(where: { $0.scientificName == scientificName })
@@ -567,20 +587,20 @@ final class LifeListStore {
             starredBySci[e.scientificName] = e.isStarred
         }
 
-        // Species already on the life list before this import began, and a
-        // snapshot of their displayed fields so we can tell afterward which
-        // ones the import actually changed (= "updated") vs. merely re-stated
-        // (= "already known"). Keyed by scientific name; multiple CSV rows for
-        // one species collapse into a single tally.
-        let originalKeys = Set(existing.map(\.scientificName))
+        // The life list as it stood before this import began, so the tally at the
+        // bottom can say which species the import actually changed and how many
+        // sightings it wrote.
         let originalBySci: [String: LifeListEntry] = Dictionary(
             uniqueKeysWithValues: existing.map { ($0.scientificName, $0) }
         )
-        var knownKeys: Set<String> = []
+        // Every species the CSV said anything about, whether or not it was
+        // already on the list. Only these can be reported as "already known" —
+        // the rest of the life list is untouched and has nothing to report.
+        var touchedKeys: Set<String> = []
 
         for row in rows {
             let sci = row.scientificName
-            if originalKeys.contains(sci) { knownKeys.insert(sci) }
+            touchedKeys.insert(sci)
             observationsBySci[sci, default: []].append(
                 LifeListEntry.Observation(
                     date: row.date,
@@ -615,35 +635,59 @@ final class LifeListStore {
                 dedupe: true
             )
         }
-        let prelimBySci = Dictionary(uniqueKeysWithValues: prelim.map { ($0.scientificName, $0) })
-
-        // Counts mirror the previous behavior: a brand-new species is "added";
-        // a pre-existing one whose displayed earliest sighting shifted (earlier
-        // date, or a healed location/coordinate) is "updated"; the rest of the
-        // touched pre-existing species are "already known". Computed on the
-        // pre-canonicalization keys, which the parser has already reduced to
-        // BirdNET-canonical binomials.
-        var updatedKeys: Set<String> = []
-        for sci in knownKeys {
-            guard let before = originalBySci[sci], let after = prelimBySci[sci] else { continue }
-            if before.firstSeen != after.firstSeen
-                || before.firstLocation != after.firstLocation
-                || before.firstLatitude != after.firstLatitude
-                || before.firstLongitude != after.firstLongitude {
-                updatedKeys.insert(sci)
-            }
-        }
-        let added = Set(observationsBySci.keys).subtracting(originalKeys).count
-        let updated = updatedKeys.count
-        let skipped = knownKeys.subtracting(updatedKeys).count
-
         // Canonicalize the same way `load()` does so freshly imported entries
         // pick up BirdNET-canonical scientific names immediately — otherwise an
         // eBird name like "Astur cooperii" (Cooper's Hawk) or "Spilopelia
         // chinensis" (Spotted Dove) would slug to a missing image and show the
         // placeholder until the next launch.
         let merged = Self.canonicalize(prelim).sorted(by: Self.ordersBefore)
-        return (merged, ImportSummary(added: added, updated: updated, skipped: skipped))
+
+        // The tally is measured against the *finished* set rather than against
+        // the row names, because canonicalization can fold an eBird spelling onto
+        // a species already on the list ("Astur cooperii" onto "Accipiter
+        // cooperii"). Counting rows would report that as a species added when the
+        // list didn't grow at all; comparing final entries to the ones we started
+        // with gets it right without needing to know which names were rewritten.
+        var added = 0
+        var updated = 0
+        var skipped = 0
+        var newObservations = 0
+        for entry in merged {
+            guard let before = originalBySci[entry.scientificName] else {
+                // New to the list: every sighting it carries is one we just wrote.
+                added += 1
+                newObservations += entry.allObservations.count
+                continue
+            }
+            // Gaining sightings is the case that used to go unreported:
+            // re-importing a CSV that has grown since last time files new rows
+            // under species already on the list without touching their
+            // first-seen fields, and every one of them was counted as "already
+            // known" while the map quietly grew pins.
+            let gained = entry.allObservations.count - before.allObservations.count
+            let earliestChanged = before.firstSeen != entry.firstSeen
+                || before.firstLocation != entry.firstLocation
+                || before.firstLatitude != entry.firstLatitude
+                || before.firstLongitude != entry.firstLongitude
+            if gained > 0 || earliestChanged {
+                updated += 1
+                newObservations += max(0, gained)
+            } else if touchedKeys.contains(entry.scientificName) {
+                // The CSV named it and had nothing new to say. Species the import
+                // never mentioned are simply not part of this tally.
+                skipped += 1
+            }
+        }
+
+        return (
+            merged,
+            ImportSummary(
+                added: added,
+                updated: updated,
+                skipped: skipped,
+                newObservations: newObservations
+            )
+        )
     }
 
     // MARK: Persistence
@@ -752,25 +796,78 @@ final class LifeListStore {
         }
     }
 
+    /// Marks that this install's stored sightings have been rewritten onto the
+    /// UTC-midnight invariant (see `ObservationDate`). The migration below is
+    /// **not** idempotent — it reads a date's day in the device's time zone — so
+    /// it has to run exactly once, and a flag is the only thing that can promise
+    /// that.
+    private static let dateMigrationKey = "lifeList.datesNormalizedToUTC"
+
+    /// Rewrites every stored sighting to midnight UTC on the calendar day it
+    /// currently reads as locally. Runs once per install, on the first launch
+    /// after the invariant landed.
+    ///
+    /// Preserving the *local* day is what makes this a no-op from the user's
+    /// side: a row that said "May 4, 2019" still says it, the export ledger's
+    /// existing keys still match (they were the local day of the old date, which
+    /// is the UTC day of the new one), and nothing already uploaded to eBird
+    /// looks new again. Ordering survives too — the map is monotonic in day
+    /// order, so an entry's earliest sighting stays its earliest and the
+    /// displayed first-seen fields don't need re-promoting.
+    ///
+    /// The one imperfect case is a device whose time zone has changed since the
+    /// records were written: those days shift by one. Unavoidable — the old
+    /// format simply didn't record which zone it meant, which is the defect being
+    /// fixed.
+    private nonisolated static func normalizeDates(_ entries: [LifeListEntry]) -> [LifeListEntry] {
+        entries.map { entry in
+            var copy = entry
+            copy.firstSeen = ObservationDate.canonical(entry.firstSeen)
+            copy.otherObservations = entry.otherObservations.map { observation in
+                var moved = observation
+                moved.date = ObservationDate.canonical(observation.date)
+                return moved
+            }
+            return copy
+        }
+    }
+
     private func load() {
+        let needsDateMigration = !UserDefaults.standard.bool(forKey: Self.dateMigrationKey)
         do {
             let url = try Self.storeURL()
-            guard FileManager.default.fileExists(atPath: url.path) else { return }
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                // Nothing stored yet, so there is nothing to migrate — a fresh
+                // install writes canonical dates from its first sighting on.
+                if needsDateMigration {
+                    UserDefaults.standard.set(true, forKey: Self.dateMigrationKey)
+                }
+                return
+            }
             let data = try Data(contentsOf: url)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let decoded = try decoder.decode([LifeListEntry].self, from: data)
-            let collapsed = Self.canonicalize(decoded)
+            let normalized = needsDateMigration ? Self.normalizeDates(decoded) : decoded
+            let collapsed = Self.canonicalize(normalized)
             entries = collapsed.sorted(by: Self.ordersBefore)
-            // Persist if anything actually changed — either rows merged or a
-            // scientific name was rewritten to its catalog-canonical form.
-            let mutated = collapsed.count != decoded.count
+            // Persist if anything actually changed — dates were migrated, rows
+            // merged, or a scientific name was rewritten to its catalog-canonical
+            // form.
+            let mutated = needsDateMigration
+                || collapsed.count != decoded.count
                 || zip(
                     decoded.sorted { $0.scientificName < $1.scientificName },
                     collapsed.sorted { $0.scientificName < $1.scientificName }
                 ).contains { $0.scientificName != $1.scientificName }
             if mutated {
                 save()
+            }
+            // Only once the migrated list is on its way to disk: a crash before
+            // this leaves the flag clear and the migration runs again next launch,
+            // which is the safe direction to fail in.
+            if needsDateMigration {
+                UserDefaults.standard.set(true, forKey: Self.dateMigrationKey)
             }
         } catch {
             Log.error("LifeListStore: load failed — \(error)")

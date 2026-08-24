@@ -46,6 +46,9 @@ struct LifeListView: View {
     /// until the filter is toggled off and back on. See `displayedEntries`.
     @State private var starredSnapshot: Set<String> = []
     @State private var searchText = ""
+    /// The list's scroll offset, so editing the query can send it back to the
+    /// top — see the `searchText` change handler.
+    @State private var scrollPosition = ScrollPosition()
     /// Global-space Y of the top edge of the bottom search field, measured so
     /// the tap-swallowing overlay (see `body`) knows where the list content
     /// stops being directly tappable.
@@ -288,7 +291,6 @@ struct LifeListView: View {
         // is typed into an empty-list search, which dropped the bottom search
         // field's focus as soon as results loaded. Keeping the List mounted
         // keeps that focus stable.
-        ScrollViewReader { proxy in
         List {
             ForEach(visibleRows) { row in
                 switch row {
@@ -338,12 +340,18 @@ struct LifeListView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .scrollBounceBehavior(.basedOnSize)
+        .scrollPosition($scrollPosition)
         // Editing the search field resets the scroll to the top of the list.
+        //
+        // Addressed as an *edge* rather than as a row id. Scrolling to
+        // `visibleRows.first?.id` used whichever id the list happened to hold at
+        // that moment — and while the catalog scan is still behind its debounce
+        // that is a stale suggestion, which the rescan then removes, leaving the
+        // id pointing at nothing and the scroll silently not happening. The top
+        // edge is always there, whatever the rows are doing.
         .onChange(of: searchText) { _, _ in
-            if let topID = visibleRows.first?.id {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(topID, anchor: .top)
-                }
+            withAnimation(.easeOut(duration: 0.2)) {
+                scrollPosition.scrollTo(edge: .top)
             }
         }
         .overlay {
@@ -573,7 +581,6 @@ struct LifeListView: View {
         } message: {
             Text("Are you sure you want to permanently remove all \(store.totalObservationCount) observations of \(store.entries.count) species from your life list? This cannot be undone. Your stars will be preserved if you re-add the species later.")
         }
-        }
     }
 
     // Blue used by the "alert me" star toggle when on, and by the filter button
@@ -610,7 +617,7 @@ struct LifeListView: View {
                             .fixedSize(horizontal: false, vertical: true)
                         Text("•")
                     }
-                    Text(entry.firstSeen, format: .dateTime.year().month(.abbreviated).day())
+                    Text(entry.firstSeen, format: ObservationDate.dayStyle)
                         .monospacedDigit()
                 }
                 .font(.caption)
@@ -976,11 +983,17 @@ struct LifeListView: View {
                 // Only surface non-zero clauses so the result never reads
                 // "0 already known" or similar.
                 var parts: [String] = []
-                if summary.added > 0 { parts.append("Added \(summary.added) species.") }
-                if summary.updated > 0 { parts.append("\(summary.updated) updated.") }
+                if summary.newObservations > 0 {
+                    parts.append(
+                        "Added \(summary.newObservations) "
+                            + (summary.newObservations == 1 ? "observation" : "observations")
+                            + " of \(summary.added + summary.updated) species."
+                    )
+                }
+                if summary.added > 0 { parts.append("\(summary.added) new to your life list.") }
                 if summary.skipped > 0 { parts.append("\(summary.skipped) already known.") }
                 importMessage = parts.isEmpty
-                    ? "No new species to add."
+                    ? "Nothing new to import."
                     : parts.joined(separator: " ")
             } catch {
                 importMessage = "Import failed: \(error.localizedDescription)"

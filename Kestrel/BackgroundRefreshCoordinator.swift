@@ -157,6 +157,7 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
                 Log.info(
                     "Revalidation: \(revalidated.confirmed) confirmed, "
                     + "\(revalidated.refreshed) refreshed, \(revalidated.failed) deferred, "
+                    + "\(revalidated.withdrawn) withdrawn, "
                     + "\(revalidated.discoveredSlugs.count) newly published"
                 )
             }

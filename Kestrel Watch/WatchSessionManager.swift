@@ -82,8 +82,8 @@ final class WatchSessionManager: NSObject {
         needsOnboarding = false
     }
 
-    /// How a heard bird is highlighted — picks the tint of the pill behind the
-    /// species name on the now-hearing screen.
+    /// How a heard bird is highlighted — picks the color the species name is
+    /// drawn in on the now-hearing screen (see `ContentView.nameColor`).
     /// The raw values match the strings the phone sends in the `highlight` key.
     enum BirdHighlight: String, Equatable {
         case newSpecies  // not yet on the life list (purple)

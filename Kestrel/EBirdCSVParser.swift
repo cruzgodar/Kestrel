@@ -55,14 +55,21 @@ nonisolated enum EBirdCSVParser {
 
         // eBird's "My eBird Data" export uses ISO `yyyy-MM-dd`. Older / region-specific
         // exports sometimes use `MM/dd/yyyy`. Try ISO first, fall back to US.
+        //
+        // Parsed **in UTC**, so a bare day in the CSV becomes midnight UTC on that
+        // day — the form every stored sighting takes (see `ObservationDate`).
+        // Parsing in the device's zone instead made an import's dates depend on
+        // where the phone was when the file was opened.
         let isoFormatter = DateFormatter()
         isoFormatter.locale = Locale(identifier: "en_US_POSIX")
-        isoFormatter.timeZone = TimeZone.current
+        isoFormatter.calendar = Calendar(identifier: .gregorian)
+        isoFormatter.timeZone = ObservationDate.utc
         isoFormatter.dateFormat = "yyyy-MM-dd"
 
         let usFormatter = DateFormatter()
         usFormatter.locale = Locale(identifier: "en_US_POSIX")
-        usFormatter.timeZone = TimeZone.current
+        usFormatter.calendar = Calendar(identifier: .gregorian)
+        usFormatter.timeZone = ObservationDate.utc
         usFormatter.dateFormat = "MM/dd/yyyy"
 
         func parseDate(_ s: String) -> Date? {

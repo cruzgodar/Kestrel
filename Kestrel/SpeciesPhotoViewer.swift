@@ -507,8 +507,18 @@ struct SpeciesPhotoFullScreen: View {
     /// capsule matches it; the info panel's corner radius is half of it.
     private static let chromeHeight: CGFloat = 48
 
+    /// What to call this bird in the menus and confirmations this screen raises.
+    ///
+    /// The life list's own name wins over the catalog's: an imported entry keeps
+    /// eBird's wording, and a "Delete this X observation?" that quietly swapped in
+    /// the catalog's name would be naming a different bird than the row the user
+    /// came from. Falls back to the catalog for a species that isn't on the list
+    /// yet (a search suggestion opened straight into the viewer), and to the
+    /// scientific name if even that has nothing.
     private func commonName(for item: SpeciesPhotoItem) -> String {
-        SpeciesCatalog.shared.commonName(for: item.scientificName) ?? item.scientificName
+        lifeListStore?.commonName(for: item.scientificName)
+            ?? SpeciesCatalog.shared.commonName(for: item.scientificName)
+            ?? item.scientificName
     }
     private func info(for item: SpeciesPhotoItem) -> SpeciesPhotoInfo? {
         SpeciesPhotoMetadata.shared.info(for: item.scientificName)
@@ -773,7 +783,7 @@ struct SpeciesPhotoFullScreen: View {
                     .multilineTextAlignment(.center)
                     .foregroundStyle(mappable ? Color.accentColor : Color.white)
                 }
-                Text(date, format: .dateTime.year().month(.abbreviated).day())
+                Text(date, format: ObservationDate.dayStyle)
                     .font(.subheadline)
                     .monospacedDigit()
                     .foregroundStyle(.white)

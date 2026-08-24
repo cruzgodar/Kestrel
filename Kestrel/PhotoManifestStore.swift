@@ -188,45 +188,85 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     struct ApplyResult: Sendable {
         var newSlugs: [String] = []
         var changedSlugs: [String] = []
+        /// Slugs the app had on record that the published manifest no longer
+        /// lists — their photo was withdrawn from the set. Dropped from local
+        /// state here; the caller deletes whatever bytes they left behind.
+        var removedSlugs: [String] = []
     }
 
     /// Diffs a freshly-fetched published manifest against local state and records
     /// what it found.
     ///
-    /// **New** species (a slug we've never seen) always have their hash + metadata
-    /// recorded, so they become downloadable and attributable immediately. This is
-    /// the "photos added over time" path and is safe to run anywhere (it only adds
-    /// knowledge; nothing on disk to disturb).
+    /// **Metadata is always recorded**, for every slug in the manifest, whatever
+    /// else is or isn't committed. It costs a dictionary write, it is the app's
+    /// only source of credit and license (`SpeciesPhotoMetadata` reads nothing
+    /// else), and `RemoteSpeciesImageStore` refuses to show a photo without it —
+    /// so withholding it doesn't defer work, it blanks the species out. Holding it
+    /// back for changed slugs is what made every species whose photo had been
+    /// re-published since the install's build show no photo at all until a
+    /// Wi-Fi-and-power background pass happened to run.
     ///
-    /// **Changed** species (known slug, different hash) are only *committed* when
-    /// `includeChanged` is set — the caller (the high-power refresh) then drops and
-    /// re-pulls their bytes. When it isn't (the cellular/foreground path), changed
-    /// slugs are reported but left un-recorded, so a later high-power pass still
-    /// sees them as changed and does the heavier re-download on Wi-Fi + power.
-    func apply(_ remote: PhotoManifest, includeChanged: Bool) -> ApplyResult {
+    /// **Hashes** are a different matter and are only advanced for slugs the app
+    /// has never seen. A changed slug's new hash is committed by the caller,
+    /// through `markValidated(_:advancedHashes:)`, and only once the replacement
+    /// bytes have actually landed — advancing it here would leave a failed refresh
+    /// looking up to date, so nothing would ever come back for it.
+    ///
+    /// **Slugs the manifest no longer lists** are dropped outright. Keeping them
+    /// meant a withdrawn photo's hash sat in local state forever with no metadata
+    /// beside it, which pinned `needsMetadataBackfill` true and made every single
+    /// foreground refetch the manifest.
+    func apply(_ remote: PhotoManifest) -> ApplyResult {
         lock.lock(); defer { lock.unlock() }
         var result = ApplyResult()
         for (slug, entry) in remote.files {
+            metadata[slug] = entry.info
             let known = hashes[slug]
             if known == nil {
                 hashes[slug] = entry.hash
-                metadata[slug] = entry.info
                 result.newSlugs.append(slug)
             } else if known != entry.hash {
                 result.changedSlugs.append(slug)
-                if includeChanged {
-                    hashes[slug] = entry.hash
-                    metadata[slug] = entry.info
-                }
-            } else {
-                // Same hash: refresh the overlay metadata anyway so a credit fix
-                // that didn't touch the image still propagates once fetched.
-                metadata[slug] = entry.info
             }
+        }
+        // Snapshot first: removing from `hashes` while iterating its own keys
+        // view works only by accident of copy-on-write.
+        let withdrawn = hashes.keys.filter { remote.files[$0] == nil }
+        if !withdrawn.isEmpty, isPlausiblyComplete(remote) {
+            for slug in withdrawn {
+                hashes.removeValue(forKey: slug)
+                metadata.removeValue(forKey: slug)
+                validatedAt.removeValue(forKey: slug)
+            }
+            result.removedSlugs = withdrawn
         }
         persistLocked()
         return result
     }
+
+    /// Whether an incoming manifest is whole enough to be treated as the full
+    /// published set, and therefore to prune against.
+    ///
+    /// Pruning is the one thing `apply` does that *removes* knowledge, and it
+    /// takes cached image bytes with it (see
+    /// `RemoteSpeciesImageStore.discardWithdrawn`). A manifest that decodes
+    /// cleanly but was published short — a build script that half-ran, a bad
+    /// deploy — would otherwise wipe most of the photo set off the device and
+    /// make the app re-download it, possibly over cellular. Photos do get
+    /// withdrawn a few at a time; they don't get withdrawn by the hundred, so a
+    /// manifest that has lost half the set is far more likely to be wrong than
+    /// the local copy is.
+    ///
+    /// Guarded rather than trusted, and deliberately loose: the cost of skipping
+    /// a legitimate prune is that a handful of stale slugs linger one more cycle.
+    private func isPlausiblyComplete(_ remote: PhotoManifest) -> Bool {
+        guard hashes.count >= Self.pruneFloor else { return true }
+        return remote.files.count * 2 >= hashes.count
+    }
+
+    /// Below this many known slugs the completeness check doesn't apply — an
+    /// install that knows about a dozen photos has no baseline worth defending.
+    private static let pruneFloor = 50
 
     /// Marks the snapshot dirty and schedules a single write shortly, collapsing
     /// a burst of stamps into one encode. Call with `lock` held.

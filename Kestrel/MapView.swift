@@ -77,16 +77,31 @@ struct MapView: View {
     /// Callbacks the location-picker mode reports through. `onConfirm` fires
     /// when Save Observation is tapped, carrying whatever location is pinned —
     /// the current location the picker opens on, or wherever the user
-    /// long-pressed instead.
+    /// long-pressed instead, or nothing at all when the picker was opened
+    /// without seeding one.
     struct LocationPicker {
         /// Where the picker opens with its pin already dropped, and the camera
         /// already there. Non-nil when the flow is editing a sighting, so the
         /// map opens on the place it was recorded rather than on wherever the
         /// user happens to be standing now. `nil` falls back to the current
-        /// location — see `seedPickerPin`.
+        /// location — see `seedPickerPin` — unless `seedsCurrentLocation` is off.
         var initialCoordinate: CLLocationCoordinate2D? = nil
+        /// Whether a picker with no `initialCoordinate` should drop a default
+        /// pin on the user's current location.
+        ///
+        /// Off for exactly one case: editing a sighting that never had
+        /// coordinates — an eBird row whose Latitude/Longitude columns were
+        /// blank, or anything logged before Kestrel recorded them. Seeding those
+        /// is wrong, and it was silent: opening Edit on a decade-old sighting
+        /// just to correct its date rewrote it to wherever the phone was
+        /// standing and dropped a pin there, with no undo. With this off the map
+        /// opens bare, Save Observation commits `nil`, and a coordinate is only
+        /// ever added by a deliberate long press.
+        var seedsCurrentLocation: Bool = true
         let onBack: () -> Void
-        let onConfirm: (CLLocationCoordinate2D) -> Void
+        /// `nil` when the picker was confirmed with no pin down — see
+        /// `seedsCurrentLocation`.
+        let onConfirm: (CLLocationCoordinate2D?) -> Void
     }
 
     /// Spelled out because the view's other stored properties are private, which
@@ -134,8 +149,24 @@ struct MapView: View {
     /// placeholder.
     private var committableCoordinate: CLLocationCoordinate2D? {
         if let pickedCoordinate { return pickedCoordinate }
+        // A picker that doesn't seed a location doesn't fall back to one either:
+        // the camera's center is "where the map happens to be looking", which is
+        // not a place anybody saw a bird. Confirming with no pin commits nil, and
+        // that is the answer (see `LocationPicker.seedsCurrentLocation`).
+        guard picker?.seedsCurrentLocation != false else { return nil }
         guard camera.lastSpan != nil else { return nil }
         return camera.lastCenter
+    }
+
+    /// The standing instruction across the top of the picker. A sighting that is
+    /// currently *without* a location says so, because the map opens bare for it
+    /// and confirming as-is leaves it that way — a picker showing no pin and no
+    /// explanation would read as one that hadn't finished loading.
+    private var pickerInstruction: String {
+        guard let picker, !picker.seedsCurrentLocation, pickedPins.isEmpty else {
+            return "Long press to choose a location"
+        }
+        return "No location recorded — long press to add one"
     }
 
     /// How long the pin takes to dissolve from its old spot to the new one.
@@ -151,7 +182,7 @@ struct MapView: View {
     /// `.task` runs before the map has reported a camera — so this hands the
     /// job to `seedPickerPinFromCamera`, which the next camera settle calls.
     private func seedPickerPin() async {
-        guard picker != nil, pickedPins.isEmpty else { return }
+        guard picker?.seedsCurrentLocation == true, pickedPins.isEmpty else { return }
         let status = CLLocationManager().authorizationStatus
         let authorized = status == .authorizedWhenInUse || status == .authorizedAlways
         // Never prompts: `current()` only resolves a fix, and only when access
@@ -159,7 +190,7 @@ struct MapView: View {
         let fix = authorized ? await LocationCache.shared.current() : nil
         // The await can take seconds to time out, and a long press in the
         // meantime is the user's own choice of location — never overwrite it.
-        guard picker != nil, pickedPins.isEmpty else { return }
+        guard picker?.seedsCurrentLocation == true, pickedPins.isEmpty else { return }
         guard let fix else {
             // No fix. Fall back to the camera, either the one it has already
             // settled on or the next one it reports.
@@ -646,11 +677,17 @@ struct MapView: View {
                 // height as a `GlassMapButton`, so the three read as one row of
                 // controls. Inset past both buttons' widths (12pt margin + 44pt
                 // button) so a long line can never run under them.
-                Text("Long press to choose a location")
+                Text(pickerInstruction)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    // Scales further than the one-line default would need,
+                    // because the "no location recorded" wording is half again as
+                    // long as the plain instruction and still has to fit between
+                    // the two corner buttons on the narrowest phone.
+                    .minimumScaleFactor(0.65)
+                    .contentTransition(.opacity)
+                    .animation(.easeInOut(duration: 0.2), value: pickerInstruction)
                     .padding(.horizontal, 18)
                     .frame(height: GlassMapButton.diameter)
                     .glassEffect(.regular, in: .capsule)
@@ -668,7 +705,13 @@ struct MapView: View {
                 // metrics, no icon) so the primary action of a screen reads the
                 // same everywhere in the app.
                 Button {
-                    guard let coordinate = committableCoordinate else { return }
+                    let coordinate = committableCoordinate
+                    // Nothing pinned *and* a picker that was supposed to seed one
+                    // means the map hasn't reported a camera yet — wait rather
+                    // than commit a location we don't have. A picker that seeds
+                    // nothing is the opposite case: no pin is the answer, and the
+                    // sighting keeps its place name without coordinates.
+                    guard coordinate != nil || !picker.seedsCurrentLocation else { return }
                     // No haptic here — the map is the middle step of the add
                     // flow, and the confirmation pulse belongs on the step
                     // that actually writes the observation (the naming
@@ -1817,10 +1860,14 @@ private enum MapSheetPhoto: Identifiable, Equatable {
     /// the card when dismissed.
     case lone(MapPoint)
 
+    /// Distinct per *bird*, not just per cluster: the index is part of the
+    /// identity because two cells of one card produce the same points array and
+    /// would otherwise share an id, leaving `fullScreenCover(item:)` no way to
+    /// tell "open the third bird" from "open the first".
     var id: String {
         switch self {
-        case .pinpoint(let points, _):
-            return "pinpoint-" + (points.first?.id ?? "") + "-\(points.count)"
+        case .pinpoint(let points, let index):
+            return "pinpoint-\(points.first?.id ?? "")-\(points.count)-\(index)"
         case .lone(let p):
             return "lone-" + p.id
         }

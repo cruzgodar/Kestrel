@@ -147,9 +147,9 @@ struct ContentView: View {
 
         ZStack {
             // The screen stays black whatever is heard. A starred or new bird is
-            // marked by tinting the species name's pill instead (see
-            // `nameHighlight`) — a full-screen wash and flash on the wrist was
-            // more alarm than information.
+            // marked by tinting the species name instead (see `nameColor`) — a
+            // full-screen wash and flash on the wrist was more alarm than
+            // information.
             Color.black.ignoresSafeArea()
 
             // Pre-warm the text-rendering pipeline during launch. The idle
@@ -354,11 +354,25 @@ struct ContentView: View {
 
     // MARK: - Tints
 
-    /// Purple: the record button's fill, and a new lifer's name.
+    /// Purple: the record button's fill. Matches the phone's `kestrelPurple`.
     private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
-    /// Blue: the phone's star glyph color (`LifeListView.starButtonTint`), reused
-    /// for a starred species' name.
-    private static let starTint = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
+
+    // The two species-name tints, kept as their own constants rather than
+    // borrowed from the button and star colors above. They do a different job:
+    // those fill a solid shape, these are *text on black*, where a color has to
+    // be light enough to read at a glance from arm's length on a dimmed
+    // always-on display. Tune the `brightness` of each here — nothing else on
+    // the watch uses them, so neither the record button nor anything on the
+    // phone moves with them.
+
+    /// Purple the species name is drawn in for a bird not yet on the life list.
+    private static let newSpeciesNameTint =
+        Color(hue: 252.0 / 360.0, saturation: 0.5, brightness: 1.0)
+    /// Blue the species name is drawn in for a starred ("alert me") bird. Hue and
+    /// saturation follow the phone's star glyph (`LifeListView.starButtonTint`)
+    /// so the same bird reads as the same color in both places.
+    private static let starredNameTint =
+        Color(hue: 220.0 / 360.0, saturation: 0.5, brightness: 1.0)
 
     /// Color the species name is drawn in — purple for a bird that isn't on the
     /// life list yet, blue for a starred ("alert me") one, plain white for an
@@ -367,8 +381,8 @@ struct ContentView: View {
     /// actually about.
     private var nameColor: Color {
         switch session.lastBird?.highlight {
-        case .newSpecies:    return Self.recordTint
-        case .starred:       return Self.starTint
+        case .newSpecies:    return Self.newSpeciesNameTint
+        case .starred:       return Self.starredNameTint
         case .normal, .none: return .white
         }
     }
