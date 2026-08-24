@@ -692,11 +692,15 @@ private struct ObservationChoiceSheet: View {
         )
         .observationFlow($draft, store: store, onCommit: onFinished)
         .observationDeleteConfirmation($pendingDelete, store: store, onDeleted: {
-            // Only step aside once there is nothing left to choose between.
+            // Step aside once there is nothing left to *choose between*.
             // Clearing out several stray sightings is one visit to this list,
             // not one visit per sighting — the list behind the confirmation is
-            // read live off the store, so the deleted row is already gone.
-            if choice.observations(in: store).isEmpty { onFinished() }
+            // read live off the store, so each deleted row is already gone — but
+            // a list offering a single option isn't a question any more, and a
+            // sheet still titled "Delete which observation?" over one row reads
+            // as a dead end. Same threshold the full-screen viewer's observation
+            // list uses when a delete takes it down to one.
+            if choice.observations(in: store).count < 2 { onFinished() }
         })
     }
 }
@@ -792,14 +796,13 @@ struct ObservationPickerSheet: View {
             .toolbar {
                 // The grab handle is hidden on every sheet in this flow, so
                 // without this the only way out of the list is a swipe nobody is
-                // told about. A toolbar button picks up the same tinted Liquid
-                // Glass treatment as the flow's other sheets' controls, and sits
-                // in the same top-left slot their Cancel does.
+                // told about. The system cancel role — the same X, in the same
+                // top-left slot, that the date and naming sheets carry — rather
+                // than a back chevron: this list is raised directly by a swipe or
+                // a menu, so leaving it abandons the action outright rather than
+                // stepping back to something.
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { dismiss() } label: {
-                        Image(systemName: "chevron.backward")
-                    }
-                    .accessibilityLabel("Back")
+                    Button(role: .cancel) { dismiss() }
                 }
             }
         }

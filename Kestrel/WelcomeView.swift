@@ -1,9 +1,16 @@
 import SwiftUI
 
 extension Color {
-    /// Kestrel's purple. The record button's idle fill and the onboarding
-    /// call-to-action are the same color by design, so it lives here rather than
-    /// being written out at each callsite.
+    /// Kestrel's purple, and the app's single source for it: the record button's
+    /// idle fill, the onboarding call-to-action, the map picker's Save
+    /// Observation button and dropped pin, and every Add Observation swipe
+    /// action are all this one value by design.
+    ///
+    /// The `AccentColor` asset carries the same color deliberately, so anything
+    /// tinted by the system (`Color.accentColor`, `Button(role: .confirm)`, the
+    /// glass add buttons) lands on it too. Kept as a literal rather than aliased
+    /// to `.accentColor` because the widget targets ship their own copy of that
+    /// asset; if this value ever changes, change the asset catalogs with it.
     static let kestrelPurple = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
 }
 

@@ -70,8 +70,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// jsDelivr CDN from the GitHub photo repo. **Un-tagged** — the version is no
     /// longer pinned here; `assetURL` inserts the current `@<version>` (from
     /// `PhotoManifestStore`) so a re-publish is picked up per-image via the
-    /// manifest rather than by editing this constant (see
-    /// `scripts/README_species_photos.md`). The `manifest.json` at this base
+    /// manifest rather than by editing this constant. The `manifest.json` at this base
     /// (default branch) drives update detection; each size lives under its own
     /// folder (`thumb/`, `hero/`, `full/`), every file named `<slug>.jpg`.
     static let assetBaseURL = "https://cdn.jsdelivr.net/gh/cruzgodar/kestrel-species-photos"

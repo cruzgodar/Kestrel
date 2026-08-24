@@ -310,8 +310,14 @@ struct ContentView: View {
     private static let stopTint = Color.red
     /// Gray for the locked (location-denied) idle state.
     private static let lockedTint = Color(white: 0.45)
-    /// Highlight purple — soft tint blended into the row background.
-    private static let recordHighlight = Color(hue: 252.0 / 360.0, saturation: 0.5, brightness: 1.0)
+    /// Flash for an ordinary bird — one already on the life list and not
+    /// starred, whose row carries no standing tint for the flash to echo.
+    private static let ordinaryFlash = Color(hue: 50.0 / 360.0, saturation: 0.6, brightness: 1.0)
+    /// Highlight purple — soft tint blended into the row background of a bird
+    /// not yet on the life list. The same value the empty-state copy pills that
+    /// phrase with, so the sentence and the rows it describes can't drift apart;
+    /// defined once over there rather than restated here.
+    private static let recordHighlight = HighlightedText.addHighlight
 
     @ViewBuilder
     private var resultsView: some View {
@@ -390,8 +396,9 @@ struct ContentView: View {
             .listRowBackground(Color.clear)
     }
 
-    // Faint blue persistent tint for starred species (alert-me list).
-    private static let starredTint = Color(hue: 215.0 / 360.0, saturation: 0.5, brightness: 1.0)
+    // Faint blue persistent tint for starred species (alert-me list) — the
+    // starred half of the pair above, from the same single definition.
+    private static let starredTint = HighlightedText.starHighlight
 
     /// The Identify empty-state description with "starred birds" on a blue pill
     /// and "those not on your life list" on a purple pill, matching the row
@@ -446,13 +453,14 @@ struct ContentView: View {
         // `starredNames` is the store's source-of-truth Set, so this is an O(1)
         // lookup (and tracks the right @Observable dependency for star toggles).
         let isStarred = lifeListStore.starredNames.contains(detection.scientificName)
-        // Flash color picks the same hue family as the persistent tint:
-        // purple for needs-add, blue for starred, yellow otherwise.
+        // Flash color is literally the persistent tint, pulsed brighter — so it
+        // reads as the same row lighting up rather than as a second color
+        // arriving over it. Yellow is the one that has no standing tint behind
+        // it: an ordinary known bird's row is plain, and the flash is all there
+        // is to see.
         let flashColor: Color = needsLifeListAdd
-            ? Color(hue: 252.0/360.0, saturation: 0.5, brightness: 1.0)
-            : (isStarred
-               ? Color(hue: 215.0/360.0, saturation: 0.5, brightness: 1.0)
-                : Color(hue: 50.0/360.0, saturation: 0.6, brightness: 1.0))
+            ? Self.recordHighlight
+            : (isStarred ? Self.starredTint : Self.ordinaryFlash)
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
@@ -460,13 +468,18 @@ struct ContentView: View {
                     .font(.headline)
                 Spacer()
                 if needsLifeListAdd {
+                    // Once the bird is on the list the checkmark is a *status*,
+                    // not a control: it reports that this session's detection has
+                    // been filed and stops responding to taps (see
+                    // `AddGlyphButton`). It used to undo the add, but "undo" had
+                    // no way to know which sighting it meant — it removed the
+                    // species' newest one, which after a backdated add is a
+                    // different record than the one just written — and it did so
+                    // on one unconfirmed tap, while every other delete in the app
+                    // goes through a confirmation. Deleting a sighting belongs to
+                    // the row's menu and swipe actions, which name what they act
+                    // on and ask first.
                     AddGlyphButton(isAdded: alreadyAdded) {
-                        // Tapping the checkmark undoes the add; the symbol-
-                        // replace transition reverse-animates back to a plus.
-                        if alreadyAdded {
-                            lifeListStore.removeLatestObservation(scientificName: detection.scientificName)
-                            return
-                        }
                         // Runs the same when → where → what's-it-called flow the
                         // Life List tab uses. A live detection could be logged
                         // here and now from the device's own fix, but that made
@@ -480,7 +493,7 @@ struct ContentView: View {
                     }
                     .accessibilityLabel(
                         alreadyAdded
-                            ? "Remove \(detection.commonName) from Life List"
+                            ? "\(detection.commonName) is on your Life List"
                             : "Add \(detection.commonName) to Life List"
                     )
                 } else {

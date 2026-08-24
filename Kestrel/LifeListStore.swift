@@ -42,6 +42,16 @@ final class LifeListStore {
     /// uploading the same records twice creates a second set of checklists.
     /// Remembering what has been handed over is the only way to let someone
     /// export repeatedly without duplicating their history.
+    ///
+    /// Keys are only ever added, never pruned — not when the sighting they
+    /// describe is edited into a different key, deleted, or wiped by "Delete All
+    /// Entries". This is intended. The key describes a *record eBird now holds*,
+    /// not a row Kestrel still stores, and that stays true however the local copy
+    /// changes; a sighting that reproduces a retired key is, by the key's own
+    /// definition, an exact copy of something already uploaded, and sending it
+    /// again would duplicate it on eBird's side. Anyone who does want the whole
+    /// list written out regardless has "Export All Observations", which ignores
+    /// this ledger entirely.
     private(set) var exportedObservationKeys: Set<String> = []
 
     /// Which observations an export should cover.
@@ -271,7 +281,11 @@ final class LifeListStore {
             scientificName: existing.scientificName,
             commonName: existing.commonName,
             isStarred: existing.isStarred,
-            observations: existing.allObservations + [added]
+            observations: existing.allObservations + [added],
+            // A sighting the user just recorded, never a merge of two sets of
+            // records — so an exact repeat of one already on file is kept as a
+            // second sighting rather than collapsed into the first.
+            dedupe: false
         )
         // A promoted earlier sighting changes the entry's sort key.
         entries.sort(by: Self.ordersBefore)
@@ -470,7 +484,11 @@ final class LifeListStore {
             scientificName: existing.scientificName,
             commonName: existing.commonName,
             isStarred: existing.isStarred,
-            observations: remaining
+            observations: remaining,
+            // Never dedupe an edit: the whole point of this call is to write
+            // back what the user typed, and collapsing the result into a
+            // same-identity sibling would make one of their records vanish.
+            dedupe: false
         )
         // The edit may have moved the entry's earliest sighting, which is its
         // sort key.
@@ -481,6 +499,16 @@ final class LifeListStore {
     /// Removes a single recorded sighting. The species itself drops off the
     /// life list when the sighting removed was its last one — a bird with no
     /// observations left is a bird that was never seen.
+    ///
+    /// Its star, deliberately, does *not* go with it. `starredNames` outlives
+    /// every entry (see that property and `removeAll`), so a bird that leaves
+    /// the list this way stays starred, keeps firing "alert me" notifications,
+    /// and comes back starred if it is ever re-added. That is the intended
+    /// trade: a star is a standing instruction about a species, not a property
+    /// of one sighting, and losing it because the last record was deleted would
+    /// be the more surprising outcome. The consequence to be aware of is that
+    /// the star has no row to appear on while the species is off the list, so
+    /// there is no way to see or clear it until the bird is recorded again.
     func removeObservation(
         scientificName: String,
         identity: LifeListEntry.Observation.Identity
@@ -501,20 +529,12 @@ final class LifeListStore {
             scientificName: existing.scientificName,
             commonName: existing.commonName,
             isStarred: existing.isStarred,
-            observations: remaining
+            observations: remaining,
+            // A delete must remove exactly one record and leave the rest alone.
+            dedupe: false
         )
         entries.sort(by: Self.ordersBefore)
         save()
-    }
-
-    /// Undoes an add: drops the species' most recent sighting, which is the one
-    /// an add button has just filed. Deliberately *not* a "remove this species"
-    /// call — nothing outside "Delete All Entries" wipes a bird's whole history,
-    /// so an undo on a bird that turns out to have other sightings on record
-    /// takes back only its own. The entry itself goes when that was the last.
-    func removeLatestObservation(scientificName: String) {
-        guard let latest = observations(for: scientificName).first else { return }
-        removeObservation(scientificName: scientificName, identity: latest.identity)
     }
 
     func removeAll() {
@@ -587,7 +607,12 @@ final class LifeListStore {
                 scientificName: sci,
                 commonName: commonBySci[sci]?.name ?? sci,
                 isStarred: starredBySci[sci] ?? false,
-                observations: observations
+                observations: observations,
+                // The import is the one place that dedupes: `observations` is
+                // the stored set unioned with this CSV's rows, and collapsing
+                // the overlap is what keeps re-importing the same export
+                // idempotent instead of doubling the user's history.
+                dedupe: true
             )
         }
         let prelimBySci = Dictionary(uniqueKeysWithValues: prelim.map { ($0.scientificName, $0) })
@@ -756,7 +781,18 @@ final class LifeListStore {
     /// `merge()`: rewrite stale eBird scientific names through the alias table,
     /// collapse trinomial subspecies into their binomial, then collapse
     /// same-common-name synonyms onto the BirdNET-canonical scientific name so
-    /// image-slug and detection lookups resolve to the bundled assets.
+    /// image-slug and detection lookups resolve to the right photo.
+    ///
+    /// One rule governs `dedupe` throughout this file, and every `make` call
+    /// below states which side of it it falls on: **collapse identical sightings
+    /// only where two independent sets of records are being unioned** — the
+    /// import folding a CSV into what is already stored, or two spellings of one
+    /// species being merged into a single entry. A call that rebuilds one entry
+    /// (relabeling it, or writing the user's own add / edit / delete into it)
+    /// never dedupes, because there is no second set for its records to be
+    /// duplicates *of*, and quietly dropping one would be losing data the user
+    /// entered by hand. This pipeline runs on every launch, so getting that
+    /// backwards would erode the list a little at a time.
     private nonisolated static func canonicalize(_ entries: [LifeListEntry]) -> [LifeListEntry] {
         collapseByCommonName(collapseToSpecies(applyAliases(entries)))
     }
@@ -771,13 +807,25 @@ final class LifeListStore {
         for entry in entries {
             let key = speciesBinomial(entry.scientificName)
             guard let existing = byBinomial[key] else {
-                // Rebuild via `make` so the binomial rename carries the full
-                // observation set (and earliest-sighting promotion) intact.
+                // Already a binomial: nothing to rewrite, so pass the entry
+                // through untouched rather than round-tripping it through
+                // `make`. That round-trip ran on every entry on every launch,
+                // which is exactly where a rebuild could quietly disturb
+                // observations the user recorded by hand.
+                guard key != entry.scientificName else {
+                    byBinomial[key] = entry
+                    continue
+                }
+                // A trinomial being renamed to its binomial. Rebuild via `make`
+                // so the rename carries the full observation set (and
+                // earliest-sighting promotion) intact — but this is one entry
+                // being relabeled, not two being merged, so nothing collapses.
                 byBinomial[key] = LifeListEntry.make(
                     scientificName: key,
                     commonName: entry.commonName,
                     isStarred: entry.isStarred,
-                    observations: entry.allObservations
+                    observations: entry.allObservations,
+                    dedupe: false
                 )
                 continue
             }
@@ -791,7 +839,11 @@ final class LifeListStore {
                 scientificName: key,
                 commonName: commonName,
                 isStarred: existing.isStarred || entry.isStarred,
-                observations: existing.allObservations + entry.allObservations
+                observations: existing.allObservations + entry.allObservations,
+                // Two separately-stored spellings of one species being folded
+                // together — a genuine union of record sets, so a sighting
+                // filed under both spellings collapses to one.
+                dedupe: true
             )
         }
         return Array(byBinomial.values)
@@ -832,7 +884,9 @@ final class LifeListStore {
                 scientificName: scientificName,
                 commonName: existing.commonName,
                 isStarred: existing.isStarred || entry.isStarred,
-                observations: existing.allObservations + entry.allObservations
+                observations: existing.allObservations + entry.allObservations,
+                // A union of two entries' records, same as `collapseToSpecies`.
+                dedupe: true
             )
         }
         // Final pass: rewrite singletons whose scientific name doesn't exist
@@ -849,7 +903,9 @@ final class LifeListStore {
                 scientificName: canonical,
                 commonName: entry.commonName,
                 isStarred: entry.isStarred,
-                observations: entry.allObservations
+                observations: entry.allObservations,
+                // One entry being relabeled, so its records pass through as-is.
+                dedupe: false
             )
         }
     }
@@ -868,7 +924,9 @@ final class LifeListStore {
                 scientificName: canonical,
                 commonName: entry.commonName,
                 isStarred: entry.isStarred,
-                observations: entry.allObservations
+                observations: entry.allObservations,
+                // One entry being relabeled, so its records pass through as-is.
+                dedupe: false
             )
         }
     }

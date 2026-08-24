@@ -12,10 +12,13 @@ import SwiftUI
 /// circle, white bold glyph.
 ///
 /// Flips to a checkmark once the species is on the list, with the same
-/// symbol-replace transition everywhere; tapping in that state undoes the add.
+/// symbol-replace transition everywhere. The checkmark is a statement of state,
+/// not a second control: it stops taking taps, so the button can never be the
+/// thing that removes a sighting. Deleting one is the row menu's and the swipe
+/// actions' job, where the sighting is named and the delete is confirmed.
 struct AddGlyphButton: View {
     /// True once the species is on the life list — swaps the plus for a
-    /// checkmark and turns the tap into an undo.
+    /// checkmark and retires the button's tap.
     let isAdded: Bool
     /// Diameter of the glass circle. Row-sized by default; the glyph scales with
     /// it so a larger button stays proportioned.
@@ -36,5 +39,10 @@ struct AddGlyphButton: View {
                 .contentShape(.circle)
         }
         .buttonStyle(NoDimButtonStyle())
+        // Not `.disabled`, which would gray the glyph out — the checkmark should
+        // read as an unambiguous "this one's filed", at full strength. This just
+        // takes the touch away, which also stops the interactive glass lighting
+        // up under a finger and promising something the tap won't do.
+        .allowsHitTesting(!isAdded)
     }
 }

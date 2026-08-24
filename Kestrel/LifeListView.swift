@@ -384,7 +384,12 @@ struct LifeListView: View {
                 text: $searchText,
                 prompt: "Search or add species",
                 horizontalInset: Self.searchFieldHorizontalInset,
-                addFlowActive: actions.draft != nil
+                // The chooser counts too: an edit started from it runs the same
+                // date → map → name flow, but out of that sheet's own draft
+                // rather than this one, so watching `draft` alone would let the
+                // keyboard flash back up between the steps of exactly those
+                // edits.
+                addFlowActive: actions.draft != nil || actions.choice != nil
             )
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.frame(in: .global).minY
@@ -554,15 +559,14 @@ struct LifeListView: View {
         }
     }
 
-    // Blue used by the "alert me" star toggle when on. Matches the blue
-    // tint used for starred-species spectrogram bands + row highlights in
-    // the Identify tab.
+    // Blue used by the "alert me" star toggle when on, and by the filter button
+    // that shows only starred species. Deliberately a stronger blue than the
+    // Identify tab's starred-row wash and spectrogram band (hue 215, saturation
+    // 0.5 — see `ContentView.starredTint`): those tint a whole row behind text
+    // and have to stay pale to keep it readable, whereas this fills a small
+    // glyph and needs the saturation to register at that size. Same family, two
+    // jobs — they are not, and should not be, the same value.
     private static let starButtonTint = Color(hue: 220.0 / 360.0, saturation: 0.7, brightness: 1.0)
-    /// Purple used for the Identify-tab record button and the add-to-life
-    /// -list circle on detection rows. Matched here so catalog suggestions
-    /// feel like a continuation of that "you can add me" affordance.
-    private static let addButtonTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
-
     /// Height of the trailing thumbnail on life-list and catalog-suggestion
     /// rows. Width follows at 4:3.
     private static let rowThumbnailHeight: CGFloat = 72
@@ -658,7 +662,7 @@ struct LifeListView: View {
             } label: {
                 Label("Add Observation", systemImage: "plus")
             }
-            .tint(Self.addButtonTint)
+            .tint(Color.kestrelPurple)
         }
         // Trailing actions are laid out from the trailing edge inward in
         // declaration order, so Delete goes first to leave Edit sitting on its
@@ -757,7 +761,7 @@ struct LifeListView: View {
             } label: {
                 Label("Add Observation", systemImage: "plus")
             }
-            .tint(Self.addButtonTint)
+            .tint(Color.kestrelPurple)
         }
         // Same haptic-touch menu the life-list rows carry, minus the two
         // actions a suggestion has nothing to apply them to: there is no entry
@@ -903,9 +907,7 @@ struct LifeListView: View {
             var parts = [
                 "Saved \(payload.observationCount) "
                     + (payload.observationCount == 1 ? "observation" : "observations")
-                    + " of \(payload.speciesCount) "
-                    + (payload.speciesCount == 1 ? "species" : "species")
-                    + "."
+                    + " of \(payload.speciesCount) species."
             ]
             if payload.unplaceableCount > 0 {
                 parts.append(

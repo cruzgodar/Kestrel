@@ -30,6 +30,13 @@ struct HighlightedText: View {
     /// Identify-tab row tints, at full saturation; the scheme-dependent opacity
     /// is applied at render time (see `atomView`). Blue marks starred ("alert
     /// me") birds; purple marks birds you can add to your life list.
+    ///
+    /// The single definition of both: `ContentView` takes its standing row tints
+    /// and its per-detection flash from these rather than restating them, so the
+    /// pills in this copy and the rows the copy is pointing at can never drift
+    /// to slightly different colors. Distinct from `Color.kestrelPurple`, which
+    /// is the solid, fully-saturated purple for controls — these are washes that
+    /// sit behind text and have to stay pale enough to read through.
     static let starHighlight = Color(hue: 215.0 / 360.0, saturation: 0.5, brightness: 1.0)
     static let addHighlight = Color(hue: 252.0 / 360.0, saturation: 0.5, brightness: 1.0)
 

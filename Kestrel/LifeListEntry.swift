@@ -114,22 +114,12 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         )] + otherObservations
     }
 
-    /// Builds an entry from an unordered set of observations: the earliest one
-    /// becomes the displayed `first*` fields and the remainder are stored in
-    /// `otherObservations`. Exact-duplicate observations are collapsed so
-    /// re-importing the same CSV stays idempotent. On a date tie the more
-    /// complete observation (coords, then location) is chosen as the displayed
-    /// one — this reproduces the old "heal a coord-less earliest sighting from
-    /// a same-date row" behavior.
-    static func make(
-        scientificName: String,
-        commonName: String,
-        isStarred: Bool,
-        observations: [Observation]
-    ) -> LifeListEntry {
-        // Collapse by identity rather than by whole-value equality so the same
-        // sighting recorded twice with different provenance still merges. The
-        // flags OR together: if any copy came from an import, eBird has it.
+    /// Collapses observations sharing an `Observation.Identity`, preserving first
+    /// -seen order. Keyed on identity rather than on whole-value equality so the
+    /// same sighting recorded twice with different provenance still merges; the
+    /// flags OR together, since if any copy came from an import then eBird has it.
+    /// Only ever reached through `make(dedupe: true)` — see the note there.
+    private static func collapseByIdentity(_ observations: [Observation]) -> [Observation] {
         var byIdentity: [Observation.Identity: Observation] = [:]
         var order: [Observation.Identity] = []
         for observation in observations {
@@ -144,8 +134,35 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
                 byIdentity[identity] = existing
             }
         }
-        let deduped = order.compactMap { byIdentity[$0] }
-        let sorted = deduped.sorted { a, b in
+        return order.compactMap { byIdentity[$0] }
+    }
+
+    /// Builds an entry from an unordered set of observations: the earliest one
+    /// becomes the displayed `first*` fields and the remainder are stored in
+    /// `otherObservations`. On a date tie the more complete observation (coords,
+    /// then location) is chosen as the displayed one — this reproduces the old
+    /// "heal a coord-less earliest sighting from a same-date row" behavior.
+    ///
+    /// `dedupe` collapses observations that share an `Observation.Identity`, and
+    /// is for **merging records from outside the app only** — an eBird import,
+    /// or the canonicalization pass that folds two taxonomic spellings of one
+    /// species together. It is what keeps re-importing the same CSV idempotent.
+    ///
+    /// Every path where the *user* writes a sighting directly — recording one,
+    /// editing one, deleting one — passes `false`. Two identical sightings are a
+    /// thing a person can legitimately record, and an edit must never be able to
+    /// make a record disappear: with dedupe on, correcting one imported sighting's
+    /// date onto a same-place sibling's date produced an identical identity and
+    /// silently collapsed the two into one, with no warning and no undo.
+    static func make(
+        scientificName: String,
+        commonName: String,
+        isStarred: Bool,
+        observations: [Observation],
+        dedupe: Bool
+    ) -> LifeListEntry {
+        let resolved = dedupe ? collapseByIdentity(observations) : observations
+        let sorted = resolved.sorted { a, b in
             if a.date != b.date { return a.date < b.date }
             func completeness(_ o: Observation) -> Int {
                 (o.latitude != nil && o.longitude != nil ? 2 : 0) + (o.location != nil ? 1 : 0)

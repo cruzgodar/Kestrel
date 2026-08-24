@@ -3,8 +3,9 @@ import Foundation
 /// The two prefetchable species-photo sizes. The full-resolution tier is
 /// deliberately absent — it's only ever fetched on demand when a card opens
 /// full-screen, never queued. `folder` is the path component under the jsDelivr
-/// photo base that holds this size's pre-rendered JPEGs (see
-/// `scripts/build_species_photos.py`): `thumb` is 300 px tall (lists, map pins,
+/// photo base that holds this size's pre-rendered JPEGs (rendered by
+/// `build_species_photos.py` in the Bird Image Selector repo): `thumb` is 300 px
+/// tall (lists, map pins,
 /// the watch's "now hearing" screen), `hero` is 900 px tall.
 /// `nonisolated` as well as `Sendable`: the project is MainActor-by-default, so
 /// without it even this plain enum's synthesized `Equatable` / `Hashable`
