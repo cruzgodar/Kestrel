@@ -48,11 +48,53 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         /// excludes `isImported`, which is provenance rather than identity — a
         /// bird added by hand and later restated by an import is one
         /// observation, not two.
+        ///
+        /// **Every field is canonicalized on the way in**, to exactly the
+        /// precision a round trip through eBird survives. The app tells users to
+        /// export to eBird and re-import periodically (see `MoreView`), and that
+        /// trip is lossy in two specific ways: the CSV carries coordinates at
+        /// five decimal places, and eBird's importer rejects quotes and can't
+        /// escape commas, so a place name is folded by
+        /// `EBirdCSVExporter.sanitize` on the way out. Comparing the raw stored
+        /// values meant a sighting recorded in Kestrel at
+        /// `42.4534198, -76.4735178` in "Ithaca, NY" came back as
+        /// `42.45342` in "Ithaca NY", failed to match itself, and was filed as a
+        /// second observation — a duplicate pin on the map and a doubled
+        /// "N Observations" for a record the user already had.
+        ///
+        /// `EBirdCSVExporter.key` already rounds for this reason; this is the
+        /// same rule applied to the other half of the round trip, so the two
+        /// notions of "the same sighting" can't disagree.
         nonisolated struct Identity: Hashable {
             let date: Date
             let location: String?
             let latitude: Double?
             let longitude: Double?
+
+            init(date: Date, location: String?, latitude: Double?, longitude: Double?) {
+                self.date = date
+                self.location = Self.canonicalPlace(location)
+                self.latitude = Self.canonicalCoordinate(latitude)
+                self.longitude = Self.canonicalCoordinate(longitude)
+            }
+
+            /// A coordinate rounded to the five decimal places (~1 m) the eBird
+            /// CSV carries — the most precision that can survive the trip.
+            static func canonicalCoordinate(_ value: Double?) -> Double? {
+                guard let value else { return nil }
+                return (value * 100_000).rounded() / 100_000
+            }
+
+            /// A place name folded the way the export folds it, and an empty
+            /// name treated as no name — which is what every display path in the
+            /// app already does with one.
+            static func canonicalPlace(_ value: String?) -> String? {
+                guard let value else { return nil }
+                // `sanitize` already collapses whitespace runs and trims, so a
+                // name that was nothing but spaces comes back empty.
+                let folded = EBirdCSVExporter.sanitize(value)
+                return folded.isEmpty ? nil : folded
+            }
         }
 
         var identity: Identity {

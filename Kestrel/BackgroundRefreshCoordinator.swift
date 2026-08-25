@@ -135,6 +135,7 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
     private func handleImageUpdate(_ task: BGTask) {
         scheduleImageUpdate()
 
+        let provider = currentProvider()
         let completion = TaskCompletionBox(task)
         let op = Task {
             // The request guaranteed power; also require Wi-Fi (unmetered) so a
@@ -159,6 +160,28 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
                     + "\(revalidated.refreshed) refreshed, \(revalidated.failed) deferred, "
                     + "\(revalidated.withdrawn) withdrawn, "
                     + "\(revalidated.discoveredSlugs.count) newly published"
+                )
+            }
+
+            // Both passes above *record* the slugs they discovered, which is what
+            // makes them downloadable — and also what stops any later pass from
+            // ever reporting them as new again. So this is the one chance to warm
+            // them: without a prefetch here a newly published photo for a
+            // life-list species would only ever arrive one lazy load at a time,
+            // as its row happened to scroll into view. `handlePrefetch` and the
+            // foreground check both already do this; this task was the hole.
+            //
+            // And it is the best possible moment for it — the task ran at all
+            // only because the device is plugged in and on Wi-Fi.
+            if result.newCount > 0 || result.changedCount > 0
+                || !revalidated.discoveredSlugs.isEmpty {
+                let lifeNames = await MainActor.run { provider?() ?? [] }
+                RemoteSpeciesImageStore.shared.setProtectedSpecies(
+                    RemoteSpeciesImageStore.launchTargets(lifeList: lifeNames)
+                )
+                await RemoteSpeciesImageStore.shared.prefetchWakeAwaitingDrain(
+                    lifeList: lifeNames,
+                    nearby: RemoteSpeciesImageStore.nearbyNames()
                 )
             }
             completion.complete(success: !Task.isCancelled)

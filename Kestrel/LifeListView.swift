@@ -135,7 +135,7 @@ struct LifeListView: View {
         // (as its new life-list row *and* as the stale suggestion) until the
         // rescan lands. Filtering here makes the swap happen on the same frame
         // the observation is written.
-        let onList = Set(store.entries.map(\.scientificName))
+        let onList = store.speciesNames
         let fresh = asyncSuggestions.filter { row in
             guard case .suggestion(let sci, _) = row else { return true }
             return !onList.contains(sci)
@@ -987,10 +987,22 @@ struct LifeListView: View {
                     parts.append(
                         "Added \(summary.newObservations) "
                             + (summary.newObservations == 1 ? "observation" : "observations")
-                            + " of \(summary.added + summary.updated) species."
+                            + " of \(summary.speciesWithNewObservations) species."
                     )
                 }
                 if summary.added > 0 { parts.append("\(summary.added) new to your life list.") }
+                // Its own clause rather than folded into the count above: these
+                // species gained no sightings, so counting them there overstated
+                // the import — and when they were *all* the import did, the whole
+                // summary collapsed to "Nothing new to import" over a list whose
+                // first-seen dates had just moved.
+                if summary.revised > 0 {
+                    parts.append(
+                        summary.revised == 1
+                            ? "1 now has an earlier first sighting."
+                            : "\(summary.revised) now have earlier first sightings."
+                    )
+                }
                 if summary.skipped > 0 { parts.append("\(summary.skipped) already known.") }
                 importMessage = parts.isEmpty
                     ? "Nothing new to import."

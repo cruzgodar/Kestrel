@@ -330,7 +330,12 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         pausedForPrompt = false
         cancelAbandonTimeout()
 
-        let end = Date()
+        // The parked stop moment, not now — same reason as `end()`. This path is
+        // reached by the abandon timeout, ten minutes after the user tapped stop,
+        // and closing collection at *that* moment would hand Health a walk ten
+        // minutes longer than the one they took. The session has been paused
+        // since the tap, so there is nothing in that window to collect anyway.
+        let end = pendingSpan?.end ?? Date()
         session.end()
         do {
             try await builder.endCollection(at: end)
@@ -357,8 +362,15 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// ending the session, an orphan being reclaimed — so the resulting prompt
     /// offers no Resume. A user-initiated stop goes through `pause()` instead.
     func end() async {
-        let end = Date()
-        let started = startDate
+        // A walk `pause()` already parked carries its true stop moment — the
+        // instant the user tapped stop. Reaching here afterwards (a watchdog, the
+        // system ending the session, a remote stop relayed from the phone) must
+        // not restate that as *now*: a prompt left sitting for ten minutes would
+        // silently stretch the walk by ten minutes, and Health would record a
+        // birding walk that ran long after the user stopped birding. Only a walk
+        // nothing has parked yet ends at this moment.
+        let end = pendingSpan?.end ?? Date()
+        let started = pendingSpan?.start ?? startDate
         self.startDate = nil
         pendingPause = false
         pausedForPrompt = false

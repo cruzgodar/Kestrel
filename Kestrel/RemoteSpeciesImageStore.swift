@@ -17,8 +17,9 @@ import UIKit
 ///     card opens full-screen, so a pinch-zoom is crisp.
 ///
 /// Downloads are ordered and coalesced by `ImageDownloadQueue`: a wake (app
-/// launch or session start) prefetches 320-nearby, then 320-life-list, then
-/// 900-nearby, then 900-life-list, while on-demand loads jump the queue. The
+/// launch or session start) prefetches nearby thumbnails, then life-list
+/// thumbnails, then nearby medium, then life-list medium, while on-demand loads
+/// jump the queue. The
 /// thumbnail is fetched from the server rather than downsampled locally, so the
 /// watch and the small photo contexts get their bytes with no decode/encode on
 /// the phone.
@@ -67,11 +68,13 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     static let fullResMemoryLimitBytes = 50 * 1024 * 1024
 
     /// Base URL for the CC-licensed species-photo set, served through the free
-    /// jsDelivr CDN from the GitHub photo repo. **Un-tagged** — the version is no
-    /// longer pinned here; `assetURL` inserts the current `@<version>` (from
-    /// `PhotoManifestStore`) so a re-publish is picked up per-image via the
-    /// manifest rather than by editing this constant. The `manifest.json` at this base
-    /// (default branch) drives update detection; each size lives under its own
+    /// jsDelivr CDN from the GitHub photo repo.
+    ///
+    /// **Un-versioned, deliberately**: every URL points at the repo's default
+    /// branch, and nothing — not this constant, not `assetURL` — pins a tag. The
+    /// photo set grows and is corrected in place, and the app notices by diffing
+    /// `manifest.json` at this same base (see `checkForPhotoUpdates`), so a
+    /// re-publish needs no app change at all. Each size lives under its own
     /// folder (`thumb/`, `hero/`, `full/`), every file named `<slug>.jpg`.
     static let assetBaseURL = "https://cdn.jsdelivr.net/gh/cruzgodar/kestrel-species-photos"
 
@@ -226,8 +229,8 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         return prepared
     }
 
-    /// Returns the small (320 px) thumbnail, loading from memory → disk → CDN
-    /// `/320` as needed and promoting up the tiers. Far cheaper to decode and hold
+    /// Returns the small (300 px tall) thumbnail, loading from memory → disk →
+    /// the CDN's `thumb` folder as needed and promoting up the tiers. Far cheaper to decode and hold
     /// than the medium image — use it for lists, map pins, cluster grids, and the
     /// hero's first paint. On a network miss the download jumps the prefetch
     /// queue. Returns nil when there's no metadata URL or loading fails. Call off
@@ -257,7 +260,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         return prepared
     }
 
-    /// Raw JPEG bytes of the 320 px thumbnail — disk if present, otherwise
+    /// Raw JPEG bytes of the 300 px-tall thumbnail — disk if present, otherwise
     /// fetched from the CDN (jumping the prefetch queue). Handed straight to the
     /// watch, which caches and decodes them itself, so the phone never decodes or
     /// re-encodes. Call off the main actor.
@@ -327,9 +330,9 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     // MARK: - Prefetch
 
     /// Warms the caches on a wake (app launch or session start). Enqueues four
-    /// tiers, drained strictly in order: every nearby species' 320 thumbnail
-    /// first, then the rest of the life list's 320 thumbnails, then nearby 900
-    /// medium, then the rest of the life list's 900 medium. 2400 is never
+    /// tiers, drained strictly in order: every nearby species' `thumb` (300 px
+    /// tall) first, then the rest of the life list's, then nearby `hero` (900 px
+    /// tall), then the rest of the life list's. The full-resolution tier is never
     /// prefetched. Already-on-disk sizes and duplicates are filtered out, so this
     /// is cheap to call on every launch and whenever the region list changes.
     ///
@@ -548,7 +551,14 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         /// their prefetch and trickling in one lazy load at a time.
         var discoveredSlugs: [String] = []
 
-        var isEmpty: Bool { confirmed == 0 && refreshed == 0 && failed == 0 && withdrawn == 0 }
+        /// `discoveredSlugs` counts: a pass that only turned up newly published
+        /// species did real work, and a caller that treats it as empty both
+        /// swallows the log line and — worse — skips the prefetch those species
+        /// depend on (see `KestrelApp.refreshPhotosOnForeground`).
+        var isEmpty: Bool {
+            confirmed == 0 && refreshed == 0 && failed == 0 && withdrawn == 0
+                && discoveredSlugs.isEmpty
+        }
     }
 
     /// Re-checks every cached image whose freshness window has lapsed.

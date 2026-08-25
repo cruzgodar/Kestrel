@@ -1213,7 +1213,16 @@ final class RecordingManager {
             // once; a bird that goes silent and returns re-fires.
             let isStarred = starredNames.contains(d.scientificName)
             let isNew = !lifeListSnapshot.contains(d.scientificName)
-            if isStarred || isNew {
+            // `isNew` is frozen at session start on purpose — it drives the row's
+            // purple treatment and the spectrogram band, which must not vanish
+            // the instant the user taps add. Alerting is a different question:
+            // once the bird is *recorded*, the user has acknowledged it and there
+            // is nothing left to tell them. Read live membership for that, or a
+            // bird they just filed goes on buzzing every `hapticCooldown` and
+            // re-notifying every `notifyCooldown` for the rest of the walk.
+            let recorded = lifeListStore?.speciesNames ?? lifeListSnapshot
+            let unrecorded = isNew && !recorded.contains(d.scientificName)
+            if isStarred || unrecorded {
                 let reason: SpeciesNotifications.Reason = isStarred ? .starred : .newSpecies
                 let last = lastHeardAt[d.scientificName]
                 if last == nil || now.timeIntervalSince(last!) >= notifyCooldown {
@@ -1226,10 +1235,13 @@ final class RecordingManager {
                     haptics.append(reason)
                     lastHapticAt[d.scientificName] = now
                 }
-            } else if hapticForAllBirds && !isNew && !isStarred {
+            } else if hapticForAllBirds {
                 // A known, non-starred bird — a single subtle haptic when the
                 // setting is on, on the same short per-species cooldown so a
-                // continuously-singing bird doesn't buzz every window.
+                // continuously-singing bird doesn't buzz every window. Reached
+                // by anything the branch above passed over, which now includes a
+                // bird added mid-session: it *is* a known bird from the moment
+                // it's recorded, and the soft haptic is what known birds get.
                 let lastBuzz = lastHapticAt[d.scientificName]
                 if lastBuzz == nil || now.timeIntervalSince(lastBuzz!) >= hapticCooldown {
                     playSoftHaptic = true

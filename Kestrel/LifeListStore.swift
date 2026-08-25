@@ -5,13 +5,24 @@ import Observation
 @Observable
 @MainActor
 final class LifeListStore {
+    /// What an import actually did, split finely enough that the summary can
+    /// state it without overstating it.
+    ///
+    /// "Gained sightings" and "had its earliest sighting replaced" were one
+    /// bucket (`updated`) and are now two, because the summary needs them apart.
+    /// Reporting `added + updated` as the species behind `newObservations`
+    /// counted species that gained nothing, and a species whose first-seen date
+    /// moved but gained no rows left `newObservations` at zero — which
+    /// suppressed the whole clause and reported "Nothing new to import" over an
+    /// import that had just rewritten the user's first-seen data.
     nonisolated struct ImportSummary {
         /// Species that weren't on the life list before this import.
         let added: Int
-        /// Species already on the list that the import actually changed — a new
-        /// sighting filed under them, or an earlier one that displaced the
-        /// displayed first-seen fields.
-        let updated: Int
+        /// Species already on the list that gained at least one sighting.
+        let gained: Int
+        /// Species already on the list whose displayed first sighting was
+        /// displaced by an earlier one, *without* gaining any sightings.
+        let revised: Int
         /// Species the CSV mentioned that it had nothing new to say about.
         let skipped: Int
         /// Sightings written across all of the above. Counted because a re-import
@@ -20,9 +31,33 @@ final class LifeListStore {
         /// tallies alone report as "already known", so the summary read as though
         /// nothing had happened while the map quietly grew pins.
         let newObservations: Int
+
+        /// The species `newObservations` were spread across: the ones new to the
+        /// list plus the ones that grew. Never counts a species that only had its
+        /// earliest sighting revised, which contributed no rows.
+        var speciesWithNewObservations: Int { added + gained }
     }
 
     private(set) var entries: [LifeListEntry] = []
+
+    /// Scientific names of every species currently on the list, kept in step
+    /// with `entries` by `refreshSpeciesNames()`.
+    ///
+    /// Maintained rather than derived on demand because the hot readers want an
+    /// O(1) membership test and are called often: `RecordingManager.merge` asks
+    /// once per detection window (on the audio path, where rebuilding a set of a
+    /// few thousand strings every three seconds is real work), and the Life List
+    /// re-asks on every render while searching.
+    ///
+    /// Refreshed only where membership can actually change — an add, a delete
+    /// that took a species' last sighting, an import, a load, a wipe. Filing or
+    /// editing an observation under a species already on the list doesn't move
+    /// it, and neither does a star toggle, so those paths don't pay for it.
+    private(set) var speciesNames: Set<String> = []
+
+    private func refreshSpeciesNames() {
+        speciesNames = Set(entries.lazy.map(\.scientificName))
+    }
 
     /// Deterministic "newest first" ordering with a stable tiebreaker, mirroring
     /// the map's `BirdCluster.ordersBefore`: most-recent `firstSeen` first, then
@@ -110,6 +145,7 @@ final class LifeListStore {
             return Self.computeMergedEntries(rows: rows, existing: existing)
         }.value
         entries = result.entries
+        refreshSpeciesNames()
         // Re-stamp stars from the persistent set so a wipe-and-reimport (or any
         // import) restores the user's "alert me" choices even though the cleared
         // entries no longer carried them.
@@ -117,8 +153,8 @@ final class LifeListStore {
         save()
 
         // Eagerly warm every imported species' photo right away rather than waiting
-        // for its row to scroll into view. `prefetchWake` fetches the 320px
-        // thumbnails first (so the list's small photos fill in fast), then the
+        // for its row to scroll into view. `prefetchWake` fetches the `thumb`
+        // images first (so the list's small photos fill in fast), then the
         // medium images. Protect the freshly-grown life list from the cache cap
         // before prefetching (mirrors the launch wiring in `KestrelApp`).
         let names = entries.map(\.scientificName)
@@ -260,6 +296,7 @@ final class LifeListStore {
         )
         entries.append(entry)
         entries.sort(by: Self.ordersBefore)
+        refreshSpeciesNames()
         save()
         return true
     }
@@ -542,6 +579,7 @@ final class LifeListStore {
         remaining.remove(at: hit)
         guard !remaining.isEmpty else {
             entries.remove(at: idx)
+            refreshSpeciesNames()
             save()
             return
         }
@@ -560,6 +598,7 @@ final class LifeListStore {
     func removeAll() {
         guard !entries.isEmpty else { return }
         entries.removeAll()
+        refreshSpeciesNames()
         save()
     }
 
@@ -649,7 +688,8 @@ final class LifeListStore {
         // list didn't grow at all; comparing final entries to the ones we started
         // with gets it right without needing to know which names were rewritten.
         var added = 0
-        var updated = 0
+        var gained = 0
+        var revised = 0
         var skipped = 0
         var newObservations = 0
         for entry in merged {
@@ -664,14 +704,19 @@ final class LifeListStore {
             // under species already on the list without touching their
             // first-seen fields, and every one of them was counted as "already
             // known" while the map quietly grew pins.
-            let gained = entry.allObservations.count - before.allObservations.count
+            let grew = entry.allObservations.count - before.allObservations.count
             let earliestChanged = before.firstSeen != entry.firstSeen
                 || before.firstLocation != entry.firstLocation
                 || before.firstLatitude != entry.firstLatitude
                 || before.firstLongitude != entry.firstLongitude
-            if gained > 0 || earliestChanged {
-                updated += 1
-                newObservations += max(0, gained)
+            // Growing wins over a revised earliest when both happened: the
+            // species is already accounted for by the "added N observations"
+            // clause, and naming it twice would double-count it.
+            if grew > 0 {
+                gained += 1
+                newObservations += grew
+            } else if earliestChanged {
+                revised += 1
             } else if touchedKeys.contains(entry.scientificName) {
                 // The CSV named it and had nothing new to say. Species the import
                 // never mentioned are simply not part of this tally.
@@ -683,7 +728,8 @@ final class LifeListStore {
             merged,
             ImportSummary(
                 added: added,
-                updated: updated,
+                gained: gained,
+                revised: revised,
                 skipped: skipped,
                 newObservations: newObservations
             )
@@ -851,6 +897,7 @@ final class LifeListStore {
             let normalized = needsDateMigration ? Self.normalizeDates(decoded) : decoded
             let collapsed = Self.canonicalize(normalized)
             entries = collapsed.sorted(by: Self.ordersBefore)
+            refreshSpeciesNames()
             // Persist if anything actually changed — dates were migrated, rows
             // merged, or a scientific name was rewritten to its catalog-canonical
             // form.
@@ -991,7 +1038,7 @@ final class LifeListStore {
         // fixes a lone Hairy Woodpecker entry stored under the old genus
         // (Leuconotopicus villosus) — the multi-entry merge above only fires
         // when there are two rows to collide.
-        return byCommon.values.map { entry in
+        let relabeled = byCommon.values.map { entry in
             if catalogNames.contains(entry.scientificName) { return entry }
             guard let canonical = catalogByCommon[entry.commonName.lowercased()] else {
                 return entry
@@ -1005,6 +1052,52 @@ final class LifeListStore {
                 dedupe: false
             )
         }
+        return collapseByScientificName(relabeled)
+    }
+
+    /// Folds together any entries left sharing a scientific name.
+    ///
+    /// The rewrite above can land one entry on a name another already holds,
+    /// because it keys on the *common* name and only the scientific name has to
+    /// come out unique. It takes two entries for the same bird whose common
+    /// names differ — which an eBird export in a non-English display language
+    /// produces readily: the localized name doesn't match the catalog, so that
+    /// entry keeps its stale synonym, while a second entry under the English
+    /// name gets rewritten onto the catalog's. `byCommon` never sees them as the
+    /// same species, so neither earlier merge fires.
+    ///
+    /// Left alone, the two ride out of canonicalization sharing a
+    /// `LifeListEntry.id`, and a `ForEach` over duplicate ids renders one row and
+    /// misroutes the other's swipe actions — the bird becomes unreachable.
+    ///
+    /// A no-op in the overwhelmingly common case (one pass over the values, no
+    /// collision found), so it costs nothing to run on every launch.
+    private nonisolated static func collapseByScientificName(
+        _ entries: [LifeListEntry]
+    ) -> [LifeListEntry] {
+        var bySci: [String: LifeListEntry] = [:]
+        var order: [String] = []
+        for entry in entries {
+            guard let existing = bySci[entry.scientificName] else {
+                bySci[entry.scientificName] = entry
+                order.append(entry.scientificName)
+                continue
+            }
+            // Prefer a common name without a parenthetical clarifier, matching
+            // how `collapseToSpecies` picks between two spellings of one bird.
+            let commonName = existing.commonName.contains("(") && !entry.commonName.contains("(")
+                ? entry.commonName
+                : existing.commonName
+            bySci[entry.scientificName] = LifeListEntry.make(
+                scientificName: entry.scientificName,
+                commonName: commonName,
+                isStarred: existing.isStarred || entry.isStarred,
+                observations: existing.allObservations + entry.allObservations,
+                // A union of two entries' record sets, same as the merges above.
+                dedupe: true
+            )
+        }
+        return order.compactMap { bySci[$0] }
     }
 
     /// First-pass migration: rewrite scientific names through the alias

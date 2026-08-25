@@ -19,7 +19,11 @@ nonisolated struct SpeciesPhotoInfo: Decodable {
     /// Source page (Wikimedia Commons / iNaturalist), where the license and
     /// attribution can be verified.
     let pageURL: String?
-    /// eBird species code (e.g. "rufwar1"), used to link to the species page.
+    /// eBird species code (e.g. "rufwar1"), as the manifest publishes it.
+    /// Carried through and persisted, but nothing in the app reads it yet — the
+    /// accessor that built an eBird species link from it had no callers and is
+    /// gone. Kept because it costs a nullable string and is the manifest's to
+    /// give, not ours to re-derive.
     let code: String?
 
     init(credit: String?, license: String?, pageURL: String?, code: String?) {
@@ -111,12 +115,6 @@ nonisolated struct SpeciesPhotoInfo: Decodable {
     var sourceURL: URL? {
         guard let pageURL, !pageURL.isEmpty else { return nil }
         return URL(string: pageURL)
-    }
-
-    /// Link to the species' eBird page, when we have its species code.
-    var ebirdURL: URL? {
-        guard let code, !code.isEmpty else { return nil }
-        return URL(string: "https://ebird.org/species/\(code)")
     }
 }
 

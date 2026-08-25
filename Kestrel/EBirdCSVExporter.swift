@@ -219,7 +219,15 @@ nonisolated enum EBirdCSVExporter {
     /// `Ithaca, NY` would silently shift every later column out of place. Strip
     /// quotes, turn commas and line breaks into spaces, and collapse the
     /// resulting runs of whitespace.
-    private static func sanitize(_ value: String) -> String {
+    ///
+    /// Not private, because this transform is *lossy* and the loss outlives the
+    /// file: a place name that goes to eBird folded comes back folded on the
+    /// next import. `LifeListEntry.Observation.Identity` folds the stored name
+    /// the same way before comparing, so a re-imported sighting still matches
+    /// the one it came from instead of being filed as a duplicate. The two must
+    /// stay the same function — hence one definition, here, where the CSV
+    /// constraint that forces it lives.
+    static func sanitize(_ value: String) -> String {
         var out = ""
         out.reserveCapacity(value.count)
         for ch in value {
