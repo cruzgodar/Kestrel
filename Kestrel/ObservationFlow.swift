@@ -29,8 +29,10 @@ struct ObservationDraft: Identifiable {
     /// see `ObservationDate`. The date picker converts to and from the device's
     /// own calendar at its own edge; nothing else in the flow does.
     var date: Date
-    /// The observation being rewritten, or `nil` when filing a new one.
-    var editing: LifeListEntry.Observation.Identity?
+    /// The observation being rewritten, or `nil` when filing a new one. The
+    /// whole record, not just its `Identity` — see `LifeListStore.locate` for
+    /// why identity alone can't tell two colliding sightings apart.
+    var editing: LifeListEntry.Observation?
     /// Where the map picker opens with its pin already down. `nil` falls back to
     /// the current location, which is what a new sighting wants — *unless*
     /// `allowsMissingCoordinate` says otherwise.
@@ -84,7 +86,7 @@ struct ObservationDraft: Identifiable {
             scientificName: scientificName,
             commonName: commonName,
             date: observation.date,
-            editing: observation.identity,
+            editing: observation,
             coordinate: coordinate,
             placeName: observation.location
         )
@@ -742,7 +744,7 @@ private struct ObservationDeleteConfirmation: ViewModifier {
             Button("Delete", role: .destructive) {
                 store.removeObservation(
                     scientificName: target.scientificName,
-                    identity: target.observation.identity
+                    observation: target.observation
                 )
                 pending = nil
                 onDeleted?()

@@ -81,11 +81,7 @@ nonisolated enum EBirdCSVExporter {
         key(
             scientificName: scientificName,
             observation: observation,
-            place: exportedPlaceName(
-                location: observation.location,
-                latitude: observation.latitude,
-                longitude: observation.longitude
-            )
+            place: exportedPlaceName(for: observation)
         )
     }
 
@@ -158,9 +154,10 @@ nonisolated enum EBirdCSVExporter {
         for (index, row) in sorted.enumerated() {
             let observation = row.observation
             let (genus, species) = splitBinomial(row.scientificName)
-            // Counted the same way `locationName(for:)` decides to fall back to
-            // the placeholder, so the tally can't drift from the file.
-            if locationName(for: observation) == unplaceableLocation { unplaceable += 1 }
+            // The exact string the Location Name column gets, so the tally and
+            // the file can't drift from each other.
+            let place = exportedPlaceName(for: observation)
+            if place == unplaceableLocation { unplaceable += 1 }
 
             let fields: [String] = [
                 sanitize(eBirdCommonName(row.commonName)),      // Common Name
@@ -168,7 +165,7 @@ nonisolated enum EBirdCSVExporter {
                 sanitize(species),                              // Species
                 presentNotCounted,                              // Number
                 "",                                             // Species Comments
-                sanitize(locationName(for: observation)),       // Location Name
+                place,                                          // Location Name
                 coordinate(observation.latitude),               // Latitude
                 coordinate(observation.longitude),              // Longitude
                 ObservationDate.eBirdDay(observation.date),     // Date
@@ -217,32 +214,13 @@ nonisolated enum EBirdCSVExporter {
         name == "Rock Pigeon" ? "Rock Pigeon (Feral Pigeon)" : name
     }
 
-    /// Location Name is required by eBird on every row, but Kestrel's place name
-    /// is optional (sound-ID adds made before the naming step existed, imports
-    /// from CSVs without a Location column). Fall back to the coordinates, which
-    /// still let eBird place the record on the map, and only then to a
-    /// placeholder the user will have to resolve by hand.
-    private static func locationName(for observation: LifeListEntry.Observation) -> String {
-        locationName(
+    /// `exportedPlaceName` for a whole observation.
+    static func exportedPlaceName(for observation: LifeListEntry.Observation) -> String {
+        exportedPlaceName(
             location: observation.location,
             latitude: observation.latitude,
             longitude: observation.longitude
         )
-    }
-
-    private static func locationName(
-        location: String?,
-        latitude: Double?,
-        longitude: Double?
-    ) -> String {
-        if let name = location?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !name.isEmpty {
-            return name
-        }
-        if let latitude, let longitude {
-            return String(format: "%.5f, %.5f", latitude, longitude)
-        }
-        return unplaceableLocation
     }
 
     /// **The** name a sighting is filed under once it has been through the
@@ -263,12 +241,31 @@ nonisolated enum EBirdCSVExporter {
     /// The comma case (`Ithaca, NY` → `Ithaca NY`) was already handled by folding
     /// through `sanitize`; these are the two the fallback introduces, which no
     /// amount of folding the *stored* name could have caught.
+    ///
+    /// **Fold first, then decide whether anything survived.** `sanitize` is lossy
+    /// — it drops quotes outright and turns commas into spaces — so a name made
+    /// only of those characters folds away to nothing. Testing the *stored* name
+    /// for emptiness and folding afterwards let such a name through as a blank
+    /// Location Name: a column eBird requires, with no coordinate fallback
+    /// applied and nothing in `Payload.unplaceableCount` to warn about it. The
+    /// order here is the fix, and it is why the fallback lives in this function
+    /// rather than in a separate one feeding it.
     static func exportedPlaceName(
         location: String?,
         latitude: Double?,
         longitude: Double?
     ) -> String {
-        sanitize(locationName(location: location, latitude: latitude, longitude: longitude))
+        // `sanitize` collapses whitespace, so this subsumes trimming: a name of
+        // nothing but spaces folds to "" here just as an empty one does.
+        let folded = sanitize(location ?? "")
+        if !folded.isEmpty { return folded }
+        // Coordinates still let eBird place the record on the map without help.
+        if let latitude, let longitude {
+            return sanitize(String(format: "%.5f, %.5f", latitude, longitude))
+        }
+        // Nothing to place it by at all — the user resolves these by hand during
+        // eBird's "Fix Locations" step.
+        return unplaceableLocation
     }
 
     /// Stand-in name for a sighting with neither a place name nor coordinates —

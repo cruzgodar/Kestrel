@@ -474,7 +474,7 @@ struct ContentView: View {
                 Text("Permissions Needed")
                     .font(.headline)
                     .multilineTextAlignment(.center)
-                Text("Kestrel needs microphone and location access to identify birds. Grant access for Kestrel in the watch's Settings app.")
+                Text("Kestrel needs microphone and location access to identify birds. Grant access for Kestrel in the watch\u{2019}s Settings app.")
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)

@@ -25,8 +25,16 @@ nonisolated struct EBirdRawRow {
 
 nonisolated enum EBirdCSVParser {
     /// Parses an eBird "My eBird Data" CSV. Skips rows with unparseable dates,
-    /// empty scientific names, or scientific names that look like spuhs / hybrids
-    /// / domestic forms (those are filtered out here so the store doesn't have to).
+    /// empty scientific names, or names that look like spuhs / hybrids / slash
+    /// forms — see `isUnidentified`, which filters them here so the store doesn't
+    /// have to.
+    ///
+    /// Domestic and feral forms are deliberately *not* skipped. Their
+    /// parenthetical is stripped ("Mallard (Domestic type)" → "Mallard", "Rock
+    /// Pigeon (Feral Pigeon)" → "Rock Pigeon") and the row is filed under the
+    /// nominate species, which is the useful outcome: eBird doesn't count them as
+    /// separate species either, and anyone with a domestic Mallard on their list
+    /// has a wild one too.
     static func parse(_ data: Data) throws -> [EBirdRawRow] {
         guard let text = String(data: data, encoding: .utf8)
                       ?? String(data: data, encoding: .isoLatin1) else {

@@ -6,17 +6,29 @@ enum WatchMetrics {
     /// physical bezel; `edgeMargin` is the diagonal clearance the corner buttons
     /// keep off that bezel (and the trailing margin the prompt captions use);
     /// `nameImageGap` is the vertical gap between the species name and the photo
-    /// below it; `imageTopCornerRadius` rounds the top of the bird photo.
+    /// below it.
     ///
     /// The photo itself is no longer inset — it runs to the left, right and bottom
     /// edges — so its bottom corners are cut by the bezel and have an *effective*
-    /// radius of `screenCornerRadius`. `imageTopCornerRadius` matches that so all
-    /// four corners read the same; add a per-size case below to tune a device.
+    /// radius of `screenCornerRadius`; `imageTopCornerRadius` is derived from that
+    /// so all four corners read the same.
     struct Metrics {
         var screenCornerRadius: CGFloat
         var edgeMargin: CGFloat
         var nameImageGap: CGFloat
-        var imageTopCornerRadius: CGFloat
+
+        /// Radius of the bird photo's *top* corners.
+        ///
+        /// Derived, not stored, and always exactly `screenCornerRadius`. The
+        /// photo runs flush to the left, right and bottom edges, so its bottom
+        /// corners are cut by the bezel and have an effective radius of the
+        /// bezel's own; matching the top to that is what makes all four read the
+        /// same. Two independently-stored fields computed from the same
+        /// expression could drift apart under an edit meant for only one of them
+        /// — and the bezel radius is the one the corner-button geometry also
+        /// depends on, so that edit would move the buttons too. Naming it here
+        /// keeps the *reason* at the call site without letting the value diverge.
+        var imageTopCornerRadius: CGFloat { screenCornerRadius }
     }
 
     /// Approximate corner radius of the physical watch screen, in points.
@@ -82,18 +94,10 @@ enum WatchMetrics {
             nameImageGap = defaultNameImageGap
         }
 
-        // The photo's bottom corners are the bezel's own, so its top corners are
-        // rounded to that same radius rather than to an inset one. Split out as
-        // its own value so a device whose top corners don't read as matching can
-        // be nudged here (add a `switch size` case) without moving the bezel
-        // radius, which the corner-button geometry also depends on.
-        let topRadius = radius + radiusAdjustment
-
         return Metrics(
             screenCornerRadius: radius + radiusAdjustment,
             edgeMargin: edgeMargin,
-            nameImageGap: nameImageGap,
-            imageTopCornerRadius: topRadius
+            nameImageGap: nameImageGap
         )
     }
 

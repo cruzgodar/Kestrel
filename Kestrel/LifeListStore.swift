@@ -336,18 +336,23 @@ final class LifeListStore {
         saveExportedKeys()
     }
 
-    /// Adds a single species to the life list. Defaults to `now` as the
+    /// Adds a single species to the life list. Defaults to today as the
     /// first-seen date; the add flow passes the date the user picked instead.
     /// No-op if the species is already in the list.
     ///
     /// Reached only through `recordObservation`: every add in the app runs the
     /// date → map → name flow first, so every sighting Kestrel records of
     /// its own carries a place name.
+    ///
+    /// `ObservationDate.today`, never `Date()`: a stored sighting is midnight UTC
+    /// on the day it happened (see `ObservationDate`), and a default argument is
+    /// exactly the kind of place a wall-clock instant slips in unnoticed — no
+    /// caller has to opt into it for it to be wrong.
     @discardableResult
     func add(
         scientificName: String,
         commonName: String,
-        firstSeen: Date = Date(),
+        firstSeen: Date = ObservationDate.today,
         location: String? = nil,
         latitude: Double? = nil,
         longitude: Double? = nil
@@ -564,6 +569,38 @@ final class LifeListStore {
         }
     }
 
+    /// Finds the stored sighting a user's edit or delete meant, in
+    /// `allObservations` order. Exact value match first, `Identity` match only as
+    /// a fallback.
+    ///
+    /// **Why both.** Two observations of one species are allowed to share an
+    /// `Identity` — every path where the user writes a record passes
+    /// `dedupe: false` to `LifeListEntry.make` precisely so an edit can't make
+    /// one vanish by colliding with a sibling, and correcting an imported
+    /// sighting's date onto a same-place neighbor's date produces exactly that
+    /// collision. `Identity` deliberately excludes `isImported`, so a pair that
+    /// collides that way can differ in provenance and in nothing else.
+    ///
+    /// Matching on identity alone took whichever of the pair came first, which
+    /// is not the row the user swiped: editing the Kestrel-native one could
+    /// resolve to the imported one and carry `isImported: true` onto the
+    /// replacement, quietly dropping a genuine sighting out of "Export New
+    /// Observations" — and deleting had the mirror problem, removing a record
+    /// the user hadn't pointed at.
+    ///
+    /// The fallback still matters. The map builds its observations from
+    /// `MapPoint`s, and the full-screen viewer from whatever it was opened with,
+    /// so a caller can legitimately hold a value that differs from the stored one
+    /// in a field identity ignores. Identity is the right answer there; it is
+    /// only the wrong answer when an exact match was available and went unused.
+    private nonisolated static func locate(
+        _ observation: LifeListEntry.Observation,
+        in observations: [LifeListEntry.Observation]
+    ) -> Int? {
+        observations.firstIndex(of: observation)
+            ?? observations.firstIndex { $0.identity == observation.identity }
+    }
+
     /// Rewrites one recorded sighting in place: the observation matching
     /// `original` is dropped and a new one with the given date/place takes its
     /// spot. The entry is rebuilt through `LifeListEntry.make`, so editing the
@@ -580,9 +617,12 @@ final class LifeListStore {
     /// the old key and make an already-uploaded sighting look new again — and
     /// eBird, which does no deduplication, would take the next export's copy as
     /// a second record rather than as a correction.
+    ///
+    /// Takes the whole `original` observation, not just its `Identity`, because
+    /// identity is deliberately ambiguous here — see `locate`.
     func replaceObservation(
         scientificName: String,
-        original: LifeListEntry.Observation.Identity,
+        original: LifeListEntry.Observation,
         date: Date,
         location: String?,
         latitude: Double?,
@@ -593,7 +633,7 @@ final class LifeListStore {
         }
         let existing = entries[idx]
         var remaining = existing.allObservations
-        guard let hit = remaining.firstIndex(where: { $0.identity == original }) else { return }
+        guard let hit = Self.locate(original, in: remaining) else { return }
         let wasImported = remaining[hit].isImported
         let wasExported = hasBeenExported(
             scientificName: scientificName,
@@ -640,18 +680,23 @@ final class LifeListStore {
     /// trade: a star is a standing instruction about a species, not a property
     /// of one sighting, and losing it because the last record was deleted would
     /// be the more surprising outcome. The consequence to be aware of is that
-    /// the star has no row to appear on while the species is off the list, so
-    /// there is no way to see or clear it until the bird is recorded again.
+    /// the star has no row to appear on while the species is off the list, it
+    /// can only be cleared from the full-screen photo viewer's menu (which
+    /// offers the star for any species, on the list or not) until the bird is
+    /// recorded again.
+    ///
+    /// Takes the whole observation rather than just its `Identity` for the
+    /// reason spelled out in `locate`.
     func removeObservation(
         scientificName: String,
-        identity: LifeListEntry.Observation.Identity
+        observation: LifeListEntry.Observation
     ) {
         guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {
             return
         }
         let existing = entries[idx]
         var remaining = existing.allObservations
-        guard let hit = remaining.firstIndex(where: { $0.identity == identity }) else { return }
+        guard let hit = Self.locate(observation, in: remaining) else { return }
         remaining.remove(at: hit)
         guard !remaining.isEmpty else {
             entries.remove(at: idx)

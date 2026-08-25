@@ -102,6 +102,21 @@ struct LifeListStoreMutationTests {
         #expect(store.entries.isEmpty)
     }
 
+    /// A stored sighting is midnight UTC on the day it happened (see
+    /// `ObservationDate`). A default argument is exactly the kind of place a
+    /// wall-clock instant slips in unnoticed — nothing has to opt into it for it
+    /// to be wrong, and a sighting carrying a mid-afternoon timestamp prints as
+    /// the wrong day for anyone east of UTC and keys the export ledger to the
+    /// wrong day with it.
+    @Test("add's default first-seen date is canonical, not a wall clock")
+    func addDefaultsToCanonicalToday() {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        store.add(scientificName: "X y", commonName: "X")
+        #expect(isMidnightUTC(store.entries[0].firstSeen))
+        #expect(store.entries[0].firstSeen == ObservationDate.today)
+    }
+
     // MARK: editing
 
     @Test("replaceObservation rewrites a sighting in place")
@@ -110,7 +125,7 @@ struct LifeListStoreMutationTests {
         let store = makeStore(scratch, defaults)
         store.recordObservation(scientificName: "X y", commonName: "X", date: may4,
                                 location: "Wrong", latitude: 1, longitude: 1)
-        let original = store.entries[0].allObservations[0].identity
+        let original = store.entries[0].allObservations[0]
 
         store.replaceObservation(
             scientificName: "X y", original: original,
@@ -134,7 +149,7 @@ struct LifeListStoreMutationTests {
         let earliest = store.entries[0].allObservations.first { $0.location == "First" }!
 
         store.replaceObservation(
-            scientificName: "X y", original: earliest.identity,
+            scientificName: "X y", original: earliest,
             date: may6, location: "Moved to last", latitude: 1, longitude: 1
         )
         #expect(store.entries[0].firstSeen == may5)
@@ -157,7 +172,7 @@ struct LifeListStoreMutationTests {
 
         // Correct its date onto the sibling's — now identical in every field.
         store.replaceObservation(
-            scientificName: "X y", original: toEdit.identity,
+            scientificName: "X y", original: toEdit,
             date: may4, location: "Same Place", latitude: 1, longitude: 1
         )
         #expect(store.entries[0].allObservations.count == 2, "an edit must never delete a record")
@@ -173,7 +188,7 @@ struct LifeListStoreMutationTests {
                   observations: [.at(may4, "P", lat: 1, lon: 1, imported: true)], dedupe: false),
         ])
         let store = makeStore(scratch, defaults)
-        let original = store.entries[0].allObservations[0].identity
+        let original = store.entries[0].allObservations[0]
 
         store.replaceObservation(scientificName: "X y", original: original,
                                  date: may5, location: "Corrected", latitude: 1, longitude: 1)
@@ -195,7 +210,7 @@ struct LifeListStoreMutationTests {
         store.markExported([EBirdCSVExporter.key(scientificName: "X y", observation: observation)])
         #expect(store.observationCount(for: .newOnly) == 0)
 
-        store.replaceObservation(scientificName: "X y", original: observation.identity,
+        store.replaceObservation(scientificName: "X y", original: observation,
                                  date: may5, location: "Corrected", latitude: 9, longitude: 9)
         #expect(store.observationCount(for: .newOnly) == 0,
                 "a correction is not a new record for eBird to file twice")
@@ -210,10 +225,103 @@ struct LifeListStoreMutationTests {
         let before = store.entries
         store.replaceObservation(
             scientificName: "X y",
-            original: LifeListEntry.Observation.at(may6, "Nowhere").identity,
+            original: LifeListEntry.Observation.at(may6, "Nowhere"),
             date: may5, location: "Q", latitude: 2, longitude: 2
         )
         #expect(store.entries == before)
+    }
+
+    // MARK: colliding sightings
+
+    /// Two observations of one species may share an `Observation.Identity` — the
+    /// add and edit paths pass `dedupe: false` precisely so an edit can't make a
+    /// record vanish by colliding with a sibling. `Identity` excludes
+    /// `isImported`, so such a pair can differ in provenance and nothing else,
+    /// and matching on identity alone took whichever came first rather than the
+    /// record the user actually pointed at.
+    ///
+    /// The damage is silent and lands in eBird: the edit inherits the imported
+    /// sibling's provenance, so a sighting the user recorded in Kestrel drops out
+    /// of "Export New Observations" and never reaches their account.
+    @Test("editing one of two colliding sightings edits the one it was handed")
+    func editPicksTheHandedCollidingSighting() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeLifeList([
+            .make("X y", "X", [
+                .at(may4, "Same Place", lat: 1, lon: 1, imported: true),
+                .at(may4, "Same Place", lat: 1, lon: 1, imported: false),
+            ]),
+        ])
+        let store = makeStore(scratch, defaults)
+        let observations = store.entries[0].allObservations
+        #expect(observations.count == 2, "the pair must survive the load unmerged")
+        #expect(
+            observations[0].identity == observations[1].identity,
+            "precondition: these are indistinguishable by identity"
+        )
+        #expect(
+            store.entries[0].firstIsImported,
+            "precondition: the imported copy is the one an identity match finds first"
+        )
+
+        let native = try #require(observations.first { !$0.isImported })
+        store.replaceObservation(
+            scientificName: "X y", original: native,
+            date: may5, location: "Corrected", latitude: 1, longitude: 1
+        )
+
+        let after = store.entries[0].allObservations
+        #expect(after.count == 2, "an edit is not an add and not a delete")
+        #expect(
+            after.contains { $0.date == may4 && $0.isImported },
+            "the imported sibling was not the record being edited"
+        )
+        let edited = try #require(after.first { $0.date == may5 })
+        #expect(!edited.isImported, "an edit must not inherit a sibling's provenance")
+        #expect(
+            store.observationCount(for: .newOnly) == 1,
+            "the user's own sighting still has to reach eBird"
+        )
+    }
+
+    /// The mirror of the edit case: a delete has to remove the record the user
+    /// swiped, not whichever of the pair identity happened to reach first.
+    @Test("deleting one of two colliding sightings deletes the one it was handed")
+    func deletePicksTheHandedCollidingSighting() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeLifeList([
+            .make("X y", "X", [
+                .at(may4, "Same Place", lat: 1, lon: 1, imported: true),
+                .at(may4, "Same Place", lat: 1, lon: 1, imported: false),
+            ]),
+        ])
+        let store = makeStore(scratch, defaults)
+        let native = try #require(store.entries[0].allObservations.first { !$0.isImported })
+
+        store.removeObservation(scientificName: "X y", observation: native)
+
+        let after = store.entries[0].allObservations
+        #expect(after.count == 1)
+        #expect(after[0].isImported, "the imported copy is the one that was left standing")
+    }
+
+    /// The map builds its observations from `MapPoint`s and the photo viewer from
+    /// whatever it was opened with, so a caller can legitimately hold a value that
+    /// differs from the stored record in a field `Identity` ignores. Identity is
+    /// the right answer there, and has to stay the fallback.
+    @Test("an observation that only matches by identity still resolves")
+    func identityFallbackStillResolves() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeLifeList([
+            .make("X y", "X", [.at(may4, "P", lat: 1, lon: 1, imported: true)]),
+        ])
+        let store = makeStore(scratch, defaults)
+        // Same sighting as the map would reconstitute it if provenance were lost.
+        let asSeenByCaller = LifeListEntry.Observation.at(may4, "P", lat: 1, lon: 1, imported: false)
+        #expect(store.entries[0].allObservations[0] != asSeenByCaller, "it differs by value")
+
+        store.removeObservation(scientificName: "X y", observation: asSeenByCaller)
+        #expect(store.entries.isEmpty, "identity is still enough to find it")
     }
 
     // MARK: deleting
@@ -227,7 +335,7 @@ struct LifeListStoreMutationTests {
                                     location: place, latitude: 1, longitude: 1)
         }
         let target = store.entries[0].allObservations.first { $0.location == "B" }!
-        store.removeObservation(scientificName: "X y", identity: target.identity)
+        store.removeObservation(scientificName: "X y", observation: target)
         #expect(store.entries[0].allObservations.map(\.location) == ["A", "C"])
     }
 
@@ -239,8 +347,8 @@ struct LifeListStoreMutationTests {
             store.recordObservation(scientificName: "X y", commonName: "X", date: may4,
                                     location: "Same", latitude: 1, longitude: 1)
         }
-        let identity = store.entries[0].allObservations[0].identity
-        store.removeObservation(scientificName: "X y", identity: identity)
+        let target = store.entries[0].allObservations[0]
+        store.removeObservation(scientificName: "X y", observation: target)
         #expect(store.entries[0].allObservations.count == 1, "one delete removes one record")
     }
 
@@ -253,7 +361,7 @@ struct LifeListStoreMutationTests {
                                 location: "P", latitude: 1, longitude: 1)
         store.removeObservation(
             scientificName: "X y",
-            identity: store.entries[0].allObservations[0].identity
+            observation: store.entries[0].allObservations[0]
         )
         #expect(store.entries.isEmpty)
         #expect(store.speciesNames.isEmpty, "membership has to keep up with the delete")
@@ -271,7 +379,7 @@ struct LifeListStoreMutationTests {
         store.setStarred(scientificName: "X y", isStarred: true)
         store.removeObservation(
             scientificName: "X y",
-            identity: store.entries[0].allObservations[0].identity
+            observation: store.entries[0].allObservations[0]
         )
         #expect(store.entries.isEmpty)
         #expect(store.starredNames.contains("X y"), "it still fires alerts")
@@ -304,9 +412,9 @@ struct LifeListStoreMutationTests {
         store.recordObservation(scientificName: "X y", commonName: "X", date: may4,
                                 location: "P", latitude: 1, longitude: 1)
         let before = store.entries
-        store.removeObservation(scientificName: "Not here", identity: before[0].allObservations[0].identity)
+        store.removeObservation(scientificName: "Not here", observation: before[0].allObservations[0])
         store.removeObservation(scientificName: "X y",
-                                identity: LifeListEntry.Observation.at(may6, "Nowhere").identity)
+                                observation: LifeListEntry.Observation.at(may6, "Nowhere"))
         #expect(store.entries == before)
     }
 
@@ -467,7 +575,7 @@ struct LifeListStoreMutationTests {
 
         store.replaceObservation(
             scientificName: "A a",
-            original: original.identity,
+            original: original,
             date: may5,
             location: "Ithaca NY",
             latitude: 1,
@@ -677,7 +785,7 @@ struct LifeListStoreMutationTests {
 
         // Deleting one of two sightings leaves the species on the list.
         let target = store.entries.first { $0.scientificName == "A a" }!.allObservations[0]
-        store.removeObservation(scientificName: "A a", identity: target.identity)
+        store.removeObservation(scientificName: "A a", observation: target)
         #expect(store.speciesNames == ["A a", "B b"])
 
         store.removeAll()

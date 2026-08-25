@@ -232,6 +232,46 @@ struct EBirdCSVParserTests {
         #expect(rows.count == 2)
     }
 
+    /// Domestic and feral forms are *not* skipped the way spuhs and hybrids are —
+    /// their parenthetical is stripped and the row is filed under the nominate
+    /// species. eBird doesn't count them as separate species either, and anyone
+    /// with a domestic Mallard on their list has a wild one too.
+    ///
+    /// The doc comment on `parse` used to claim they were filtered out, which
+    /// described neither what the code did nor what it should do.
+    @Test(
+        "domestic and feral forms are filed under the nominate species, not dropped",
+        arguments: [
+            (sci: "Anas platyrhynchos", common: "Mallard (Domestic type)",
+             expectCommon: "Mallard"),
+            (sci: "Columba livia", common: "Rock Pigeon (Feral Pigeon)",
+             expectCommon: "Rock Pigeon"),
+            (sci: "Anser anser", common: "Graylag Goose (Domestic type)",
+             expectCommon: "Graylag Goose"),
+        ]
+    )
+    func domesticFormsAreKept(
+        c: (sci: String, common: String, expectCommon: String)
+    ) throws {
+        let rows = try parse([(c.sci, c.common, "2019-05-04", "P", 1.0, 1.0)])
+        #expect(rows.count == 1, "\(c.common.debugDescription) is still a real sighting")
+        #expect(rows[0].scientificName == c.sci)
+        #expect(rows[0].commonName == c.expectCommon)
+    }
+
+    /// The domestic form and the wild bird are one species, so an import carrying
+    /// both must not produce two life-list entries.
+    @Test("a domestic form and the wild bird converge on one species")
+    func domesticFormConvergesWithWild() throws {
+        let rows = try parse([
+            ("Anas platyrhynchos", "Mallard (Domestic type)", "2019-05-04", "P", 1.0, 1.0),
+            ("Anas platyrhynchos", "Mallard", "2020-05-04", "P", 1.0, 1.0),
+        ])
+        #expect(rows.count == 2, "both sightings are kept")
+        #expect(Set(rows.map(\.scientificName)) == ["Anas platyrhynchos"])
+        #expect(Set(rows.map(\.commonName)) == ["Mallard"])
+    }
+
     // MARK: volume
 
     @Test("a large export parses in full")

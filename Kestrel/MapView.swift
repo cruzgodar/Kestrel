@@ -19,20 +19,28 @@ struct MapPoint: Identifiable, Hashable {
     let location: String?
     let latitude: Double
     let longitude: Double
+    /// Provenance of the sighting this point plots, carried through from the
+    /// stored observation. Not displayed anywhere — it is here so that
+    /// `observation` reconstitutes the stored record *exactly*, which is what
+    /// lets a pin-scoped edit or delete resolve by value rather than falling back
+    /// to `Identity` (which excludes provenance, and so can't tell two colliding
+    /// sightings apart — see `LifeListStore.locate`).
+    var isImported: Bool = false
 
     var coordinate: CLLocationCoordinate2D {
         CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
     }
 
     /// The recorded sighting this point plots. A map point carries a date, a
-    /// place, and coordinates — exactly what identifies an observation — so the
+    /// place, coordinates and provenance — the whole stored observation — so the
     /// menus and the full-screen viewer can act on it directly.
     var observation: LifeListEntry.Observation {
         LifeListEntry.Observation(
             date: date,
             location: location,
             latitude: latitude,
-            longitude: longitude
+            longitude: longitude,
+            isImported: isImported
         )
     }
 }
@@ -444,7 +452,8 @@ struct MapView: View {
                     date: entry.firstSeen,
                     location: entry.firstLocation,
                     latitude: lat,
-                    longitude: lon
+                    longitude: lon,
+                    isImported: entry.firstIsImported
                 ))
             }
             for (i, obs) in entry.otherObservations.enumerated() {
@@ -456,7 +465,8 @@ struct MapView: View {
                     date: obs.date,
                     location: obs.location,
                     latitude: lat,
-                    longitude: lon
+                    longitude: lon,
+                    isImported: obs.isImported
                 ))
             }
         }
@@ -1179,19 +1189,67 @@ struct MapView: View {
         var reps: [WIP] = []
         reps.reserveCapacity(sorted.count)
 
+        // A threshold that isn't a usable positive number can't fold anything, so
+        // every point stands alone — the same answer the pairwise test gives, and
+        // the bucketing below would divide by it. The lower bound is what keeps
+        // `Int(...)` off an infinite or absurd quotient, which traps.
+        guard thresholdLat >= Self.minimumClusterThreshold,
+              thresholdLon >= Self.minimumClusterThreshold,
+              thresholdLat.isFinite, thresholdLon.isFinite else {
+            return sorted.map {
+                BirdCluster(representative: $0, coordinate: $0.coordinate, others: [])
+            }
+        }
+
+        // Spatial hash, one cell per threshold-sized box, so each point is
+        // compared against its own neighborhood instead of against every
+        // representative found so far.
+        //
+        // The pairwise version was O(n²): at high zoom the thresholds shrink until
+        // nearly every point is its own representative, so each new point scanned
+        // the whole accumulated list. That is fine for a hand-built life list and
+        // not fine for an imported one — eBird's "My eBird Data" export is one row
+        // per *observation*, which for an active birder is tens of thousands, and
+        // this runs synchronously on the main actor on every zoom-step settle.
+        //
+        // The result is identical, not merely similar. A representative within
+        // `threshold` of a point must lie in one of the nine cells around it, and
+        // among those candidates the *lowest index* is the one the linear scan
+        // would have hit first — so the same point folds onto the same stack, in
+        // the same order.
+        var cells: [Cell: [Int]] = [:]
+        cells.reserveCapacity(sorted.count)
+
         for point in sorted {
             let lat = point.latitude
             let lon = point.longitude
-            var folded = false
-            for i in reps.indices {
-                if abs(reps[i].lat - lat) < thresholdLat
-                    && abs(reps[i].lon - lon) < thresholdLon {
-                    reps[i].others.append(point)
-                    folded = true
-                    break
+            let cell = Cell(
+                lat: Int((lat / thresholdLat).rounded(.down)),
+                lon: Int((lon / thresholdLon).rounded(.down))
+            )
+
+            var best: Int?
+            for dLat in -1...1 {
+                for dLon in -1...1 {
+                    let neighbor = Cell(lat: cell.lat + dLat, lon: cell.lon + dLon)
+                    guard let candidates = cells[neighbor] else { continue }
+                    for i in candidates {
+                        // Already looking at an earlier match; nothing later in
+                        // this cell can beat it (indices are appended in order).
+                        if let best, i > best { break }
+                        if abs(reps[i].lat - lat) < thresholdLat
+                            && abs(reps[i].lon - lon) < thresholdLon {
+                            best = i
+                            break
+                        }
+                    }
                 }
             }
-            if !folded {
+
+            if let best {
+                reps[best].others.append(point)
+            } else {
+                cells[cell, default: []].append(reps.count)
                 reps.append(WIP(point: point, lat: lat, lon: lon))
             }
         }
@@ -1204,6 +1262,17 @@ struct MapView: View {
             )
         }
     }
+
+    /// One cell of `computeClusters`' spatial hash, in threshold-sized units.
+    private struct Cell: Hashable {
+        let lat: Int
+        let lon: Int
+    }
+
+    /// Smallest threshold the spatial hash will divide by — about 0.1 mm of
+    /// latitude. Below this nothing could cluster anyway, and the quotient starts
+    /// running out of `Int`.
+    private static let minimumClusterThreshold: Double = 1e-9
 }
 
 /// The haptic-touch menu behind a single bird on the map — a pinned thumbnail

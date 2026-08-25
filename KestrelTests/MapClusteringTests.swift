@@ -139,6 +139,145 @@ struct MapClusteringTests {
                 "the same longitude gap is a shorter distance at 70°N")
     }
 
+    // MARK: the spatial hash
+
+    /// The pairwise scan `computeClusters` used to be: fold each point onto the
+    /// first representative found so far that is within the threshold.
+    ///
+    /// The spatial hash that replaced it has to give the *identical* answer, not
+    /// merely a similar one — the representative a stack folds onto is the
+    /// stack's identity, which is what the tap handler, the card and the
+    /// full-screen viewer all key off.
+    private func referenceClusters(
+        _ points: [MapPoint],
+        span: MKCoordinateSpan,
+        centerLatitude: Double
+    ) -> [BirdCluster] {
+        let degPerPoint = span.latitudeDelta / Double(viewSize.height)
+        let thresholdLat = degPerPoint * Double(footprint.height + 4)
+        let cosLat = max(cos(centerLatitude * .pi / 180), 0.05)
+        let thresholdLon = (degPerPoint * Double(footprint.width + 4)) / cosLat
+
+        struct WIP {
+            let point: MapPoint
+            var others: [MapPoint] = []
+        }
+        var reps: [WIP] = []
+        for point in points.sorted(by: BirdCluster.ordersBefore) {
+            var folded = false
+            for i in reps.indices {
+                if abs(reps[i].point.latitude - point.latitude) < thresholdLat
+                    && abs(reps[i].point.longitude - point.longitude) < thresholdLon {
+                    reps[i].others.append(point)
+                    folded = true
+                    break
+                }
+            }
+            if !folded { reps.append(WIP(point: point)) }
+        }
+        return reps.map {
+            BirdCluster(
+                representative: $0.point,
+                coordinate: $0.point.coordinate,
+                others: $0.others
+            )
+        }
+    }
+
+    /// A deterministic pseudo-random spread, so the two implementations are
+    /// compared on messy input rather than on a tidy grid — and on the same messy
+    /// input every run.
+    private func scatter(_ count: Int, seed: UInt64 = 0x5eed) -> [MapPoint] {
+        var state = seed
+        func next() -> Double {
+            // xorshift64*, inline so the test carries no dependency.
+            state ^= state >> 12
+            state ^= state << 25
+            state ^= state >> 27
+            return Double((state &* 2_685_821_657_736_338_717) >> 11) / Double(1 << 53)
+        }
+        return (0..<count).map { i in
+            point("p\(i)", "Genus sp\(i % 40)", [may4, may5, may6][i % 3],
+                  lat: 42.0 + next() * 0.4, lon: -76.0 + next() * 0.4)
+        }
+    }
+
+    @Test("the spatial hash agrees with a pairwise scan, at every zoom")
+    func gridMatchesPairwise() {
+        let points = scatter(400)
+        for delta in [2.0, 0.5, 0.1, 0.02, 0.004, 0.0005] {
+            let span = MKCoordinateSpan(latitudeDelta: delta, longitudeDelta: delta)
+            let actual = cluster(points, span: span)
+            let expected = referenceClusters(points, span: span, centerLatitude: 42)
+
+            #expect(actual.map(\.representative.id) == expected.map(\.representative.id),
+                    "representatives differ at span \(delta)")
+            #expect(actual.map { $0.others.map(\.id) } == expected.map { $0.others.map(\.id) },
+                    "stack membership differs at span \(delta)")
+        }
+    }
+
+    /// When a point sits within the threshold of two representatives, the pairwise
+    /// scan takes the one it met first. The hash checks nine cells in an order of
+    /// its own, so it has to pick the lowest index among the candidates rather
+    /// than the first one it happens to find.
+    @Test("a point between two stacks joins the earlier one")
+    func foldsOntoTheEarlierRepresentative() {
+        // Sorted newest first, so "b" is the first representative and "a" the
+        // second; "middle" is within reach of both.
+        let span = MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
+        let threshold = (span.latitudeDelta / Double(viewSize.height)) * Double(footprint.height + 4)
+        let points = [
+            point("b", "B b", may6, lat: 42.0, lon: -76.0),
+            point("a", "A a", may5, lat: 42.0 + threshold * 1.5, lon: -76.0),
+            point("middle", "M m", may4, lat: 42.0 + threshold * 0.75, lon: -76.0),
+        ]
+        let clusters = cluster(points, span: span)
+        let expected = referenceClusters(points, span: span, centerLatitude: 42)
+        #expect(clusters.map(\.representative.id) == expected.map(\.representative.id))
+        let holder = clusters.first { $0.others.contains { $0.id == "middle" } }
+        #expect(holder?.representative.id == "b", "the first representative wins the tie")
+    }
+
+    /// eBird's "My eBird Data" export is one row per *observation*, so an active
+    /// birder's import is tens of thousands of pins — and this runs synchronously
+    /// on the main actor on every zoom-step settle. The pairwise scan was O(n²)
+    /// and degenerated exactly where it hurts: at high zoom nearly every point is
+    /// its own representative, so each new one scanned the whole list.
+    ///
+    /// The bound is deliberately loose. It is not a benchmark; it is there to fail
+    /// if the quadratic behavior ever comes back, which at this size is the
+    /// difference between milliseconds and minutes.
+    @Test("clustering a large imported life list stays interactive")
+    func scalesToALargeLifeList() {
+        let points = scatter(20_000)
+        // A high zoom, where almost nothing folds — the pairwise worst case.
+        let span = MKCoordinateSpan(latitudeDelta: 0.004, longitudeDelta: 0.004)
+
+        let started = Date()
+        let clusters = cluster(points, span: span)
+        let elapsed = Date().timeIntervalSince(started)
+
+        #expect(elapsed < 2.0, "took \(elapsed)s — the quadratic scan is back")
+        // Still a partition: every point accounted for, exactly once.
+        let covered = clusters.flatMap { $0.all.map(\.id) }
+        #expect(covered.count == points.count)
+        #expect(Set(covered).count == points.count)
+    }
+
+    @Test("a degenerate threshold leaves every point standing alone")
+    func zeroFootprintDoesNotFold() {
+        // Nothing can be within a zero-width threshold — and the spatial hash
+        // must not divide by it.
+        let points = scatter(50)
+        let clusters = MapView.computeClusters(
+            points: points, span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1),
+            centerLatitude: 42, viewSize: viewSize, footprint: .zero, gutter: 0
+        )
+        #expect(clusters.count == points.count)
+        #expect(clusters.allSatisfy { $0.others.isEmpty })
+    }
+
     // MARK: uniqueByEarliest
 
     /// A cluster can hold several sightings of the same bird; the card shows one
@@ -251,6 +390,26 @@ struct MapClusteringTests {
         let p = point("x", "X y", may4, lat: 42.4534198, lon: -76.4735178, place: "Ithaca, NY")
         let stored = LifeListEntry.Observation.at(may4, "Ithaca, NY", lat: 42.4534198, lon: -76.4735178)
         #expect(p.observation.identity == stored.identity)
+    }
+
+    /// A pin's edit and delete resolve the stored record *by value* first, so a
+    /// point has to reconstitute the whole observation — provenance included.
+    /// `Identity` excludes `isImported` and so can't tell two colliding sightings
+    /// apart; falling back to it picks whichever came first, which is not
+    /// necessarily the pin the user long-pressed. See `LifeListStore.locate`.
+    @Test("a map point's observation carries the stored record exactly")
+    func pointObservationCarriesProvenance() {
+        let stored = LifeListEntry.Observation.at(
+            may4, "Ithaca NY", lat: 42.45342, lon: -76.47352, imported: true
+        )
+        let entry = LifeListEntry.make("X y", "X", [stored])
+        let p = MapPoint(
+            id: "x", scientificName: "X y", commonName: "X",
+            date: entry.firstSeen, location: entry.firstLocation,
+            latitude: entry.firstLatitude!, longitude: entry.firstLongitude!,
+            isImported: entry.firstIsImported
+        )
+        #expect(p.observation == stored, "not merely identity-equal — the same record")
     }
 
     // MARK: ordering

@@ -188,6 +188,68 @@ struct EBirdCSVExporterTests {
         #expect(payload.unplaceableCount == 2)
     }
 
+    /// `sanitize` is lossy — it drops quotes outright and turns commas into
+    /// spaces — so a name made only of those characters folds away to nothing.
+    /// Testing the *stored* name for emptiness and folding afterwards let such a
+    /// name through as a blank Location Name: a column eBird requires, with no
+    /// coordinate fallback applied and nothing in `unplaceableCount` to warn
+    /// about it.
+    @Test("a name that folds away to nothing falls back to the coordinates")
+    func foldedAwayNameFallsBackToCoordinates() {
+        for hostile in [",", ",,,", "\"", "\u{201C}\u{201D}", "\" , \""] {
+            let payload = EBirdCSVExporter.makeCSV(rows: [
+                row(observation: .at(may4, hostile, lat: 1, lon: 2)),
+            ])
+            #expect(parseExportedCSV(payload)[0][5] == "1.00000 2.00000", "\(hostile)")
+            #expect(payload.unplaceableCount == 0, "\(hostile)")
+        }
+    }
+
+    @Test("a name that folds away with no coordinates is counted as unplaceable")
+    func foldedAwayNameWithNoCoordinatesIsUnplaceable() {
+        for hostile in [",", ",,,", "\"", "\" , \""] {
+            let payload = EBirdCSVExporter.makeCSV(rows: [row(observation: .at(may4, hostile))])
+            #expect(parseExportedCSV(payload)[0][5] == "Unspecified location", "\(hostile)")
+            #expect(payload.unplaceableCount == 1, "\(hostile)")
+        }
+    }
+
+    /// The column is required, so there is no input for which leaving it empty is
+    /// the right answer.
+    @Test("the Location Name column is never blank, whatever the stored name")
+    func locationNameIsNeverBlank() {
+        let names: [String?] = [
+            nil, "", "   ", ",", "\"", ",,,", "\u{201C}\u{201D}", "\n\t", "Ithaca, NY", "Sapsucker Woods",
+        ]
+        for name in names {
+            for coords in [(1.0, 2.0), (nil, nil)] as [(Double?, Double?)] {
+                let payload = EBirdCSVExporter.makeCSV(rows: [
+                    row(observation: .at(may4, name, lat: coords.0, lon: coords.1)),
+                ])
+                #expect(!parseExportedCSV(payload)[0][5].isEmpty, "\(name ?? "nil")")
+            }
+        }
+    }
+
+    /// `Observation.Identity` compares the *exported* place name, so a sighting
+    /// whose stored name folds away has to recognize the coordinates it comes
+    /// back from eBird carrying — otherwise the returning copy is filed as a
+    /// second observation: a duplicate pin and a doubled "N Observations".
+    @Test("a folded-away name and the coordinates it exports under are one identity")
+    func foldedAwayNameRoundTripsAsOneSighting() {
+        let stored = LifeListEntry.Observation.at(may4, ",", lat: 42.45342, lon: -76.47352)
+        // What the next eBird download hands back: the name the file carried.
+        let returned = LifeListEntry.Observation.at(
+            may4, "42.45342 -76.47352", lat: 42.45342, lon: -76.47352, imported: true
+        )
+        #expect(stored.identity == returned.identity)
+        #expect(
+            EBirdCSVExporter.key(scientificName: "X y", observation: stored)
+                == EBirdCSVExporter.key(scientificName: "X y", observation: returned),
+            "the ledger and identity must not disagree about what one sighting is"
+        )
+    }
+
     // MARK: names and coordinates
 
     /// eBird files feral city pigeons under a disambiguated name; using it here

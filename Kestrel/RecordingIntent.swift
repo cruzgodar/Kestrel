@@ -44,7 +44,7 @@ enum RecordingIntentRequest {
 struct StartRecordingIntent: AppIntent {
     static var title: LocalizedStringResource = "Start Recording"
     static var description = IntentDescription(
-        "Start listening for birds if a recording isn't already in progress."
+        "Start listening for birds if a recording isn\u{2019}t already in progress."
     )
     /// Foreground the app to run the intent and bring up the microphone.
     static var openAppWhenRun = true

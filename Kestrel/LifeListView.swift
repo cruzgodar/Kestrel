@@ -581,7 +581,7 @@ struct LifeListView: View {
             }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("Are you sure you want to permanently remove all \(store.totalObservationCount) observations of \(store.entries.count) species from your life list? This cannot be undone. Your stars will be preserved if you re-add the species later.")
+            Text(clearAllMessage)
         }
     }
 
@@ -846,6 +846,20 @@ struct LifeListView: View {
             .padding(.bottom, 4)
             .listRowInsets(EdgeInsets())
             .listRowSeparator(.hidden)
+    }
+
+    /// The wording behind "Delete All Entries". The observation count is
+    /// pluralized — the export result alert two modifiers up already does it, and
+    /// "all 1 observations" reads as a bug in the middle of a confirmation the
+    /// user is being asked to trust. ("Species" is its own plural, so the second
+    /// count needs nothing.)
+    private var clearAllMessage: String {
+        let observations = store.totalObservationCount
+        let noun = observations == 1 ? "observation" : "observations"
+        return "Are you sure you want to permanently remove all "
+            + "\(observations) \(noun) of \(store.entries.count) species from your "
+            + "life list? This cannot be undone. Your stars will be preserved if "
+            + "you re-add the species later."
     }
 
     private var speciesCountText: String {

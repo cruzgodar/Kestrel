@@ -292,25 +292,56 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
         }
     }
 
-    /// Writes the snapshot right now, bypassing the coalescing delay.
+    /// Writes the snapshot right now, bypassing the coalescing delay, and waits
+    /// for it to land.
     ///
-    /// `markDownloaded` batches its stamps behind a two-second timer, so there is
-    /// otherwise no moment at which a caller can say "the file reflects this."
+    /// `markDownloaded` batches its stamps behind a two-second timer and
+    /// `persistLocked` hands even its immediate writes to the IO queue, so there
+    /// is otherwise no moment at which a caller can say "the file reflects this."
     /// Tests reading the snapshot back need exactly that.
+    ///
+    /// Not part of the app's own flow, and shouldn't be — the whole point of the
+    /// queue is that nothing blocks on the write.
     func persistNow() {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
         persistLocked()
+        lock.unlock()
+        // Behind the write just queued. The queue is serial, so a `sync` barrier
+        // can only run once it has.
+        persistQueue.sync { }
     }
 
+    /// Queues a write of the current state. Call with `lock` held.
+    ///
+    /// **Only the snapshot is taken under the lock; the encode and the disk write
+    /// happen on the IO queue.** Copying three dictionaries is O(1) — they are
+    /// value types, so this is a retain, not a walk — whereas encoding them is a
+    /// JSON pass over every species the photo set has ever described, and the
+    /// write is a full atomic file replace.
+    ///
+    /// Doing that work inside the lock blocked the main thread, which reads
+    /// `info(forSlug:)` through `RemoteSpeciesImageStore.isAttributed` from view
+    /// bodies and `.task`s on every photo the app draws. A manifest apply landing
+    /// while a list scrolled would stall the scroll for the length of the encode.
+    /// `LifeListStore.save()` has always snapshotted-then-encoded for exactly this
+    /// reason; this is the same shape.
     private func persistLocked() {
         guard let url = snapshotURL else { return }
-        let snapshot = LocalSnapshot(
-            hashes: hashes,
-            metadata: metadata.mapValues(CodableInfo.init),
-            validatedAt: validatedAt
-        )
-        guard let data = try? JSONEncoder().encode(snapshot) else { return }
-        try? data.write(to: url, options: .atomic)
+        // Three dictionary copies: retains, not walks. Everything that actually
+        // costs anything — the `CodableInfo` remap, the encode, the write — is
+        // deferred to the queue below, outside the lock.
+        let hashes = self.hashes
+        let metadata = self.metadata
+        let validatedAt = self.validatedAt
+        persistQueue.async {
+            let snapshot = LocalSnapshot(
+                hashes: hashes,
+                metadata: metadata.mapValues(CodableInfo.init),
+                validatedAt: validatedAt
+            )
+            guard let data = try? JSONEncoder().encode(snapshot) else { return }
+            try? data.write(to: url, options: .atomic)
+        }
     }
 }
 

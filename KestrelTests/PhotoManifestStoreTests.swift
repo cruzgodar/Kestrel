@@ -266,6 +266,76 @@ struct PhotoManifestStoreTests {
 
     // MARK: persistence
 
+    /// The encode and the disk write happen on the IO queue, outside the lock —
+    /// only the (O(1), copy-on-write) dictionary snapshot is taken under it.
+    ///
+    /// The lock is the same one `info(forSlug:)` takes, and that is read from view
+    /// bodies and `.task`s on every photo the app draws (via
+    /// `RemoteSpeciesImageStore.isAttributed`). Encoding a manifest describing
+    /// every photographed species while holding it stalled the main thread for the
+    /// length of the encode, so a manifest apply landing mid-scroll hitched the
+    /// scroll.
+    ///
+    /// Measured as "does the mutating call return before its own encode finishes",
+    /// which is the same statement: nothing can return early while still encoding
+    /// inside the lock. The bound is *relative* — the same write, waited on via
+    /// `persistNow` — so it calibrates itself to whatever machine it runs on
+    /// rather than hard-coding a duration.
+    @Test("a mutation does not hold the lock through its own encode")
+    func mutationDoesNotEncodeUnderTheLock() {
+        let scratch = ScratchDirectory()
+        let subject = store(scratch)
+        var entries: [String: (hash: String, credit: String?)] = [:]
+        for i in 0..<10_000 {
+            entries["slug\(i)"] = ("hash\(i)", "A photographer with a reasonably long name \(i)")
+        }
+        _ = subject.apply(manifest(entries))
+        subject.persistNow()   // settle, so the timings below start from quiet
+
+        let keys = Array(entries.keys)
+        let queuedStart = Date()
+        subject.markValidated(keys)
+        let queued = Date().timeIntervalSince(queuedStart)
+
+        // The same work, waited on. `persistNow` is a barrier by construction, so
+        // this necessarily includes an encode and a file write.
+        let flushedStart = Date()
+        subject.persistNow()
+        let flushed = Date().timeIntervalSince(flushedStart)
+
+        #expect(
+            queued * 4 < flushed,
+            "markValidated took \(queued)s against a \(flushed)s flush — it is encoding under the lock"
+        )
+    }
+
+    /// The write being asynchronous must not make the in-memory state lag: what
+    /// `apply` recorded is readable the instant it returns, whatever the file is
+    /// doing.
+    @Test("state applied is readable before the write has landed")
+    func appliedStateIsImmediatelyVisible() {
+        let scratch = ScratchDirectory()
+        let subject = store(scratch)
+        _ = subject.apply(manifest(["a": ("h1", "Alice")]))
+        #expect(subject.recordedHash(forSlug: "a") == "h1")
+        #expect(subject.info(forSlug: "a")?.credit == "Alice")
+    }
+
+    /// `persistNow` has to be a barrier, not just a nudge — a test that reads the
+    /// file back needs the write to have finished, and the write is queued now.
+    @Test("persistNow waits for the write it queued")
+    func persistNowIsABarrier() {
+        let scratch = ScratchDirectory()
+        let subject = store(scratch)
+        _ = subject.apply(manifest(["a": ("h1", "Alice")]))
+        subject.persistNow()
+        #expect(
+            scratch.data("photos_manifest_local.json") != nil,
+            "the snapshot is on disk by the time persistNow returns"
+        )
+    }
+
+
     @Test("hashes, metadata and stamps survive a relaunch")
     func snapshotPersists() {
         let scratch = ScratchDirectory()

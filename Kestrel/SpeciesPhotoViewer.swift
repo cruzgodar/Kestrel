@@ -619,6 +619,16 @@ struct SpeciesPhotoFullScreen: View {
     private func menuButton(for item: SpeciesPhotoItem) -> some View {
         let starred = lifeListStore?.starredNames.contains(item.scientificName) ?? false
         let actionable = hasSighting(item)
+        // Present whenever there is a store to write to, rather than only for a
+        // bird with a sighting — see the note at the `star:` argument below.
+        let starToggle: (isStarred: Bool, toggle: () -> Void)? = lifeListStore.map { store in
+            (isStarred: starred, toggle: {
+                // A single short tap to confirm the star toggled, matching the
+                // Life List tab's star button.
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                store.setStarred(scientificName: item.scientificName, isStarred: !starred)
+            })
+        }
         return Menu {
             SpeciesRowMenu(
                 onEdit: actionable ? { editSighting(of: item) } : nil,
@@ -628,22 +638,21 @@ struct SpeciesPhotoFullScreen: View {
                         commonName: commonName(for: item)
                     )
                 },
-                // Only for a bird actually on the life list. Starring is
-                // "alert me about this one again", which belongs to a bird
-                // you've recorded — and a catalog species opened straight from
-                // Life List search has no row anywhere to show the star on or
-                // to take it back off, so offering it here would strand a
-                // setting the user couldn't find again. Same rule the Identify
-                // tab's detection rows follow.
-                star: actionable ? (starred, {
-                    // A single short tap to confirm the star toggled, matching
-                    // the Life List tab's star button.
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    lifeListStore?.setStarred(
-                        scientificName: item.scientificName,
-                        isStarred: !starred
-                    )
-                }) : nil,
+                // Offered for *any* species, on the life list or not — unlike
+                // Edit and Delete above, which need a sighting to act on.
+                //
+                // This screen is the app's only unconditional star control, and
+                // it has to be, because `starredNames` outlives the life-list
+                // entry: deleting a species' last sighting drops its row but
+                // deliberately keeps its star (see
+                // `LifeListStore.removeObservation`), and every other star in the
+                // app is drawn from an entry — the Life List's rows and its
+                // starred-only filter, the map's pin menu, the Identify row menu
+                // (gated on `alreadyAdded`). Gating this one too left such a bird
+                // firing notifications on every walk with nowhere in the app to
+                // turn them off. It is reachable here by searching the species in
+                // the Life List tab and opening its photo.
+                star: starToggle,
                 onDelete: actionable ? { deleteSighting(of: item) } : nil
             )
         } label: {
