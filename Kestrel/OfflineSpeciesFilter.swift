@@ -2,10 +2,11 @@ import Compression
 import Foundation
 
 /// Offline fallback for the location/week species filter. Reads the precomputed
-/// table baked by `scripts/build_offline_species_filter.py` — the bundled
-/// BirdNET location model sampled over a global lat/lon grid for all 48 weeks —
-/// and answers "which species are plausible here, this week?" by snapping to the
-/// nearest grid sample. Used when the live geo model can't run (no fix at
+/// table baked by `build_offline_species_filter.py` (which lives with the other
+/// data-generation scripts, outside this repo) — the bundled BirdNET location
+/// model sampled over a global lat/lon grid for all 48 weeks — and answers
+/// "which species are plausible here, this week?" by snapping to the nearest
+/// grid sample. Used when the live geo model can't run (no fix at
 /// listen-start, inference failure, etc.).
 ///
 /// Entirely inert unless `offline_species_filter.bin` is present in the bundle:

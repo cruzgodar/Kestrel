@@ -629,7 +629,7 @@ struct MapView: View {
                     updateVisibleEntries(force: true)
                 }
                 .onChange(of: store.entries) { _, _ in
-                    rebuildClusters(animated: true, rehydrate: false)
+                    rebuildClusters(animated: true, rehydrate: false, refreshCard: true)
                     updateVisibleEntries(force: true)
                 }
                 }
@@ -783,14 +783,16 @@ struct MapView: View {
                 card: mapCard,
                 store: store,
                 photo: $sheetPhoto,
-                onPinpoint: { point in
+                onPinpoint: { coordinate in
                     // "Pinpoint on Map" from a bird inside a cluster card. Clear
                     // the photo explicitly: closing the card tears down the cover
                     // visually, but the item binding would otherwise stay set and
                     // re-present the photo the next time a card opens.
                     sheetPhoto = nil
                     mapCard = nil
-                    navigator?.focus(latitude: point.latitude, longitude: point.longitude)
+                    navigator?.focus(
+                        latitude: coordinate.latitude, longitude: coordinate.longitude
+                    )
                 },
                 onLoneDismissed: {
                     // The lone-bird photo opened over the card was dismissed —
@@ -1018,7 +1020,7 @@ struct MapView: View {
     /// paths instead force a fresh `updateVisibleEntries`, which mounts any changed
     /// host with its content already present (correct hit area) — so they pass
     /// `rehydrate: false` and don't flicker.
-    private func rebuildClusters(animated: Bool, rehydrate: Bool = true) {
+    private func rebuildClusters(animated: Bool, rehydrate: Bool = true, refreshCard: Bool = false) {
         guard let span = camera.lastSpan, viewSize.width > 0, viewSize.height > 0 else {
             return
         }
@@ -1030,6 +1032,15 @@ struct MapView: View {
             footprint: Self.annotationFootprint,
             gutter: Self.clusterGutter
         )
+        // Re-point an open card at the stack as it now stands. Before the
+        // `next != visibleReps` guard below, because an edit that leaves every
+        // pin where it was still changes what the card's menus should act on.
+        //
+        // Only from the life-list path (see the `.onChange` that passes
+        // `refreshCard`), never from a camera move: at the medium detent the map
+        // is live behind the card, so re-deriving on zoom would rewrite the
+        // card's contents under a user who was only panning.
+        if refreshCard { recomposeOpenCard(from: computed) }
         let oldReps = visibleReps
         var next: [String: RepInfo] = [:]
         next.reserveCapacity(computed.count)
@@ -1095,6 +1106,62 @@ struct MapView: View {
                 scheduleHitTestRehydration(changedIDs: changedIDs)
             }
         }
+    }
+
+    /// Re-points `mapCard` at the freshly computed stack standing where it was,
+    /// or puts it away when nothing of it is left.
+    ///
+    /// The card used to hold the `BirdCluster` captured at tap time and never
+    /// hear about the store again, so a sighting deleted from a grid cell's own
+    /// menu left its thumbnail sitting in the grid. Tapping that ghost opened a
+    /// viewer over a record that no longer existed (which then dismissed itself
+    /// on sight), and editing it resolved to nothing in `LifeListStore.locate`
+    /// and silently did nothing at all. Every other list of sightings in the app
+    /// is read live off the store for exactly this reason — see
+    /// `ObservationChoice.observations(in:)` — and this is the one that wasn't.
+    private func recomposeOpenCard(from clusters: [BirdCluster]) {
+        guard case .cluster(let open)? = mapCard else { return }
+        guard let recomposed = Self.recomposedCluster(for: open, in: clusters) else {
+            mapCard = nil
+            return
+        }
+        guard recomposed != open else { return }
+        mapCard = .cluster(recomposed)
+    }
+
+    /// The cluster in `clusters` that stands where `open` did: the one still
+    /// holding the most of its points.
+    ///
+    /// Matched on point ids rather than on coordinates or on `BirdCluster.id`,
+    /// because a write moves both of those. A `MapPoint.id` is
+    /// `"<species>"` or `"<species>#<index into otherObservations>"`, and
+    /// `LifeListEntry.make` re-sorts a species' observations on every write — so
+    /// editing or deleting one sighting renumbers *that species'* points, and can
+    /// hand the stack a different representative (and with it a different
+    /// `BirdCluster.id` and coordinate). What it cannot do is renumber the
+    /// *other* species in the stack, and a card only ever opens over two or more
+    /// (a single-species stack taps straight through to its photo), so at least
+    /// one point id always survives.
+    ///
+    /// `nil` means nothing the card was showing is pinned here any more — every
+    /// sighting in it was deleted or moved — and the caller closes the card.
+    nonisolated static func recomposedCluster(
+        for open: BirdCluster,
+        in clusters: [BirdCluster]
+    ) -> BirdCluster? {
+        let openIDs = Set(open.all.map(\.id))
+        var best: (cluster: BirdCluster, shared: Int)?
+        for cluster in clusters {
+            let shared = cluster.all.count { openIDs.contains($0.id) }
+            guard shared > 0 else { continue }
+            // Strictly greater, so an exact tie keeps the earlier cluster —
+            // `computeClusters` returns them in a deterministic order, so the
+            // card doesn't hop between two equally-good stacks on re-renders.
+            if best == nil || shared > best!.shared {
+                best = (cluster, shared)
+            }
+        }
+        return best?.cluster
     }
 
     /// Debounced remount of *only the changed* annotation hosts to refresh
@@ -1651,8 +1718,11 @@ private struct MapCardSheet: View {
     /// it open instantly over the card. `.pinpoint` carries the map button and
     /// returns to the card; `.lone` has no button and closes the card on exit.
     @Binding var photo: MapSheetPhoto?
-    /// "Pinpoint on Map" for a bird tapped inside a cluster card.
-    let onPinpoint: (MapPoint) -> Void
+    /// "Pinpoint on Map" for a bird tapped inside a cluster card. Takes a bare
+    /// coordinate rather than a `MapPoint` so the viewer can pinpoint a sighting
+    /// it has *edited* — whose coordinate no longer matches any point this card
+    /// was built from.
+    let onPinpoint: (CLLocationCoordinate2D) -> Void
     /// The lone-bird photo (opened over a card) was dismissed.
     let onLoneDismissed: () -> Void
 
@@ -1796,8 +1866,19 @@ private struct MapCardSheet: View {
                         if let point = points.first(where: {
                             $0.scientificName == item.scientificName
                         }) {
-                            onPinpoint(point)
+                            onPinpoint(point.coordinate)
                         }
+                    },
+                    // Preferred by the viewer over `onShowOnMap` — it carries the
+                    // sighting as it now stands, so pinpointing after an edit goes
+                    // to where the record actually is rather than to the frozen
+                    // `MapPoint` this card was built from.
+                    onShowObservationOnMap: { observation in
+                        guard let latitude = observation.latitude,
+                              let longitude = observation.longitude else { return }
+                        onPinpoint(CLLocationCoordinate2D(
+                            latitude: latitude, longitude: longitude
+                        ))
                     }
                 )
                 // Re-inject the store so the viewer's star toggle resolves it.

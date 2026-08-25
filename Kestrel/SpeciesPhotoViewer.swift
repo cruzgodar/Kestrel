@@ -448,13 +448,33 @@ struct SpeciesPhotoFullScreen: View {
         return observations(for: item).count
     }
 
+    /// The sighting a pin-scoped page stands for, *as it now stands* — the value
+    /// the viewer was opened with, carried forward through any edit made from
+    /// this screen (see `ObservationActions.current`). `nil` for a
+    /// species-scoped item, which stands for no single sighting.
+    ///
+    /// Everything on this screen that acts on "the sighting under this photo"
+    /// goes through here. `item.observation` is a copy captured when the viewer
+    /// opened, and an edit gives the record a new date or place — so the raw
+    /// copy stops matching anything on record, and using it would ask the store
+    /// about a sighting that no longer exists.
+    private func liveObservation(for item: SpeciesPhotoItem) -> LifeListEntry.Observation? {
+        item.observation.map { actions.current($0) }
+    }
+
     /// Whether the one sighting the current page stands for has been removed
     /// from the store. Only ever true for a pin-scoped item — a species-scoped
     /// one has the rest of its history to fall back on, and `sightingSection`
     /// handles it going empty. Always false with no store (previews).
+    ///
+    /// Asked of the *live* sighting, not the one the viewer opened with. An edit
+    /// rewrites the record's date or place, which is what `Identity` is made of,
+    /// so a raw-copy comparison read every edit as a deletion and shut the
+    /// viewer the moment a user corrected a date — taking the map card under it
+    /// down too.
     private var currentSightingWasDeleted: Bool {
         guard let item = currentItem,
-              let observation = item.observation,
+              let observation = liveObservation(for: item),
               let store = lifeListStore else { return false }
         return !store.observations(for: item.scientificName)
             .contains { $0.identity == observation.identity }
@@ -605,6 +625,29 @@ struct SpeciesPhotoFullScreen: View {
         .accessibilityLabel("Back")
     }
 
+    /// Whether this screen has anywhere to send a "show me this on the map" tap.
+    /// Either callback will do — see `showOnMap(_:observation:)`.
+    private var canShowOnMap: Bool {
+        onShowOnMap != nil || onShowObservationOnMap != nil
+    }
+
+    /// Sends the sighting under the current photo to the map.
+    ///
+    /// Prefers the sighting-scoped callback, which takes the record *by value*
+    /// and so carries the coordinate as it now stands. `onShowOnMap` takes the
+    /// item instead, leaving the host to resolve it back to whatever it was
+    /// holding when the viewer opened — a map card's frozen `MapPoint`, or the
+    /// species' earliest sighting — which an edit made from this screen has
+    /// since moved. With no observation to hand over (a species-scoped item),
+    /// the host's own resolution is the only answer there is, and the right one.
+    private func showOnMap(_ item: SpeciesPhotoItem, observation: LifeListEntry.Observation?) {
+        if let onShowObservationOnMap, let observation {
+            onShowObservationOnMap(observation)
+        } else {
+            onShowOnMap?(item)
+        }
+    }
+
     /// Whether this bird has a sighting the menu could edit or delete. A map pin
     /// carries its own; a species-scoped item has to have something on record.
     private func hasSighting(_ item: SpeciesPhotoItem) -> Bool {
@@ -676,7 +719,7 @@ struct SpeciesPhotoFullScreen: View {
     /// a species-scoped item asks, unless there is only one to mean.
     private func editSighting(of item: SpeciesPhotoItem) {
         guard let store = lifeListStore else { return }
-        if let observation = item.observation {
+        if let observation = liveObservation(for: item) {
             actions.edit(
                 scientificName: item.scientificName,
                 commonName: commonName(for: item),
@@ -695,7 +738,7 @@ struct SpeciesPhotoFullScreen: View {
     /// sighting, after a confirmation.
     private func deleteSighting(of item: SpeciesPhotoItem) {
         guard let store = lifeListStore else { return }
-        if let observation = item.observation {
+        if let observation = liveObservation(for: item) {
             actions.delete(
                 scientificName: item.scientificName,
                 commonName: commonName(for: item),
@@ -757,7 +800,11 @@ struct SpeciesPhotoFullScreen: View {
             // something stale.
             EmptyView()
         } else {
-            singleSighting(for: item, observation: observations.first)
+            // `observations` is empty for a pin-scoped item (see `observations(for:)`),
+            // so this is where its own sighting is printed — live, so an edit made
+            // from the menu above shows through instead of leaving the caption
+            // describing the record's previous date and place.
+            singleSighting(for: item, observation: observations.first ?? liveObservation(for: item))
         }
     }
 
@@ -775,7 +822,7 @@ struct SpeciesPhotoFullScreen: View {
         // does nothing for a sighting logged without coordinates (an eBird row
         // with no lat/lon), so without this check the place name would render as
         // an accent-colored link that swallows the tap.
-        let mappable = onShowOnMap != nil && (observation ?? item.observation)?.hasCoordinate == true
+        let mappable = canShowOnMap && (observation ?? item.observation)?.hasCoordinate == true
         if let date {
             // Place (accent-colored, the map link) + date stacked together. When
             // the map action is available the *whole block* — place, date, and a
@@ -798,8 +845,8 @@ struct SpeciesPhotoFullScreen: View {
                     .foregroundStyle(.white)
             }
 
-            if let onShowOnMap, mappable {
-                Button { onShowOnMap(item) } label: {
+            if mappable {
+                Button { showOnMap(item, observation: observation) } label: {
                     block
                         // Generous hit area: padding around the whole place+date
                         // block (plus the date text itself) so taps near it land.

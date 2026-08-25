@@ -440,4 +440,109 @@ struct MapClusteringTests {
         #expect(one.hashValue == same.hashValue)
         #expect(one != different)
     }
+
+    // MARK: re-pointing an open card
+
+    /// The map's bottom card used to hold the `BirdCluster` captured at tap time
+    /// and never hear about the store again, so a sighting deleted from a grid
+    /// cell's own menu left its thumbnail sitting in the grid — a ghost whose tap
+    /// opened a viewer over a record that no longer existed, and whose edit
+    /// silently did nothing. `recomposedCluster` is what re-points the card at
+    /// the stack as it now stands.
+
+    /// A write renumbers the edited species' points (`MapPoint.id` embeds an
+    /// index into `otherObservations`, and `LifeListEntry.make` re-sorts on every
+    /// write) and can hand the stack a different representative — so neither the
+    /// coordinate nor `BirdCluster.id` survives. The *other* species in the stack
+    /// keep their ids, and a card only ever opens over two or more.
+    @Test("a card re-points to the stack that kept most of its points")
+    func recomposeFollowsSharedPoints() throws {
+        let a = point("A a", "A a", may4, lat: 42, lon: -76)
+        let b = point("B b", "B b", may5, lat: 42, lon: -76)
+        let open = BirdCluster(representative: b, coordinate: b.coordinate, others: [a])
+
+        // "A a" was edited: renumbered, and now the stack's representative.
+        let editedA = point("A a#1", "A a", may6, lat: 42, lon: -76)
+        let after = BirdCluster(
+            representative: editedA, coordinate: editedA.coordinate, others: [b]
+        )
+        let elsewhere = BirdCluster(
+            representative: point("C c", "C c", may4, lat: 10, lon: 10),
+            coordinate: CLLocationCoordinate2D(latitude: 10, longitude: 10),
+            others: []
+        )
+
+        let recomposed = try #require(
+            MapView.recomposedCluster(for: open, in: [elsewhere, after])
+        )
+        #expect(recomposed == after)
+    }
+
+    /// A delete that leaves the rest of the stack standing keeps the card open,
+    /// pointed at what's left.
+    @Test("a card survives one of its birds being deleted")
+    func recomposeSurvivesADelete() throws {
+        let a = point("A a", "A a", may4, lat: 42, lon: -76)
+        let b = point("B b", "B b", may5, lat: 42, lon: -76)
+        let open = BirdCluster(representative: b, coordinate: b.coordinate, others: [a])
+        let after = BirdCluster(representative: b, coordinate: b.coordinate, others: [])
+
+        let recomposed = try #require(MapView.recomposedCluster(for: open, in: [after]))
+        #expect(recomposed == after)
+        #expect(recomposed.all.count == 1, "the deleted bird is gone from the grid")
+    }
+
+    /// Nothing the card was showing is pinned here any more — every sighting in
+    /// it was deleted or moved away. The caller closes the card.
+    @Test("a card with nothing left recomposes to nil")
+    func recomposeToNilWhenEmptied() {
+        let a = point("A a", "A a", may4, lat: 42, lon: -76)
+        let b = point("B b", "B b", may5, lat: 42, lon: -76)
+        let open = BirdCluster(representative: b, coordinate: b.coordinate, others: [a])
+
+        #expect(MapView.recomposedCluster(for: open, in: []) == nil)
+        let unrelated = BirdCluster(
+            representative: point("C c", "C c", may4, lat: 42, lon: -76),
+            coordinate: CLLocationCoordinate2D(latitude: 42, longitude: -76),
+            others: []
+        )
+        #expect(MapView.recomposedCluster(for: open, in: [unrelated]) == nil)
+    }
+
+    /// An untouched card must recompose to exactly itself, or every unrelated
+    /// life-list write would churn the open card's contents.
+    @Test("an unaffected card recomposes to itself")
+    func recomposeIsStableWhenNothingChanged() throws {
+        let a = point("A a", "A a", may4, lat: 42, lon: -76)
+        let b = point("B b", "B b", may5, lat: 42, lon: -76)
+        let open = BirdCluster(representative: b, coordinate: b.coordinate, others: [a])
+        let elsewhere = BirdCluster(
+            representative: point("C c", "C c", may4, lat: 10, lon: 10),
+            coordinate: CLLocationCoordinate2D(latitude: 10, longitude: 10),
+            others: []
+        )
+
+        let recomposed = try #require(
+            MapView.recomposedCluster(for: open, in: [open, elsewhere])
+        )
+        #expect(recomposed == open)
+    }
+
+    /// If a stack splits, the card follows the larger half rather than picking
+    /// whichever the clustering happened to return first.
+    @Test("a split stack re-points to the half holding more of the card")
+    func recomposePrefersTheLargerOverlap() throws {
+        let a = point("A a", "A a", may4, lat: 42, lon: -76)
+        let b = point("B b", "B b", may5, lat: 42, lon: -76)
+        let c = point("C c", "C c", may6, lat: 42, lon: -76)
+        let open = BirdCluster(representative: c, coordinate: c.coordinate, others: [a, b])
+
+        let smaller = BirdCluster(representative: c, coordinate: c.coordinate, others: [])
+        let larger = BirdCluster(representative: b, coordinate: b.coordinate, others: [a])
+
+        let recomposed = try #require(
+            MapView.recomposedCluster(for: open, in: [smaller, larger])
+        )
+        #expect(recomposed == larger)
+    }
 }

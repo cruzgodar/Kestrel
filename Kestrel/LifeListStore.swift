@@ -620,6 +620,16 @@ final class LifeListStore {
     ///
     /// Takes the whole `original` observation, not just its `Identity`, because
     /// identity is deliberately ambiguous here — see `locate`.
+    ///
+    /// Returns the sighting it actually wrote, or `nil` when `original` wasn't on
+    /// record and nothing was written. Both halves matter to a caller holding a
+    /// sighting *by value*: an edit gives that value a new date or place, so the
+    /// copy the caller is still holding no longer describes anything, and a
+    /// second edit or a delete aimed at it would silently do nothing. Handing
+    /// back the replacement is what lets a caller follow its own edit — see
+    /// `ObservationActions.recordEdit`. The `nil` says the write didn't happen,
+    /// which used to be indistinguishable from one that did.
+    @discardableResult
     func replaceObservation(
         scientificName: String,
         original: LifeListEntry.Observation,
@@ -627,13 +637,13 @@ final class LifeListStore {
         location: String?,
         latitude: Double?,
         longitude: Double?
-    ) {
+    ) -> LifeListEntry.Observation? {
         guard let idx = entries.firstIndex(where: { $0.scientificName == scientificName }) else {
-            return
+            return nil
         }
         let existing = entries[idx]
         var remaining = existing.allObservations
-        guard let hit = Self.locate(original, in: remaining) else { return }
+        guard let hit = Self.locate(original, in: remaining) else { return nil }
         let wasImported = remaining[hit].isImported
         let wasExported = hasBeenExported(
             scientificName: scientificName,
@@ -667,6 +677,7 @@ final class LifeListStore {
         // sort key.
         entries.sort(by: Self.ordersBefore)
         save()
+        return replacement
     }
 
     /// Removes a single recorded sighting. The species itself drops off the

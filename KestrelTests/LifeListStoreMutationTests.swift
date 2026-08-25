@@ -231,6 +231,75 @@ struct LifeListStoreMutationTests {
         #expect(store.entries == before)
     }
 
+    // MARK: what an edit reports back
+
+    /// A caller holding a sighting *by value* — the full-screen viewer opened on
+    /// a map pin — needs the record the edit actually wrote, because the copy it
+    /// was holding no longer describes anything on the list.
+    @Test("replaceObservation returns the sighting it wrote")
+    func replaceReturnsTheWrittenSighting() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        store.recordObservation(scientificName: "X y", commonName: "X", date: may4,
+                                location: "Wrong", latitude: 1, longitude: 1)
+        let original = store.entries[0].allObservations[0]
+
+        let written = try #require(store.replaceObservation(
+            scientificName: "X y", original: original,
+            date: may5, location: "Right", latitude: 3, longitude: 3
+        ))
+        #expect(written.date == may5)
+        #expect(written.location == "Right")
+        #expect(written.latitude == 3)
+        #expect(store.entries[0].allObservations.contains(written),
+                "the returned record is the one on the list, not a description of one")
+    }
+
+    /// The flow follows the store's return value rather than rebuilding the
+    /// sighting from the draft, because provenance isn't in the draft: a
+    /// locally-rebuilt copy would come back Kestrel-native and stop matching the
+    /// imported record actually on file.
+    @Test("the returned sighting carries the stored provenance")
+    func replaceReturnsProvenance() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeLifeList([
+            .make(scientificName: "X y", commonName: "X", isStarred: false,
+                  observations: [.at(may4, "P", lat: 1, lon: 1, imported: true)], dedupe: false),
+        ])
+        let store = makeStore(scratch, defaults)
+        let original = store.entries[0].allObservations[0]
+
+        let written = store.replaceObservation(
+            scientificName: "X y", original: original,
+            date: may5, location: "Corrected", latitude: 1, longitude: 1
+        )
+        #expect(written?.isImported == true)
+    }
+
+    /// The other half: `nil` says the write didn't happen. Without it a caller
+    /// couldn't tell a successful edit from one that resolved to nothing, and
+    /// would go on believing in a sighting the store never wrote.
+    @Test("replaceObservation returns nil when the original isn't on record")
+    func replaceReturnsNilWhenMissing() {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        store.recordObservation(scientificName: "X y", commonName: "X", date: may4,
+                                location: "P", latitude: 1, longitude: 1)
+
+        let missing = store.replaceObservation(
+            scientificName: "X y",
+            original: LifeListEntry.Observation.at(may6, "Nowhere"),
+            date: may5, location: "Q", latitude: 2, longitude: 2
+        )
+        #expect(missing == nil)
+
+        let unknownSpecies = store.replaceObservation(
+            scientificName: "No such", original: store.entries[0].allObservations[0],
+            date: may5, location: "Q", latitude: 2, longitude: 2
+        )
+        #expect(unknownSpecies == nil)
+    }
+
     // MARK: colliding sightings
 
     /// Two observations of one species may share an `Observation.Identity` — the

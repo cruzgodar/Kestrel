@@ -101,12 +101,21 @@ extension View {
     /// `onCommit` fires only when a sighting was actually written, so a caller
     /// that raised the flow from a chooser can put that chooser away — while
     /// cancelling out of the flow leaves it standing.
+    ///
+    /// `onEdited` fires only on the *edit* path, carrying the sighting that was
+    /// rewritten and the one that replaced it. A host holding a sighting by value
+    /// — the full-screen viewer opened on a map pin, say — has no other way to
+    /// learn that the record under it now has a different date or place, and a
+    /// stale copy is one its next edit or delete would silently miss.
     func observationFlow(
         _ draft: Binding<ObservationDraft?>,
         store: LifeListStore,
-        onCommit: (() -> Void)? = nil
+        onCommit: (() -> Void)? = nil,
+        onEdited: ((LifeListEntry.Observation, LifeListEntry.Observation) -> Void)? = nil
     ) -> some View {
-        modifier(ObservationFlowModifier(draft: draft, store: store, onCommit: onCommit))
+        modifier(ObservationFlowModifier(
+            draft: draft, store: store, onCommit: onCommit, onEdited: onEdited
+        ))
     }
 }
 
@@ -123,6 +132,8 @@ private struct ObservationFlowModifier: ViewModifier {
     /// of the flow lives inside one.
     let store: LifeListStore
     let onCommit: (() -> Void)?
+    /// See `observationFlow(_:store:onCommit:onEdited:)`.
+    let onEdited: ((LifeListEntry.Observation, LifeListEntry.Observation) -> Void)?
 
     func body(content: Content) -> some View {
         // `item`, not `isPresented`: SwiftUI keeps the presented content alive
@@ -165,7 +176,12 @@ private struct ObservationFlowModifier: ViewModifier {
     private func commit(coordinate: CLLocationCoordinate2D?, name: String?) {
         guard let draft else { return }
         if let editing = draft.editing {
-            store.replaceObservation(
+            // The store's return value, not a copy rebuilt from the draft: it is
+            // the record that actually landed, `isImported` and all, and it is
+            // `nil` when `editing` was no longer on record to be rewritten. A
+            // host that followed a locally-reconstructed value instead would go
+            // on believing in a sighting the store never wrote.
+            let replacement = store.replaceObservation(
                 scientificName: draft.scientificName,
                 original: editing,
                 date: draft.date,
@@ -173,6 +189,7 @@ private struct ObservationFlowModifier: ViewModifier {
                 latitude: coordinate?.latitude,
                 longitude: coordinate?.longitude
             )
+            if let replacement { onEdited?(editing, replacement) }
         } else {
             store.recordObservation(
                 scientificName: draft.scientificName,
@@ -558,6 +575,50 @@ final class ObservationActions {
     /// A sighting awaiting its delete confirmation.
     var pendingDelete: PendingObservationDelete?
 
+    /// Sighting → the sighting that replaced it, for every edit this
+    /// `ObservationActions` has driven.
+    ///
+    /// A host that holds a sighting *by value* — the full-screen viewer opened
+    /// on a map pin, a menu built from a `MapPoint` — is holding a copy the
+    /// store can move out from under it. An edit rewrites the record's date or
+    /// place, which is exactly what `LifeListEntry.Observation.Identity` is made
+    /// of, so the held copy stops matching anything on record. Two things then
+    /// go wrong, and both did: the held copy reads as *deleted* (see
+    /// `SpeciesPhotoFullScreen.currentSightingWasDeleted`, which shut the viewer
+    /// the moment the user corrected a date), and a second edit or a delete
+    /// aimed at it resolves to nothing in `LifeListStore.locate` and silently
+    /// no-ops.
+    ///
+    /// Keeping the trail here rather than in each host is what makes one fix
+    /// cover all of them: every add/edit/delete affordance in the app already
+    /// funnels through this object.
+    private var edits: [LifeListEntry.Observation: LifeListEntry.Observation] = [:]
+
+    /// Records that `original` was rewritten as `replacement`. Called by the
+    /// flow with the store's own return value, so only writes that actually
+    /// landed are tracked.
+    func recordEdit(original: LifeListEntry.Observation, replacement: LifeListEntry.Observation) {
+        guard original != replacement else { return }
+        edits[original] = replacement
+    }
+
+    /// `observation` as it now stands, following every edit made through this
+    /// object — so a caller that has been holding one value across two edits
+    /// still lands on the record that exists now.
+    ///
+    /// Returns `observation` itself when nothing has touched it, which is the
+    /// overwhelmingly common case. The `seen` set is what keeps an edit that
+    /// restores a sighting's earlier values (A → B → A) from walking a cycle
+    /// forever.
+    func current(_ observation: LifeListEntry.Observation) -> LifeListEntry.Observation {
+        var current = observation
+        var seen: Set<LifeListEntry.Observation> = [current]
+        while let next = edits[current], seen.insert(next).inserted {
+            current = next
+        }
+        return current
+    }
+
     /// Files a new sighting of a species.
     func add(scientificName: String, commonName: String) {
         draft = .adding(scientificName: scientificName, commonName: commonName)
@@ -696,7 +757,15 @@ private struct ObservationActionsModifier: ViewModifier {
     func body(content: Content) -> some View {
         if let store {
             content
-                .observationFlow($actions.draft, store: store)
+                .observationFlow(
+                    $actions.draft,
+                    store: store,
+                    // Every host of an `ObservationActions` gets edit-following
+                    // for free — see `ObservationActions.edits`.
+                    onEdited: { original, replacement in
+                        actions.recordEdit(original: original, replacement: replacement)
+                    }
+                )
                 .sheet(item: $actions.choice) { choice in
                     ObservationChoiceSheet(
                         choice: choice,

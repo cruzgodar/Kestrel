@@ -1452,8 +1452,9 @@ final class RecordingManager {
             return
         }
         // Offline fallback: the precomputed grid (birds by location + week),
-        // bundled from `scripts/build_offline_species_filter.py`. Inert unless
-        // that data file ships in the bundle. Needs only a coordinate — the live
+        // bundled from `build_offline_species_filter.py` (outside this repo —
+        // see `OfflineSpeciesFilter`). Inert unless that data file ships in the
+        // bundle. Needs only a coordinate — the live
         // model couldn't run, but we can still snap to the nearest grid sample —
         // so use a fresh fix if we just got one, else the last-known location.
         let lat = location?.coordinate.latitude ?? LocationCache.shared.lastLatitude
