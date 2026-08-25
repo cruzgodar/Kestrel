@@ -183,7 +183,7 @@ struct LifeListView: View {
     /// you've already recorded should surface instantly when searching, not get
     /// buried under "not found in this area." Only catalog suggestions
     /// (non-lifers) are range-tested, so that section contains non-lifers only.
-    private static func partitionByRange(_ rows: [SearchRow], allowed: Set<Int>?) -> [SearchRow] {
+    static func partitionByRange(_ rows: [SearchRow], allowed: Set<Int>?) -> [SearchRow] {
         guard let allowed else { return rows }
         let index = SpeciesCatalog.shared.indexByScientificName
         func inRange(_ row: SearchRow) -> Bool {

@@ -76,7 +76,13 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     /// Whether a coalesced write is already pending.
     private var persistScheduled = false
 
-    private static func localURL() -> URL? {
+    /// Where the persisted snapshot lives. Injected rather than fixed so a test
+    /// can point a store at a scratch directory: `shared` is a singleton over the
+    /// app's real container, and exercising `apply` against it would rewrite the
+    /// running install's record of which photos it has.
+    private let snapshotURL: URL?
+
+    private static func defaultSnapshotURL() -> URL? {
         guard let dir = try? FileManager.default.url(
             for: .applicationSupportDirectory, in: .userDomainMask,
             appropriateFor: nil, create: true
@@ -84,13 +90,17 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
         return dir.appendingPathComponent("photos_manifest_local.json")
     }
 
-    private init() {
+    /// - Parameter directory: `nil` (the default) means the app's real
+    ///   Application Support directory.
+    init(directory: URL? = nil) {
+        snapshotURL = directory.map { $0.appendingPathComponent("photos_manifest_local.json") }
+            ?? Self.defaultSnapshotURL()
         // Persisted state from past applies, if any. There is no bundled seed:
         // everything the app knows about the photo set was fetched.
         var localHashes: [String: String] = [:]
         var localMetadata: [String: SpeciesPhotoInfo] = [:]
         var localValidatedAt: [String: Double] = [:]
-        if let url = Self.localURL(), let data = try? Data(contentsOf: url),
+        if let url = snapshotURL, let data = try? Data(contentsOf: url),
            let snapshot = try? JSONDecoder().decode(LocalSnapshot.self, from: data) {
             localHashes = snapshot.hashes
             localMetadata = snapshot.metadata.mapValues(\.info)
@@ -282,8 +292,18 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
         }
     }
 
+    /// Writes the snapshot right now, bypassing the coalescing delay.
+    ///
+    /// `markDownloaded` batches its stamps behind a two-second timer, so there is
+    /// otherwise no moment at which a caller can say "the file reflects this."
+    /// Tests reading the snapshot back need exactly that.
+    func persistNow() {
+        lock.lock(); defer { lock.unlock() }
+        persistLocked()
+    }
+
     private func persistLocked() {
-        guard let url = Self.localURL() else { return }
+        guard let url = snapshotURL else { return }
         let snapshot = LocalSnapshot(
             hashes: hashes,
             metadata: metadata.mapValues(CodableInfo.init),

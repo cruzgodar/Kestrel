@@ -35,7 +35,11 @@ enum ReviewPrompt {
     /// doesn't collide with the stop button's morph.
     private static let promptDelay: Duration = .seconds(3)
 
-    private static let defaults = UserDefaults.standard
+    /// Swappable so a test can run against a scratch suite. Every counter here
+    /// is *cumulative for the life of the install* and never reset, so a test
+    /// against the real defaults would permanently skew when the running app
+    /// next asks for a review.
+    static var defaults = UserDefaults.standard
 
     /// The running total of sessions that lasted at least `minimumSessionDuration`.
     /// Cumulative for the life of the install and never reset — the cooldown is

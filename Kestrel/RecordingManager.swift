@@ -1161,6 +1161,34 @@ final class RecordingManager {
         starredNames = scientificNames
     }
 
+    /// Whether a heard species is worth alerting about, and as what — or `nil`
+    /// for one that should pass without a notification or an alert haptic.
+    ///
+    /// Two life-list sets go in, and the difference between them is the whole
+    /// point. `snapshotAtSessionStart` is frozen when recording begins and drives
+    /// the *display* — the row's purple treatment, the spectrogram band — which
+    /// must not vanish the instant the user taps add, or the list would rearrange
+    /// itself under their thumb. Alerting is a different question: the moment a
+    /// bird is actually recorded the user has acknowledged it, and there is
+    /// nothing left to tell them about it.
+    ///
+    /// Reading only the frozen snapshot for both is what made a bird the user had
+    /// just filed go on buzzing every `hapticCooldown` and re-notifying every
+    /// `notifyCooldown` for the rest of the walk. A starred bird still alerts
+    /// either way — a star is a standing "tell me again", not a gap in the user's
+    /// records.
+    nonisolated static func alertReason(
+        scientificName: String,
+        starred: Set<String>,
+        snapshotAtSessionStart: Set<String>,
+        recordedNow: Set<String>
+    ) -> SpeciesNotifications.Reason? {
+        if starred.contains(scientificName) { return .starred }
+        let wasNewAtSessionStart = !snapshotAtSessionStart.contains(scientificName)
+        let stillUnrecorded = !recordedNow.contains(scientificName)
+        return wasNewAtSessionStart && stillUnrecorded ? .newSpecies : nil
+    }
+
     private func merge(_ results: [Detection]) {
         // Flash any repeat match (regardless of confidence change), but
         // enforce a per-species cooldown so the same row doesn't strobe on
@@ -1206,24 +1234,19 @@ final class RecordingManager {
                 detectionMap[d.id] = d
             }
 
-            // Notify when (a) the species is interesting (starred or
-            // not-yet-in-life-list), and (b) it hasn't been heard for at
-            // least `notifyCooldown` seconds. The clock resets on every
-            // detection, so a continuously-singing bird only triggers
+            // Notify when (a) the species is worth alerting about — see
+            // `alertReason`, which is where "starred, or heard before you'd
+            // recorded it and still unrecorded" is decided — and (b) it hasn't
+            // been heard for at least `notifyCooldown` seconds. The clock resets
+            // on every detection, so a continuously-singing bird only triggers
             // once; a bird that goes silent and returns re-fires.
-            let isStarred = starredNames.contains(d.scientificName)
-            let isNew = !lifeListSnapshot.contains(d.scientificName)
-            // `isNew` is frozen at session start on purpose — it drives the row's
-            // purple treatment and the spectrogram band, which must not vanish
-            // the instant the user taps add. Alerting is a different question:
-            // once the bird is *recorded*, the user has acknowledged it and there
-            // is nothing left to tell them. Read live membership for that, or a
-            // bird they just filed goes on buzzing every `hapticCooldown` and
-            // re-notifying every `notifyCooldown` for the rest of the walk.
             let recorded = lifeListStore?.speciesNames ?? lifeListSnapshot
-            let unrecorded = isNew && !recorded.contains(d.scientificName)
-            if isStarred || unrecorded {
-                let reason: SpeciesNotifications.Reason = isStarred ? .starred : .newSpecies
+            if let reason = Self.alertReason(
+                scientificName: d.scientificName,
+                starred: starredNames,
+                snapshotAtSessionStart: lifeListSnapshot,
+                recordedNow: recorded
+            ) {
                 let last = lastHeardAt[d.scientificName]
                 if last == nil || now.timeIntervalSince(last!) >= notifyCooldown {
                     notifications.append((d.commonName, d.scientificName, reason))

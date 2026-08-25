@@ -24,6 +24,7 @@
 		23D23C8E87B930ED24FEFAC136FF42A3 /* cxx_api.h in Headers */ = {isa = PBXBuildFile; fileRef = DC039114C1F9AC92E87EBB4EBD38135F /* cxx_api.h */; settings = {ATTRIBUTES = (Project, ); }; };
 		266E35D85E78F43845A5F6B36BF170B5 /* ort_enums_internal.h in Headers */ = {isa = PBXBuildFile; fileRef = 56D76EC51D159B9B1B30587B4712A4D3 /* ort_enums_internal.h */; settings = {ATTRIBUTES = (Project, ); }; };
 		2F65D245613587DB12C392DFADF63B20 /* ort_session_internal.h in Headers */ = {isa = PBXBuildFile; fileRef = 17AA3EFB649DE74FC62AC454171177D6 /* ort_session_internal.h */; settings = {ATTRIBUTES = (Project, ); }; };
+		41FF68626695675054EB2F936338BAEA /* Pods-KestrelTests-dummy.m in Sources */ = {isa = PBXBuildFile; fileRef = 4C465724AABF479ABA1A64AC3569B1BC /* Pods-KestrelTests-dummy.m */; };
 		52B6B2A7287C3805CD4BCA3DDDBC74CF /* ort_xnnpack_execution_provider.mm in Sources */ = {isa = PBXBuildFile; fileRef = 31B31480AF82734DCFA5B470FE73F98A /* ort_xnnpack_execution_provider.mm */; settings = {COMPILER_FLAGS = "-std=c++17 -fobjc-arc-exceptions -Wall -Wextra -Werror"; }; };
 		60B16686C45128C6F7823DE2A77D46A4 /* ort_coreml_execution_provider.h in Headers */ = {isa = PBXBuildFile; fileRef = 277AA51A826C54BA37B5213F03EBAB25 /* ort_coreml_execution_provider.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		61D3A8EDE65E8B1CC54EB3DF09D060D3 /* onnxruntime-objc-umbrella.h in Headers */ = {isa = PBXBuildFile; fileRef = FCDAACA59F7F84459D0445C335CD5424 /* onnxruntime-objc-umbrella.h */; settings = {ATTRIBUTES = (Public, ); }; };
@@ -31,8 +32,10 @@
 		8A42B8146DDE38ADE3ED6EDBC2B79032 /* ort_xnnpack_execution_provider.h in Headers */ = {isa = PBXBuildFile; fileRef = 395DBDB53D16B5F5F8F30A1E967813A9 /* ort_xnnpack_execution_provider.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		8F7C4CD119A9DABE0FBE1C0F689CB7ED /* assert_arc_enabled.mm in Sources */ = {isa = PBXBuildFile; fileRef = 2BE81CD49D86A2D19E71AC7FBBC35EBB /* assert_arc_enabled.mm */; settings = {COMPILER_FLAGS = "-std=c++17 -fobjc-arc-exceptions -Wall -Wextra -Werror"; }; };
 		9AF9269ECBDFF9EB7145BEA7218E509A /* ort_value.mm in Sources */ = {isa = PBXBuildFile; fileRef = 85B7326191701F34CF64D569C03657C4 /* ort_value.mm */; settings = {COMPILER_FLAGS = "-std=c++17 -fobjc-arc-exceptions -Wall -Wextra -Werror"; }; };
+		9B01F2B959AE99EB65D46EA975D9F5C4 /* Pods-KestrelTests-umbrella.h in Headers */ = {isa = PBXBuildFile; fileRef = 48320039FC28BC00407746F5B0A4A81D /* Pods-KestrelTests-umbrella.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		A1AAF3813E95B4D63DF34942E6455FB7 /* onnxruntime.h in Headers */ = {isa = PBXBuildFile; fileRef = 3AA9D68F5717F31A624A9141BF0DAF83 /* onnxruntime.h */; settings = {ATTRIBUTES = (Public, ); }; };
-		A3665A9B9B4A93F6B066433133ED124F /* Pods-Kestrel-umbrella.h in Headers */ = {isa = PBXBuildFile; fileRef = 7B7E3BF22CE69858352A9F0E9D3EB2FF /* Pods-Kestrel-umbrella.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		A3665A9B9B4A93F6B066433133ED124F /* Pods-Kestrel-umbrella.h in Headers */ = {isa = PBXBuildFile; fileRef = F9C8877C19D06FF05E352F3472C10EDD /* Pods-Kestrel-umbrella.h */; settings = {ATTRIBUTES = (Public, ); }; };
+		A51493F66DD840438B841FC8303B0C3D /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 384DDA2CB25005BD6479B5987C619DD4 /* Foundation.framework */; };
 		A58FB0EFDD3C9B5A3583250DB1B6CFC4 /* ort_enums.mm in Sources */ = {isa = PBXBuildFile; fileRef = DE1D7367B33EA4EB20D462E6DD9E7327 /* ort_enums.mm */; settings = {COMPILER_FLAGS = "-std=c++17 -fobjc-arc-exceptions -Wall -Wextra -Werror"; }; };
 		AD9F028F68CE61827DBCE1B2C7E6BE88 /* ort_session.h in Headers */ = {isa = PBXBuildFile; fileRef = 68AB86C30CF061A9B26500CC0A7CB84D /* ort_session.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		B489D3C87B5B9705AD5213A1995DCFD0 /* ort_custom_op_registration.h in Headers */ = {isa = PBXBuildFile; fileRef = F39C73D9BD6EED2CDCC41A0A01F9F326 /* ort_custom_op_registration.h */; settings = {ATTRIBUTES = (Public, ); }; };
@@ -42,7 +45,7 @@
 		C62106312BD2EBC04A3AB37AD4AC16F3 /* ort_value.h in Headers */ = {isa = PBXBuildFile; fileRef = 4D5F381912C9288E853B3A8C02036DBC /* ort_value.h */; settings = {ATTRIBUTES = (Public, ); }; };
 		D7BAD2505AC816132FABF04959FE5CFF /* cxx_utils.mm in Sources */ = {isa = PBXBuildFile; fileRef = 87577964DE05D25CABBE5E7D0795C05F /* cxx_utils.mm */; settings = {COMPILER_FLAGS = "-std=c++17 -fobjc-arc-exceptions -Wall -Wextra -Werror"; }; };
 		DDDD494B96271F52D5E3DD9C5810214E /* ort_enums.h in Headers */ = {isa = PBXBuildFile; fileRef = D39D67DBB3A8A5474CAA5A00A396A235 /* ort_enums.h */; settings = {ATTRIBUTES = (Public, ); }; };
-		E424E1A6784B3C47B28FD718C00F28EF /* Pods-Kestrel-dummy.m in Sources */ = {isa = PBXBuildFile; fileRef = 97B46EE8B04FE56186690942509FBEFE /* Pods-Kestrel-dummy.m */; };
+		E424E1A6784B3C47B28FD718C00F28EF /* Pods-Kestrel-dummy.m in Sources */ = {isa = PBXBuildFile; fileRef = C2B7F9167F6C934D2BD714AA81AE7DD6 /* Pods-Kestrel-dummy.m */; };
 		E6285B7813D752DF3629A2D4278D41E4 /* ort_coreml_execution_provider.mm in Sources */ = {isa = PBXBuildFile; fileRef = AEAD6692A69F0A75D0986DE9B69FBB7F /* ort_coreml_execution_provider.mm */; settings = {COMPILER_FLAGS = "-std=c++17 -fobjc-arc-exceptions -Wall -Wextra -Werror"; }; };
 		EF35BAF69E3B1B057CA50D7EE17C60ED /* error_utils.mm in Sources */ = {isa = PBXBuildFile; fileRef = 62ED1B7E76370411B8DD1EB722BFAC27 /* error_utils.mm */; settings = {COMPILER_FLAGS = "-std=c++17 -fobjc-arc-exceptions -Wall -Wextra -Werror"; }; };
 		F0DB61EB2EE01A5169E5A43A0BD55489 /* ort_env.mm in Sources */ = {isa = PBXBuildFile; fileRef = 48676CEEB0F4D43737DB210D3A276C4D /* ort_env.mm */; settings = {COMPILER_FLAGS = "-std=c++17 -fobjc-arc-exceptions -Wall -Wextra -Werror"; }; };
@@ -67,6 +70,13 @@
 			remoteGlobalIDString = DD8A7EE9BACB64198DBBF12EA5122AC8;
 			remoteInfo = "onnxruntime-objc";
 		};
+		88361BD1F2D496B350FB38F105775E20 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = BFDFE7DC352907FC980B868725387E98 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1D8A0A19DC1279D7CBACCE86B75B628;
+			remoteInfo = "Pods-Kestrel";
+		};
 		C6DE12BD2897B00DC4FFAB990A10FCA4 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = BFDFE7DC352907FC980B868725387E98 /* Project object */;
@@ -77,16 +87,17 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		03F26B7EB9288FB16F2F54046EA9BB5A /* Pods-Kestrel-acknowledgements.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "Pods-Kestrel-acknowledgements.plist"; sourceTree = "<group>"; };
 		05075C347B5AB86D88B87807BF61357F /* onnxruntime-c.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "onnxruntime-c.release.xcconfig"; sourceTree = "<group>"; };
 		08EBB1AC109ABBE00B3A902FD49F9B79 /* onnxruntime_ep_c_api.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = onnxruntime_ep_c_api.h; path = Headers/onnxruntime_ep_c_api.h; sourceTree = "<group>"; };
+		0B7714CBF478D1D1B9580B4E60EB91B0 /* Pods-KestrelTests-acknowledgements.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "Pods-KestrelTests-acknowledgements.plist"; sourceTree = "<group>"; };
 		0C64F9D3AC0C2FA451A00F167A47979D /* onnxruntime_session_options_config_keys.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = onnxruntime_session_options_config_keys.h; path = Headers/onnxruntime_session_options_config_keys.h; sourceTree = "<group>"; };
 		118731D1780DC344BCE1A1A52017AE9B /* onnxruntime_lite_custom_op.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = onnxruntime_lite_custom_op.h; path = Headers/onnxruntime_lite_custom_op.h; sourceTree = "<group>"; };
 		12875381D92D0029DAD97C16F4A0A942 /* onnxruntime_env_config_keys.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = onnxruntime_env_config_keys.h; path = Headers/onnxruntime_env_config_keys.h; sourceTree = "<group>"; };
 		17AA3EFB649DE74FC62AC454171177D6 /* ort_session_internal.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ort_session_internal.h; path = objectivec/ort_session_internal.h; sourceTree = "<group>"; };
-		1ACFB175FE42BF0CBDAAAAF69FC18BD7 /* Pods-Kestrel-Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "Pods-Kestrel-Info.plist"; sourceTree = "<group>"; };
 		1EC829B9DC593F75AC7113F586C72F81 /* onnxruntime-objc.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "onnxruntime-objc.debug.xcconfig"; sourceTree = "<group>"; };
+		261E9688B02FF6631FC3D77984663F27 /* Pods-Kestrel-acknowledgements.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "Pods-Kestrel-acknowledgements.plist"; sourceTree = "<group>"; };
 		277AA51A826C54BA37B5213F03EBAB25 /* ort_coreml_execution_provider.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ort_coreml_execution_provider.h; path = objectivec/include/ort_coreml_execution_provider.h; sourceTree = "<group>"; };
+		2B589015A70885F0891E3D7B1B9CCDF7 /* Pods-Kestrel-acknowledgements.markdown */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = "Pods-Kestrel-acknowledgements.markdown"; sourceTree = "<group>"; };
 		2BE81CD49D86A2D19E71AC7FBBC35EBB /* assert_arc_enabled.mm */ = {isa = PBXFileReference; includeInIndex = 1; name = assert_arc_enabled.mm; path = objectivec/assert_arc_enabled.mm; sourceTree = "<group>"; };
 		31B31480AF82734DCFA5B470FE73F98A /* ort_xnnpack_execution_provider.mm */ = {isa = PBXFileReference; includeInIndex = 1; name = ort_xnnpack_execution_provider.mm; path = objectivec/ort_xnnpack_execution_provider.mm; sourceTree = "<group>"; };
 		384DDA2CB25005BD6479B5987C619DD4 /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
@@ -94,34 +105,39 @@
 		3AA9D68F5717F31A624A9141BF0DAF83 /* onnxruntime.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = onnxruntime.h; path = objectivec/include/onnxruntime.h; sourceTree = "<group>"; };
 		3C20F7C82FAD0C79E6AC69000B97CE36 /* onnxruntime_float16.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = onnxruntime_float16.h; path = Headers/onnxruntime_float16.h; sourceTree = "<group>"; };
 		45FE83F8DF22A92FD09473B740F9108A /* error_utils.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = error_utils.h; path = objectivec/error_utils.h; sourceTree = "<group>"; };
+		48320039FC28BC00407746F5B0A4A81D /* Pods-KestrelTests-umbrella.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = "Pods-KestrelTests-umbrella.h"; sourceTree = "<group>"; };
 		48676CEEB0F4D43737DB210D3A276C4D /* ort_env.mm */ = {isa = PBXFileReference; includeInIndex = 1; name = ort_env.mm; path = objectivec/ort_env.mm; sourceTree = "<group>"; };
+		4C465724AABF479ABA1A64AC3569B1BC /* Pods-KestrelTests-dummy.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = "Pods-KestrelTests-dummy.m"; sourceTree = "<group>"; };
 		4D5F381912C9288E853B3A8C02036DBC /* ort_value.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ort_value.h; path = objectivec/include/ort_value.h; sourceTree = "<group>"; };
+		567D65C92B8E0F9C020E2A3F5B69DF20 /* Pods-KestrelTests.modulemap */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.module; path = "Pods-KestrelTests.modulemap"; sourceTree = "<group>"; };
 		56D76EC51D159B9B1B30587B4712A4D3 /* ort_enums_internal.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ort_enums_internal.h; path = objectivec/ort_enums_internal.h; sourceTree = "<group>"; };
 		5C1692635C5F313AFDD095E4F6CE5211 /* onnxruntime-c-xcframeworks.sh */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.script.sh; path = "onnxruntime-c-xcframeworks.sh"; sourceTree = "<group>"; };
 		61159292C3B4991E70982B18D19CB1A7 /* ort_session.mm */ = {isa = PBXFileReference; includeInIndex = 1; name = ort_session.mm; path = objectivec/ort_session.mm; sourceTree = "<group>"; };
 		62ED1B7E76370411B8DD1EB722BFAC27 /* error_utils.mm */ = {isa = PBXFileReference; includeInIndex = 1; name = error_utils.mm; path = objectivec/error_utils.mm; sourceTree = "<group>"; };
-		65546A527419922F51D3AA0C0D868094 /* Pods-Kestrel.modulemap */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.module; path = "Pods-Kestrel.modulemap"; sourceTree = "<group>"; };
 		68AB86C30CF061A9B26500CC0A7CB84D /* ort_session.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ort_session.h; path = objectivec/include/ort_session.h; sourceTree = "<group>"; };
 		765BA64445D83712EBF46138FA84DA46 /* ort_value_internal.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ort_value_internal.h; path = objectivec/ort_value_internal.h; sourceTree = "<group>"; };
-		7B7E3BF22CE69858352A9F0E9D3EB2FF /* Pods-Kestrel-umbrella.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = "Pods-Kestrel-umbrella.h"; sourceTree = "<group>"; };
+		7A976F76A8E7E2975C9ECE409EA300F9 /* Pods-KestrelTests */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; name = "Pods-KestrelTests"; path = Pods_KestrelTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		85B7326191701F34CF64D569C03657C4 /* ort_value.mm */ = {isa = PBXFileReference; includeInIndex = 1; name = ort_value.mm; path = objectivec/ort_value.mm; sourceTree = "<group>"; };
 		87577964DE05D25CABBE5E7D0795C05F /* cxx_utils.mm */ = {isa = PBXFileReference; includeInIndex = 1; name = cxx_utils.mm; path = objectivec/cxx_utils.mm; sourceTree = "<group>"; };
 		93E55E6F4E2FCB90843CDE4DDEA601EF /* onnxruntime-objc-Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "onnxruntime-objc-Info.plist"; sourceTree = "<group>"; };
-		97B46EE8B04FE56186690942509FBEFE /* Pods-Kestrel-dummy.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = "Pods-Kestrel-dummy.m"; sourceTree = "<group>"; };
 		9D940727FF8FB9C785EB98E56350EF41 /* Podfile */ = {isa = PBXFileReference; explicitFileType = text.script.ruby; includeInIndex = 1; indentWidth = 2; lastKnownFileType = text; name = Podfile; path = ../Podfile; sourceTree = SOURCE_ROOT; tabWidth = 2; xcLanguageSpecificationIdentifier = xcode.lang.ruby; };
+		A139BA7FE6BD6E301066C8F1EF4A3694 /* Pods-Kestrel.modulemap */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.module; path = "Pods-Kestrel.modulemap"; sourceTree = "<group>"; };
 		A5A2901F093EDC220AC22F390CF2ED74 /* ort_env_internal.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ort_env_internal.h; path = objectivec/ort_env_internal.h; sourceTree = "<group>"; };
+		A8EBA55ED0EDFF272DB5D43EDD7B737A /* Pods-Kestrel.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "Pods-Kestrel.release.xcconfig"; sourceTree = "<group>"; };
 		A9EB2ACAC876993F589BF0A98A1B1BBE /* onnxruntime.xcframework */ = {isa = PBXFileReference; includeInIndex = 1; path = onnxruntime.xcframework; sourceTree = "<group>"; };
-		AD310C99903205075F0F72B32C5C9EDE /* Pods-Kestrel-acknowledgements.markdown */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = "Pods-Kestrel-acknowledgements.markdown"; sourceTree = "<group>"; };
 		AEAD6692A69F0A75D0986DE9B69FBB7F /* ort_coreml_execution_provider.mm */ = {isa = PBXFileReference; includeInIndex = 1; name = ort_coreml_execution_provider.mm; path = objectivec/ort_coreml_execution_provider.mm; sourceTree = "<group>"; };
 		AF44BE896BEBBE099592D03904279C1C /* onnxruntime-objc */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; name = "onnxruntime-objc"; path = onnxruntime_objc.framework; sourceTree = BUILT_PRODUCTS_DIR; };
-		B4C8F962F884C3C6D029A1098CDCABBA /* Pods-Kestrel.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "Pods-Kestrel.release.xcconfig"; sourceTree = "<group>"; };
+		B6A3C3578509CC99768FEB6C87679773 /* Pods-KestrelTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "Pods-KestrelTests.release.xcconfig"; sourceTree = "<group>"; };
 		B8370FDB9829B5865E9D5DB39776882E /* onnxruntime-objc.modulemap */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.module; path = "onnxruntime-objc.modulemap"; sourceTree = "<group>"; };
 		BDE6BEE707F7A2789372A1AC35627984 /* onnxruntime_cxx_inline.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = onnxruntime_cxx_inline.h; path = Headers/onnxruntime_cxx_inline.h; sourceTree = "<group>"; };
+		BE41DAD0E702DE8A9B5F9348CA3C01D4 /* Pods-KestrelTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "Pods-KestrelTests.debug.xcconfig"; sourceTree = "<group>"; };
 		C053D3863AAE79B46693AEEEDD79FA6C /* onnxruntime-objc.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "onnxruntime-objc.release.xcconfig"; sourceTree = "<group>"; };
 		C130DFDBF11A8A7A35E0317C079EE92E /* onnxruntime-objc-dummy.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = "onnxruntime-objc-dummy.m"; sourceTree = "<group>"; };
+		C2B7F9167F6C934D2BD714AA81AE7DD6 /* Pods-Kestrel-dummy.m */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.objc; path = "Pods-Kestrel-dummy.m"; sourceTree = "<group>"; };
 		C2C523C7CDA2CD6762ED37B8AF28386F /* onnxruntime_cxx_api.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = onnxruntime_cxx_api.h; path = Headers/onnxruntime_cxx_api.h; sourceTree = "<group>"; };
 		C5539945F33EBD9C23459B0BB04B3A01 /* onnxruntime-objc-prefix.pch */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = "onnxruntime-objc-prefix.pch"; sourceTree = "<group>"; };
 		CB19290E98836810F87BD5E093452861 /* ort_env.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ort_env.h; path = objectivec/include/ort_env.h; sourceTree = "<group>"; };
+		D393B4198B0DAC3122ACC961083F44B8 /* Pods-KestrelTests-acknowledgements.markdown */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; path = "Pods-KestrelTests-acknowledgements.markdown"; sourceTree = "<group>"; };
 		D39D67DBB3A8A5474CAA5A00A396A235 /* ort_enums.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ort_enums.h; path = objectivec/include/ort_enums.h; sourceTree = "<group>"; };
 		D765EA86BD573A29BE2539397D858C1F /* onnxruntime_ep_device_ep_metadata_keys.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = onnxruntime_ep_device_ep_metadata_keys.h; path = Headers/onnxruntime_ep_device_ep_metadata_keys.h; sourceTree = "<group>"; };
 		D888CF60C3E0B86207EBAB9B32724311 /* coreml_provider_factory.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = coreml_provider_factory.h; path = Headers/coreml_provider_factory.h; sourceTree = "<group>"; };
@@ -129,10 +145,13 @@
 		DE1D7367B33EA4EB20D462E6DD9E7327 /* ort_enums.mm */ = {isa = PBXFileReference; includeInIndex = 1; name = ort_enums.mm; path = objectivec/ort_enums.mm; sourceTree = "<group>"; };
 		E0271A9179F17DD7067FA86A9B243363 /* onnxruntime_run_options_config_keys.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = onnxruntime_run_options_config_keys.h; path = Headers/onnxruntime_run_options_config_keys.h; sourceTree = "<group>"; };
 		E16AC762555E2C7BDD1B8D4E506E3BE6 /* cxx_utils.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = cxx_utils.h; path = objectivec/cxx_utils.h; sourceTree = "<group>"; };
+		E450AE810B539B033EED7D8EC6B569E9 /* Pods-Kestrel.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "Pods-Kestrel.debug.xcconfig"; sourceTree = "<group>"; };
+		E6AC8FABFF7F982FE78A1ED6B73607F5 /* Pods-Kestrel-Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "Pods-Kestrel-Info.plist"; sourceTree = "<group>"; };
+		E6FAB5683C8431C82F98451B4AE8BB7E /* Pods-KestrelTests-Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = "Pods-KestrelTests-Info.plist"; sourceTree = "<group>"; };
 		F39C73D9BD6EED2CDCC41A0A01F9F326 /* ort_custom_op_registration.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = ort_custom_op_registration.h; path = objectivec/include/ort_custom_op_registration.h; sourceTree = "<group>"; };
 		F6681E937A22BAE1670B6EB82920E293 /* onnxruntime-c.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "onnxruntime-c.debug.xcconfig"; sourceTree = "<group>"; };
-		F8D7AA2F1ACB042A22C678BEF76A355B /* Pods-Kestrel.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; path = "Pods-Kestrel.debug.xcconfig"; sourceTree = "<group>"; };
 		F92C3F2CDA9CAD48298045B0E8D81E8E /* cpu_provider_factory.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = cpu_provider_factory.h; path = Headers/cpu_provider_factory.h; sourceTree = "<group>"; };
+		F9C8877C19D06FF05E352F3472C10EDD /* Pods-Kestrel-umbrella.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = "Pods-Kestrel-umbrella.h"; sourceTree = "<group>"; };
 		FCDAACA59F7F84459D0445C335CD5424 /* onnxruntime-objc-umbrella.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; path = "onnxruntime-objc-umbrella.h"; sourceTree = "<group>"; };
 		FE0A676A807209E92560B222678D905A /* onnxruntime_c_api.h */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.c.h; name = onnxruntime_c_api.h; path = Headers/onnxruntime_c_api.h; sourceTree = "<group>"; };
 		FF50CE714880550003E65600FDD3BD77 /* Pods-Kestrel */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; name = "Pods-Kestrel"; path = Pods_Kestrel.framework; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -152,6 +171,14 @@
 			buildActionMask = 2147483647;
 			files = (
 				FF681E98FBEB19960A90043B9DA3E8B1 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F7AFAF0727842DC41843503772603CE4 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A51493F66DD840438B841FC8303B0C3D /* Foundation.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -198,6 +225,16 @@
 			name = Pods;
 			sourceTree = "<group>";
 		};
+		360B65EC64D3ACF976529FC09AED0B82 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				AF44BE896BEBBE099592D03904279C1C /* onnxruntime-objc */,
+				FF50CE714880550003E65600FDD3BD77 /* Pods-Kestrel */,
+				7A976F76A8E7E2975C9ECE409EA300F9 /* Pods-KestrelTests */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
 		5F0940053BDFF8B2E3EF833F8C4D874A /* Support Files */ = {
 			isa = PBXGroup;
 			children = (
@@ -209,37 +246,12 @@
 			path = "../Target Support Files/onnxruntime-c";
 			sourceTree = "<group>";
 		};
-		6ECC8CA54E2BBFC34CBD6D14D76A1B2C /* Products */ = {
-			isa = PBXGroup;
-			children = (
-				AF44BE896BEBBE099592D03904279C1C /* onnxruntime-objc */,
-				FF50CE714880550003E65600FDD3BD77 /* Pods-Kestrel */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
 		77D198E93FBE59B1E750A9C5430B9BA3 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
 				A9EB2ACAC876993F589BF0A98A1B1BBE /* onnxruntime.xcframework */,
 			);
 			name = Frameworks;
-			sourceTree = "<group>";
-		};
-		8200BCDF0BBED0BDB359DCD3C0B6C79F /* Pods-Kestrel */ = {
-			isa = PBXGroup;
-			children = (
-				65546A527419922F51D3AA0C0D868094 /* Pods-Kestrel.modulemap */,
-				AD310C99903205075F0F72B32C5C9EDE /* Pods-Kestrel-acknowledgements.markdown */,
-				03F26B7EB9288FB16F2F54046EA9BB5A /* Pods-Kestrel-acknowledgements.plist */,
-				97B46EE8B04FE56186690942509FBEFE /* Pods-Kestrel-dummy.m */,
-				1ACFB175FE42BF0CBDAAAAF69FC18BD7 /* Pods-Kestrel-Info.plist */,
-				7B7E3BF22CE69858352A9F0E9D3EB2FF /* Pods-Kestrel-umbrella.h */,
-				F8D7AA2F1ACB042A22C678BEF76A355B /* Pods-Kestrel.debug.xcconfig */,
-				B4C8F962F884C3C6D029A1098CDCABBA /* Pods-Kestrel.release.xcconfig */,
-			);
-			name = "Pods-Kestrel";
-			path = "Target Support Files/Pods-Kestrel";
 			sourceTree = "<group>";
 		};
 		87142F3EB1ED153B594D24D855352964 /* Support Files */ = {
@@ -265,6 +277,31 @@
 			);
 			name = "onnxruntime-objc";
 			path = "onnxruntime-objc";
+			sourceTree = "<group>";
+		};
+		A5491FF29C36B6AAC786B8E6CDE04A4E /* Pods-KestrelTests */ = {
+			isa = PBXGroup;
+			children = (
+				567D65C92B8E0F9C020E2A3F5B69DF20 /* Pods-KestrelTests.modulemap */,
+				D393B4198B0DAC3122ACC961083F44B8 /* Pods-KestrelTests-acknowledgements.markdown */,
+				0B7714CBF478D1D1B9580B4E60EB91B0 /* Pods-KestrelTests-acknowledgements.plist */,
+				4C465724AABF479ABA1A64AC3569B1BC /* Pods-KestrelTests-dummy.m */,
+				E6FAB5683C8431C82F98451B4AE8BB7E /* Pods-KestrelTests-Info.plist */,
+				48320039FC28BC00407746F5B0A4A81D /* Pods-KestrelTests-umbrella.h */,
+				BE41DAD0E702DE8A9B5F9348CA3C01D4 /* Pods-KestrelTests.debug.xcconfig */,
+				B6A3C3578509CC99768FEB6C87679773 /* Pods-KestrelTests.release.xcconfig */,
+			);
+			name = "Pods-KestrelTests";
+			path = "Target Support Files/Pods-KestrelTests";
+			sourceTree = "<group>";
+		};
+		B82458AD5EA2C0715DDF4A8AB81FFAD1 /* Targets Support Files */ = {
+			isa = PBXGroup;
+			children = (
+				EE8AC43FAF8D5B2C45802A9690BDD2B9 /* Pods-Kestrel */,
+				A5491FF29C36B6AAC786B8E6CDE04A4E /* Pods-KestrelTests */,
+			);
+			name = "Targets Support Files";
 			sourceTree = "<group>";
 		};
 		CEBBE686D9E79124FDC817273D1E37B3 /* onnxruntime-c */ = {
@@ -295,8 +332,8 @@
 				9D940727FF8FB9C785EB98E56350EF41 /* Podfile */,
 				D210D550F4EA176C3123ED886F8F87F5 /* Frameworks */,
 				301E03F4CF5298EF3BB7C77B68C0A723 /* Pods */,
-				6ECC8CA54E2BBFC34CBD6D14D76A1B2C /* Products */,
-				FF7B32911246FB74BD3B39ACC3239F51 /* Targets Support Files */,
+				360B65EC64D3ACF976529FC09AED0B82 /* Products */,
+				B82458AD5EA2C0715DDF4A8AB81FFAD1 /* Targets Support Files */,
 			);
 			sourceTree = "<group>";
 		};
@@ -316,12 +353,20 @@
 			name = iOS;
 			sourceTree = "<group>";
 		};
-		FF7B32911246FB74BD3B39ACC3239F51 /* Targets Support Files */ = {
+		EE8AC43FAF8D5B2C45802A9690BDD2B9 /* Pods-Kestrel */ = {
 			isa = PBXGroup;
 			children = (
-				8200BCDF0BBED0BDB359DCD3C0B6C79F /* Pods-Kestrel */,
+				A139BA7FE6BD6E301066C8F1EF4A3694 /* Pods-Kestrel.modulemap */,
+				2B589015A70885F0891E3D7B1B9CCDF7 /* Pods-Kestrel-acknowledgements.markdown */,
+				261E9688B02FF6631FC3D77984663F27 /* Pods-Kestrel-acknowledgements.plist */,
+				C2B7F9167F6C934D2BD714AA81AE7DD6 /* Pods-Kestrel-dummy.m */,
+				E6AC8FABFF7F982FE78A1ED6B73607F5 /* Pods-Kestrel-Info.plist */,
+				F9C8877C19D06FF05E352F3472C10EDD /* Pods-Kestrel-umbrella.h */,
+				E450AE810B539B033EED7D8EC6B569E9 /* Pods-Kestrel.debug.xcconfig */,
+				A8EBA55ED0EDFF272DB5D43EDD7B737A /* Pods-Kestrel.release.xcconfig */,
 			);
-			name = "Targets Support Files";
+			name = "Pods-Kestrel";
+			path = "Target Support Files/Pods-Kestrel";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -358,9 +403,36 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C3B8DB699C97BDDB90D53479916AFC76 /* Headers */ = {
+			isa = PBXHeadersBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9B01F2B959AE99EB65D46EA975D9F5C4 /* Pods-KestrelTests-umbrella.h in Headers */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXHeadersBuildPhase section */
 
 /* Begin PBXNativeTarget section */
+		8237D2228B37B51B5DC09E5865AC91BB /* Pods-KestrelTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8DF28966147664F05C32DA48463B32F1 /* Build configuration list for PBXNativeTarget "Pods-KestrelTests" */;
+			buildPhases = (
+				C3B8DB699C97BDDB90D53479916AFC76 /* Headers */,
+				C057678B123CE630994DD347749DFC14 /* Sources */,
+				F7AFAF0727842DC41843503772603CE4 /* Frameworks */,
+				517A6CFACD6BA6FD357F77286FFFEA8A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B168DEC4A34F5226E73E88F4349B354D /* PBXTargetDependency */,
+			);
+			name = "Pods-KestrelTests";
+			productName = Pods_KestrelTests;
+			productReference = 7A976F76A8E7E2975C9ECE409EA300F9 /* Pods-KestrelTests */;
+			productType = "com.apple.product-type.framework";
+		};
 		A1D8A0A19DC1279D7CBACCE86B75B628 /* Pods-Kestrel */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 60484CA74ECA122A8906C01E4E3EB93A /* Build configuration list for PBXNativeTarget "Pods-Kestrel" */;
@@ -420,19 +492,27 @@
 			mainGroup = CF1408CF629C7361332E53B88F7BD30C;
 			minimizedProjectReferenceProxies = 0;
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 6ECC8CA54E2BBFC34CBD6D14D76A1B2C /* Products */;
+			productRefGroup = 360B65EC64D3ACF976529FC09AED0B82 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
 				01D26C9790741D5F08E2B47A48D79331 /* onnxruntime-c */,
 				DD8A7EE9BACB64198DBBF12EA5122AC8 /* onnxruntime-objc */,
 				A1D8A0A19DC1279D7CBACCE86B75B628 /* Pods-Kestrel */,
+				8237D2228B37B51B5DC09E5865AC91BB /* Pods-KestrelTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		1C2C4BB1B5E3421709FBF9FD25105482 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		517A6CFACD6BA6FD357F77286FFFEA8A /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -494,6 +574,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C057678B123CE630994DD347749DFC14 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				41FF68626695675054EB2F936338BAEA /* Pods-KestrelTests-dummy.m in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -514,6 +602,12 @@
 			name = "onnxruntime-objc";
 			target = DD8A7EE9BACB64198DBBF12EA5122AC8 /* onnxruntime-objc */;
 			targetProxy = 7DD47A5F7AA705EE137BF4B30530A76C /* PBXContainerItemProxy */;
+		};
+		B168DEC4A34F5226E73E88F4349B354D /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = "Pods-Kestrel";
+			target = A1D8A0A19DC1279D7CBACCE86B75B628 /* Pods-Kestrel */;
+			targetProxy = 88361BD1F2D496B350FB38F105775E20 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -557,6 +651,46 @@
 				VERSION_INFO_PREFIX = "";
 			};
 			name = Debug;
+		};
+		7849D48B82B38FCE2312BAC4A3A624D9 /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = B6A3C3578509CC99768FEB6C87679773 /* Pods-KestrelTests.release.xcconfig */;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = NO;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				"CODE_SIGN_IDENTITY[sdk=appletvos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=watchos*]" = "";
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				ENABLE_MODULE_VERIFIER = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				INFOPLIST_FILE = "Target Support Files/Pods-KestrelTests/Pods-KestrelTests-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MACH_O_TYPE = staticlib;
+				MODULEMAP_FILE = "Target Support Files/Pods-KestrelTests/Pods-KestrelTests.modulemap";
+				OTHER_LDFLAGS = "";
+				OTHER_LIBTOOLFLAGS = "";
+				PODS_ROOT = "$(SRCROOT)";
+				PRODUCT_BUNDLE_IDENTIFIER = "org.cocoapods.${PRODUCT_NAME:rfc1034identifier}";
+				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
+			};
+			name = Release;
 		};
 		9248FB869881F9B39BE18C435BA3B865 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -663,7 +797,7 @@
 		};
 		AC306C1C305111383E319868791E9728 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = F8D7AA2F1ACB042A22C678BEF76A355B /* Pods-Kestrel.debug.xcconfig */;
+			baseConfigurationReference = E450AE810B539B033EED7D8EC6B569E9 /* Pods-Kestrel.debug.xcconfig */;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = NO;
 				CLANG_ENABLE_OBJC_WEAK = NO;
@@ -702,7 +836,7 @@
 		};
 		D548D7BDFAB07A8A55146CD40C305E9A /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = B4C8F962F884C3C6D029A1098CDCABBA /* Pods-Kestrel.release.xcconfig */;
+			baseConfigurationReference = A8EBA55ED0EDFF272DB5D43EDD7B737A /* Pods-Kestrel.release.xcconfig */;
 			buildSettings = {
 				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = NO;
 				CLANG_ENABLE_OBJC_WEAK = NO;
@@ -843,6 +977,45 @@
 			};
 			name = Release;
 		};
+		FC32D13DFA5D9FAB97884064BF7841F1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = BE41DAD0E702DE8A9B5F9348CA3C01D4 /* Pods-KestrelTests.debug.xcconfig */;
+			buildSettings = {
+				ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES = NO;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				"CODE_SIGN_IDENTITY[sdk=appletvos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=iphoneos*]" = "";
+				"CODE_SIGN_IDENTITY[sdk=watchos*]" = "";
+				CURRENT_PROJECT_VERSION = 1;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				DYLIB_INSTALL_NAME_BASE = "@rpath";
+				ENABLE_MODULE_VERIFIER = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				INFOPLIST_FILE = "Target Support Files/Pods-KestrelTests/Pods-KestrelTests-Info.plist";
+				INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+				IPHONEOS_DEPLOYMENT_TARGET = 26.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MACH_O_TYPE = staticlib;
+				MODULEMAP_FILE = "Target Support Files/Pods-KestrelTests/Pods-KestrelTests.modulemap";
+				OTHER_LDFLAGS = "";
+				OTHER_LIBTOOLFLAGS = "";
+				PODS_ROOT = "$(SRCROOT)";
+				PRODUCT_BUNDLE_IDENTIFIER = "org.cocoapods.${PRODUCT_NAME:rfc1034identifier}";
+				PRODUCT_NAME = "$(TARGET_NAME:c99extidentifier)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VERSIONING_SYSTEM = "apple-generic";
+				VERSION_INFO_PREFIX = "";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -878,6 +1051,15 @@
 			buildConfigurations = (
 				589D90111CF1F8BCC706D61ADC4B04AC /* Debug */,
 				9B9AB1429831BAC0792EB374C06C900D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		8DF28966147664F05C32DA48463B32F1 /* Build configuration list for PBXNativeTarget "Pods-KestrelTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FC32D13DFA5D9FAB97884064BF7841F1 /* Debug */,
+				7849D48B82B38FCE2312BAC4A3A624D9 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

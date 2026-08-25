@@ -39,10 +39,16 @@ enum WatchMetrics {
     private static let defaultEdgeMargin: CGFloat = 12
     private static let defaultNameImageGap: CGFloat = 10
 
-    /// Resolved metrics for the current watch. Edit the per-size cases to tune a
-    /// particular watch's margins.
-    static var current: Metrics {
-        let size = currentScreenSize
+    /// Resolved metrics for the current watch. Edit the per-size cases in
+    /// `metrics(for:)` to tune a particular watch's margins.
+    static var current: Metrics { metrics(for: currentScreenSize) }
+
+    /// The table itself, keyed by screen size.
+    ///
+    /// Split out from `current` so it can be resolved for *any* size rather than
+    /// only the watch the code happens to be running on — which is what lets the
+    /// whole table be checked at once, instead of one device per simulator run.
+    static func metrics(for size: CGSize) -> Metrics {
         let radius: CGFloat
         switch size {
         case CGSize(width: 162, height: 197): radius = 28   // 40mm  (SE 2/3, Series 6)

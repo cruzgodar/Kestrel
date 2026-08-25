@@ -140,7 +140,7 @@ nonisolated enum CoreMLModelCache {
     /// Whether a leaked temp entry carries this process's pid — see the note in
     /// `purgeLegacyTempModels`. Unparseable names are treated as *ours*, so an
     /// unrecognized naming scheme is left alone rather than deleted blind.
-    private static func isOwnedByThisProcess(_ url: URL) -> Bool {
+    static func isOwnedByThisProcess(_ url: URL) -> Bool {
         let parts = url.lastPathComponent.split(separator: "-", omittingEmptySubsequences: false)
         guard parts.count > legacyTempPIDComponent,
               let pid = Int32(parts[legacyTempPIDComponent]) else { return true }

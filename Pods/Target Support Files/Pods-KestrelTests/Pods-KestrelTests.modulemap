@@ -1,0 +1,6 @@
+framework module Pods_KestrelTests {
+  umbrella header "Pods-KestrelTests-umbrella.h"
+
+  export *
+  module * { export * }
+}

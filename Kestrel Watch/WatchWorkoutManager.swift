@@ -335,7 +335,7 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         // and closing collection at *that* moment would hand Health a walk ten
         // minutes longer than the one they took. The session has been paused
         // since the tap, so there is nothing in that window to collect anyway.
-        let end = pendingSpan?.end ?? Date()
+        let end = Self.endInstant(parked: pendingSpan?.end, now: Date())
         session.end()
         do {
             try await builder.endCollection(at: end)
@@ -369,7 +369,7 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         // silently stretch the walk by ten minutes, and Health would record a
         // birding walk that ran long after the user stopped birding. Only a walk
         // nothing has parked yet ends at this moment.
-        let end = pendingSpan?.end ?? Date()
+        let end = Self.endInstant(parked: pendingSpan?.end, now: Date())
         let started = pendingSpan?.start ?? startDate
         self.startDate = nil
         pendingPause = false
@@ -406,6 +406,21 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         // Hold the builder open. Nothing is written to HealthKit (and so no
         // activity-sharing notification fires) until `save()`.
         park(started: started, end: end, builder: builder)
+    }
+
+    /// When a walk actually ended.
+    ///
+    /// A walk `pause()` already parked carries its true stop moment — the instant
+    /// the user tapped stop. Every later teardown path (`end()`, and the abandon
+    /// timeout's `endPausedSession()`) must use *that*, not the moment it happens
+    /// to run: a prompt left sitting for ten minutes would otherwise stretch the
+    /// walk by ten minutes, and Health would record a birding walk that ran long
+    /// after the user stopped birding. The session has been paused since the tap,
+    /// so there is nothing in that window to collect anyway.
+    ///
+    /// Only a walk nothing has parked yet ends at the current instant.
+    nonisolated static func endInstant(parked: Date?, now: Date) -> Date {
+        parked ?? now
     }
 
     /// Parks a finished, unattended walk in `pendingSave` so the prompt fades in

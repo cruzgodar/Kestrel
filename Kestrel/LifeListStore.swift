@@ -111,8 +111,26 @@ final class LifeListStore {
         case everything
     }
 
-    init() {
-        if let saved = Self.loadStars() {
+    /// Directory the three persisted files live in. Injected rather than fixed
+    /// so a test can point a store at a scratch directory instead of the app's
+    /// real container — without that, exercising load, migration, or persistence
+    /// at all would mean reading and overwriting the running install's own life
+    /// list.
+    private let directory: URL?
+    /// Where the one-shot date-migration flag lives, injected for the same
+    /// reason: the flag is *once per install*, so a test that used the real
+    /// defaults would consume the app's own migration and silently change what
+    /// the next launch does.
+    private let defaults: UserDefaults
+
+    /// - Parameters:
+    ///   - directory: `nil` (the default) means the app's Application Support
+    ///     directory — the real store.
+    ///   - defaults: `nil` (the default) means `UserDefaults.standard`.
+    init(directory: URL? = nil, defaults: UserDefaults? = nil) {
+        self.directory = directory ?? Self.applicationSupport()
+        self.defaults = defaults ?? .standard
+        if let saved = loadStars() {
             starredNames = saved
             load()
             // Re-stamp entries from the authoritative set (their decoded flags
@@ -126,7 +144,7 @@ final class LifeListStore {
             starredNames = Set(entries.lazy.filter(\.isStarred).map(\.scientificName))
             saveStars()
         }
-        exportedObservationKeys = Self.loadExportedKeys()
+        exportedObservationKeys = loadExportedKeys()
     }
 
     /// Reads the CSV at `url`, parses it as an eBird export, and merges into the life list.
@@ -667,11 +685,22 @@ final class LifeListStore {
                 commonName: commonBySci[sci]?.name ?? sci,
                 isStarred: starredBySci[sci] ?? false,
                 observations: observations,
-                // The import is the one place that dedupes: `observations` is
-                // the stored set unioned with this CSV's rows, and collapsing
-                // the overlap is what keeps re-importing the same export
-                // idempotent instead of doubling the user's history.
-                dedupe: true
+                // Dedupe exactly the species this CSV said something about, and
+                // no others.
+                //
+                // For a touched species `observations` really is two independent
+                // record sets unioned — what was stored, plus this file's rows —
+                // and collapsing the overlap is what keeps re-importing the same
+                // export idempotent instead of doubling the user's history.
+                //
+                // For every *other* species on the list there is no second set:
+                // `observations` is just what was already stored, rebuilt. Passing
+                // `dedupe: true` there breaks this file's one rule (see
+                // `canonicalize`) and silently drops records the user entered by
+                // hand — two deliberate sightings of one bird at one spot became
+                // one, because an import that never mentioned that bird happened
+                // to run. Nothing warned them, and nothing could bring it back.
+                dedupe: touchedKeys.contains(sci)
             )
         }
         // Canonicalize the same way `load()` does so freshly imported entries
@@ -738,46 +767,35 @@ final class LifeListStore {
 
     // MARK: Persistence
 
-    private nonisolated static func storeURL() throws -> URL {
-        let dir = try FileManager.default.url(
+    /// The app's real home for all three files. `nil` only if Application
+    /// Support can't be resolved at all, which nothing can recover from — the
+    /// store then reads and writes nothing and the list stays empty in memory.
+    private nonisolated static func applicationSupport() -> URL? {
+        try? FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
             appropriateFor: nil,
             create: true
         )
-        return dir.appendingPathComponent("life_list.json")
     }
+
+    /// The life list itself.
+    private var storeURL: URL? { directory?.appendingPathComponent("life_list.json") }
 
     /// Separate file for the starred ("alert me") set, intentionally decoupled
     /// from `life_list.json` so the stars outlive a wipe-and-reimport.
-    private nonisolated static func starsURL() throws -> URL {
-        let dir = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        return dir.appendingPathComponent("starred_species.json")
-    }
+    private var starsURL: URL? { directory?.appendingPathComponent("starred_species.json") }
 
     /// Separate file for the eBird export ledger, decoupled from the life list
     /// for the same reason the stars are: it has to outlive a wipe-and-reimport.
-    private nonisolated static func exportedKeysURL() throws -> URL {
-        let dir = try FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        return dir.appendingPathComponent("exported_observations.json")
-    }
+    private var exportedKeysURL: URL? { directory?.appendingPathComponent("exported_observations.json") }
 
     /// Loads the export ledger. An absent file simply means nothing has been
     /// exported yet, so an empty set is the right answer.
-    private static func loadExportedKeys() -> Set<String> {
+    private func loadExportedKeys() -> Set<String> {
         do {
-            let url = try exportedKeysURL()
-            guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+            guard let url = exportedKeysURL,
+                  FileManager.default.fileExists(atPath: url.path) else { return [] }
             let data = try Data(contentsOf: url)
             return try JSONDecoder().decode(Set<String>.self, from: data)
         } catch {
@@ -789,10 +807,10 @@ final class LifeListStore {
     /// Loads the persisted star set. Returns `nil` (not empty) when the file
     /// has never been written, so `init` can tell "no stars" apart from
     /// "pre-feature install, migrate from the entries."
-    private static func loadStars() -> Set<String>? {
+    private func loadStars() -> Set<String>? {
         do {
-            let url = try starsURL()
-            guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+            guard let url = starsURL,
+                  FileManager.default.fileExists(atPath: url.path) else { return nil }
             let data = try Data(contentsOf: url)
             return try JSONDecoder().decode(Set<String>.self, from: data)
         } catch {
@@ -809,13 +827,27 @@ final class LifeListStore {
     /// so a later save can't land before an earlier one.
     private static let ioQueue = DispatchQueue(label: "com.kestrel.lifelist.io", qos: .utility)
 
+    /// Blocks until every write queued so far has landed on disk.
+    ///
+    /// Persistence is deliberately asynchronous — that's the whole point of the
+    /// IO queue — which leaves no moment at which a caller can say "the file now
+    /// reflects this change." Tests need exactly that before they read a file
+    /// back, and the queue being *serial* is what makes a barrier enough: a
+    /// `sync` behind the queued writes can only run once they have.
+    ///
+    /// Not part of the app's own flow, and shouldn't be: blocking the main actor
+    /// on disk IO is the hitch this queue exists to avoid.
+    func flushPendingWrites() {
+        Self.ioQueue.sync { }
+    }
+
     /// Mirrors `saveStars`: snapshot on the main actor, encode + write on the
     /// serial IO queue so a large ledger never hitches the UI.
     private func saveExportedKeys() {
         let snapshot = exportedObservationKeys.sorted()
+        guard let url = exportedKeysURL else { return }
         Self.ioQueue.async {
             do {
-                let url = try Self.exportedKeysURL()
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
                 let data = try encoder.encode(snapshot)
@@ -829,9 +861,9 @@ final class LifeListStore {
     private func saveStars() {
         // Snapshot on the main actor (cheap value copy), then encode + write off it.
         let snapshot = starredNames.sorted()
+        guard let url = starsURL else { return }
         Self.ioQueue.async {
             do {
-                let url = try Self.starsURL()
                 let encoder = JSONEncoder()
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
                 let data = try encoder.encode(snapshot)
@@ -879,14 +911,14 @@ final class LifeListStore {
     }
 
     private func load() {
-        let needsDateMigration = !UserDefaults.standard.bool(forKey: Self.dateMigrationKey)
+        let needsDateMigration = !defaults.bool(forKey: Self.dateMigrationKey)
         do {
-            let url = try Self.storeURL()
-            guard FileManager.default.fileExists(atPath: url.path) else {
+            guard let url = storeURL,
+                  FileManager.default.fileExists(atPath: url.path) else {
                 // Nothing stored yet, so there is nothing to migrate — a fresh
                 // install writes canonical dates from its first sighting on.
                 if needsDateMigration {
-                    UserDefaults.standard.set(true, forKey: Self.dateMigrationKey)
+                    defaults.set(true, forKey: Self.dateMigrationKey)
                 }
                 return
             }
@@ -914,7 +946,7 @@ final class LifeListStore {
             // this leaves the flag clear and the migration runs again next launch,
             // which is the safe direction to fail in.
             if needsDateMigration {
-                UserDefaults.standard.set(true, forKey: Self.dateMigrationKey)
+                defaults.set(true, forKey: Self.dateMigrationKey)
             }
         } catch {
             Log.error("LifeListStore: load failed — \(error)")
@@ -1132,9 +1164,9 @@ final class LifeListStore {
         // write on the IO queue so the whole-list JSON encode and atomic disk write
         // never block the main thread (the source of the star-tap / edit hitch).
         let snapshot = entries
+        guard let url = storeURL else { return }
         Self.ioQueue.async {
             do {
-                let url = try Self.storeURL()
                 let encoder = JSONEncoder()
                 encoder.dateEncodingStrategy = .iso8601
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

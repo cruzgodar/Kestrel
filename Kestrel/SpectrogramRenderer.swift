@@ -138,6 +138,14 @@ nonisolated final class SpectrogramRenderer: @unchecked Sendable {
 
     // MARK: API
 
+    /// Columns produced since the last `reset()` — blanks written to account for
+    /// a display-link pause included. The one number that says whether a gap was
+    /// accounted for rather than spliced over, so it is what a test asserts on.
+    var columnsGenerated: Int {
+        lock.lock(); defer { lock.unlock() }
+        return totalColumnsGenerated
+    }
+
     func reset() {
         lock.lock(); defer { lock.unlock() }
         pending.removeAll(keepingCapacity: true)
