@@ -147,10 +147,10 @@ struct MoreView: View {
 
     #if DEBUG
     /// Debug-only readout of how many life-list and nearby-region species have an
-    /// image cached at each resolution — thumbnail (320) and medium (900) from
-    /// disk, full (2400) from the in-memory viewer tier. Each denominator is the
-    /// number of that group's species that have photo metadata at all (the
-    /// reachable maximum). Recomputed on appear and after a cache clear.
+    /// image cached at each tier — `thumb/` and `hero/` from disk, `full/` from
+    /// the in-memory viewer tier. Each denominator is the number of that group's
+    /// species that have photo metadata at all (the reachable maximum).
+    /// Recomputed on appear and after a cache clear.
     private var cacheCountsView: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Cached Images")
@@ -168,19 +168,24 @@ struct MoreView: View {
         .onAppear(perform: refreshCacheCounts)
     }
 
+    /// Labelled by *tier*, not by a pixel count. The rendered sizes are the photo
+    /// build script's to choose, not this app's, so a number written out here is
+    /// a copy that can silently go stale — as it had: the full tier was labelled
+    /// @2400 against a documented cap of 2700. The folder names are the actual
+    /// contract with the CDN, so they can't drift.
     private func countGroup(
         _ title: String,
         _ counts: RemoteSpeciesImageStore.ResolutionCounts
     ) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            countRow(title, at: 320, counts.thumb, of: counts.total)
-            countRow(title, at: 900, counts.medium, of: counts.total)
-            countRow(title, at: 2400, counts.full, of: counts.total)
+            countRow(title, tier: "thumb", counts.thumb, of: counts.total)
+            countRow(title, tier: "hero", counts.medium, of: counts.total)
+            countRow(title, tier: "full", counts.full, of: counts.total)
         }
     }
 
-    private func countRow(_ title: String, at pixels: Int, _ have: Int, of total: Int) -> some View {
-        Text("\(title) @\(pixels): \(have)/\(total)")
+    private func countRow(_ title: String, tier: String, _ have: Int, of total: Int) -> some View {
+        Text("\(title) \(tier): \(have)/\(total)")
             .font(.system(.footnote, design: .monospaced))
             .foregroundStyle(.secondary)
     }

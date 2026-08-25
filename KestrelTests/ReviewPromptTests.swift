@@ -120,12 +120,17 @@ struct ReviewPromptTests {
     /// on. Backdating that ask to *now* rather than to zero means someone who was
     /// already asked waits out a full cooldown instead of being asked again on
     /// their very next session.
+    ///
+    /// The migration is invoked the way the app invokes it — once, at launch —
+    /// rather than falling out of the first read of `isDue`.
     @Test("a pre-cooldown install is backdated, not asked immediately")
     func migrationBackdatesTheAsk() {
         withScratchDefaults { defaults in
             for _ in 0..<10 { ReviewPrompt.recordSession(duration: 120) }
             defaults.set("1.0", forKey: "review.promptedAppVersion")
             defaults.removeObject(forKey: "review.promptedAtSessionCount")
+
+            ReviewPrompt.migrateLegacyPromptRecord()
 
             #expect(!ReviewPrompt.isDue, "they were already asked; a full cooldown starts now")
             #expect(defaults.object(forKey: "review.promptedAtSessionCount") as? Int == 10)
@@ -134,6 +139,48 @@ struct ReviewPromptTests {
             #expect(!ReviewPrompt.isDue)
             ReviewPrompt.recordSession(duration: 120)
             #expect(ReviewPrompt.isDue)
+        }
+    }
+
+    /// The migration runs once. A second launch must not re-backdate the ask to
+    /// the *new* count, which would push the next prompt out by a further cooldown
+    /// every time the app started.
+    @Test("the backdate is pinned, not recomputed on every launch")
+    func migrationIsOneShot() {
+        withScratchDefaults { defaults in
+            for _ in 0..<10 { ReviewPrompt.recordSession(duration: 120) }
+            defaults.set("1.0", forKey: "review.promptedAppVersion")
+            defaults.removeObject(forKey: "review.promptedAtSessionCount")
+
+            ReviewPrompt.migrateLegacyPromptRecord()
+            #expect(defaults.object(forKey: "review.promptedAtSessionCount") as? Int == 10)
+
+            for _ in 0..<6 { ReviewPrompt.recordSession(duration: 120) }
+            // A relaunch, and another, with sessions in between.
+            ReviewPrompt.migrateLegacyPromptRecord()
+            ReviewPrompt.migrateLegacyPromptRecord()
+            #expect(defaults.object(forKey: "review.promptedAtSessionCount") as? Int == 10)
+            #expect(ReviewPrompt.isDue, "16 sessions is 10 + a full cooldown")
+        }
+    }
+
+    /// Reading whether a prompt is due must not *change* when the next one is —
+    /// the counters here are once-per-install state, and a getter that wrote to
+    /// them made the backdate land at whatever moment something first happened to
+    /// ask.
+    @Test("isDue is a pure read")
+    func isDueDoesNotWrite() {
+        withScratchDefaults { defaults in
+            for _ in 0..<10 { ReviewPrompt.recordSession(duration: 120) }
+            defaults.set("1.0", forKey: "review.promptedAppVersion")
+            defaults.removeObject(forKey: "review.promptedAtSessionCount")
+
+            _ = ReviewPrompt.isDue
+            _ = ReviewPrompt.isDue
+            #expect(
+                defaults.object(forKey: "review.promptedAtSessionCount") == nil,
+                "only migrateLegacyPromptRecord() writes the ask point"
+            )
         }
     }
 

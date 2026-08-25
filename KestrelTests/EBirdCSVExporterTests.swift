@@ -400,6 +400,109 @@ struct EBirdCSVExporterTests {
         )
     }
 
+    /// The key and `Observation.Identity` have to describe a sighting the same
+    /// way, or an edit can carry a ledger entry forward under one notion of "the
+    /// same sighting" while the merge folds records under another.
+    @Test("the ledger key's place component is the one identity compares")
+    func keyPlaceMatchesIdentity() {
+        let cases: [LifeListEntry.Observation] = [
+            .at(may4, "Ithaca, NY", lat: 42.4534198, lon: -76.4735178),
+            .at(may4, nil, lat: 42.4534198, lon: -76.4735178),
+            .at(may4, "   ", lat: 1, lon: 2),
+            .at(may4),
+        ]
+        for observation in cases {
+            let place = EBirdCSVExporter.key(scientificName: "X y", observation: observation)
+                .components(separatedBy: "|")[2]
+            #expect(
+                place == observation.identity.location,
+                "key and identity must fold \(String(describing: observation.location)) the same way"
+            )
+        }
+    }
+
+    // MARK: the legacy ledger key
+
+    /// The place component of the key changed. A ledger written by an earlier
+    /// build is full of the old form, and nothing migrates it — the store reads
+    /// both instead (see `LifeListStore.hasBeenExported`), because a key that
+    /// stops matching means the user's next export hands eBird a second copy of
+    /// records it already holds, which cannot be undone.
+    @Test("the legacy key is the old raw-location format")
+    func legacyKeyShape() {
+        let observation = LifeListEntry.Observation.at(
+            may4, "Ithaca, NY", lat: 42.45342, lon: -76.47352
+        )
+        let legacy = EBirdCSVExporter.legacyKey(scientificName: "X y", observation: observation)
+        #expect(legacy == "X y|2026-05-04|Ithaca, NY|42.45342|-76.47352")
+
+        let current = EBirdCSVExporter.key(scientificName: "X y", observation: observation)
+        #expect(current == "X y|2026-05-04|Ithaca NY|42.45342|-76.47352")
+        #expect(current != legacy, "this pair is the whole reason both are read")
+    }
+
+    /// A sighting whose stored name needs no folding produces the same string
+    /// either way, which is why the vast majority of an existing ledger keeps
+    /// matching without any compatibility read at all.
+    @Test("the two key formats agree when the place name needs no folding")
+    func legacyKeyAgreesOnPlainNames() {
+        let observation = LifeListEntry.Observation.at(may4, "Sapsucker Woods", lat: 1, lon: 2)
+        #expect(
+            EBirdCSVExporter.key(scientificName: "X y", observation: observation)
+            == EBirdCSVExporter.legacyKey(scientificName: "X y", observation: observation)
+        )
+    }
+
+    // MARK: exportedPlaceName
+
+    /// The single definition of "what place is this sighting filed under", shared
+    /// by the CSV's Location Name column, the ledger key, and identity.
+    @Test("exportedPlaceName resolves the fallback and folds the result")
+    func exportedPlaceNameResolvesFallback() {
+        #expect(
+            EBirdCSVExporter.exportedPlaceName(location: "Ithaca, NY", latitude: 1, longitude: 2)
+            == "Ithaca NY"
+        )
+        #expect(
+            EBirdCSVExporter.exportedPlaceName(location: nil, latitude: 42.4534198, longitude: -76.4735178)
+            == "42.45342 -76.47352"
+        )
+        #expect(
+            EBirdCSVExporter.exportedPlaceName(location: "  ", latitude: 42.45342, longitude: -76.47352)
+            == "42.45342 -76.47352",
+            "a blank name is no name"
+        )
+        #expect(
+            EBirdCSVExporter.exportedPlaceName(location: nil, latitude: 42.45342, longitude: nil)
+            == "Unspecified location",
+            "half a coordinate can't place anything"
+        )
+        #expect(
+            EBirdCSVExporter.exportedPlaceName(location: nil, latitude: nil, longitude: nil)
+            == "Unspecified location"
+        )
+    }
+
+    /// It has to be exactly what the file carries, or the sighting still won't
+    /// recognize the copy that comes back.
+    @Test("exportedPlaceName is byte-for-byte the CSV's Location Name column")
+    func exportedPlaceNameMatchesTheFile() {
+        let observations: [LifeListEntry.Observation] = [
+            .at(may4, "Ithaca, NY", lat: 42.4534198, lon: -76.4735178),
+            .at(may4, nil, lat: 42.4534198, lon: -76.4735178),
+            .at(may4, "\"Quoted Marsh\"", lat: 1, lon: 2),
+            .at(may4),
+        ]
+        let payload = EBirdCSVExporter.makeCSV(rows: observations.map { row(observation: $0) })
+        let written = parseExportedCSV(payload).map { $0[5] }
+        let expected = observations.map {
+            EBirdCSVExporter.exportedPlaceName(
+                location: $0.location, latitude: $0.latitude, longitude: $0.longitude
+            )
+        }
+        #expect(Set(written) == Set(expected))
+    }
+
     @Test("the suggested filename carries the save date")
     func defaultFilename() {
         let name = EBirdCSVExporter.defaultFilename(date: utcDay(2026, 5, 4))

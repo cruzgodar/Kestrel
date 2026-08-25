@@ -180,6 +180,36 @@ struct EBirdCSVParserTests {
         #expect(rows[0].commonName == c.expectCommon)
     }
 
+    /// Removing a parenthetical leaves a gap where it was, and a single
+    /// `"  "` → `" "` pass only closes gaps of exactly two: `replacingOccurrences`
+    /// doesn't rescan what it has written, so a run of three comes out as two.
+    /// One clarifier between two words leaves two spaces and was handled; two
+    /// space-separated clarifiers mid-name leave three, and that doubled space
+    /// rode through into the stored — and displayed — common name.
+    @Test(
+        "the whitespace a stripped parenthetical leaves behind is fully collapsed",
+        arguments: [
+            // The shapes that leave a run of three, which is what actually broke.
+            "Hairy Woodpecker (Eastern) (Pacific) Group",
+            "Hairy   Woodpecker",
+            // And the shapes that already worked, kept so closing the above can't
+            // regress them.
+            "Hairy (Eastern) Woodpecker",
+            "Hairy Woodpecker (Eastern) (Pacific)",
+            "Hairy Woodpecker (Eastern)  ",
+            "  (Eastern) Hairy Woodpecker",
+            "Hairy (a)(b)(c) Woodpecker",
+        ]
+    )
+    func parentheticalWhitespaceCollapsed(raw: String) throws {
+        let rows = try parse([("Dryobates villosus", raw, "2019-05-04", "P", 1.0, 1.0)])
+        let name = rows[0].commonName
+        #expect(!name.contains("  "), "\(raw.debugDescription) → \(name.debugDescription)")
+        #expect(name == name.trimmingCharacters(in: .whitespacesAndNewlines))
+        #expect(name.contains("Hairy"))
+        #expect(name.contains("Woodpecker"))
+    }
+
     /// Two subspecies groups of one bird arriving as separate rows must reduce to
     /// one species — that's what the stripping and the binomial collapse are for.
     @Test("two subspecies groups reduce to the same species")

@@ -331,11 +331,14 @@ struct ContentView: View {
             let aged = manager.detections.filter {
                 now.timeIntervalSince($0.lastSeen) > Self.agingThreshold
             }
-            // Membership set built once per render so each row's "already added?"
-            // check is O(1) instead of a linear scan of the whole life list per row
-            // (which, across many rows × a large list × every merge-driven
-            // re-render, added up).
-            let lifeListNames = Set(lifeListStore.entries.map(\.scientificName))
+            // The store's own membership set, so each row's "already added?"
+            // check is O(1) instead of a linear scan of the whole life list per
+            // row (which, across many rows × a large list × every merge-driven
+            // re-render, added up). Read rather than rebuilt: `speciesNames` is
+            // maintained for exactly this, and building a fresh set of a few
+            // thousand strings on every render was paying the cost it exists to
+            // avoid.
+            let lifeListNames = lifeListStore.speciesNames
             List {
                 topSpacerRow
                 ForEach(recent) { detection in

@@ -417,6 +417,68 @@ struct LifeListStoreMutationTests {
         #expect(store.observationCount(for: .everything) == 2, "Export All ignores the ledger entirely")
     }
 
+    /// The key's place component changed, and nothing migrates the ledger — the
+    /// store reads both formats instead. This is the case that would otherwise
+    /// hand a user a second copy of their whole history: eBird does no
+    /// deduplication, so a ledger entry that stops matching is unrecoverable.
+    @Test("a ledger written in the old key format still suppresses those sightings")
+    func legacyLedgerKeysStillMatch() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let observations: [(sci: String, observation: LifeListEntry.Observation)] = [
+            // A name the fold changes — the only case where the two keys differ.
+            ("A a", .at(may4, "Ithaca, NY", lat: 1, lon: 1)),
+            // A nameless sighting, whose key now carries the exported fallback.
+            ("B b", .at(may4, nil, lat: 2, lon: 2)),
+            // And one the fold leaves alone, which matched all along.
+            ("C c", .at(may4, "Sapsucker Woods", lat: 3, lon: 3)),
+        ]
+        try scratch.writeLifeList(observations.map {
+            .make(scientificName: $0.sci, commonName: $0.sci, isStarred: false,
+                  observations: [$0.observation], dedupe: false)
+        })
+        try scratch.writeExportedKeys(observations.map {
+            EBirdCSVExporter.legacyKey(scientificName: $0.sci, observation: $0.observation)
+        })
+
+        let store = makeStore(scratch, defaults)
+        #expect(store.observationCount(for: .everything) == 3)
+        #expect(
+            store.observationCount(for: .newOnly) == 0,
+            "every one of these was already handed to eBird"
+        )
+    }
+
+    /// Editing a sighting whose ledger entry is in the old format must still
+    /// carry it forward, or correcting a typo re-uploads the record.
+    @Test("an edit carries a legacy ledger entry forward")
+    func editCarriesLegacyLedgerEntry() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let original = LifeListEntry.Observation.at(may4, "Ithaca, NY", lat: 1, lon: 1)
+        try scratch.writeLifeList([
+            .make(scientificName: "A a", commonName: "A", isStarred: false,
+                  observations: [original], dedupe: false),
+        ])
+        try scratch.writeExportedKeys([
+            EBirdCSVExporter.legacyKey(scientificName: "A a", observation: original),
+        ])
+
+        let store = makeStore(scratch, defaults)
+        #expect(store.observationCount(for: .newOnly) == 0)
+
+        store.replaceObservation(
+            scientificName: "A a",
+            original: original.identity,
+            date: may5,
+            location: "Ithaca NY",
+            latitude: 1,
+            longitude: 1
+        )
+        #expect(
+            store.observationCount(for: .newOnly) == 0,
+            "a corrected sighting is the same record eBird already holds"
+        )
+    }
+
     @Test("the ledger survives a wipe-and-reimport")
     func ledgerSurvivesWipe() throws {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()

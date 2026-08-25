@@ -40,6 +40,63 @@ struct ObservationIdentityTests {
         #expect(original.identity.hashValue == reimported.identity.hashValue)
     }
 
+    /// The case the fold above doesn't reach on its own: Kestrel's place name is
+    /// optional, eBird's Location Name is not, so a nameless sighting is exported
+    /// under its own coordinates and comes back carrying *that* as its place.
+    /// Folding only the stored name left it unequal to itself, and the returning
+    /// copy was filed as a second observation.
+    @Test("a sighting with coordinates and no name matches its re-imported twin")
+    func namelessWithCoordinatesRoundTrips() {
+        let original = LifeListEntry.Observation.at(day, nil, lat: 42.4534198, lon: -76.4735178)
+
+        // The Location Name column the exporter actually writes for it.
+        let exportedPlace = EBirdCSVExporter.exportedPlaceName(
+            location: nil, latitude: 42.4534198, longitude: -76.4735178
+        )
+        let reimported = LifeListEntry.Observation.at(
+            day, exportedPlace, lat: 42.45342, lon: -76.47352, imported: true
+        )
+
+        #expect(exportedPlace == "42.45342 -76.47352", "the fallback name, with its comma folded out")
+        #expect(original.identity == reimported.identity)
+        #expect(original.identity.hashValue == reimported.identity.hashValue)
+    }
+
+    /// The same for a sighting with neither a name nor coordinates, which goes
+    /// out under the placeholder eBird makes the user resolve by hand.
+    @Test("a sighting with neither a name nor coordinates matches its re-imported twin")
+    func unplaceableRoundTrips() {
+        let original = LifeListEntry.Observation.at(day)
+        let exportedPlace = EBirdCSVExporter.exportedPlaceName(
+            location: nil, latitude: nil, longitude: nil
+        )
+        let reimported = LifeListEntry.Observation.at(day, exportedPlace, imported: true)
+
+        #expect(exportedPlace == "Unspecified location")
+        #expect(original.identity == reimported.identity)
+    }
+
+    /// Resolving the fallback must not make two *different* nameless sightings
+    /// look like one. They're separated by their coordinates, which is exactly
+    /// what the fallback name is built from.
+    @Test("nameless sightings at different places stay distinct")
+    func namelessDistinctByCoordinate() {
+        let a = LifeListEntry.Observation.at(day, nil, lat: 42.45342, lon: -76.47352)
+        let b = LifeListEntry.Observation.at(day, nil, lat: 42.45372, lon: -76.47352)
+        let nowhere = LifeListEntry.Observation.at(day)
+        #expect(a.identity != b.identity)
+        #expect(a.identity != nowhere.identity)
+    }
+
+    /// A named sighting is still identified by its name, not by its coordinates —
+    /// the fallback only applies when there is nothing to fall back *from*.
+    @Test("a place name still outranks the coordinate fallback")
+    func nameWinsOverFallback() {
+        let named = LifeListEntry.Observation.at(day, "Sapsucker Woods", lat: 42.45342, lon: -76.47352)
+        let nameless = LifeListEntry.Observation.at(day, nil, lat: 42.45342, lon: -76.47352)
+        #expect(named.identity != nameless.identity)
+    }
+
     /// Coordinates are the half that fails silently — the place name at least
     /// looks different when you read it.
     @Test("coordinates below the CSV's precision don't split a sighting in two")

@@ -167,8 +167,18 @@ final class SpeciesNotifications: NSObject {
             .appendingPathComponent("kestrel-\(UUID().uuidString).jpg")
         do {
             try FileManager.default.copyItem(at: fileURL, to: tmpURL)
+        } catch {
+            Log.error("Notification attachment copy error — \(error)")
+            return nil
+        }
+        do {
             return try UNNotificationAttachment(identifier: scientificName, url: tmpURL)
         } catch {
+            // The copy landed but the attachment was rejected, so nothing is going
+            // to move the file into the notification store — clean it up rather
+            // than leaving a stray JPEG in tmp for every failed notification. The
+            // app already leaked gigabytes into tmp once (see `CoreMLModelCache`).
+            try? FileManager.default.removeItem(at: tmpURL)
             Log.error("Notification attachment error — \(error)")
             return nil
         }

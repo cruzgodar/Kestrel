@@ -69,6 +69,13 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
 
     @State private var image: UIImage?
     @State private var loaded = false
+    /// The species `image` was loaded for. `.task(id:)` re-runs when the name
+    /// changes without the view's identity changing — that is the whole point of
+    /// the `id:` — but `@State` survives that, so without this the previous
+    /// bird's photo stays on screen while the new one loads. Every call site's
+    /// `ForEach` id currently carries the species, so nothing hits this today;
+    /// it costs one comparison to make sure nothing ever does.
+    @State private var loadedName: String?
 
     var body: some View {
         Group {
@@ -88,6 +95,13 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
         }
         .task(id: scientificName) {
             let store = RemoteSpeciesImageStore.shared
+            // A different bird than the one on screen: drop the old photo before
+            // loading, so the wrong species is never shown under the right name.
+            if loadedName != scientificName {
+                loadedName = scientificName
+                image = nil
+                loaded = false
+            }
 
             if progressive {
                 // Already have the medium image resident — show it straight away,

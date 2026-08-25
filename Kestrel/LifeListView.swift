@@ -506,7 +506,9 @@ struct LifeListView: View {
                 return
             }
             let needle = q.lowercased()
-            let lifeNames = Set(store.entries.map(\.scientificName))
+            // The store's maintained membership set — the same one `visibleRows`
+            // reads — rather than a fresh one built per scan.
+            let lifeNames = store.speciesNames
             let lifeCommonNames = Set(store.entries.map { $0.commonName.lowercased() })
             let allowed = allowedIndices
             let result = await Task.detached(priority: .userInitiated) {

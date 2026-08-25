@@ -69,19 +69,58 @@ nonisolated enum EBirdCSVExporter {
     /// device's local day instead, flying to a different UTC offset moved every
     /// evening sighting's key onto the next day, the ledger stopped recognizing
     /// it, and the next "Export New Observations" handed eBird a second copy.
+    ///
+    /// The place component is `exportedPlaceName` — the name this sighting is
+    /// actually filed under on eBird's side, fallback resolved and folded —
+    /// rather than the raw stored one, so this key and
+    /// `LifeListEntry.Observation.Identity` describe a sighting the same way.
+    /// They used to disagree, which meant an edit could carry a ledger entry
+    /// forward under one notion of "the same sighting" while the merge folded
+    /// records under another.
     static func key(scientificName: String, observation: LifeListEntry.Observation) -> String {
-        let date = ObservationDate.isoDay(observation.date)
-        let location = observation.location ?? ""
-        func coord(_ value: Double?) -> String {
-            guard let value else { return "" }
-            return String(format: "%.5f", value)
-        }
-        return [
+        key(
+            scientificName: scientificName,
+            observation: observation,
+            place: exportedPlaceName(
+                location: observation.location,
+                latitude: observation.latitude,
+                longitude: observation.longitude
+            )
+        )
+    }
+
+    /// The key format as it stood before the place component was folded: the raw
+    /// stored location, empty string when there wasn't one.
+    ///
+    /// Read-side only, and never written. A ledger built by an earlier build is
+    /// full of these, and the ledger is the one piece of state whose loss is
+    /// *unrecoverable* — eBird does no deduplication, so a key that stops
+    /// matching hands the user a second copy of a record they already uploaded.
+    /// Recognizing both formats costs one extra set lookup and needs no
+    /// migration, which is the only way to change the format without ever
+    /// risking that.
+    static func legacyKey(
+        scientificName: String,
+        observation: LifeListEntry.Observation
+    ) -> String {
+        key(
+            scientificName: scientificName,
+            observation: observation,
+            place: observation.location ?? ""
+        )
+    }
+
+    private static func key(
+        scientificName: String,
+        observation: LifeListEntry.Observation,
+        place: String
+    ) -> String {
+        [
             scientificName,
-            date,
-            location,
-            coord(observation.latitude),
-            coord(observation.longitude)
+            ObservationDate.isoDay(observation.date),
+            place,
+            coordinate(observation.latitude),
+            coordinate(observation.longitude)
         ].joined(separator: "|")
     }
 
@@ -184,14 +223,52 @@ nonisolated enum EBirdCSVExporter {
     /// still let eBird place the record on the map, and only then to a
     /// placeholder the user will have to resolve by hand.
     private static func locationName(for observation: LifeListEntry.Observation) -> String {
-        if let name = observation.location?.trimmingCharacters(in: .whitespacesAndNewlines),
+        locationName(
+            location: observation.location,
+            latitude: observation.latitude,
+            longitude: observation.longitude
+        )
+    }
+
+    private static func locationName(
+        location: String?,
+        latitude: Double?,
+        longitude: Double?
+    ) -> String {
+        if let name = location?.trimmingCharacters(in: .whitespacesAndNewlines),
            !name.isEmpty {
             return name
         }
-        if let lat = observation.latitude, let lon = observation.longitude {
-            return String(format: "%.5f, %.5f", lat, lon)
+        if let latitude, let longitude {
+            return String(format: "%.5f, %.5f", latitude, longitude)
         }
         return unplaceableLocation
+    }
+
+    /// **The** name a sighting is filed under once it has been through the
+    /// export: the Location Name column's fallback resolved, then folded by
+    /// `sanitize`. Byte-for-byte what lands in the CSV, and therefore what eBird
+    /// hands back on the next data download.
+    ///
+    /// Not private, and not merely a rendering detail, because a sighting has to
+    /// be able to recognize its own re-imported twin.
+    /// `LifeListEntry.Observation.Identity` compares *this*, not the raw stored
+    /// location: a sighting with coordinates but no place name went out under
+    /// "42.45342, -76.47352" and came back carrying that as its Location, so
+    /// comparing the raw values made it unequal to itself and filed the returning
+    /// copy as a second observation — a duplicate pin on the map and a doubled
+    /// "N Observations" for a record the user already had. The same is true of a
+    /// sighting with neither, which goes out as `unplaceableLocation`.
+    ///
+    /// The comma case (`Ithaca, NY` → `Ithaca NY`) was already handled by folding
+    /// through `sanitize`; these are the two the fallback introduces, which no
+    /// amount of folding the *stored* name could have caught.
+    static func exportedPlaceName(
+        location: String?,
+        latitude: Double?,
+        longitude: Double?
+    ) -> String {
+        sanitize(locationName(location: location, latitude: latitude, longitude: longitude))
     }
 
     /// Stand-in name for a sighting with neither a place name nor coordinates —

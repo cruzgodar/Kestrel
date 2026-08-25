@@ -147,6 +147,10 @@ final class LifeListStore {
         exportedObservationKeys = loadExportedKeys()
     }
 
+    /// How many times an import will re-merge around a concurrent write before
+    /// falling back to merging inline on the main actor. See `importEBird`.
+    private static let maxImportMergeAttempts = 4
+
     /// Reads the CSV at `url`, parses it as an eBird export, and merges into the life list.
     /// Caller is responsible for `startAccessingSecurityScopedResource()` if needed.
     func importEBird(from url: URL) async throws -> ImportSummary {
@@ -154,14 +158,47 @@ final class LifeListStore {
         // Parse + merge are CPU-heavy — a character-by-character CSV scan followed
         // by a full canonicalization pass against the ~6.5k-species catalog — so a
         // large eBird export would visibly freeze the UI if run inline on the main
-        // actor (`async` alone doesn't move work off it). Snapshot the current
-        // entries, do the heavy work on a detached task, and apply only the cheap
-        // result back on main.
-        let existing = entries
-        let result = try await Task.detached(priority: .userInitiated) {
-            let rows = try EBirdCSVParser.parse(data)
-            return Self.computeMergedEntries(rows: rows, existing: existing)
+        // actor (`async` alone doesn't move work off it). Parse once, then merge
+        // on a detached task and apply only the cheap result back on main.
+        let rows = try await Task.detached(priority: .userInitiated) {
+            try EBirdCSVParser.parse(data)
         }.value
+
+        // Moving the merge off the main actor is exactly what keeps the UI live
+        // while a large import runs — which means the user can go on recording
+        // sightings during it. A merge computed against a snapshot describes a
+        // life list that no longer exists, and assigning it wholesale threw those
+        // sightings away with no warning and no undo.
+        //
+        // So the snapshot is checked, and a merge that raced a write is redone
+        // against what is actually there now. In the app this settles on the
+        // first pass: a retry needs a write to land inside the re-merge itself,
+        // and the add flow takes seconds of tapping to produce one.
+        //
+        // The last attempt runs **inline on the main actor**, where there is no
+        // suspension point between reading `entries` and writing it back and so
+        // nothing can interleave at all. That's what makes this terminate rather
+        // than merely usually terminate — a caller writing faster than the merge
+        // completes would otherwise retry forever. One brief hitch in a case that
+        // shouldn't arise is a fair price for never silently dropping a record.
+        let result: (entries: [LifeListEntry], summary: ImportSummary)
+        var attempt = 1
+        while true {
+            let existing = entries
+            guard attempt < Self.maxImportMergeAttempts else {
+                result = Self.computeMergedEntries(rows: rows, existing: existing)
+                break
+            }
+            let merged = await Task.detached(priority: .userInitiated) {
+                Self.computeMergedEntries(rows: rows, existing: existing)
+            }.value
+            if entries == existing {
+                result = merged
+                break
+            }
+            Log.info("LifeListStore: life list changed during import, re-merging (attempt \(attempt))")
+            attempt += 1
+        }
         entries = result.entries
         refreshSpeciesNames()
         // Re-stamp stars from the persistent set so a wipe-and-reimport (or any
@@ -219,11 +256,31 @@ final class LifeListStore {
     /// handed it over.
     private func isNewToEBird(_ row: EBirdCSVExporter.Row) -> Bool {
         guard !row.observation.isImported else { return false }
-        let key = Self.exportKey(
+        return !hasBeenExported(
             scientificName: row.scientificName,
             observation: row.observation
         )
-        return !exportedObservationKeys.contains(key)
+    }
+
+    /// Whether the ledger already holds this sighting, under *either* key format.
+    ///
+    /// The place component of the key changed (see `EBirdCSVExporter.legacyKey`),
+    /// and a ledger written by an earlier build is full of the old form. Nothing
+    /// migrates it: this is the one piece of state whose loss can't be undone —
+    /// eBird does no deduplication, so a key that stops matching means the user's
+    /// next "Export New Observations" hands them a second copy of records they
+    /// already uploaded. Reading both formats costs a set lookup and cannot fail.
+    private func hasBeenExported(
+        scientificName: String,
+        observation: LifeListEntry.Observation
+    ) -> Bool {
+        let key = Self.exportKey(scientificName: scientificName, observation: observation)
+        if exportedObservationKeys.contains(key) { return true }
+        let legacy = EBirdCSVExporter.legacyKey(
+            scientificName: scientificName,
+            observation: observation
+        )
+        return exportedObservationKeys.contains(legacy)
     }
 
     /// Every recorded sighting on the life list, counted. A species contributes
@@ -538,8 +595,9 @@ final class LifeListStore {
         var remaining = existing.allObservations
         guard let hit = remaining.firstIndex(where: { $0.identity == original }) else { return }
         let wasImported = remaining[hit].isImported
-        let wasExported = exportedObservationKeys.contains(
-            Self.exportKey(scientificName: scientificName, observation: remaining[hit])
+        let wasExported = hasBeenExported(
+            scientificName: scientificName,
+            observation: remaining[hit]
         )
         remaining.remove(at: hit)
         let replacement = LifeListEntry.Observation(
@@ -980,9 +1038,18 @@ final class LifeListStore {
     /// row's display fields to keep.
     private nonisolated static func collapseToSpecies(_ entries: [LifeListEntry]) -> [LifeListEntry] {
         var byBinomial: [String: LifeListEntry] = [:]
+        // Insertion order, kept for the same reason `collapseByScientificName`
+        // keeps one: `Dictionary.values` is unordered, and Swift seeds its
+        // hashing per process, so returning it made the *input order* of the next
+        // pass differ between launches. That pass resolves a collision by keeping
+        // whichever entry it saw first, so which scientific name and which common
+        // name survived a merge was a coin flip — and the survivor's name is the
+        // entry's id, and its id is its photo slug.
+        var order: [String] = []
         for entry in entries {
             let key = speciesBinomial(entry.scientificName)
             guard let existing = byBinomial[key] else {
+                order.append(key)
                 // Already a binomial: nothing to rewrite, so pass the entry
                 // through untouched rather than round-tripping it through
                 // `make`. That round-trip ran on every entry on every launch,
@@ -1022,7 +1089,7 @@ final class LifeListStore {
                 dedupe: true
             )
         }
-        return Array(byBinomial.values)
+        return order.compactMap { byBinomial[$0] }
     }
 
     /// Second-pass merge: collapse entries that share the same common name but
@@ -1041,10 +1108,16 @@ final class LifeListStore {
             uniquingKeysWith: { first, _ in first }
         )
         var byCommon: [String: LifeListEntry] = [:]
+        // Insertion order, for the reason spelled out in `collapseToSpecies`:
+        // this pass keeps whichever of two colliding entries it met first, so its
+        // output has to be ordered or the *next* pass inherits a different input
+        // order on every launch.
+        var order: [String] = []
         for entry in entries {
             let key = entry.commonName.lowercased()
             guard let existing = byCommon[key] else {
                 byCommon[key] = entry
+                order.append(key)
                 continue
             }
             // Prefer the scientific name BirdNET emits so detections map to this row.
@@ -1070,7 +1143,7 @@ final class LifeListStore {
         // fixes a lone Hairy Woodpecker entry stored under the old genus
         // (Leuconotopicus villosus) — the multi-entry merge above only fires
         // when there are two rows to collide.
-        let relabeled = byCommon.values.map { entry in
+        let relabeled = order.compactMap { byCommon[$0] }.map { entry in
             if catalogNames.contains(entry.scientificName) { return entry }
             guard let canonical = catalogByCommon[entry.commonName.lowercased()] else {
                 return entry

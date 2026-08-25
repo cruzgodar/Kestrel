@@ -304,6 +304,62 @@ struct LifeListStoreCanonicalizationTests {
         #expect(second.map(\.scientificName) == first.map(\.scientificName))
     }
 
+    /// When two entries have to be merged, *which one survives* must be a
+    /// function of the stored file, not of the run.
+    ///
+    /// The pipeline's stages hand entries to each other as arrays, and each stage
+    /// resolves a collision by keeping whichever entry it met first — so an
+    /// unordered `Dictionary.values` anywhere in the chain made the winner a coin
+    /// flip re-tossed on every launch. The survivor's scientific name is the
+    /// entry's `id`, and its id is its photo slug, so the same bird could come
+    /// back under a different name (and a different photo) than it had yesterday.
+    ///
+    /// Ten independent pairs, so an arbitrary ordering agreeing with the file's
+    /// by luck is a one-in-a-thousand accident rather than a coin flip.
+    @Test("which of two merged entries wins is decided by the stored order")
+    func mergeWinnerFollowsStoredOrder() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        // Neither name is in the catalog, so neither can win on that ground and
+        // the tie falls to whichever was seen first.
+        let entries = (0..<10).flatMap { i -> [LifeListEntry] in
+            let shared = "Shared Bird \(i)"
+            return [
+                .make("Aaa sp\(i)x", shared, [.at(may5, "First", lat: 1, lon: 1)]),
+                .make("Zzz sp\(i)x", shared, [.at(may4, "Second", lat: 2, lon: 2)]),
+            ]
+        }
+        let loaded = try roundTrip(entries, scratch, defaults)
+        #expect(loaded.count == 10, "each pair merges to one entry")
+        #expect(
+            loaded.allSatisfy { $0.scientificName.hasPrefix("Aaa") },
+            "the entry listed first in the file decides the surviving name"
+        )
+        // Both records survive the merge whichever name won.
+        #expect(loaded.allSatisfy { $0.allObservations.count == 2 })
+    }
+
+    /// The same, one stage earlier: a trinomial collapse feeds the common-name
+    /// pass, so its output has to be ordered too or the guarantee above only
+    /// holds for lists with no subspecies rows in them.
+    @Test("the stored order survives a subspecies collapse on the way through")
+    func subspeciesCollapsePreservesOrder() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let entries = (0..<10).flatMap { i -> [LifeListEntry] in
+            let shared = "Shared Bird \(i)"
+            return [
+                .make("Aaa sp\(i)x reidi", shared, [.at(may5, "First", lat: 1, lon: 1)]),
+                .make("Zzz sp\(i)x", shared, [.at(may4, "Second", lat: 2, lon: 2)]),
+            ]
+        }
+        let loaded = try roundTrip(entries, scratch, defaults)
+        #expect(loaded.count == 10)
+        #expect(
+            loaded.allSatisfy { $0.scientificName.hasPrefix("Aaa") },
+            "the trinomial collapses to its binomial and still wins the tie"
+        )
+        #expect(loaded.allSatisfy { !$0.scientificName.contains("reidi") })
+    }
+
     @Test("ordersBefore is a strict weak ordering")
     func ordersBeforeIsStrict() {
         let a = LifeListEntry.make("A a", "A", [.at(may4)])

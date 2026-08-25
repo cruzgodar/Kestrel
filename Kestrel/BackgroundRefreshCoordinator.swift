@@ -129,7 +129,14 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
             )
             completion.complete(success: !Task.isCancelled)
         }
-        completion.setExpirationHandler { op.cancel() }
+        // Cancelling the work is not the same as finishing it: `setTaskCompleted`
+        // still has to be called, or iOS scores the window as a failure and
+        // throttles this task's future scheduling. `complete` is idempotent, so
+        // whichever of the two gets there first wins.
+        completion.setExpirationHandler {
+            op.cancel()
+            completion.complete(success: false)
+        }
     }
 
     private func handleImageUpdate(_ task: BGTask) {
@@ -186,13 +193,32 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
             }
             completion.complete(success: !Task.isCancelled)
         }
-        completion.setExpirationHandler { op.cancel() }
+        // Cancelling the work is not the same as finishing it: `setTaskCompleted`
+        // still has to be called, or iOS scores the window as a failure and
+        // throttles this task's future scheduling. `complete` is idempotent, so
+        // whichever of the two gets there first wins.
+        completion.setExpirationHandler {
+            op.cancel()
+            completion.complete(success: false)
+        }
     }
 
     // MARK: - Network check
 
+    /// How long to wait for `NWPathMonitor` to report before giving up. It fires
+    /// almost immediately in practice; this exists so the wait can't be
+    /// unbounded (see `isOnUnmeteredNetwork`).
+    private static let pathResolveTimeout: DispatchTimeInterval = .seconds(5)
+
     /// Resolves whether the current path is a satisfied, unmetered (Wi-Fi/wired)
     /// connection. Used to keep the high-power image refresh off cellular.
+    ///
+    /// Always resolves. A `withCheckedContinuation` cannot be cancelled, so a
+    /// monitor that never reported would park this task forever — and the
+    /// background window it runs in would then expire with its work neither
+    /// finished nor abandoned. The timeout answers `false`, which is the safe
+    /// direction: the caller skips the refresh and reschedules rather than
+    /// spending the user's data on a connection it couldn't classify.
     static func isOnUnmeteredNetwork() async -> Bool {
         // `nonisolated` as well as `@unchecked Sendable`: the project is
         // MainActor-by-default, so without it this box is main-actor isolated
@@ -201,22 +227,35 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
         nonisolated final class Box: @unchecked Sendable {
             let lock = NSLock()
             var resumed = false
+
+            /// True for exactly one caller, so the continuation is resumed once
+            /// however the race between the monitor and the timeout falls out.
+            func claim() -> Bool {
+                lock.lock(); defer { lock.unlock() }
+                if resumed { return false }
+                resumed = true
+                return true
+            }
         }
         let box = Box()
+        let queue = DispatchQueue(label: "com.cruzgodar.Kestrel.netcheck")
         return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
             let monitor = NWPathMonitor()
             monitor.pathUpdateHandler = { path in
-                box.lock.lock()
-                if box.resumed { box.lock.unlock(); return }
-                box.resumed = true
-                box.lock.unlock()
+                guard box.claim() else { return }
                 monitor.cancel()
                 let unmetered = path.status == .satisfied
                     && !path.isExpensive
                     && !path.isConstrained
                 cont.resume(returning: unmetered)
             }
-            monitor.start(queue: DispatchQueue(label: "com.cruzgodar.Kestrel.netcheck"))
+            monitor.start(queue: queue)
+            queue.asyncAfter(deadline: .now() + Self.pathResolveTimeout) {
+                guard box.claim() else { return }
+                monitor.cancel()
+                Log.info("Network check timed out; treating the path as metered")
+                cont.resume(returning: false)
+            }
         }
     }
 }

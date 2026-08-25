@@ -49,17 +49,31 @@ enum ReviewPrompt {
     }
 
     /// `qualifyingSessionCount` as it stood the last time we asked, or `nil` if
-    /// this install has never been asked.
+    /// this install has never been asked. A pure read — see
+    /// `migrateLegacyPromptRecord`, which is what puts a value here for an
+    /// install that predates the cooldown.
     private static var promptedAtSessionCount: Int? {
-        if let count = defaults.object(forKey: promptedAtCountKey) as? Int { return count }
-        // Migration: an install that predates the cooldown recorded only the
-        // version it asked on. Backdate that ask to *now* rather than to zero,
-        // so someone who was already asked waits out a full cooldown instead of
-        // being asked again on their very next session.
-        guard defaults.string(forKey: promptedVersionKey) != nil else { return nil }
-        let seeded = qualifyingSessionCount
-        defaults.set(seeded, forKey: promptedAtCountKey)
-        return seeded
+        defaults.object(forKey: promptedAtCountKey) as? Int
+    }
+
+    /// Pins the ask point for an install that predates the cooldown, which
+    /// recorded only the version it asked on.
+    ///
+    /// Backdates that ask to *now* rather than to zero, so someone who was
+    /// already asked waits out a full cooldown instead of being asked again on
+    /// their very next session. Runs once — the count it writes is what every
+    /// later read sees — and is a no-op on an install that has either been asked
+    /// under the current scheme or never been asked at all.
+    ///
+    /// Called explicitly at launch rather than lazily from `promptedAtSessionCount`.
+    /// Doing it in that getter meant merely *reading* `isDue` consumed the
+    /// migration and rewrote once-per-install state, which is not something a
+    /// property named like a question should do — and it made the backdate land
+    /// at whatever moment something first happened to ask.
+    static func migrateLegacyPromptRecord() {
+        guard defaults.object(forKey: promptedAtCountKey) == nil,
+              defaults.string(forKey: promptedVersionKey) != nil else { return }
+        defaults.set(qualifyingSessionCount, forKey: promptedAtCountKey)
     }
 
     /// Records a finished session. Sessions shorter than a minute are ignored

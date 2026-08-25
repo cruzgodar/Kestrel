@@ -124,6 +124,11 @@ struct KestrelApp: App {
             CoreMLModelCache.purgeLegacyTempModels()
         }
 
+        // Pin the ask point for an install upgrading from a build that recorded
+        // only the version it last asked on. Once per install, and cheap — two
+        // defaults reads on an install that has nothing to migrate.
+        ReviewPrompt.migrateLegacyPromptRecord()
+
         let manager = RecordingManager()
         // Kick off BirdNET + geo-model loading in the background as soon as
         // the app launches, so the first Start Recording tap is instant.

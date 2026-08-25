@@ -203,12 +203,21 @@ struct LifeListEntryMakeTests {
 
     // MARK: edges
 
+    /// No caller reaches this — every one passes at least one observation — but
+    /// the fallback is the only line in the app that could put a wall-clock
+    /// instant in a sighting's date, and a date carrying a time of day prints as
+    /// the wrong day for anyone east of UTC and keys the export ledger to the
+    /// wrong day with it.
     @Test("an entry built from no observations still has a usable first-seen date")
     func emptyObservations() {
         let entry = LifeListEntry.make("X y", "X", [])
         #expect(entry.otherObservations.isEmpty)
         #expect(entry.firstLocation == nil)
         #expect(!entry.firstIsImported)
+        #expect(
+            isMidnightUTC(entry.firstSeen),
+            "the fallback date obeys the same invariant as a real sighting's"
+        )
     }
 
     @Test("the star flag rides through unchanged")

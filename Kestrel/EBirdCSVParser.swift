@@ -143,7 +143,15 @@ nonisolated enum EBirdCSVParser {
         return "\(parts[0]) \(parts[1])"
     }
 
-    /// Removes `(...)` segments and surrounding whitespace.
+    /// Removes `(...)` segments, then collapses the whitespace removing them
+    /// leaves behind.
+    ///
+    /// Split + join rather than a `"  "` → `" "` replacement, which only closed
+    /// gaps of exactly two: `replacingOccurrences` doesn't rescan what it has
+    /// written, so a run of three came out as two. Three is what two
+    /// space-separated clarifiers mid-name leave behind — `"A (x) (y) B"` →
+    /// `"A   B"` → `"A  B"` — and that doubled space was then stored, and
+    /// displayed, as part of the common name.
     private static func stripParens(_ s: String) -> String {
         var result = ""
         var depth = 0
@@ -152,9 +160,7 @@ nonisolated enum EBirdCSVParser {
             if ch == ")" { depth = max(0, depth - 1); continue }
             if depth == 0 { result.append(ch) }
         }
-        return result
-            .replacingOccurrences(of: "  ", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return result.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
     // MARK: CSV state machine

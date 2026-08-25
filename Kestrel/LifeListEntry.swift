@@ -49,31 +49,44 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         /// bird added by hand and later restated by an import is one
         /// observation, not two.
         ///
-        /// **Every field is canonicalized on the way in**, to exactly the
-        /// precision a round trip through eBird survives. The app tells users to
-        /// export to eBird and re-import periodically (see `MoreView`), and that
-        /// trip is lossy in two specific ways: the CSV carries coordinates at
-        /// five decimal places, and eBird's importer rejects quotes and can't
-        /// escape commas, so a place name is folded by
-        /// `EBirdCSVExporter.sanitize` on the way out. Comparing the raw stored
-        /// values meant a sighting recorded in Kestrel at
-        /// `42.4534198, -76.4735178` in "Ithaca, NY" came back as
-        /// `42.45342` in "Ithaca NY", failed to match itself, and was filed as a
-        /// second observation — a duplicate pin on the map and a doubled
-        /// "N Observations" for a record the user already had.
+        /// **Every field is canonicalized on the way in**, to exactly what a
+        /// round trip through eBird survives. The app tells users to export to
+        /// eBird and re-import periodically (see `MoreView`), and that trip
+        /// changes a sighting in three specific ways:
         ///
-        /// `EBirdCSVExporter.key` already rounds for this reason; this is the
-        /// same rule applied to the other half of the round trip, so the two
-        /// notions of "the same sighting" can't disagree.
+        ///   1. The CSV carries coordinates at five decimal places, so
+        ///      `42.4534198` comes back as `42.45342`.
+        ///   2. eBird's importer rejects quotes and can't escape commas, so a
+        ///      place name is folded by `EBirdCSVExporter.sanitize` on the way
+        ///      out — "Ithaca, NY" comes back as "Ithaca NY".
+        ///   3. eBird's Location Name column is *required* and Kestrel's place
+        ///      name is not, so a sighting without one is exported under a name
+        ///      the exporter invents — its own coordinates, or a placeholder —
+        ///      and comes back carrying that.
+        ///
+        /// Each of those made a sighting unequal to itself on the way home, so
+        /// the returning copy was filed as a second observation: a duplicate pin
+        /// on the map and a doubled "N Observations" for a record the user
+        /// already had. So identity compares the *exported* form of each field
+        /// (see `canonicalCoordinate` and `canonicalPlace`) rather than what
+        /// happens to be stored.
+        ///
+        /// `EBirdCSVExporter.key` is built from the same two functions, so the
+        /// ledger's notion of "the same sighting" and this one cannot disagree.
         nonisolated struct Identity: Hashable {
             let date: Date
-            let location: String?
+            /// The place this sighting is filed under *as eBird will know it* —
+            /// see `canonicalPlace`. Never nil: a sighting with no place name of
+            /// its own still exports under one.
+            let location: String
             let latitude: Double?
             let longitude: Double?
 
             init(date: Date, location: String?, latitude: Double?, longitude: Double?) {
                 self.date = date
-                self.location = Self.canonicalPlace(location)
+                self.location = Self.canonicalPlace(
+                    location, latitude: latitude, longitude: longitude
+                )
                 self.latitude = Self.canonicalCoordinate(latitude)
                 self.longitude = Self.canonicalCoordinate(longitude)
             }
@@ -85,15 +98,31 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
                 return (value * 100_000).rounded() / 100_000
             }
 
-            /// A place name folded the way the export folds it, and an empty
-            /// name treated as no name — which is what every display path in the
-            /// app already does with one.
-            static func canonicalPlace(_ value: String?) -> String? {
-                guard let value else { return nil }
-                // `sanitize` already collapses whitespace runs and trims, so a
-                // name that was nothing but spaces comes back empty.
-                let folded = EBirdCSVExporter.sanitize(value)
-                return folded.isEmpty ? nil : folded
+            /// The place name the export will actually write for this sighting:
+            /// folded the way the CSV folds it, *and* with the Location Name
+            /// column's fallback already resolved.
+            ///
+            /// Resolving the fallback is what makes a nameless sighting survive
+            /// the trip. Kestrel's place name is optional, but eBird's Location
+            /// Name is not — so a sighting with coordinates and no name is
+            /// exported under "42.45342, -76.47352" and one with neither under
+            /// "Unspecified location", and *that* is the name that comes back on
+            /// the next import. Folding only the stored name left the returning
+            /// copy unequal to the sighting it came from, so it was filed as a
+            /// second observation: a duplicate pin and a doubled "N
+            /// Observations". Comparing what the file carries, rather than what
+            /// we happened to store, is the only version of this that closes.
+            ///
+            /// It also means an empty name and no name are the same thing here,
+            /// which is what every display path in the app already does with one.
+            static func canonicalPlace(
+                _ value: String?,
+                latitude: Double?,
+                longitude: Double?
+            ) -> String {
+                EBirdCSVExporter.exportedPlaceName(
+                    location: value, latitude: latitude, longitude: longitude
+                )
             }
         }
 
@@ -215,7 +244,14 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         return LifeListEntry(
             scientificName: scientificName,
             commonName: commonName,
-            firstSeen: first?.date ?? Date(),
+            // `ObservationDate.today`, not `Date()`: a wall-clock instant is the
+            // one thing a stored sighting's date is never allowed to be (see
+            // `ObservationDate`), and this is the only line in the app that could
+            // produce one. No caller reaches it today — every one passes at least
+            // one observation — but an entry that did carry a mid-afternoon
+            // timestamp would print as the wrong day for anyone east of UTC and
+            // key the export ledger to the wrong day with it.
+            firstSeen: first?.date ?? ObservationDate.today,
             firstLocation: first?.location,
             firstLatitude: first?.latitude,
             firstLongitude: first?.longitude,

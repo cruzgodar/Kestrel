@@ -422,6 +422,194 @@ struct LifeListStoreImportTests {
         #expect(store.entries.isEmpty)
     }
 
+    // MARK: the eBird round trip
+
+    /// The full loop the app tells users to run: record in Kestrel, export,
+    /// upload to eBird, download your data months later, import it back. Every
+    /// sighting has to recognize the copy that comes home, whatever it did or
+    /// didn't have a place name for.
+    ///
+    /// The nameless cases are the ones that failed. eBird's Location Name column
+    /// is required and Kestrel's place name is not, so the exporter fills one in
+    /// — the coordinates, or a placeholder — and *that* is what comes back.
+    /// Identity compared the raw stored name, so the returning copy didn't match
+    /// the sighting it came from and was filed as a second observation: a
+    /// duplicate pin on the map and a doubled "N Observations".
+    @Test(
+        "a sighting survives the export/re-import round trip",
+        arguments: [
+            ("named", "Sapsucker Woods", 42.4534198, -76.4735178),
+            ("named with a comma", "Ithaca, NY", 42.4534198, -76.4735178),
+            ("nameless with coordinates", nil, 42.4534198, -76.4735178),
+            ("nameless without coordinates", nil, nil, nil),
+        ] as [(String, String?, Double?, Double?)]
+    )
+    func exportReimportRoundTrip(
+        label: String, place: String?, latitude: Double?, longitude: Double?
+    ) async throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        store.recordObservation(
+            scientificName: "Cardinalis cardinalis",
+            commonName: "Northern Cardinal",
+            date: utcDay(2026, 5, 4),
+            location: place,
+            latitude: latitude,
+            longitude: longitude
+        )
+        #expect(store.totalObservationCount == 1)
+
+        // Take the place name from the file itself rather than restating it, so
+        // this can't drift from what the exporter actually writes.
+        let payload = await store.makeEBirdExport(scope: .everything)
+        let exported = parseExportedCSV(payload)
+        #expect(exported.count == 1)
+
+        // eBird hands back what it was given.
+        _ = try await importCSV(store, scratch, [(
+            sci: "Cardinalis cardinalis",
+            common: "Northern Cardinal",
+            date: "2026-05-04",
+            location: exported[0][5],
+            lat: latitude,
+            lon: longitude
+        )])
+
+        #expect(
+            store.totalObservationCount == 1,
+            "\(label): the re-imported copy must fold into the sighting it came from"
+        )
+        #expect(store.entries.count == 1)
+    }
+
+    /// The round trip must not go the other way either: a sighting Kestrel never
+    /// exported is genuinely new to the list and has to survive the import.
+    @Test("a genuinely new sighting still arrives on the same import")
+    func roundTripDoesNotSwallowNewRecords() async throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        store.recordObservation(
+            scientificName: "Cardinalis cardinalis",
+            commonName: "Northern Cardinal",
+            date: utcDay(2026, 5, 4),
+            location: nil,
+            latitude: 42.4534198,
+            longitude: -76.4735178
+        )
+        let payload = await store.makeEBirdExport(scope: .everything)
+        let exportedPlace = parseExportedCSV(payload)[0][5]
+
+        _ = try await importCSV(store, scratch, [
+            // The returning copy of what we just exported…
+            ("Cardinalis cardinalis", "Northern Cardinal", "2026-05-04", exportedPlace, 42.4534198, -76.4735178),
+            // …plus a sighting only eBird knows about.
+            ("Cardinalis cardinalis", "Northern Cardinal", "2026-06-01", "Mundy Wildflower Garden", 42.4500, -76.4700),
+        ])
+        #expect(store.totalObservationCount == 2)
+    }
+
+    // MARK: writes racing the merge
+
+    /// Tracks whether the import under test has finished, so the writer below
+    /// knows when to stop. Main-actor isolated by the project's default, which is
+    /// what makes it safe to share with the import's own task.
+    @MainActor
+    private final class Latch {
+        var done = false
+    }
+
+    /// The merge runs off the main actor precisely so the UI stays live during a
+    /// large import — which means the user can go on recording sightings while it
+    /// runs. Assigning the merged result wholesale threw those away: the merge
+    /// described a life list that no longer existed.
+    ///
+    /// The writes are a *stream*, not a single one at a hopefully-right moment.
+    /// The import has several suspension points (the parse, then each merge
+    /// attempt) and only the window between a merge's snapshot and its
+    /// write-back is the dangerous one; a lone write timed with `Task.yield()`
+    /// lands in the parse instead and passes against the bug. Writing throughout
+    /// guarantees the window is hit, whatever the internal shape turns out to be.
+    @Test("sightings recorded during an import are not lost")
+    func writeDuringImportSurvives() async throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+
+        // Big enough that the merge takes long enough to write into.
+        let rows = (0..<4000).map { i in
+            (
+                sci: "Genus sp\(i)x", common: "Bird \(i)", date: "2026-05-04",
+                location: "Ithaca NY" as String?,
+                lat: 42.0 + Double(i) / 100_000 as Double?, lon: -76.0 as Double?
+            )
+        }
+        let url = scratch.url.appendingPathComponent("big.csv")
+        try eBirdCSV(rows).write(to: url)
+
+        let latch = Latch()
+        async let importing: Void = { @MainActor in
+            _ = try? await store.importEBird(from: url)
+            latch.done = true
+        }()
+
+        var recorded: [String] = []
+        while !latch.done {
+            let name = "Testus sp\(recorded.count)x"
+            store.recordObservation(
+                scientificName: name,
+                commonName: "Test Bird \(recorded.count)",
+                date: utcDay(2026, 5, 4),
+                location: "My Yard",
+                latitude: 42.45342,
+                longitude: -76.47352
+            )
+            recorded.append(name)
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        await importing
+
+        #expect(!recorded.isEmpty, "the import has to run long enough to write into")
+        let lost = recorded.filter { !store.contains(scientificName: $0) }
+        #expect(lost.isEmpty, "\(lost.count) of \(recorded.count) sightings were dropped by the merge")
+        #expect(store.entries.count == rows.count + recorded.count, "and the import still landed")
+        #expect(recorded.allSatisfy { store.speciesNames.contains($0) })
+    }
+
+    /// The re-merge has to *terminate*. A writer faster than the merge would
+    /// retry forever, which is why the last attempt runs inline on the main actor
+    /// where nothing can interleave. This is that case, driven deliberately: the
+    /// loop above writes every 5 ms against a merge that takes far longer.
+    @Test("an import racing a continuous writer still completes", .timeLimit(.minutes(1)))
+    func importTerminatesUnderContinuousWrites() async throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        let rows = (0..<4000).map { i in
+            (
+                sci: "Genus sp\(i)x", common: "Bird \(i)", date: "2026-05-04",
+                location: "Ithaca NY" as String?, lat: 42.0 as Double?, lon: -76.0 as Double?
+            )
+        }
+        let url = scratch.url.appendingPathComponent("big.csv")
+        try eBirdCSV(rows).write(to: url)
+
+        let latch = Latch()
+        async let importing: Void = { @MainActor in
+            _ = try? await store.importEBird(from: url)
+            latch.done = true
+        }()
+        var written = 0
+        while !latch.done {
+            written += 1
+            store.recordObservation(
+                scientificName: "Testus sp\(written)x", commonName: "T\(written)",
+                date: utcDay(2026, 5, 4), location: "Yard", latitude: 1, longitude: 1
+            )
+            try await Task.sleep(for: .milliseconds(1))
+        }
+        await importing
+        #expect(latch.done, "the import must finish rather than retrying forever")
+        #expect(store.entries.count == rows.count + written)
+    }
+
     // MARK: persistence
 
     @Test("an import reaches disk")
