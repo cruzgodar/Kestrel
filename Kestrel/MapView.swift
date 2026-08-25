@@ -8,7 +8,11 @@ import UIKit
 /// coordinates — so the same species can appear at several locations. `id` is
 /// unique per point; `scientificName` stays the species key used for photo
 /// lookups.
-struct MapPoint: Identifiable, Hashable {
+/// `nonisolated` for the reason `LifeListEntry` is: the project defaults to
+/// MainActor isolation, so without it even this plain value type's members are
+/// main-actor bound — and `MapView.recomposedCluster` / `computeClusters` are
+/// deliberately off-main so the clustering tests can drive them directly.
+nonisolated struct MapPoint: Identifiable, Hashable {
     let id: String
     let scientificName: String
     let commonName: String
@@ -501,8 +505,9 @@ struct MapView: View {
                                 info: visibleReps[point.id],
                                 thumbSize: Self.thumbSize,
                                 onTap: handleAnnotationTap,
-                                // Display-only in picker mode, menu included.
-                                menuEnabled: picker == nil,
+                                // Display-only in picker mode: no tap, no press,
+                                // no menu.
+                                interactive: picker == nil,
                                 menu: annotationMenu
                             )
                         }
@@ -1430,9 +1435,10 @@ private struct FadingAnnotationContent<Menu: View>: View {
     /// Opens the annotation. The flag says whether the interaction was a tap —
     /// false for the long press, which the map's tap-to-dismiss never sees.
     let onTap: (MapView.RepInfo, Bool) -> Void
-    /// False in picker mode, where the thumbnails are there for orientation
-    /// only and every action on the menu would be a dead end.
-    let menuEnabled: Bool
+    /// False in picker mode, where the thumbnails are there for orientation only
+    /// and every gesture on one would be a dead end. Gates the *whole* gesture
+    /// set, not just the menu: see the note in `body`.
+    let interactive: Bool
     /// The haptic-touch menu, built only for a thumbnail standing for one bird.
     @ViewBuilder let menu: (MapView.RepInfo) -> Menu
 
@@ -1461,8 +1467,21 @@ private struct FadingAnnotationContent<Menu: View>: View {
                 )
                 .contentShape(Rectangle())
                 .opacity(opacity)
+                // Picker mode: the thumbnails are there for orientation only, and
+                // every gesture on one dead-ends in `handleAnnotationTap`'s
+                // `guard picker == nil`. So attach nothing at all.
+                //
+                // It used to fall through to the press catcher below, whose
+                // `.began` handler fires a medium impact *before* calling back —
+                // so a long press that happened to land on a thumbnail played that
+                // haptic and then did nothing, while the map's own long press
+                // (which drops the pin) played a second one on the same touch.
+                // Two buzzes for one press, one of them announcing a gesture that
+                // wasn't going to happen.
+                if !interactive {
+                    content
                 // Only a lone bird gets a menu — see `MapView.annotationMenu`.
-                if menuEnabled && rendered.count == 1 {
+                } else if rendered.count == 1 {
                     content
                         .onTapGesture { onTap(rendered, true) }
                         .contextMenu { menu(rendered) }
@@ -1626,7 +1645,9 @@ private struct MapAnnotationContent: View {
 
 // MARK: - Cluster model
 
-struct BirdCluster: Identifiable, Hashable {
+/// `nonisolated` for the same reason `MapPoint` is — `recomposedCluster` reads
+/// `all` from a nonisolated context.
+nonisolated struct BirdCluster: Identifiable, Hashable {
     let representative: MapPoint
     let coordinate: CLLocationCoordinate2D
     let others: [MapPoint]

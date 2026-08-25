@@ -123,12 +123,16 @@ func utcDay(_ year: Int, _ month: Int, _ day: Int) -> Date {
 /// Whether an instant is exactly midnight UTC — the literal form of the stored
 /// invariant.
 ///
-/// Asserted directly rather than as `date == ObservationDate.canonical(date)`,
-/// which is *not* the same thing: `canonical` reads the day in the device's zone,
-/// so re-applying it to an already-canonical date shifts it a day for anyone west
-/// of UTC. That non-idempotence is exactly why the migration runs once, and a
-/// test that leaned on it would fail on a simulator set to Los Angeles and pass
-/// on one set to London.
+/// Spelled out longhand rather than deferring to `ObservationDate.isCanonical`,
+/// which computes the same predicate: the tests *of* that function need something
+/// independent to check it against.
+///
+/// Note which `ObservationDate` call it corresponds to. It is
+/// `canonical(date, in: .utc) == date`, **not** `canonical(date) == date` —
+/// the latter reads the day in the *device's* zone, so it answers false for a
+/// perfectly canonical date anywhere west of UTC. That distinction is the whole
+/// subject of `isCanonical`, and a helper that got it wrong would pass in London
+/// and fail in Los Angeles.
 func isMidnightUTC(_ date: Date) -> Bool {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(secondsFromGMT: 0)!

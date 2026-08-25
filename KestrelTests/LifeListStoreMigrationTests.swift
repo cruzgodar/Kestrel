@@ -2,14 +2,20 @@ import Foundation
 import Testing
 @testable import Kestrel
 
-/// The one-shot rewrite of every stored sighting onto the UTC-midnight
-/// invariant.
+/// The rewrite of every stored sighting onto the UTC-midnight invariant.
 ///
-/// This migration is **not idempotent** — it reads a date's day in the device's
-/// current time zone — so it has to run exactly once per install, and a flag in
-/// `UserDefaults` is the only thing that can promise that. Running it twice would
-/// shift dates by a day for anyone off UTC; never running it would leave old
-/// records comparing unequal to new ones.
+/// `ObservationDate.canonical` on its own is **not idempotent** — it reads a
+/// date's day in the device's current time zone, so a second pass over an
+/// already-canonical date lands on the day before for anyone west of UTC. The
+/// migration therefore gates every date on `ObservationDate.isCanonical` and is
+/// safe to run any number of times.
+///
+/// That gate is the correctness guarantee; the `UserDefaults` flag is only an
+/// optimization. It used to be the other way round, and couldn't be: the flag
+/// lands in `UserDefaults` while the migrated list lands on the store's IO queue,
+/// and nothing orders the two — so a kill between them can lose either one. The
+/// direction that mattered, data written and flag lost, re-ran the migration and
+/// shifted the user's whole life list back a day.
 @Suite("LifeListStore date migration")
 @MainActor
 struct LifeListStoreMigrationTests {
@@ -130,6 +136,78 @@ struct LifeListStoreMigrationTests {
         }
     }
 
+    /// The crash window the flag cannot close, exercised directly: the migrated
+    /// list reaches disk but the `UserDefaults` write is lost, so the next launch
+    /// runs the migration over data that has already been through it.
+    ///
+    /// This is what used to corrupt a life list. `normalizeDates` re-applied
+    /// `ObservationDate.canonical` unconditionally, and on any device west of UTC
+    /// that read midnight-UTC back as the previous local day and stored midnight
+    /// UTC on *that* — every sighting in the Americas one day earlier, the export
+    /// ledger's keys no longer matching, and the next "Export New Observations"
+    /// handing eBird a duplicate of the user's history.
+    ///
+    /// Correct on any machine: where the device is on UTC the migration is the
+    /// identity anyway, and everywhere else this fails without the
+    /// `isCanonical` gate.
+    @Test("the migration survives a lost flag")
+    func migrationSurvivesALostFlag() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeLifeList([
+            .make(scientificName: "X y", commonName: "X", isStarred: false,
+                  observations: [
+                    .at(instant(2019, 5, 4, 14, zone: .current), "P", lat: 1, lon: 1),
+                    .at(instant(2021, 8, 9, 22, zone: .current), "Q", lat: 2, lon: 2),
+                  ],
+                  dedupe: false),
+        ])
+
+        let first = unmigratedStore(scratch, defaults)
+        let migrated = first.entries[0].allObservations.map(\.date).sorted()
+        #expect(migrated.allSatisfy(isMidnightUTC))
+        first.flushPendingWrites()
+
+        // The data landed; the flag didn't. Re-open five times in a row, each one
+        // believing it still has the migration to do.
+        for pass in 1...5 {
+            defaults.defaults.removeObject(forKey: Self.flagKey)
+            let reopened = unmigratedStore(scratch, defaults)
+            let now = reopened.entries[0].allObservations.map(\.date).sorted()
+            #expect(now == migrated, "pass \(pass) moved the dates")
+            reopened.flushPendingWrites()
+            #expect(try scratch.readLifeList()[0].allObservations.map(\.date).sorted() == migrated,
+                    "pass \(pass) wrote shifted dates back to disk")
+        }
+    }
+
+    /// The ledger half of the same scenario. A shifted day changes the key, and a
+    /// key that stops matching is unrecoverable — eBird does no deduplication, so
+    /// the next export hands over a second copy of records already uploaded.
+    @Test("a repeated migration leaves the export ledger's keys matching")
+    func repeatedMigrationPreservesLedgerKeys() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeLifeList([
+            .make(scientificName: "X y", commonName: "X", isStarred: false,
+                  observations: [.at(instant(2019, 5, 4, 14, zone: .current), "P", lat: 1, lon: 1)],
+                  dedupe: false),
+        ])
+        let first = unmigratedStore(scratch, defaults)
+        let key = EBirdCSVExporter.key(
+            scientificName: "X y", observation: first.entries[0].allObservations[0]
+        )
+        first.flushPendingWrites()
+        try scratch.writeExportedKeys([key])
+
+        defaults.defaults.removeObject(forKey: Self.flagKey)
+        let reopened = unmigratedStore(scratch, defaults)
+        let after = EBirdCSVExporter.key(
+            scientificName: "X y", observation: reopened.entries[0].allObservations[0]
+        )
+        #expect(after == key)
+        #expect(reopened.observationCount(for: .newOnly) == 0,
+                "a re-migrated sighting must not look new to eBird again")
+    }
+
     @Test("a fresh install marks the migration done without touching anything")
     func freshInstallMarksMigrated() {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()
@@ -140,9 +218,9 @@ struct LifeListStoreMigrationTests {
                 "a fresh install writes canonical dates from its first sighting on")
     }
 
-    /// The flag is set only *after* the migrated list is on its way to disk, so a
-    /// crash before that leaves the flag clear and the migration runs again next
-    /// launch — the safe direction to fail in.
+    /// The ordinary already-migrated launch: the flag is set, so the pass is
+    /// skipped outright. `migrationSurvivesALostFlag` covers the case where it
+    /// isn't and the pass runs anyway.
     @Test("an already-migrated install leaves its dates alone")
     func migratedInstallUntouched() throws {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()

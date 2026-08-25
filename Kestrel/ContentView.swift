@@ -182,11 +182,12 @@ struct ContentView: View {
                 )
             }
         }
-        // Mirror starred status into the manager so notifications + the
-        // spectrogram's blue band reflect mid-session star toggles.
-        .onChange(of: lifeListStore.starredNames, initial: true) { _, new in
-            manager.updateStarred(new)
-        }
+        // No star mirroring here any more: `RecordingManager.starredNames` reads
+        // the store itself. This tab pushing it in only worked while starring was
+        // something you did on this tab, and it hasn't been for a while — the map
+        // pin menu, the full-screen viewer and the life-list row menu all toggle
+        // stars with Identify deselected.
+        //
         // Re-sample the clock so rows slide below the "Over a minute ago"
         // header as they age, animating the migration.
         .onReceive(ageTimer) { date in

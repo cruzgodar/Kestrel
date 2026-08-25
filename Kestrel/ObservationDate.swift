@@ -24,8 +24,10 @@ import Foundation
 /// calendar; only the stored value is canonical. `canonical(_:)` maps a locally
 /// chosen day onto midnight UTC, and `picker(for:)` maps it back. They are
 /// inverses of each other but **neither is idempotent**, so a date is converted
-/// exactly once at each boundary — see the one-shot migration in
-/// `LifeListStore.load()`.
+/// exactly once at each boundary. That's fine for the two boundaries themselves,
+/// whose input is always a local wall-clock instant — but a *migration* over
+/// stored data has no such guarantee about how many times it runs, which is what
+/// `isCanonical(_:)` is for. See `LifeListStore.normalizeDates`.
 nonisolated enum ObservationDate {
     static let utc = TimeZone(secondsFromGMT: 0)!
 
@@ -53,6 +55,27 @@ nonisolated enum ObservationDate {
     /// sighting's draft opens on — `Date()` would carry a wall-clock time that
     /// lands on the wrong UTC day for anyone far enough east or west of it.
     static var today: Date { canonical(Date()) }
+
+    /// Whether `date` already holds the invariant: midnight UTC exactly.
+    ///
+    /// The guard that makes a *migration* over stored dates safe to repeat.
+    /// `canonical(_:)` is not idempotent — run over a date that is already
+    /// midnight UTC, it re-reads that instant's day in the device's zone, which
+    /// for anywhere west of UTC is the day *before*, and hands back midnight UTC
+    /// on that. Every sighting in the Americas would slide back a day.
+    ///
+    /// Skipping an already-canonical date is not merely safe, it is exactly
+    /// right. A pre-invariant date is local midnight, which differs from midnight
+    /// UTC for every zone with a non-zero offset — so a date that needs
+    /// converting never looks canonical. The one case that does is a device whose
+    /// zone *is* UTC, where `canonical(_:)` is the identity anyway and there is
+    /// nothing to skip.
+    /// Expressed through `canonical(_:in:)` itself, read in UTC: "is this already
+    /// midnight UTC on its own UTC day?" Written this way rather than by picking
+    /// the time fields apart so it cannot disagree with the conversion it guards.
+    static func isCanonical(_ date: Date) -> Bool {
+        canonical(date, in: utc) == date
+    }
 
     /// The inverse of `canonical(_:)`: local midnight on the UTC day `date`
     /// names. The read-side conversion, used to seed a `DatePicker` — which

@@ -334,3 +334,99 @@ struct AlertRuleTests {
         ) == nil)
     }
 }
+
+/// Where the alert rule gets its `starred` set from.
+///
+/// `alertReason` is pure and well covered above, but it only ever sees whatever
+/// the caller hands it — and the caller used to hand it a mirror the Identify tab
+/// refreshed from an `.onChange`. That was true enough while starring happened
+/// only on that tab, and it hasn't been for a while: the map's pin and
+/// cluster-grid menus, the full-screen viewer's menu and the life-list row's own
+/// menu all toggle stars, every one of them reachable with Identify deselected.
+/// Whether the alert rule saw the toggle then came down to whether SwiftUI had
+/// re-evaluated an off-screen tab's body.
+@Suite("Starred set wiring")
+@MainActor
+struct StarredWiringTests {
+
+    private func manager(_ store: LifeListStore) -> RecordingManager {
+        let manager = RecordingManager()
+        manager.lifeListStore = store
+        return manager
+    }
+
+    @Test("the manager reads stars straight off the store")
+    func readsFromStore() {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        let manager = manager(store)
+        #expect(manager.starredNames.isEmpty)
+
+        store.setStarred(scientificName: "Cardinalis cardinalis", isStarred: true)
+        #expect(manager.starredNames == ["Cardinalis cardinalis"],
+                "no view is mounted to push this in — it has to be read")
+    }
+
+    /// The regression, in the shape it actually took: a star toggled from
+    /// somewhere that is not the Identify tab, mid-session.
+    @Test("a star toggled with no view mounted reaches the alert rule")
+    func starToggledOffTabAlerts() {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        store.add(scientificName: "Turdus migratorius", commonName: "American Robin",
+                  firstSeen: utcDay(2020, 1, 1))
+        let manager = manager(store)
+
+        // Recorded before the session and unstarred: nothing to say about it.
+        let snapshot: Set<String> = ["Turdus migratorius"]
+        #expect(RecordingManager.alertReason(
+            scientificName: "Turdus migratorius",
+            starred: manager.starredNames,
+            snapshotAtSessionStart: snapshot,
+            recordedNow: store.speciesNames
+        ) == nil)
+
+        // Starred from the map's pin menu, say, while the Map tab is showing.
+        store.setStarred(scientificName: "Turdus migratorius", isStarred: true)
+        #expect(RecordingManager.alertReason(
+            scientificName: "Turdus migratorius",
+            starred: manager.starredNames,
+            snapshotAtSessionStart: snapshot,
+            recordedNow: store.speciesNames
+        ) == .starred, "the toggle has to take effect on the very next detection")
+    }
+
+    @Test("unstarring takes effect just as immediately")
+    func unstarringTakesEffect() {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        store.setStarred(scientificName: "Cardinalis cardinalis", isStarred: true)
+        let manager = manager(store)
+        #expect(manager.starredNames == ["Cardinalis cardinalis"])
+
+        store.setStarred(scientificName: "Cardinalis cardinalis", isStarred: false)
+        #expect(manager.starredNames.isEmpty)
+    }
+
+    /// A star outlives the life-list entry it was set on — deleting a species'
+    /// last sighting deliberately keeps it — so the manager must keep seeing it.
+    @Test("a star on a species that has left the life list is still seen")
+    func starOnDepartedSpeciesIsSeen() {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        let sighting = LifeListEntry.Observation.at(utcDay(2020, 1, 1), "P", lat: 1, lon: 1)
+        store.add(scientificName: "X y", commonName: "X", firstSeen: sighting.date,
+                  location: "P", latitude: 1, longitude: 1)
+        store.setStarred(scientificName: "X y", isStarred: true)
+        store.removeObservation(scientificName: "X y", observation: sighting)
+
+        #expect(!store.contains(scientificName: "X y"))
+        #expect(manager(store).starredNames == ["X y"])
+    }
+
+    /// With no store there is nothing to record and nothing to star.
+    @Test("a manager with no store reports no stars rather than trapping")
+    func noStoreIsEmpty() {
+        #expect(RecordingManager().starredNames.isEmpty)
+    }
+}

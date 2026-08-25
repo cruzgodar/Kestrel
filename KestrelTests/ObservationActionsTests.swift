@@ -123,4 +123,107 @@ struct ObservationActionsTests {
                 "the raw held copy is what made an edit look like a deletion")
         #expect(onRecord.contains { $0.identity == actions.current(held).identity })
     }
+
+    // MARK: which sighting did you mean?
+
+    /// Whether an Edit or a Delete acts outright or raises the chooser.
+    ///
+    /// This is the branch that decides whether the trail above is even reachable.
+    /// An action resolved to a single sighting runs the flow from `draft`, which
+    /// the host's own `observationFlow` reports back through `onEdited`; one that
+    /// raises a `choice` runs it from the chooser's own draft instead — and the
+    /// chooser has to forward those edits on, or a host holding a sighting by
+    /// value never hears about them. The chooser's wiring is a SwiftUI
+    /// presentation and can't be driven from here; these pin the precondition for
+    /// it mattering.
+
+    /// Files `count` sightings of one species, newest last.
+    private func seed(_ store: LifeListStore, _ count: Int) {
+        for i in 0..<count {
+            store.recordObservation(
+                scientificName: "X y", commonName: "X",
+                date: utcDay(2026, 5, 4 + i), location: "Place \(i)",
+                latitude: Double(i), longitude: Double(i)
+            )
+        }
+    }
+
+    @Test("a bird seen once is edited outright, with nothing to ask")
+    func singleSightingEditsDirectly() {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        seed(store, 1)
+
+        let actions = ObservationActions()
+        actions.edit(scientificName: "X y", commonName: "X", in: store)
+        #expect(actions.choice == nil, "there is only one sighting this could mean")
+        #expect(actions.draft?.editing == store.observations(for: "X y").first)
+    }
+
+    @Test("a bird seen several times raises the chooser instead")
+    func severalSightingsRaiseTheChooser() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        seed(store, 3)
+
+        let actions = ObservationActions()
+        actions.edit(scientificName: "X y", commonName: "X", in: store)
+        #expect(actions.draft == nil)
+
+        let choice = try #require(actions.choice)
+        #expect(choice.isDeleting == false)
+        #expect(choice.limitedTo == nil, "a life-list row stands for the whole species")
+        #expect(choice.observations(in: store).count == 3)
+    }
+
+    @Test("delete mirrors edit: one goes straight to the confirmation, several ask")
+    func deleteResolvesTheSameWay() {
+        let scratchA = ScratchDirectory(), defaultsA = ScratchDefaults()
+        let single = makeStore(scratchA, defaultsA)
+        seed(single, 1)
+        let a = ObservationActions()
+        a.delete(scientificName: "X y", commonName: "X", in: single)
+        #expect(a.choice == nil)
+        #expect(a.pendingDelete?.observation == single.observations(for: "X y").first)
+
+        let scratchB = ScratchDirectory(), defaultsB = ScratchDefaults()
+        let many = makeStore(scratchB, defaultsB)
+        seed(many, 3)
+        let b = ObservationActions()
+        b.delete(scientificName: "X y", commonName: "X", in: many)
+        #expect(b.pendingDelete == nil)
+        #expect(b.choice?.isDeleting == true)
+    }
+
+    /// A map thumbnail stands for only the sightings pinned under it, so the
+    /// question it raises is narrowed to those — offering one from the other side
+    /// of the country under a pin the user long-pressed here would be a non
+    /// sequitur.
+    @Test("a pin-scoped action asks only about the sightings it stands for")
+    func limitedChoiceNarrowsTheQuestion() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        seed(store, 3)
+        let subset = Array(store.observations(for: "X y").prefix(2))
+
+        let actions = ObservationActions()
+        actions.edit(scientificName: "X y", commonName: "X", among: subset)
+
+        let choice = try #require(actions.choice)
+        #expect(choice.limitedTo == Set(subset.map(\.identity)))
+        #expect(choice.observations(in: store).count == 2)
+    }
+
+    @Test("an action with nothing to act on is a no-op, not an empty chooser")
+    func noSightingsIsANoOp() {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+
+        let actions = ObservationActions()
+        actions.edit(scientificName: "X y", commonName: "X", in: store)
+        actions.delete(scientificName: "X y", commonName: "X", in: store)
+        #expect(actions.choice == nil)
+        #expect(actions.draft == nil)
+        #expect(actions.pendingDelete == nil)
+    }
 }

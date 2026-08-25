@@ -229,6 +229,11 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     func apply(_ remote: PhotoManifest) -> ApplyResult {
         lock.lock(); defer { lock.unlock() }
         var result = ApplyResult()
+        // What the app knew *before* this manifest, captured up front: the loop
+        // below inserts every newly-published slug into `hashes`, so reading the
+        // count afterwards would size the completeness check against a baseline
+        // this same manifest had just grown.
+        let knownBefore = hashes.count
         for (slug, entry) in remote.files {
             metadata[slug] = entry.info
             let known = hashes[slug]
@@ -242,7 +247,7 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
         // Snapshot first: removing from `hashes` while iterating its own keys
         // view works only by accident of copy-on-write.
         let withdrawn = hashes.keys.filter { remote.files[$0] == nil }
-        if !withdrawn.isEmpty, isPlausiblyComplete(remote) {
+        if !withdrawn.isEmpty, isPlausiblyComplete(remote, knownBefore: knownBefore) {
             for slug in withdrawn {
                 hashes.removeValue(forKey: slug)
                 metadata.removeValue(forKey: slug)
@@ -269,9 +274,14 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     ///
     /// Guarded rather than trusted, and deliberately loose: the cost of skipping
     /// a legitimate prune is that a handful of stale slugs linger one more cycle.
-    private func isPlausiblyComplete(_ remote: PhotoManifest) -> Bool {
-        guard hashes.count >= Self.pruneFloor else { return true }
-        return remote.files.count * 2 >= hashes.count
+    ///
+    /// `knownBefore` is the slug count as it stood *before* `apply` folded this
+    /// manifest in, which is the only baseline the comparison means anything
+    /// against — by the time this runs, `hashes` already holds every slug the
+    /// incoming manifest just introduced.
+    private func isPlausiblyComplete(_ remote: PhotoManifest, knownBefore: Int) -> Bool {
+        guard knownBefore >= Self.pruneFloor else { return true }
+        return remote.files.count * 2 >= knownBefore
     }
 
     /// Below this many known slugs the completeness check doesn't apply — an

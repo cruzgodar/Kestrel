@@ -65,6 +65,76 @@ struct ObservationDateTests {
         #expect(ObservationDate.today == expected)
     }
 
+    // MARK: isCanonical
+
+    /// The guard that makes the stored-date migration safe to repeat. Without it
+    /// a second pass re-reads an already-canonical instant's day in the device's
+    /// zone — which west of UTC is the day *before* — and every sighting in the
+    /// Americas slides back a day.
+    @Test("a canonical date is recognized as one, in every zone", arguments: TestZones.all)
+    func isCanonicalAcceptsCanonicalDates(zone: TimeZone) {
+        // Built directly, not through `canonical`, so this isn't checking the
+        // function against itself.
+        for day in [utcDay(2019, 5, 4), utcDay(2026, 1, 1), utcDay(2000, 2, 29)] {
+            #expect(ObservationDate.isCanonical(day))
+            // And it's the same predicate the test helper spells out longhand.
+            #expect(isMidnightUTC(day))
+        }
+        // Whatever a *local* day converts to is canonical by construction.
+        #expect(ObservationDate.isCanonical(ObservationDate.canonical(instant(2019, 5, 4, 14, zone: zone), in: zone)))
+    }
+
+    /// The pre-invariant shape: local midnight, which is midnight UTC only where
+    /// the offset is zero. Those are exactly the dates the migration has to move,
+    /// so `isCanonical` must not wave them through.
+    @Test("a legacy local-midnight date is not canonical off UTC", arguments: TestZones.all)
+    func isCanonicalRejectsLocalMidnight(zone: TimeZone) {
+        let localMidnight = instant(2019, 5, 4, 0, zone: zone)
+        let offset = zone.secondsFromGMT(for: localMidnight)
+        #expect(ObservationDate.isCanonical(localMidnight) == (offset == 0),
+                "\(zone.identifier): local midnight is canonical only at a zero offset")
+    }
+
+    /// A wall-clock instant — what `Date()` gives, and what v1.0 stored — is
+    /// never canonical, so nothing that needs converting is skipped.
+    @Test("a wall-clock instant is never canonical", arguments: TestZones.all)
+    func isCanonicalRejectsWallClock(zone: TimeZone) {
+        for hour in [1, 9, 14, 23] {
+            #expect(!ObservationDate.isCanonical(instant(2019, 5, 4, hour, 30, zone: zone)))
+        }
+    }
+
+    /// The whole point, stated directly: gating on `isCanonical` turns a
+    /// conversion that cannot be repeated into one that can.
+    ///
+    /// Zones are passed explicitly rather than left to the device, so this fails
+    /// on any machine rather than only on one set west of UTC.
+    @Test("gating on isCanonical makes the conversion repeatable", arguments: TestZones.all)
+    func isCanonicalMakesMigrationIdempotent(zone: TimeZone) {
+        func migrate(_ date: Date) -> Date {
+            ObservationDate.isCanonical(date) ? date : ObservationDate.canonical(date, in: zone)
+        }
+        let legacy = instant(2019, 5, 4, 14, 30, zone: zone)
+        let once = migrate(legacy)
+        #expect(once == utcDay(2019, 5, 4))
+        // Ten more passes must be dead no-ops.
+        var repeated = once
+        for _ in 0..<10 { repeated = migrate(repeated) }
+        #expect(repeated == once, "\(zone.identifier): a repeated migration moved the date")
+    }
+
+    /// And the failure it prevents, so the guard can't be dropped as redundant:
+    /// ungated, a second pass really does shift the day wherever the offset is
+    /// negative.
+    @Test("ungated, a second pass shifts the day west of UTC")
+    func ungatedSecondPassShiftsTheDay() {
+        let zone = TestZones.losAngeles
+        let once = ObservationDate.canonical(instant(2019, 5, 4, 14, zone: zone), in: zone)
+        #expect(once == utcDay(2019, 5, 4))
+        let twice = ObservationDate.canonical(once, in: zone)
+        #expect(twice == utcDay(2019, 5, 3), "this is the corruption isCanonical exists to stop")
+    }
+
     // MARK: picker round trip
 
     /// `picker` and `canonical` are inverses. This is what makes the date wheel

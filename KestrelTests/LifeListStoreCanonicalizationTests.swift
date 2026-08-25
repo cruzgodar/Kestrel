@@ -385,6 +385,50 @@ struct LifeListStoreCanonicalizationTests {
         #expect(onDisk.map(\.scientificName) == ["Dryobates villosus"])
     }
 
+    /// One entry, already canonical in every respect, written compactly. `save()`
+    /// writes pretty-printed JSON with sorted keys, so if the load rewrote the
+    /// file at all these bytes would not survive.
+    private static let cleanCompactJSON =
+        #"[{"scientificName":"Cardinalis cardinalis","commonName":"Northern Cardinal","#
+        + #""firstSeen":"2019-05-04T00:00:00Z","firstLocation":"Ithaca","#
+        + #""firstLatitude":42.45,"firstLongitude":-76.5,"#
+        + #""firstIsImported":false,"isStarred":false,"otherObservations":[]}]"#
+
+    /// The other half of `rewritePersisted`: a load that found nothing to fix
+    /// must not write.
+    ///
+    /// The test this replaces compared entry counts and scientific names only, so
+    /// it read "nothing changed" off two properties rather than off the entries
+    /// themselves. Straight value equality against what was decoded is what
+    /// actually says a launch had no work to do.
+    @Test("a load that changed nothing leaves the file untouched")
+    func cleanLoadDoesNotRewrite() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeRawLifeList(Self.cleanCompactJSON)
+        let store = makeStore(scratch, defaults)
+        store.flushPendingWrites()
+
+        #expect(store.entries.count == 1)
+        #expect(scratch.data("life_list.json") == Data(Self.cleanCompactJSON.utf8),
+                "nothing about this entry needed canonicalizing, so nothing should have been written")
+    }
+
+    /// And with the migration flag *clear* over data that is already canonical —
+    /// the lost-flag case. The migration runs, finds every date already midnight
+    /// UTC, and changes nothing; the file should be left exactly as it was rather
+    /// than rewritten for the sake of a pass that did no work.
+    @Test("a migration pass over canonical data leaves the file untouched")
+    func idempotentMigrationDoesNotRewrite() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeRawLifeList(Self.cleanCompactJSON)
+        // Deliberately *not* `makeStore`, which marks the migration done.
+        let store = LifeListStore(directory: scratch.url, defaults: defaults.defaults)
+        store.flushPendingWrites()
+
+        #expect(store.entries[0].firstSeen == utcDay(2019, 5, 4))
+        #expect(scratch.data("life_list.json") == Data(Self.cleanCompactJSON.utf8))
+    }
+
     @Test("an empty or absent life list loads as empty without writing anything")
     func absentFileIsEmpty() {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()

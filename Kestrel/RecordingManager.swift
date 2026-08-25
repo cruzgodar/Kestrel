@@ -110,11 +110,22 @@ final class RecordingManager {
     /// purple instead of goldenrod). Captured by the view via
     /// `snapshotLifeList(_:)` on the false → true transition of `isRecording`.
     private(set) var lifeListSnapshot: Set<String> = []
-    /// Live set of scientific names the user has starred. The Identify UI
-    /// pushes this in via `updateStarred(_:)` whenever the life list changes,
-    /// so notifications/highlighting react to mid-session star toggles instead
-    /// of being frozen to a snapshot.
-    private(set) var starredNames: Set<String> = []
+    /// Live set of scientific names the user has starred — read straight off the
+    /// store, never frozen, so notifications, alert haptics and the spectrogram's
+    /// blue band react to a star toggled mid-session.
+    ///
+    /// Read rather than pushed. This was a mirror the Identify tab kept up to
+    /// date from an `.onChange`, which was true enough when starring happened
+    /// only on that tab. It doesn't any more: the map's pin and cluster-grid
+    /// menus, the full-screen viewer's menu, and the life-list row's own menu all
+    /// toggle stars, and every one of them is reachable with Identify deselected
+    /// — at which point whether the mirror updated came down to whether SwiftUI
+    /// had re-evaluated an off-screen tab's body. `refreshLifeListFromStore` and
+    /// `merge`'s `recorded` already read the store directly for exactly this
+    /// reason; this is the last of the three that didn't.
+    ///
+    /// Empty with no store, which is only previews — nothing there records.
+    var starredNames: Set<String> { lifeListStore?.starredNames ?? [] }
 
     /// Pushed from `KestrelApp`'s tab + scene-phase observers. When false,
     /// new-species events fire a local notification instead of relying on
@@ -1141,24 +1152,17 @@ final class RecordingManager {
         lifeListSnapshot = scientificNames
     }
 
-    /// Populates `lifeListSnapshot` + `starredNames` straight from the store.
-    /// Called at the top of every start path (local and watch-driven) so the
-    /// "is this species already a lifer?" check is correct regardless of
-    /// whether a SwiftUI view happens to be mounted and observing — without
-    /// this, a watch-initiated background session started a stale (often
-    /// empty) snapshot and notified for every bird heard.
+    /// Freezes `lifeListSnapshot` from the store. Called at the top of every
+    /// start path (local and watch-driven) so the "is this species already a
+    /// lifer?" check is correct regardless of whether a SwiftUI view happens to
+    /// be mounted and observing — without this, a watch-initiated background
+    /// session started a stale (often empty) snapshot and notified for every bird
+    /// heard.
+    ///
+    /// Stars need no equivalent: `starredNames` reads the store on every access.
     private func refreshLifeListFromStore() {
         guard let store = lifeListStore else { return }
         lifeListSnapshot = Set(store.entries.map(\.scientificName))
-        starredNames = store.starredNames
-    }
-
-    /// Live mirror of the user's starred species. Unlike `lifeListSnapshot`
-    /// this is *not* frozen at session start — toggling a star mid-session
-    /// should immediately change which detections fire notifications and
-    /// which spectrogram bands get the blue tint.
-    func updateStarred(_ scientificNames: Set<String>) {
-        starredNames = scientificNames
     }
 
     /// Whether a heard species is worth alerting about, and as what — or `nil`

@@ -988,16 +988,22 @@ final class LifeListStore {
         }
     }
 
-    /// Marks that this install's stored sightings have been rewritten onto the
-    /// UTC-midnight invariant (see `ObservationDate`). The migration below is
-    /// **not** idempotent — it reads a date's day in the device's time zone — so
-    /// it has to run exactly once, and a flag is the only thing that can promise
-    /// that.
+    /// Records that this install's stored sightings have been rewritten onto the
+    /// UTC-midnight invariant (see `ObservationDate`), so later launches can skip
+    /// a pass that has nothing left to do.
+    ///
+    /// **An optimization, not a correctness guarantee.** It used to be the latter,
+    /// and couldn't be: the flag lands in `UserDefaults` while the migrated list
+    /// lands on the IO queue, and nothing orders the two, so a kill between them
+    /// can leave *either* one written without the other. The direction that
+    /// mattered — data migrated, flag lost — re-ran a conversion that was not
+    /// idempotent and slid every sighting west of UTC back a day. `normalizeDates`
+    /// is now safe to repeat, which is what actually closes that; this only keeps
+    /// the ordinary launch from walking the list for nothing.
     private static let dateMigrationKey = "lifeList.datesNormalizedToUTC"
 
-    /// Rewrites every stored sighting to midnight UTC on the calendar day it
-    /// currently reads as locally. Runs once per install, on the first launch
-    /// after the invariant landed.
+    /// Rewrites every stored sighting that isn't already midnight UTC to midnight
+    /// UTC on the calendar day it currently reads as locally.
     ///
     /// Preserving the *local* day is what makes this a no-op from the user's
     /// side: a row that said "May 4, 2019" still says it, the export ledger's
@@ -1007,17 +1013,28 @@ final class LifeListStore {
     /// order, so an entry's earliest sighting stays its earliest and the
     /// displayed first-seen fields don't need re-promoting.
     ///
+    /// **Safe to run any number of times.** `ObservationDate.canonical` on its own
+    /// is not — it re-reads an already-canonical instant's day in the device's
+    /// zone, which west of UTC is the day before — so every date is gated on
+    /// `ObservationDate.isCanonical` first. Skipping those is exactly right, not
+    /// merely safe: see that function. This is what makes the migration flag an
+    /// optimization rather than the only thing standing between a lost `UserDefaults`
+    /// write and a life list shifted back a day.
+    ///
     /// The one imperfect case is a device whose time zone has changed since the
     /// records were written: those days shift by one. Unavoidable — the old
     /// format simply didn't record which zone it meant, which is the defect being
     /// fixed.
     private nonisolated static func normalizeDates(_ entries: [LifeListEntry]) -> [LifeListEntry] {
-        entries.map { entry in
+        func normalized(_ date: Date) -> Date {
+            ObservationDate.isCanonical(date) ? date : ObservationDate.canonical(date)
+        }
+        return entries.map { entry in
             var copy = entry
-            copy.firstSeen = ObservationDate.canonical(entry.firstSeen)
+            copy.firstSeen = normalized(entry.firstSeen)
             copy.otherObservations = entry.otherObservations.map { observation in
                 var moved = observation
-                moved.date = ObservationDate.canonical(observation.date)
+                moved.date = normalized(observation.date)
                 return moved
             }
             return copy
@@ -1045,20 +1062,23 @@ final class LifeListStore {
             entries = collapsed.sorted(by: Self.ordersBefore)
             refreshSpeciesNames()
             // Persist if anything actually changed — dates were migrated, rows
-            // merged, or a scientific name was rewritten to its catalog-canonical
-            // form.
-            let mutated = needsDateMigration
-                || collapsed.count != decoded.count
-                || zip(
-                    decoded.sorted { $0.scientificName < $1.scientificName },
-                    collapsed.sorted { $0.scientificName < $1.scientificName }
-                ).contains { $0.scientificName != $1.scientificName }
-            if mutated {
+            // merged, a scientific name was rewritten to its catalog-canonical
+            // form, or a merge picked a different common name.
+            //
+            // Straight value equality against what was decoded, because every
+            // stage above preserves input order when it changes nothing:
+            // `normalizeDates` and `applyAliases` map, and each collapse pass
+            // rebuilds from a first-seen `order` array. So `collapsed == decoded`
+            // is exactly "this launch found nothing to fix". The old test
+            // compared only entry *counts* and scientific names, which missed a
+            // changed common name or a re-sorted observation set and redid that
+            // work, unpersisted, on every launch.
+            if collapsed != decoded {
                 save()
             }
-            // Only once the migrated list is on its way to disk: a crash before
-            // this leaves the flag clear and the migration runs again next launch,
-            // which is the safe direction to fail in.
+            // Purely so the next launch can skip the pass; `normalizeDates` is
+            // idempotent, so losing this write costs a walk over the list rather
+            // than the user's dates. See `dateMigrationKey`.
             if needsDateMigration {
                 defaults.set(true, forKey: Self.dateMigrationKey)
             }

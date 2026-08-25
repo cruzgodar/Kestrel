@@ -770,6 +770,17 @@ private struct ObservationActionsModifier: ViewModifier {
                     ObservationChoiceSheet(
                         choice: choice,
                         store: store,
+                        // The chooser runs the flow out of its own draft, so its
+                        // edits reach `actions` only if they're handed back —
+                        // this is the same call the modifier makes for the draft
+                        // it owns directly, just one presentation further down.
+                        // Without it, "Edit which observation?" was the one route
+                        // to an edit that left the host's trail unwritten, and a
+                        // host holding that sighting by value would go on asking
+                        // the store about a record the edit had moved.
+                        onEdited: { original, replacement in
+                            actions.recordEdit(original: original, replacement: replacement)
+                        },
                         onFinished: { actions.choice = nil }
                     )
                 }
@@ -834,6 +845,9 @@ private struct ObservationChoiceSheet: View {
     /// Threaded down for the usual reason — `@Observable` environment objects
     /// don't cross a sheet boundary.
     let store: LifeListStore
+    /// Reports an edit made from here back to the `ObservationActions` that
+    /// raised this chooser. See `observationFlow(_:store:onCommit:onEdited:)`.
+    let onEdited: (LifeListEntry.Observation, LifeListEntry.Observation) -> Void
     /// The chosen action went through; put the chooser away.
     let onFinished: () -> Void
 
@@ -863,7 +877,7 @@ private struct ObservationChoiceSheet: View {
                 }
             }
         )
-        .observationFlow($draft, store: store, onCommit: onFinished)
+        .observationFlow($draft, store: store, onCommit: onFinished, onEdited: onEdited)
         .observationDeleteConfirmation($pendingDelete, store: store, onDeleted: {
             // Step aside once there is nothing left to *choose between*.
             // Clearing out several stray sightings is one visit to this list,

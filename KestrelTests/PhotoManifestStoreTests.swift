@@ -159,6 +159,55 @@ struct PhotoManifestStoreTests {
                 "photos do get withdrawn a few at a time")
     }
 
+    /// The baseline the completeness check measures against is what the app knew
+    /// *before* this manifest, not after.
+    ///
+    /// `apply` records every newly-published slug's hash on its way through, so
+    /// reading the count afterwards sized the check against a number this same
+    /// manifest had just inflated — which made the guard progressively stricter
+    /// the more the photo set grew. Here the manifest lists 70 species against a
+    /// baseline of 100: it has not lost half the set, so the 75 it stopped
+    /// listing are genuinely withdrawn and their bytes should go.
+    @Test("the completeness check is measured against the pre-apply baseline")
+    func completenessUsesPreApplyBaseline() {
+        let scratch = ScratchDirectory()
+        let subject = store(scratch)
+        var known: [String: (hash: String, credit: String?)] = [:]
+        for i in 0..<100 { known["slug\(i)"] = ("h\(i)", "Alice") }
+        _ = subject.apply(manifest(known))
+
+        // 25 of the originals survive; 45 species are newly published alongside.
+        var next: [String: (hash: String, credit: String?)] = [:]
+        for i in 0..<25 { next["slug\(i)"] = ("h\(i)", "Alice") }
+        for i in 0..<45 { next["new\(i)"] = ("n\(i)", "Bob") }
+        let result = subject.apply(manifest(next))
+
+        #expect(result.newSlugs.count == 45)
+        #expect(result.removedSlugs.count == 75,
+                "70 listed against a baseline of 100 is not a short manifest")
+        #expect(subject.recordedHash(forSlug: "slug99") == nil)
+        #expect(subject.info(forSlug: "slug99") == nil)
+    }
+
+    /// The same confusion at the floor. An install knowing 49 slugs is below it
+    /// and prunes unconditionally — but counting after the loop let a manifest's
+    /// own additions carry the total over 50 and switch the ratio check on.
+    @Test("newly published slugs cannot push a below-floor install over it")
+    func additionsDoNotCrossTheFloor() {
+        let scratch = ScratchDirectory()
+        let subject = store(scratch)
+        var known: [String: (hash: String, credit: String?)] = [:]
+        for i in 0..<49 { known["slug\(i)"] = ("h\(i)", "Alice") }
+        _ = subject.apply(manifest(known))
+
+        var next: [String: (hash: String, credit: String?)] = ["slug0": ("h0", "Alice")]
+        for i in 0..<24 { next["new\(i)"] = ("n\(i)", "Bob") }
+        let result = subject.apply(manifest(next))
+
+        #expect(result.removedSlugs.count == 48,
+                "49 known is below the floor, whatever this manifest also added")
+    }
+
     /// Below the floor there is no baseline worth defending — an install that
     /// knows about a dozen photos shouldn't refuse to prune.
     @Test("a small local set prunes without the completeness check")
