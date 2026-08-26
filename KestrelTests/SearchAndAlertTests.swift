@@ -163,6 +163,63 @@ struct SearchTests {
         })
     }
 
+    /// Equal scores are the common case, not the exception: a substring hit
+    /// scores 0 for *every* species containing the query, which for a short
+    /// needle is hundreds of them. `Array.sorted` can return either arrangement
+    /// of equal elements, so without a tiebreaker below the score the twenty
+    /// species that survive `.prefix(20)` — the contents, not merely the order —
+    /// could differ between two scans of an unchanged catalog. The user sees that
+    /// as suggestions appearing and vanishing while they type nothing.
+    @Test("equal-scoring suggestions are ordered by name, not arbitrarily")
+    func equalScoresOrderByName() {
+        let rows = LifeListView.computeSuggestions(
+            needle: "sparrow", excluding: [], lifeCommonNames: [], allowed: nil
+        )
+        try? #require(rows.count > 5)
+        let names: [String] = rows.compactMap {
+            if case .suggestion(_, let common) = $0 { return common }
+            return nil
+        }
+        // Everything matching "sparrow" as a substring scores 0, so with no range
+        // filter the whole list is one equal-score block and must be alphabetical.
+        #expect(names == names.sorted(), "\(names)")
+    }
+
+    @Test("repeated scans of an unchanged catalog return the identical list")
+    func suggestionsAreDeterministic() {
+        for needle in ["a", "e", "sparrow", "warb"] {
+            let first = LifeListView.computeSuggestions(
+                needle: needle, excluding: [], lifeCommonNames: [], allowed: nil
+            )
+            for _ in 0..<5 {
+                let again = LifeListView.computeSuggestions(
+                    needle: needle, excluding: [], lifeCommonNames: [], allowed: nil
+                )
+                #expect(again == first, "\(needle)")
+            }
+        }
+    }
+
+    /// The same guarantee with a range filter in play, where the primary key is
+    /// `inRange` rather than the score.
+    @Test("the in-range block is itself ordered deterministically")
+    func inRangeBlockIsDeterministic() {
+        let catalog = SpeciesCatalog.shared.all
+        let matching = catalog.indices.filter {
+            LifeListView.scoreMatch(catalog[$0].searchHay, needle: "a", allowFuzzy: false) != nil
+        }
+        try? #require(matching.count > 40)
+        let allowed = Set(matching.suffix(10))
+        let first = LifeListView.computeSuggestions(
+            needle: "a", excluding: [], lifeCommonNames: [], allowed: allowed
+        )
+        for _ in 0..<5 {
+            #expect(LifeListView.computeSuggestions(
+                needle: "a", excluding: [], lifeCommonNames: [], allowed: allowed
+            ) == first)
+        }
+    }
+
     @Test("a query matching nothing yields no suggestions")
     func noMatches() {
         #expect(LifeListView.computeSuggestions(

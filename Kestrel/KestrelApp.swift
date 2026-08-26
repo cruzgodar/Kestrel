@@ -365,15 +365,21 @@ struct KestrelApp: App {
         let discoveryDue = RemoteSpeciesImageStore.shared.manifestCheckDue(minInterval: 6 * 3600)
             || PhotoManifestStore.shared.needsMetadataBackfill
         Task {
+            // Held so the revalidation below can reuse it rather than fetching
+            // the same file again a line later.
+            var manifest: PhotoManifest?
             if discoveryDue {
                 let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: false)
+                manifest = result.manifest
                 if result.newCount > 0 { prefetchPhotos(lifeList: lifeNames) }
             }
             // Expire and re-check cached images a day after they were last
             // confirmed. Unchanged photos cost a hash comparison, not a download,
             // and a failed check leaves the cache exactly as it was — so this is
             // safe to run on any connection. See `revalidateStaleImages`.
-            let revalidated = await RemoteSpeciesImageStore.shared.revalidateStaleImages()
+            let revalidated = await RemoteSpeciesImageStore.shared.revalidateStaleImages(
+                using: manifest
+            )
             // Revalidation fetches the same manifest discovery does, so it can be
             // the pass that first sees a newly published species — and it records
             // that slug's hash, which means the discovery branch above will never

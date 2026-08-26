@@ -249,7 +249,16 @@ struct LifeListView: View {
             .sorted { a, b in
                 // No location cached → rank by name score alone.
                 if allowed != nil && a.inRange != b.inRange { return a.inRange }
-                return a.score < b.score
+                if a.score != b.score { return a.score < b.score }
+                // Alphabetical past the score, so the cap below always keeps the
+                // same twenty. Equal-scoring matches are the common case, not the
+                // exception — a substring hit scores 0 for every species that
+                // contains the query — and `Array.sorted` can return either
+                // arrangement of equal elements, so without this the *contents*
+                // of the truncated list, not merely its order, could change
+                // between two scans of an unchanged catalog.
+                if a.common != b.common { return a.common < b.common }
+                return a.scientific < b.scientific
             }
             .prefix(20)
             .map { .suggestion(scientificName: $0.scientific, commonName: $0.common) }
@@ -413,8 +422,13 @@ struct LifeListView: View {
                 // date → map → name flow, but out of that sheet's own draft
                 // rather than this one, so watching `draft` alone would let the
                 // keyboard flash back up between the steps of exactly those
-                // edits.
-                addFlowActive: actions.draft != nil || actions.choice != nil
+                // edits. So does a pending delete — its confirmation is an alert
+                // rather than a sheet, so it doesn't take first responder itself,
+                // and a swipe-delete from a focused search left the keyboard
+                // standing under the question.
+                addFlowActive: actions.draft != nil
+                    || actions.choice != nil
+                    || actions.pendingDelete != nil
             )
                 .onGeometryChange(for: CGFloat.self) { proxy in
                     proxy.frame(in: .global).minY

@@ -156,11 +156,20 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
             // Plugged in on Wi-Fi: the full pass — discover new photos *and*
             // re-download changed ones.
             let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: true)
-            Log.info("Image-update task: \(result.newCount) new, \(result.changedCount) changed")
+            Log.info(
+                "Image-update task: \(result.newCount) new, \(result.changedCount) changed "
+                + "(\(result.refreshedCount) re-downloaded)"
+            )
             // Then sweep anything whose one-day freshness window has lapsed but
             // that the change diff didn't touch, so the whole cache gets
             // re-confirmed even when the app is rarely foregrounded.
-            let revalidated = await RemoteSpeciesImageStore.shared.revalidateStaleImages()
+            //
+            // Handed the manifest the pass above already fetched: the two passes
+            // want the same file, and downloading it twice in one background
+            // window was pure waste.
+            let revalidated = await RemoteSpeciesImageStore.shared.revalidateStaleImages(
+                using: result.manifest
+            )
             if !revalidated.isEmpty {
                 Log.info(
                     "Revalidation: \(revalidated.confirmed) confirmed, "
@@ -180,6 +189,10 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
             //
             // And it is the best possible moment for it — the task ran at all
             // only because the device is plugged in and on Wi-Fi.
+            // `changedCount`, not `refreshedCount`: a changed species whose bytes
+            // weren't cached is never "refreshed", but its hash was advanced so a
+            // lazy load would fetch the new photo — which is exactly the trickle
+            // this prefetch exists to pre-empt.
             if result.newCount > 0 || result.changedCount > 0
                 || !revalidated.discoveredSlugs.isEmpty {
                 let lifeNames = await MainActor.run { provider?() ?? [] }

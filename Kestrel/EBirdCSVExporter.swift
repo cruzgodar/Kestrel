@@ -137,11 +137,22 @@ nonisolated enum EBirdCSVExporter {
     ) -> Payload {
         // Oldest first, so the file reads chronologically and eBird's import
         // review page walks forward through the user's birding history.
+        //
+        // Tiebroken past the name and down through the sighting itself
+        // (`ordersBeforeAtSameDate`, the same fall-through
+        // `LifeListStore.observations(for:)` uses), so the same life list always
+        // renders byte-identical bytes. Date + common name alone left two
+        // sightings of one species on one day comparing equal, and
+        // `Array.sorted` can hand back either arrangement of equal elements — so
+        // exporting twice could produce two different files from unchanged data,
+        // which is a poor property for something a user diffs or re-uploads.
         let sorted = rows.sorted { a, b in
             if a.observation.date != b.observation.date {
                 return a.observation.date < b.observation.date
             }
-            return a.commonName < b.commonName
+            if a.commonName != b.commonName { return a.commonName < b.commonName }
+            if a.scientificName != b.scientificName { return a.scientificName < b.scientificName }
+            return LifeListEntry.Observation.ordersBeforeAtSameDate(a.observation, b.observation)
         }
 
         var lines: [String] = []
@@ -157,7 +168,13 @@ nonisolated enum EBirdCSVExporter {
             // The exact string the Location Name column gets, so the tally and
             // the file can't drift from each other.
             let place = exportedPlaceName(for: observation)
-            if place == unplaceableLocation { unplaceable += 1 }
+            if isUnplaceable(
+                location: observation.location,
+                latitude: observation.latitude,
+                longitude: observation.longitude
+            ) {
+                unplaceable += 1
+            }
 
             let fields: [String] = [
                 sanitize(eBirdCommonName(row.commonName)),      // Common Name
@@ -232,11 +249,15 @@ nonisolated enum EBirdCSVExporter {
     /// be able to recognize its own re-imported twin.
     /// `LifeListEntry.Observation.Identity` compares *this*, not the raw stored
     /// location: a sighting with coordinates but no place name went out under
-    /// "42.45342, -76.47352" and came back carrying that as its Location, so
+    /// `42.45342 -76.47352` and came back carrying that as its Location, so
     /// comparing the raw values made it unequal to itself and filed the returning
     /// copy as a second observation — a duplicate pin on the map and a doubled
     /// "N Observations" for a record the user already had. The same is true of a
     /// sighting with neither, which goes out as `unplaceableLocation`.
+    ///
+    /// Note the *space* in that fallback, not a comma. The file forbids commas
+    /// outright (they are the delimiter, with no quoting), so the two numbers are
+    /// joined by a space and nothing downstream ever sees the comma form.
     ///
     /// The comma case (`Ithaca, NY` → `Ithaca NY`) was already handled by folding
     /// through `sanitize`; these are the two the fallback introduces, which no
@@ -260,12 +281,28 @@ nonisolated enum EBirdCSVExporter {
         let folded = sanitize(location ?? "")
         if !folded.isEmpty { return folded }
         // Coordinates still let eBird place the record on the map without help.
+        // Joined by a space, and built by `coordinate` — the same function the
+        // Latitude and Longitude columns go through — so the name a row is filed
+        // under can't round differently from the columns beside it.
         if let latitude, let longitude {
-            return sanitize(String(format: "%.5f, %.5f", latitude, longitude))
+            return "\(coordinate(latitude)) \(coordinate(longitude))"
         }
         // Nothing to place it by at all — the user resolves these by hand during
         // eBird's "Fix Locations" step.
         return unplaceableLocation
+    }
+
+    /// Whether eBird will have nothing at all to place this sighting by, and so
+    /// whether it exports under `unplaceableLocation` — exactly the condition
+    /// under which `exportedPlaceName` reaches its last line.
+    ///
+    /// Stated structurally rather than by comparing the exported name back
+    /// against the placeholder string, which counted a user who had genuinely
+    /// named a spot "Unspecified location" among the rows they would have to fix
+    /// by hand on eBird's side.
+    static func isUnplaceable(location: String?, latitude: Double?, longitude: Double?) -> Bool {
+        guard sanitize(location ?? "").isEmpty else { return false }
+        return latitude == nil || longitude == nil
     }
 
     /// Stand-in name for a sighting with neither a place name nor coordinates —
@@ -273,8 +310,25 @@ nonisolated enum EBirdCSVExporter {
     /// `Payload.unplaceableCount` counts.
     private static let unplaceableLocation = "Unspecified location"
 
+    /// A coordinate rounded to the five decimal places (~1 m) the CSV carries —
+    /// the most precision that can survive a trip through eBird.
+    ///
+    /// **The single rounding decision**, shared with
+    /// `LifeListEntry.Observation.Identity.canonicalCoordinate`, which delegates
+    /// here the same way `canonicalPlace` delegates to `exportedPlaceName`. The
+    /// two used to round independently — `%.5f` here (half-to-even) against
+    /// `(v * 100_000).rounded() / 100_000` there (half-away-from-zero) — so the
+    /// ledger's idea of a coordinate and identity's could in principle disagree
+    /// about a value landing exactly on a half. One function, one answer.
+    static func canonicalCoordinate(_ value: Double?) -> Double? {
+        guard let value else { return nil }
+        return (value * 100_000).rounded() / 100_000
+    }
+
+    /// `canonicalCoordinate` rendered for the file. Formatting the already-
+    /// rounded value means `%.5f` has nothing left to decide.
     private static func coordinate(_ value: Double?) -> String {
-        guard let value else { return "" }
+        guard let value = canonicalCoordinate(value) else { return "" }
         return String(format: "%.5f", value)
     }
 

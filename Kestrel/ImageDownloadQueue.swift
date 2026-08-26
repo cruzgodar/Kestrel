@@ -106,15 +106,22 @@ actor ImageDownloadQueue {
         pump()
     }
 
-    /// Suspends until every tier is empty and nothing is in flight — i.e. the
-    /// prefetch has fully drained. Used by the background refresh task to hold its
-    /// runtime assertion open while queued downloads finish (a foreground-style
-    /// `URLSession` download is suspended the instant the app is, so the task must
-    /// stay alive until the bytes land). Returns immediately when already idle;
-    /// respects cancellation of the awaiting task so an expiring background window
-    /// stops the wait promptly.
+    /// Suspends until every tier is empty and no *bulk* download is running —
+    /// i.e. the prefetch has fully drained. Used by the background refresh task to
+    /// hold its runtime assertion open while queued downloads finish (a
+    /// foreground-style `URLSession` download is suspended the instant the app is,
+    /// so the task must stay alive until the bytes land). Returns immediately when
+    /// already idle; respects cancellation of the awaiting task so an expiring
+    /// background window stops the wait promptly.
+    ///
+    /// Deliberately **not** gated on `inFlight`, which also holds on-demand
+    /// `fetch` calls the views and the watch bridge make. Those have nothing to do
+    /// with the prefetch being drained, and waiting on them meant a background
+    /// window stayed open for a photo some list happened to be loading. Every bulk
+    /// job is covered anyway: queued ones by `tiers`, running ones by `activeBulk`,
+    /// which `drain` only decrements once its download has returned.
     func waitUntilIdle() async {
-        while activeBulk > 0 || !inFlight.isEmpty || tiers.contains(where: { !$0.isEmpty }) {
+        while activeBulk > 0 || tiers.contains(where: { !$0.isEmpty }) {
             if Task.isCancelled { return }
             try? await Task.sleep(for: .milliseconds(250))
         }

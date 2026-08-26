@@ -5,10 +5,15 @@ import SwiftUI
 extension Color {
     /// Green used by the Edit swipe action on a life-list row and in the
     /// full-screen viewer's observation list. Deliberately the star blue's
-    /// saturation and brightness at a different hue, so the two swipe colors
-    /// read as siblings rather than as two unrelated tints. The hue sits at the
-    /// darker-reading end of green for that reason — green is the lightest hue
-    /// family there is, so at the blue's brightness it can only go so deep.
+    /// *saturation* (0.7, see `LifeListView.starButtonTint`) at a different hue,
+    /// so the two swipe colors read as siblings rather than as two unrelated
+    /// tints.
+    ///
+    /// The brightness is the one thing it can't share. Green is the lightest hue
+    /// family there is, so at the blue's brightness of 1.0 this reads as a pale
+    /// mint against white swipe-action text; 0.62 is where it gets dark enough to
+    /// carry the label, and the hue sits at the deeper end of green for the same
+    /// reason.
     static let kestrelEditGreen = Color(hue: 140.0 / 360.0, saturation: 0.7, brightness: 0.62)
 }
 

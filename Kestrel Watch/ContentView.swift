@@ -354,8 +354,11 @@ struct ContentView: View {
 
     // MARK: - Tints
 
-    /// Purple: the record button's fill. Matches the phone's `kestrelPurple`.
-    private static let recordTint = Color(hue: 252.0 / 360.0, saturation: 0.65, brightness: 1.0)
+    /// Purple: the record button's fill. The watch target's own
+    /// `Color.kestrelPurple` (see `WatchWelcomeView`), which carries the same
+    /// value as the phone's — restating the literal here made two copies inside
+    /// one target, which is exactly the drift that constant exists to prevent.
+    private static let recordTint = Color.kestrelPurple
 
     // The two species-name tints, kept as their own constants rather than
     // borrowed from the button and star colors above. They do a different job:
@@ -368,9 +371,15 @@ struct ContentView: View {
     /// Purple the species name is drawn in for a bird not yet on the life list.
     private static let newSpeciesNameTint =
         Color(hue: 252.0 / 360.0, saturation: 0.5, brightness: 1.0)
-    /// Blue the species name is drawn in for a starred ("alert me") bird. Hue and
-    /// saturation follow the phone's star glyph (`LifeListView.starButtonTint`)
-    /// so the same bird reads as the same color in both places.
+    /// Blue the species name is drawn in for a starred ("alert me") bird.
+    ///
+    /// The *hue* follows the phone's star glyph (`LifeListView.starButtonTint`,
+    /// hue 220) so the same bird reads as the same color in both places. The
+    /// saturation deliberately does not: that glyph is a small solid shape and
+    /// needs 0.7 to register at its size, whereas this is text on black, where
+    /// 0.5 is what stays legible at arm's length on a dimmed always-on display.
+    /// Same job as the phone's row wash (`HighlightedText.starHighlight`), and
+    /// the same saturation as it.
     private static let starredNameTint =
         Color(hue: 220.0 / 360.0, saturation: 0.5, brightness: 1.0)
 

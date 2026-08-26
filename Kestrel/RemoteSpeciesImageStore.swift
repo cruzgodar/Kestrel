@@ -414,8 +414,23 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     private static let lastManifestCheckKey = "photoManifestLastCheck"
 
     struct PhotoUpdateResult: Sendable {
+        /// Species the app had never heard of before this manifest.
         var newCount = 0
+        /// Species whose published hash has moved on since the app last recorded
+        /// it. Reported on **every** pass, whatever `includeChanged` says —
+        /// finding them is the diff's job and costs nothing; re-pulling their
+        /// bytes is what the cellular path defers. This used to be incremented
+        /// only inside the `includeChanged` branch, so the foreground path
+        /// reported a flat zero while its own doc comment said changed species
+        /// "are reported and left alone."
         var changedCount = 0
+        /// Of those, how many actually had their bytes re-pulled. Always 0 on a
+        /// pass that didn't ask for changed photos.
+        var refreshedCount = 0
+        /// The manifest this pass fetched, so a caller running a second pass in
+        /// the same breath can hand it back instead of downloading the same file
+        /// again — see `revalidateStaleImages(using:)`. Nil when the fetch failed.
+        var manifest: PhotoManifest?
     }
 
     /// Whether enough time has passed since the last manifest fetch to do another
@@ -461,7 +476,11 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
 
         let applied = PhotoManifestStore.shared.apply(remote)
         discardWithdrawn(applied.removedSlugs)
-        var result = PhotoUpdateResult(newCount: applied.newSlugs.count)
+        var result = PhotoUpdateResult(
+            newCount: applied.newSlugs.count,
+            changedCount: applied.changedSlugs.count,
+            manifest: remote
+        )
 
         guard includeChanged else { return result }
 
@@ -470,7 +489,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
             guard let published = remote.files[slug]?.hash else { continue }
             if await refreshCachedSizes(slug: slug) {
                 advanced[slug] = published
-                result.changedCount += 1
+                result.refreshedCount += 1
             } else if !hasCachedBytes(slug: slug) {
                 // Nothing cached to go stale, so there is nothing to protect and
                 // no download to get wrong: record the new hash and let the next
@@ -574,8 +593,13 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// its old recorded hash — so it's still stale and the next pass tries again.
     /// Nothing is ever deleted on a schedule; bytes are only ever replaced by
     /// bytes. Call off the main actor.
+    ///
+    /// `prefetched` lets a caller that has *just* fetched the manifest hand it
+    /// over rather than making this download the identical file a second time —
+    /// which the high-power background pass did on every run, once through
+    /// `checkForPhotoUpdates` and once here.
     @discardableResult
-    func revalidateStaleImages() async -> RevalidationResult {
+    func revalidateStaleImages(using prefetched: PhotoManifest? = nil) async -> RevalidationResult {
         let cached = cachedSlugs()
         guard !cached.isEmpty else { return RevalidationResult() }
         let stale = PhotoManifestStore.shared.staleSlugs(cached, maxAge: Self.cacheFreshness)
@@ -587,9 +611,19 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
             return RevalidationResult()
         }
 
-        guard let url = Self.manifestURL(),
-              let data = await download(url),
-              let remote = PhotoManifest(data: data) else {
+        // A handed-over manifest skips the fetch but nothing else: the retry
+        // floor above still applies, because the images this pass may re-pull
+        // are the expensive part and they are unaffected by who fetched the
+        // manifest.
+        let fetched: PhotoManifest?
+        if let prefetched {
+            fetched = prefetched
+        } else if let url = Self.manifestURL(), let data = await download(url) {
+            fetched = PhotoManifest(data: data)
+        } else {
+            fetched = nil
+        }
+        guard let remote = fetched else {
             // Offline, or the CDN is unreachable. Everything stays cached and
             // stale; the retry floor keeps this from hammering the network.
             UserDefaults.standard.set(now, forKey: Self.lastRevalidationKey)

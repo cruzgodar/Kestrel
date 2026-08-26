@@ -559,14 +559,17 @@ final class LifeListStore {
     /// observation list, and the Life List tab's edit/delete choosers — so all
     /// of them order and label sightings identically.  Empty for a species
     /// that isn't on the list.
+    ///
+    /// Ordered by `LifeListEntry.Observation.ordersBefore`, which tiebreaks past
+    /// the date all the way down to provenance. Sorting on date and place alone
+    /// left two sightings sharing both — a pair this app deliberately allows —
+    /// comparing equal, and `Array.sorted` can return either arrangement of equal
+    /// elements. See that function.
     func observations(for scientificName: String) -> [LifeListEntry.Observation] {
         guard let entry = entries.first(where: { $0.scientificName == scientificName }) else {
             return []
         }
-        return entry.allObservations.sorted { a, b in
-            if a.date != b.date { return a.date > b.date }
-            return (a.location ?? "") < (b.location ?? "")
-        }
+        return entry.allObservations.sorted(by: LifeListEntry.Observation.ordersBefore)
     }
 
     /// Finds the stored sighting a user's edit or delete meant, in

@@ -565,6 +565,136 @@ struct EBirdCSVExporterTests {
         #expect(Set(written) == Set(expected))
     }
 
+    // MARK: row order is a function of the data, not of the input
+
+    /// The same life list must render the same bytes. Date + common name alone
+    /// left two sightings of one species on one day comparing equal, and
+    /// `Array.sorted` can return either arrangement of equal elements — so an
+    /// export could differ from one run to the next with nothing having changed,
+    /// which is a poor property for a file people diff and re-upload.
+    @Test("the same rows in any order render byte-identical output")
+    func exportIsInputOrderIndependent() {
+        let observations: [LifeListEntry.Observation] = [
+            .at(may4, "Sapsucker Woods", lat: 42.4791, lon: -76.4512),
+            .at(may4, "Sapsucker Woods", lat: 42.4791, lon: -76.4512, imported: true),
+            .at(may4, "Sapsucker Woods"),
+            .at(may4, "Stewart Park", lat: 42.46, lon: -76.51),
+        ]
+        let rows = observations.map { row(observation: $0) }
+        let expected = EBirdCSVExporter.makeCSV(rows: rows).csv
+        for arrangement in [rows.reversed().map { $0 }, rows.shuffled(), rows.shuffled(), rows.shuffled()] {
+            #expect(EBirdCSVExporter.makeCSV(rows: arrangement).csv == expected)
+        }
+    }
+
+    /// Same day, two species: the common name decides, and nothing below it can
+    /// reintroduce a wobble.
+    @Test("same-day rows of different species order by name, stably")
+    func sameDayDifferentSpecies() {
+        let rows = [
+            row("Zenaida macroura", "Mourning Dove", observation: .at(may4, "A")),
+            row("Cardinalis cardinalis", "Northern Cardinal", observation: .at(may4, "A")),
+        ]
+        let forward = parseExportedCSV(EBirdCSVExporter.makeCSV(rows: rows)).map { $0[0] }
+        let backward = parseExportedCSV(EBirdCSVExporter.makeCSV(rows: rows.reversed())).map { $0[0] }
+        #expect(forward == ["Mourning Dove", "Northern Cardinal"])
+        #expect(forward == backward)
+    }
+
+    // MARK: one rounding, shared with Identity
+
+    /// The ledger key, the CSV columns, and `Observation.Identity` all describe
+    /// the same coordinate. They used to round it two different ways — `%.5f`
+    /// (half-to-even) in this file against `.rounded()` (half-away-from-zero) in
+    /// `Identity` — so in principle they could disagree about a value landing on
+    /// a half. One function now, and this is the assertion that keeps it one.
+    @Test("Identity and the exporter round coordinates identically", arguments: [
+        0.0, 1.0, -1.0, 42.4534198, -76.4735249, 0.000005, -0.000005,
+        1.000005, 1.000015, 89.999995, -179.999995, 0.123455, 0.123465,
+    ])
+    func roundingAgrees(value: Double) {
+        #expect(
+            LifeListEntry.Observation.Identity.canonicalCoordinate(value)
+                == EBirdCSVExporter.canonicalCoordinate(value)
+        )
+    }
+
+    @Test("nil rounds to nil on both sides")
+    func roundingAgreesOnNil() {
+        #expect(EBirdCSVExporter.canonicalCoordinate(nil) == nil)
+        #expect(LifeListEntry.Observation.Identity.canonicalCoordinate(nil) == nil)
+    }
+
+    /// The stronger property the shared rounding buys: what the file carries
+    /// parses back to exactly the value identity will compare on, so a sighting
+    /// still recognizes its own re-imported twin.
+    @Test("the exported column parses back to the identity's own coordinate", arguments: [
+        42.4534198, -76.4735249, 0.000005, 1.000005, 0.123455, -0.123455, 89.999995,
+    ])
+    func exportedColumnMatchesIdentity(value: Double) {
+        let payload = EBirdCSVExporter.makeCSV(rows: [
+            row(observation: .at(may4, "Somewhere", lat: value, lon: value)),
+        ])
+        let fields = parseExportedCSV(payload)[0]
+        let parsed = Double(fields[6])
+        #expect(parsed == LifeListEntry.Observation.Identity.canonicalCoordinate(value))
+    }
+
+    // MARK: unplaceable is a fact about the sighting, not a string match
+
+    /// The tally used to be taken by comparing the exported name back against the
+    /// placeholder, so a user who had genuinely named a spot "Unspecified
+    /// location" was counted among the rows they would have to fix by hand on
+    /// eBird's side. They have a place name like anyone else.
+    @Test("a sighting the user named 'Unspecified location' is not counted as unplaceable")
+    func userNamedPlaceholderIsNotUnplaceable() {
+        for coordinates in [(1.0, 2.0), (nil, nil)] as [(Double?, Double?)] {
+            let payload = EBirdCSVExporter.makeCSV(rows: [
+                row(observation: .at(
+                    may4, "Unspecified location", lat: coordinates.0, lon: coordinates.1
+                )),
+            ])
+            #expect(parseExportedCSV(payload)[0][5] == "Unspecified location")
+            #expect(payload.unplaceableCount == 0, "the user named this place")
+        }
+    }
+
+    /// `isUnplaceable` has to agree exactly with the branch `exportedPlaceName`
+    /// actually takes, or the alert reports a different number than the file.
+    @Test("isUnplaceable agrees with the placeholder branch for every shape of input")
+    func isUnplaceableMatchesTheFallback() {
+        let names: [String?] = [nil, "", "   ", ",", "\"", "Named", "Unspecified location"]
+        let coordinates: [(Double?, Double?)] = [(nil, nil), (1, nil), (nil, 2), (1, 2)]
+        for name in names {
+            for (lat, lon) in coordinates {
+                let exported = EBirdCSVExporter.exportedPlaceName(
+                    location: name, latitude: lat, longitude: lon
+                )
+                let flagged = EBirdCSVExporter.isUnplaceable(
+                    location: name, latitude: lat, longitude: lon
+                )
+                // The one case where the two can legitimately differ is a user
+                // who typed the placeholder themselves.
+                let tookTheFallback = exported == "Unspecified location"
+                    && EBirdCSVExporter.sanitize(name ?? "").isEmpty
+                #expect(flagged == tookTheFallback, "\(name ?? "nil") \(String(describing: lat))")
+            }
+        }
+    }
+
+    /// Half a coordinate is no coordinate: `exportedPlaceName` needs both to
+    /// build its fallback, so the tally has to require both too.
+    @Test("one coordinate without the other is still unplaceable")
+    func halfACoordinateIsUnplaceable() {
+        for (lat, lon) in [(1.0, nil), (nil, 2.0)] as [(Double?, Double?)] {
+            let payload = EBirdCSVExporter.makeCSV(rows: [
+                row(observation: .at(may4, nil, lat: lat, lon: lon)),
+            ])
+            #expect(parseExportedCSV(payload)[0][5] == "Unspecified location")
+            #expect(payload.unplaceableCount == 1)
+        }
+    }
+
     @Test("the suggested filename carries the save date")
     func defaultFilename() {
         let name = EBirdCSVExporter.defaultFilename(date: utcDay(2026, 5, 4))

@@ -93,9 +93,14 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
 
             /// A coordinate rounded to the five decimal places (~1 m) the eBird
             /// CSV carries — the most precision that can survive the trip.
+            ///
+            /// Delegated to `EBirdCSVExporter`, exactly as `canonicalPlace` below
+            /// is, so the rounding identity compares on and the rounding the file
+            /// is written with are one decision made in one place. They used to
+            /// be two — `%.5f` there against `.rounded()` here, which disagree on
+            /// a value landing exactly on a half.
             static func canonicalCoordinate(_ value: Double?) -> Double? {
-                guard let value else { return nil }
-                return (value * 100_000).rounded() / 100_000
+                EBirdCSVExporter.canonicalCoordinate(value)
             }
 
             /// The place name the export will actually write for this sighting:
@@ -105,7 +110,8 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
             /// Resolving the fallback is what makes a nameless sighting survive
             /// the trip. Kestrel's place name is optional, but eBird's Location
             /// Name is not — so a sighting with coordinates and no name is
-            /// exported under "42.45342, -76.47352" and one with neither under
+            /// exported under `42.45342 -76.47352` (a space, not a comma: the
+            /// file forbids commas) and one with neither under
             /// "Unspecified location", and *that* is the name that comes back on
             /// the next import. Folding only the stored name left the returning
             /// copy unequal to the sighting it came from, so it was filed as a
@@ -135,6 +141,71 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         /// Longitude columns were blank — the UI hides its map affordances for
         /// those rather than offering a tap that goes nowhere.
         var hasCoordinate: Bool { latitude != nil && longitude != nil }
+
+        // MARK: Ordering
+
+        /// Ascending, with `nil` first. `nil` means "these are equal, keep
+        /// comparing" — the shape the tiebreaker chains below are written in.
+        private static func ascending(_ a: Double?, _ b: Double?) -> Bool? {
+            switch (a, b) {
+            case (nil, nil):     return nil
+            case (nil, _):       return true
+            case (_, nil):       return false
+            case let (x?, y?):   return x == y ? nil : x < y
+            }
+        }
+
+        /// Everything a sighting *is* apart from its date, as a total order:
+        /// place name, then coordinates, then provenance.
+        ///
+        /// Both of the app's date-first orderings fall through to this once the
+        /// dates match, so the two can't disagree about which of two same-day
+        /// sightings comes first.
+        ///
+        /// It has to be a *total* order, not merely a tiebreaker, because two
+        /// sightings of one species are allowed to share a date **and** a place:
+        /// every path where the user writes a record passes `dedupe: false` to
+        /// `make` precisely so an edit can't collapse one into a sibling, and
+        /// `LifeListStore.locate` exists because such a pair can differ in
+        /// nothing but `isImported`. Comparing on date and place alone left that
+        /// pair equal, and `Array.sorted` is not stable on equal elements — so
+        /// their order could change between two sorts of the same data.
+        nonisolated static func ordersBeforeAtSameDate(_ a: Observation, _ b: Observation) -> Bool {
+            // The optionals are compared as optionals, not coalesced to "".
+            // Everywhere the app *displays* a place, no name and an empty name
+            // are the same thing — but they are different stored values, and
+            // `LifeListStore.locate` matches on the exact value before it falls
+            // back to identity. Folding them together here would leave that pair
+            // comparing equal, which is the very hole this function closes.
+            switch (a.location, b.location) {
+            case (nil, nil):   break
+            case (nil, _):     return true
+            case (_, nil):     return false
+            case let (x?, y?): if x != y { return x < y }
+            }
+            if let byLatitude = ascending(a.latitude, b.latitude) { return byLatitude }
+            if let byLongitude = ascending(a.longitude, b.longitude) { return byLongitude }
+            // Kestrel-native before imported, arbitrarily but consistently. Two
+            // sightings that reach here and tie on this are equal in every field,
+            // so which one comes first is not a question anything can answer.
+            return !a.isImported && b.isImported
+        }
+
+        /// Deterministic "newest first" ordering, with tiebreakers all the way
+        /// down. The order every list that shows a species' sightings uses — see
+        /// `LifeListStore.observations(for:)`.
+        ///
+        /// Mirrors `LifeListStore.ordersBefore` and `BirdCluster.ordersBefore`,
+        /// which carry stable tiebreakers for the same reason: `Array.sorted`
+        /// makes no promise about equal elements, so an ordering that leaves two
+        /// records equal can hand back either arrangement. In
+        /// `ObservationPickerSheet` — which keys its rows by position and re-reads
+        /// the store live — that meant the rows could swap under the user's
+        /// finger, in the one list whose whole job is telling such sightings apart.
+        nonisolated static func ordersBefore(_ a: Observation, _ b: Observation) -> Bool {
+            if a.date != b.date { return a.date > b.date }
+            return ordersBeforeAtSameDate(a, b)
+        }
 
         init(
             date: Date,

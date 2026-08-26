@@ -205,20 +205,30 @@ extension SpeciesNotifications: UNUserNotificationCenterDelegate {
         }
     }
 
-    /// Presents the idle-timeout prompt even while the app is foregrounded, so its
-    /// "End Session" action is reachable if the user happens to be in the app when
-    /// the silence threshold is crossed. Other notifications keep the default
-    /// foregrounded behavior (the species alerts already gate themselves on the
-    /// spectrogram not being visible).
+    /// Presents everything Kestrel posts, foregrounded or not.
+    ///
+    /// **Whether an alert is wanted is decided where it is posted, not here.**
+    /// Every `add` in this file already sits behind a condition that knows the
+    /// context: a species alert only exists when
+    /// `RecordingManager.spectrogramVisible` is false, a lifecycle alert only
+    /// when a watch session has actually ended, the idle prompt only after a
+    /// silent stretch. There is nothing left for this method to second-guess.
+    ///
+    /// Suppressing everything but the idle prompt looked like "don't interrupt
+    /// the foreground", but it was a *different* rule from the one the post site
+    /// applies, and the gap between them swallowed real alerts.
+    /// `spectrogramVisible` means "on the Identify tab **and** active", so
+    /// recording while looking at the Map, Life List or Settings tab posted a
+    /// new-species notification — spending its `notifyCooldown` — that was then
+    /// dropped here. The haptic still fired (the app is foregrounded, so
+    /// `RecordingManager.merge` buzzes the phone), leaving a pulse for a new
+    /// lifer with nothing anywhere naming the bird. "Watch disconnected" went the
+    /// same way.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        if notification.request.content.categoryIdentifier == Self.idleTimeoutCategory {
-            completionHandler([.banner, .sound])
-        } else {
-            completionHandler([])
-        }
+        completionHandler([.banner, .sound])
     }
 }

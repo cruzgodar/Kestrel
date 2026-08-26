@@ -228,7 +228,8 @@ struct MoreView: View {
                     let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: true)
                     updateCheckStatus = result.newCount == 0 && result.changedCount == 0
                         ? "No photo updates"
-                        : "\(result.newCount) new, \(result.changedCount) changed"
+                        : "\(result.newCount) new, \(result.changedCount) changed "
+                            + "(\(result.refreshedCount) re-downloaded)"
                     checkingForUpdates = false
                     refreshCacheCounts()
                 }
