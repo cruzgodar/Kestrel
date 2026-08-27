@@ -385,9 +385,17 @@ final class LifeListStore {
     /// The new observation is folded in with the existing ones via
     /// `LifeListEntry.make`, so an observation earlier than the current
     /// `firstSeen` is promoted to the displayed first-seen fields and the old
-    /// one drops into `otherObservations`. Exact duplicates collapse, matching
-    /// re-import behavior. No-op if the species isn't on the list — the Life
-    /// List tab's add flow routes those through `add` instead.
+    /// one drops into `otherObservations`. No-op if the species isn't on the
+    /// list — the Life List tab's add flow routes those through `add` instead.
+    ///
+    /// **Nothing collapses here**, even an exact repeat of a sighting already on
+    /// file. This is the user writing a record by hand, not two sets of records
+    /// being unioned, so it falls on the `dedupe: false` side of this file's one
+    /// rule — see `canonicalize` and the note at the call below. (This comment
+    /// used to claim the opposite, "exact duplicates collapse, matching
+    /// re-import behavior", which was left over from before that rule existed
+    /// and describes a behavior that would silently eat a second sighting of one
+    /// bird at one spot on one day.)
     func addObservation(
         scientificName: String,
         date: Date,

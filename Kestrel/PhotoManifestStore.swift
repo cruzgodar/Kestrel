@@ -34,14 +34,19 @@ nonisolated struct PhotoManifest: Decodable, Sendable {
 /// what lets photos be added to the CDN over time and picked up **without an app
 /// update**.
 ///
-/// It holds two things, both persisted so they survive relaunch:
+/// It holds four things, all persisted so they survive relaunch:
 ///   • **hashes** — recorded as published manifests are applied. Diffing an
 ///     incoming manifest's hashes against these is how new (unseen slug) and
 ///     changed (different hash) photos are found.
-///   • **metadata** — the credit/license/page/code for every species a fetched
-///     manifest has told us about. This is the *only* source of photo metadata
-///     in the app (`SpeciesPhotoMetadata` reads nothing else), so a slug missing
-///     here has no photo as far as the rest of the app is concerned.
+///   • **metadata** — the credit/license/page/code for the photo the app
+///     actually holds for each species. This is the *only* source of photo
+///     metadata in the app (`SpeciesPhotoMetadata` reads nothing else), so a
+///     slug missing here has no photo as far as the rest of the app is
+///     concerned.
+///   • **pending metadata** — the credit for a photo that has been *republished*
+///     upstream but whose new bytes haven't been pulled yet, held back so the
+///     image and its attribution turn over together rather than the caption
+///     running days ahead of the picture.
 ///   • **validation stamps** — when each slug's cached bytes were last confirmed
 ///     to match the published hash. Cached images go stale on a timer (see
 ///     `RemoteSpeciesImageStore.cacheFreshness`); confirming one costs a hash
@@ -61,9 +66,23 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     /// slug → content hash of the photo the app believes is current, advanced as
     /// manifests are applied.
     private var hashes: [String: String]
-    /// slug → attribution, for every species a fetched manifest has described.
-    /// Empty until the first successful fetch.
+    /// slug → attribution **for the bytes the app currently holds**. Empty until
+    /// the first successful fetch.
     private var metadata: [String: SpeciesPhotoInfo]
+    /// slug → attribution for a *republished* photo whose bytes haven't been
+    /// pulled yet, held back so the credit and the image it credits swap over
+    /// together.
+    ///
+    /// A changed slug keeps serving its cached bytes until a Wi-Fi-and-power pass
+    /// re-downloads them (see `RemoteSpeciesImageStore.checkForPhotoUpdates`),
+    /// which can be days. Writing the incoming credit into `metadata` on sight
+    /// meant that whole window rendered photo *v1* under photo *v2*'s
+    /// photographer and license — the same failure `isAttributed` exists to
+    /// prevent, wearing a plausible-looking name instead of a blank one. Parking
+    /// it here and promoting it in `markValidated(_:advancedHashes:)`, the one
+    /// place that knows the replacement bytes actually landed, keeps the pair
+    /// atomic.
+    private var pendingMetadata: [String: SpeciesPhotoInfo]
     /// slug → epoch seconds when the app last confirmed that slug's cached bytes
     /// match the published hash. A slug with no entry has never been confirmed
     /// and therefore counts as stale, which is the right default: it makes an
@@ -99,16 +118,19 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
         // everything the app knows about the photo set was fetched.
         var localHashes: [String: String] = [:]
         var localMetadata: [String: SpeciesPhotoInfo] = [:]
+        var localPendingMetadata: [String: SpeciesPhotoInfo] = [:]
         var localValidatedAt: [String: Double] = [:]
         if let url = snapshotURL, let data = try? Data(contentsOf: url),
            let snapshot = try? JSONDecoder().decode(LocalSnapshot.self, from: data) {
             localHashes = snapshot.hashes
             localMetadata = snapshot.metadata.mapValues(\.info)
+            localPendingMetadata = (snapshot.pendingMetadata ?? [:]).mapValues(\.info)
             localValidatedAt = snapshot.validatedAt ?? [:]
         }
 
         hashes = localHashes
         metadata = localMetadata
+        pendingMetadata = localPendingMetadata
         validatedAt = localValidatedAt
     }
 
@@ -173,6 +195,11 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     /// were actually re-downloaded — recorded only here, *after* the download
     /// landed, so a failed refresh leaves both the old bytes and the old hash in
     /// place and the slug stays stale for the next attempt.
+    ///
+    /// This is also where a republished photo's held-back credit is promoted (see
+    /// `pendingMetadata`). Hash and attribution advance in the same breath,
+    /// because they describe the same bytes: whichever pass proves the new image
+    /// is on disk proves the new credit belongs to it.
     func markValidated(
         _ slugs: [String],
         advancedHashes: [String: String] = [:],
@@ -185,16 +212,28 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
         for (slug, hash) in advancedHashes {
             hashes[slug] = hash
             validatedAt[slug] = stamp
+            if let promoted = pendingMetadata.removeValue(forKey: slug) {
+                metadata[slug] = promoted
+            }
         }
         persistLocked()
     }
 
     /// Drops every validation stamp, so the next revalidation pass re-checks the
     /// whole cache. Used when the cached bytes are wiped out from under us.
+    ///
+    /// Any held-back credit is promoted at the same time. `pendingMetadata`
+    /// exists to keep a republished photo's credit away from the *old bytes*
+    /// still on disk — and there are none now. Every asset URL is unversioned, so
+    /// the next load of one of these slugs fetches the republished image, and
+    /// holding its credit back past this point would produce the identical
+    /// mis-crediting in the opposite direction.
     func clearValidationStamps() {
         lock.lock(); defer { lock.unlock() }
-        guard !validatedAt.isEmpty else { return }
+        guard !validatedAt.isEmpty || !pendingMetadata.isEmpty else { return }
         validatedAt = [:]
+        for (slug, info) in pendingMetadata { metadata[slug] = info }
+        pendingMetadata = [:]
         persistLocked()
     }
 
@@ -212,14 +251,25 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     /// Diffs a freshly-fetched published manifest against local state and records
     /// what it found.
     ///
-    /// **Metadata is always recorded**, for every slug in the manifest, whatever
-    /// else is or isn't committed. It costs a dictionary write, it is the app's
-    /// only source of credit and license (`SpeciesPhotoMetadata` reads nothing
-    /// else), and `RemoteSpeciesImageStore` refuses to show a photo without it —
-    /// so withholding it doesn't defer work, it blanks the species out. Holding it
-    /// back for changed slugs is what made every species whose photo had been
-    /// re-published since the install's build show no photo at all until a
-    /// Wi-Fi-and-power background pass happened to run.
+    /// **Metadata travels with the bytes it credits.** For a slug the app has
+    /// never seen, and for one whose published hash still matches ours, the
+    /// incoming credit is recorded on sight: the first has no bytes for it to
+    /// disagree with, and the second is a *correction* to the photo already on
+    /// disk, which is exactly the fix that has to propagate immediately. It has
+    /// to be recorded for those, not merely may be — it is the app's only source
+    /// of credit and license (`SpeciesPhotoMetadata` reads nothing else) and
+    /// `RemoteSpeciesImageStore` refuses to show a photo without it, so
+    /// withholding it there doesn't defer work, it blanks the species out.
+    ///
+    /// A **republished** slug is the one case that waits. Its cached bytes go on
+    /// being served until a Wi-Fi-and-power pass replaces them, so writing the
+    /// new photographer and license in now would caption the old photo with the
+    /// new photo's credit for however many days that takes. The incoming credit
+    /// is parked in `pendingMetadata` and promoted by
+    /// `markValidated(_:advancedHashes:)` alongside the hash, so the image and
+    /// its attribution change over together. The single exception is a slug that
+    /// has a hash but no credit at all — the pre-manifest upgrade path — where
+    /// there is nothing to keep showing and waiting would leave it invisible.
     ///
     /// **Hashes** are a different matter and are only advanced for slugs the app
     /// has never seen. A changed slug's new hash is committed by the caller,
@@ -240,13 +290,35 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
         // this same manifest had just grown.
         let knownBefore = hashes.count
         for (slug, entry) in remote.files {
-            metadata[slug] = entry.info
             let known = hashes[slug]
             if known == nil {
+                // Never seen: there are no bytes on hand for the credit to
+                // disagree with, and recording the hash is what makes the photo
+                // downloadable at all.
                 hashes[slug] = entry.hash
+                metadata[slug] = entry.info
+                pendingMetadata.removeValue(forKey: slug)
                 result.newSlugs.append(slug)
             } else if known != entry.hash {
                 result.changedSlugs.append(slug)
+                if metadata[slug] == nil {
+                    // Nothing on record to keep showing. Withholding here would
+                    // leave the slug unattributed — and therefore invisible (see
+                    // `RemoteSpeciesImageStore.isAttributed`) and pinned into
+                    // `needsMetadataBackfill` — which is strictly worse than the
+                    // drift being avoided. This is the pre-manifest upgrade path,
+                    // where a hash was seeded without a credit beside it.
+                    metadata[slug] = entry.info
+                } else {
+                    // Republished. Hold the new credit until the new bytes land.
+                    pendingMetadata[slug] = entry.info
+                }
+            } else {
+                // Same bytes as ours, so any metadata change is a *correction* to
+                // the photo already on disk — exactly the fix that has to
+                // propagate on sight.
+                metadata[slug] = entry.info
+                pendingMetadata.removeValue(forKey: slug)
             }
         }
         // Snapshot first: removing from `hashes` while iterating its own keys
@@ -256,6 +328,7 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
             for slug in withdrawn {
                 hashes.removeValue(forKey: slug)
                 metadata.removeValue(forKey: slug)
+                pendingMetadata.removeValue(forKey: slug)
                 validatedAt.removeValue(forKey: slug)
             }
             result.removedSlugs = withdrawn
@@ -286,6 +359,7 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
         let unattributed = hashes.keys.filter { metadata[$0] == nil }
         for slug in unattributed {
             hashes.removeValue(forKey: slug)
+            pendingMetadata.removeValue(forKey: slug)
             validatedAt.removeValue(forKey: slug)
         }
         persistLocked()
@@ -375,11 +449,13 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
         // deferred to the queue below, outside the lock.
         let hashes = self.hashes
         let metadata = self.metadata
+        let pendingMetadata = self.pendingMetadata
         let validatedAt = self.validatedAt
         persistQueue.async {
             let snapshot = LocalSnapshot(
                 hashes: hashes,
                 metadata: metadata.mapValues(CodableInfo.init),
+                pendingMetadata: pendingMetadata.mapValues(CodableInfo.init),
                 validatedAt: validatedAt
             )
             guard let data = try? JSONEncoder().encode(snapshot) else { return }
@@ -394,6 +470,10 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
 private nonisolated struct LocalSnapshot: Codable {
     let hashes: [String: String]
     let metadata: [String: CodableInfo]
+    /// Optional so snapshots written before deferred attribution existed still
+    /// decode. A missing map means nothing is being held back, which is exactly
+    /// what such an install's state means: it wrote every credit on sight.
+    let pendingMetadata: [String: CodableInfo]?
     /// Optional so snapshots written before per-slug freshness existed still
     /// decode; a missing map means nothing has been validated, which correctly
     /// makes the whole cache stale on the first launch of this build.

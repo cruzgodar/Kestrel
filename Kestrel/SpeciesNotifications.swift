@@ -19,6 +19,12 @@ final class SpeciesNotifications: NSObject {
     nonisolated static let idleTimeoutCategory = "kestrel-idle-timeout"
     nonisolated static let endSessionAction = "kestrel-end-session"
 
+    /// Category stamped on the per-bird alerts (`notifyNewSpecies`). It carries
+    /// no actions — it exists so `willPresent` can tell "a bird was heard" apart
+    /// from the app's few lifecycle notifications and drop the sound for it. See
+    /// `presentationOptions(forCategory:)`.
+    nonisolated static let speciesCategory = "kestrel-species"
+
     /// Invoked when the user taps the idle-timeout notification's "End Session"
     /// action. Wired by `KestrelApp` to end whichever session is active.
     var onEndSessionRequested: (() -> Void)?
@@ -39,13 +45,22 @@ final class SpeciesNotifications: NSObject {
             title: "End Session",
             options: [.destructive]
         )
-        let category = UNNotificationCategory(
+        let idleCategory = UNNotificationCategory(
             identifier: Self.idleTimeoutCategory,
             actions: [endAction],
             intentIdentifiers: [],
             options: []
         )
-        center.setNotificationCategories([category])
+        // Registered despite having no actions of its own, so the identifier the
+        // species alerts carry is a declared category rather than a bare string
+        // the system has never heard of.
+        let speciesCategory = UNNotificationCategory(
+            identifier: Self.speciesCategory,
+            actions: [],
+            intentIdentifiers: [],
+            options: []
+        )
+        center.setNotificationCategories([idleCategory, speciesCategory])
     }
 
     /// Asks the system once for alert+sound permission, awaiting the user's
@@ -84,7 +99,10 @@ final class SpeciesNotifications: NSObject {
         let content = UNMutableNotificationContent()
         content.title = commonName
         content.body  = reason.body
+        // Kept for delivery while the app is *away* — a pocketed phone's only
+        // announcement. The foreground case drops it; see `willPresent`.
         content.sound = .default
+        content.categoryIdentifier = Self.speciesCategory
         if let attachment = await makeAttachment(scientificName: scientificName) {
             content.attachments = [attachment]
         }
@@ -228,11 +246,43 @@ extension SpeciesNotifications: UNUserNotificationCenterDelegate {
     /// though — `RecordingManager.merge` stamps `lastHeardAt` on every detection
     /// whether or not it queued a notification, so the window was already running
     /// regardless. What was lost was the one banner, not the ones after it.
+    ///
+    /// What it *doesn't* do is play a sound for a bird. See
+    /// `presentationOptions(forCategory:)`.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .sound])
+        completionHandler(
+            Self.presentationOptions(
+                forCategory: notification.request.content.categoryIdentifier
+            )
+        )
+    }
+
+    /// How a notification is presented while the app is on screen.
+    ///
+    /// Everything banners (see `willPresent`). The **sound** is the part that
+    /// depends on what is being said, and a per-bird alert is the one thing that
+    /// must not make one.
+    ///
+    /// A species alert already has a signal, and it isn't audible:
+    /// `RecordingManager.merge` buzzes the phone for exactly these birds whenever
+    /// the app is foregrounded. Letting the banner ring on top of that means a
+    /// walk spent with the Map tab open chirps out loud at every new lifer — from
+    /// an app whose whole premise is that you can put the phone away and let your
+    /// wrist tell you. The sound stays on `content.sound` so a *backgrounded*
+    /// delivery still announces itself, which is the case with no haptic and no
+    /// screen to look at.
+    ///
+    /// The handful of lifecycle notifications keep theirs. Each one is a one-off
+    /// asking for a decision or reporting that recording has stopped — "no birds
+    /// heard for 30 minutes, end the session?", "watch recording stopped" — none
+    /// of which repeats, and all of which are worth interrupting for.
+    nonisolated static func presentationOptions(
+        forCategory category: String
+    ) -> UNNotificationPresentationOptions {
+        category == speciesCategory ? [.banner] : [.banner, .sound]
     }
 }

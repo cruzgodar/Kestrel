@@ -76,20 +76,164 @@ struct PhotoManifestStoreTests {
         #expect(subject.recordedHash(forSlug: "a") == "h2")
     }
 
-    /// Metadata is always recorded, for every slug, whatever else is or isn't
-    /// committed. Withholding it doesn't defer work — it blanks the species out,
-    /// which is what made every re-published photo show nothing at all until a
-    /// Wi-Fi-and-power background pass happened to run.
-    @Test("metadata is recorded even for a slug whose hash is held back")
-    func metadataAlwaysRecorded() {
+    // MARK: attribution follows the bytes
+
+    /// A *correction* — the same photo, a fixed credit — has to land on the pass
+    /// that finds it. The bytes on disk are the ones the new credit describes, so
+    /// there is nothing to wait for, and waiting would leave the app knowingly
+    /// showing an attribution it has already been told is wrong.
+    @Test("a credit fix on an unchanged photo lands immediately")
+    func creditFixAppliesAtOnce() {
         let scratch = ScratchDirectory()
         let subject = store(scratch)
         _ = subject.apply(manifest(["a": ("h1", "Alice")]))
-        _ = subject.apply(manifest(["a": ("h2", "Bob After A Credit Fix")]))
+        let result = subject.apply(manifest(["a": ("h1", "Alice Corrected")]))
 
-        #expect(subject.info(forSlug: "a")?.credit == "Bob After A Credit Fix",
-                "an attribution fix must reach the app on the same pass that finds it")
-        #expect(subject.recordedHash(forSlug: "a") == "h1", "while the hash still waits")
+        #expect(result.changedSlugs.isEmpty, "same hash, so the photo itself hasn't moved")
+        #expect(subject.info(forSlug: "a")?.credit == "Alice Corrected")
+    }
+
+    /// A *republished* photo is the opposite case, and it used to be handled the
+    /// same way. The cached bytes go on being served until a Wi-Fi-and-power pass
+    /// re-downloads them — days, on a phone that is rarely both — and writing the
+    /// incoming credit in on sight captioned photo v1 with photo v2's
+    /// photographer and license for that entire window. That is the same failure
+    /// `isAttributed` exists to prevent, wearing a plausible name instead of a
+    /// blank one.
+    @Test("a republished photo keeps its old credit until the new bytes land")
+    func republishedCreditWaitsForItsBytes() {
+        let scratch = ScratchDirectory()
+        let subject = store(scratch)
+        _ = subject.apply(manifest(["a": ("h1", "Alice")]))
+        let result = subject.apply(manifest(["a": ("h2", "Bob")]))
+
+        #expect(result.changedSlugs == ["a"])
+        #expect(subject.info(forSlug: "a")?.credit == "Alice",
+                "the cached bytes are still Alice's photo, so the caption still says Alice")
+        #expect(subject.recordedHash(forSlug: "a") == "h1")
+
+        // The refresh landed: hash and credit turn over together.
+        subject.markValidated([], advancedHashes: ["a": "h2"])
+        #expect(subject.recordedHash(forSlug: "a") == "h2")
+        #expect(subject.info(forSlug: "a")?.credit == "Bob")
+    }
+
+    /// The held-back credit is *held*, not dropped. A foreground pass finds the
+    /// change, does nothing about the bytes (that's the metered-network rule),
+    /// and the app is relaunched before the high-power pass ever runs.
+    @Test("a held-back credit survives a relaunch and still promotes")
+    func heldBackCreditSurvivesRelaunch() {
+        let scratch = ScratchDirectory()
+        do {
+            let subject = store(scratch)
+            _ = subject.apply(manifest(["a": ("h1", "Alice")]))
+            _ = subject.apply(manifest(["a": ("h2", "Bob")]))
+            subject.persistNow()
+        }
+        let reopened = store(scratch)
+        #expect(reopened.info(forSlug: "a")?.credit == "Alice", "still crediting the cached bytes")
+
+        reopened.markValidated([], advancedHashes: ["a": "h2"])
+        #expect(reopened.info(forSlug: "a")?.credit == "Bob",
+                "and the parked credit was still there to promote")
+    }
+
+    /// A slug republished twice before either refresh lands: the newest credit is
+    /// the one that eventually promotes, because it is the one describing the
+    /// bytes a refresh would actually fetch.
+    @Test("a second republish supersedes the first held-back credit")
+    func laterRepublishSupersedesTheHeldCredit() {
+        let scratch = ScratchDirectory()
+        let subject = store(scratch)
+        _ = subject.apply(manifest(["a": ("h1", "Alice")]))
+        _ = subject.apply(manifest(["a": ("h2", "Bob")]))
+        _ = subject.apply(manifest(["a": ("h3", "Carol")]))
+
+        #expect(subject.info(forSlug: "a")?.credit == "Alice")
+        subject.markValidated([], advancedHashes: ["a": "h3"])
+        #expect(subject.info(forSlug: "a")?.credit == "Carol")
+    }
+
+    /// A republish that is *reverted* upstream before the app ever pulls it. The
+    /// hash comes back to what we hold, so the slug stops being changed — and the
+    /// parked credit has to be dropped with it, or a later unrelated hash bump
+    /// would promote a credit for bytes that were never published.
+    @Test("a reverted republish drops the credit it had parked")
+    func revertedRepublishDiscardsTheHeldCredit() {
+        let scratch = ScratchDirectory()
+        let subject = store(scratch)
+        _ = subject.apply(manifest(["a": ("h1", "Alice")]))
+        _ = subject.apply(manifest(["a": ("h2", "Bob")]))
+        _ = subject.apply(manifest(["a": ("h1", "Alice")]))
+
+        #expect(subject.info(forSlug: "a")?.credit == "Alice")
+        subject.markValidated([], advancedHashes: ["a": "hLater"])
+        #expect(subject.info(forSlug: "a")?.credit == "Alice",
+                "Bob's credit was never published for any bytes we hold")
+    }
+
+    /// Wiping the cache is the one thing that makes waiting *wrong*. Every asset
+    /// URL is unversioned, so with no bytes on disk the next load fetches the
+    /// republished photo — and holding its credit back past that point produces
+    /// the identical mis-crediting in the opposite direction.
+    @Test("clearing the cache promotes every held-back credit")
+    func clearingStampsPromotesHeldCredits() {
+        let scratch = ScratchDirectory()
+        let subject = store(scratch)
+        _ = subject.apply(manifest(["a": ("h1", "Alice")]))
+        subject.markValidated(["a"])
+        _ = subject.apply(manifest(["a": ("h2", "Bob")]))
+        #expect(subject.info(forSlug: "a")?.credit == "Alice")
+
+        subject.clearValidationStamps()
+        #expect(subject.info(forSlug: "a")?.credit == "Bob",
+                "the bytes Alice's credit described are gone")
+    }
+
+    /// The one case that must *not* wait: a hash on record with no credit beside
+    /// it — what an upgrade from the bundled-metadata build leaves behind. There
+    /// is nothing to keep showing, so withholding wouldn't preserve a correct
+    /// caption, it would leave the species unattributed and therefore invisible
+    /// (see `RemoteSpeciesImageStore.isAttributed`) and pin `needsMetadataBackfill`
+    /// on forever.
+    @Test("a changed slug with no credit at all is attributed at once")
+    func bareHashIsAttributedWithoutWaiting() throws {
+        let scratch = ScratchDirectory()
+        try Data("""
+        {"hashes":{"a":"h1"},"metadata":{},"validatedAt":{}}
+        """.utf8).write(to: scratch.url.appendingPathComponent("photos_manifest_local.json"))
+
+        let subject = store(scratch)
+        #expect(subject.needsMetadataBackfill)
+
+        let result = subject.apply(manifest(["a": ("h2", "Alice")]))
+        #expect(result.changedSlugs == ["a"], "the published photo really has moved on")
+        #expect(subject.info(forSlug: "a")?.credit == "Alice", "and yet it is attributed now")
+        #expect(!subject.needsMetadataBackfill, "so the backfill terminates")
+    }
+
+    /// A photo withdrawn while its republish was still parked takes the parked
+    /// credit with it — nothing is left to promote it onto.
+    @Test("withdrawing a slug drops the credit it had parked")
+    func withdrawalDropsTheHeldCredit() {
+        let scratch = ScratchDirectory()
+        let subject = store(scratch)
+        var entries: [String: (hash: String, credit: String?)] = [:]
+        for i in 0..<80 { entries["slug\(i)"] = ("h\(i)", "Alice") }
+        _ = subject.apply(manifest(entries))
+
+        entries["slug0"] = ("changed", "Bob")
+        _ = subject.apply(manifest(entries))
+        #expect(subject.info(forSlug: "slug0")?.credit == "Alice")
+
+        entries.removeValue(forKey: "slug0")
+        let result = subject.apply(manifest(entries))
+        #expect(result.removedSlugs == ["slug0"])
+        #expect(subject.info(forSlug: "slug0") == nil)
+
+        // Nothing to promote onto, so a stray advance can't resurrect it.
+        subject.markValidated([], advancedHashes: ["slug0": "changed"])
+        #expect(subject.info(forSlug: "slug0") == nil)
     }
 
     @Test("an unknown slug has no metadata")
@@ -295,7 +439,8 @@ struct PhotoManifestStoreTests {
         #expect(!subject.needsMetadataBackfill, "a fresh install knows about nothing")
 
         _ = subject.apply(manifest(["a": ("h1", "Alice")]))
-        #expect(!subject.needsMetadataBackfill, "apply always records metadata")
+        #expect(!subject.needsMetadataBackfill,
+                "a slug whose hash apply records gets its metadata in the same breath")
     }
 
     /// A withdrawn photo's hash sitting in local state forever with no metadata

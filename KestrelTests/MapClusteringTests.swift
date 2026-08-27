@@ -441,6 +441,141 @@ struct MapClusteringTests {
         #expect(one != different)
     }
 
+    // MARK: an edit has to be visible through equality
+
+    /// **The failure both of this file's `==` operators exist to prevent.**
+    ///
+    /// `RepInfo` and `BirdCluster` are hand-written `Equatable` only because
+    /// `CLLocationCoordinate2D` isn't. Both used to settle for comparing
+    /// `MapPoint.id`s — and an id is `"<species>"` or `"<species>#<index>"`,
+    /// which does *not* move when the sighting behind it is edited. So the two
+    /// "nothing changed, skip the write" guards that read these operators
+    /// (`rebuildClusters`' `next != visibleReps`, and `recomposeOpenCard`'s
+    /// `recomposed != open`) took an edit for a no-op and left the map holding
+    /// the pre-edit record.
+    ///
+    /// What the user saw: editing a lone pin's date, then opening its menu again,
+    /// re-opened the flow on the *old* date — and confirming that resolved to
+    /// nothing in `LifeListStore.locate` (identity is made of exactly the fields
+    /// the first edit had rewritten) and silently wrote nothing at all. The photo
+    /// the pin opened captioned itself with the old place and date for the same
+    /// reason.
+    ///
+    /// Every field is checked one at a time, because it only takes one of them
+    /// slipping out of the comparison to reopen this.
+    @Test("an edited sighting is not equal to the one it replaced", arguments: [
+        "date", "place", "latitude", "longitude", "provenance",
+    ])
+    func editedPointBreaksEquality(_ field: String) {
+        let before = MapPoint(
+            id: "X y", scientificName: "X y", commonName: "X",
+            date: may4, location: "Ithaca NY",
+            latitude: 42.45342, longitude: -76.47352, isImported: false
+        )
+        var after = before
+        switch field {
+        case "date":       after = copy(before, date: may5)
+        case "place":      after = copy(before, location: "Sapsucker Woods")
+        case "latitude":   after = copy(before, latitude: 42.5)
+        case "longitude":  after = copy(before, longitude: -76.5)
+        default:           after = copy(before, isImported: true)
+        }
+
+        #expect(after.id == before.id, "the id deliberately doesn't move — that's the trap")
+
+        let coord = CLLocationCoordinate2D(latitude: 42, longitude: -76)
+        #expect(
+            MapView.RepInfo(count: 1, coordinate: coord, representative: before, others: [])
+                != MapView.RepInfo(count: 1, coordinate: coord, representative: after, others: []),
+            "\(field) changed, so the annotation's rep info must be rewritten"
+        )
+        #expect(
+            BirdCluster(representative: before, coordinate: coord, others: [])
+                != BirdCluster(representative: after, coordinate: coord, others: []),
+            "\(field) changed, so an open card must be re-pointed"
+        )
+    }
+
+    /// The same, for a sighting that isn't the stack's representative — a card's
+    /// grid cell acts on `others` just as directly as on the rep.
+    @Test("an edit to a non-representative member also breaks equality")
+    func editedMemberBreaksEquality() {
+        let rep = point("A a", "A a", may5, lat: 42, lon: -76)
+        let before = point("B b", "B b", may4, lat: 42, lon: -76, place: "Ithaca NY")
+        let after = copy(before, location: "Sapsucker Woods")
+        let coord = CLLocationCoordinate2D(latitude: 42, longitude: -76)
+
+        #expect(
+            MapView.RepInfo(count: 2, coordinate: coord, representative: rep, others: [before])
+                != MapView.RepInfo(count: 2, coordinate: coord, representative: rep, others: [after])
+        )
+        #expect(
+            BirdCluster(representative: rep, coordinate: coord, others: [before])
+                != BirdCluster(representative: rep, coordinate: coord, others: [after])
+        )
+    }
+
+    /// The cluster's own coordinate took part in neither operator, so a stack
+    /// that moved while keeping its members — the pin's sighting re-pinned
+    /// somewhere else — compared equal to where it used to be. That coordinate is
+    /// what `handleAnnotationTap` hands the card it opens.
+    @Test("a stack that moved is not equal to where it was")
+    func movedStackBreaksEquality() {
+        let rep = point("A a", "A a", may4, lat: 42, lon: -76)
+        let here = CLLocationCoordinate2D(latitude: 42, longitude: -76)
+        let there = CLLocationCoordinate2D(latitude: 43, longitude: -77)
+
+        #expect(
+            MapView.RepInfo(count: 1, coordinate: here, representative: rep, others: [])
+                != MapView.RepInfo(count: 1, coordinate: there, representative: rep, others: [])
+        )
+        #expect(
+            BirdCluster(representative: rep, coordinate: here, others: [])
+                != BirdCluster(representative: rep, coordinate: there, others: [])
+        )
+    }
+
+    /// Equality still has to be *true* for genuinely unchanged input, or the
+    /// guards stop guarding: every camera settle would rewrite `visibleReps` and
+    /// re-point an open card under a user who was only panning.
+    @Test("an unchanged stack still compares equal, and still hashes equal")
+    func unchangedStackStaysEqual() {
+        let rep = point("A a", "A a", may4, lat: 42, lon: -76)
+        let other = point("B b", "B b", may5, lat: 42, lon: -76)
+        let coord = CLLocationCoordinate2D(latitude: 42, longitude: -76)
+
+        let a = BirdCluster(representative: rep, coordinate: coord, others: [other])
+        let b = BirdCluster(representative: rep, coordinate: coord, others: [other])
+        #expect(a == b)
+        #expect(a.hashValue == b.hashValue, "Hashable's own requirement")
+        #expect(
+            MapView.RepInfo(count: 2, coordinate: coord, representative: rep, others: [other])
+                == MapView.RepInfo(count: 2, coordinate: coord, representative: rep, others: [other])
+        )
+    }
+
+    /// `MapPoint` is a `let`-only value type, so an "edit" is a rebuild. Spelled
+    /// out once here rather than at each call site above.
+    private func copy(
+        _ p: MapPoint,
+        date: Date? = nil,
+        location: String? = nil,
+        latitude: Double? = nil,
+        longitude: Double? = nil,
+        isImported: Bool? = nil
+    ) -> MapPoint {
+        MapPoint(
+            id: p.id,
+            scientificName: p.scientificName,
+            commonName: p.commonName,
+            date: date ?? p.date,
+            location: location ?? p.location,
+            latitude: latitude ?? p.latitude,
+            longitude: longitude ?? p.longitude,
+            isImported: isImported ?? p.isImported
+        )
+    }
+
     // MARK: re-pointing an open card
 
     /// The map's bottom card used to hold the `BirdCluster` captured at tap time

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import UserNotifications
 @testable import Kestrel
 
 /// The Life List tab's search: matching, ranking, and the in-range grouping.
@@ -485,5 +486,58 @@ struct StarredWiringTests {
     @Test("a manager with no store reports no stars rather than trapping")
     func noStoreIsEmpty() {
         #expect(RecordingManager().starredNames.isEmpty)
+    }
+}
+
+/// How a notification is presented while the app is on screen.
+///
+/// The rule is about the **sound**, not the banner: everything Kestrel posts
+/// banners, because whether an alert is wanted at all is decided where it is
+/// posted (a species alert only exists when `RecordingManager.spectrogramVisible`
+/// is false, a lifecycle alert only when a session has actually ended). Deciding
+/// it a second time here, under a different rule, is what used to swallow real
+/// alerts — recording while looking at the Map tab posted a new-species
+/// notification that this delegate then dropped, leaving a haptic with nothing
+/// anywhere naming the bird.
+///
+/// Presenting *everything* fixed that and overshot: species alerts carry
+/// `content.sound` for the pocketed-phone case, so a walk spent with the Map tab
+/// open began chirping out loud at every new lifer — from an app whose whole
+/// premise is that you can put the phone away and let your wrist tell you.
+@Suite("Foreground notification presentation")
+struct NotificationPresentationTests {
+
+    /// The regression. A per-bird alert already has a signal while the app is
+    /// foregrounded — `RecordingManager.merge` buzzes the phone for exactly these
+    /// birds — and it repeats for every new species of the walk, which is what
+    /// makes an audible one intolerable rather than merely redundant.
+    @Test("a species alert banners silently")
+    func speciesAlertHasNoSound() {
+        let options = SpeciesNotifications.presentationOptions(
+            forCategory: SpeciesNotifications.speciesCategory
+        )
+        #expect(options.contains(.banner), "the bird still has to be named somewhere")
+        #expect(!options.contains(.sound), "the haptic already said it")
+    }
+
+    /// The lifecycle notifications keep theirs. Each is a one-off asking for a
+    /// decision or reporting that recording has stopped, none of them repeats,
+    /// and all are worth interrupting for.
+    @Test("the idle-timeout prompt still sounds", arguments: [
+        SpeciesNotifications.idleTimeoutCategory,
+        "",                     // `notifySessionLifecycle` sets no category
+        "something-unforeseen", // and anything added later opts in by default
+    ])
+    func lifecycleAlertsKeepTheirSound(_ category: String) {
+        let options = SpeciesNotifications.presentationOptions(forCategory: category)
+        #expect(options.contains(.banner))
+        #expect(options.contains(.sound))
+    }
+
+    /// The categories have to actually differ, or the branch above is decorative.
+    @Test("the species category is distinct from the idle-timeout one")
+    func categoriesAreDistinct() {
+        #expect(SpeciesNotifications.speciesCategory != SpeciesNotifications.idleTimeoutCategory)
+        #expect(!SpeciesNotifications.speciesCategory.isEmpty)
     }
 }

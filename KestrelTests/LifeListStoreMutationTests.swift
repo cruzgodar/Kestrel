@@ -102,6 +102,29 @@ struct LifeListStoreMutationTests {
         #expect(store.entries.isEmpty)
     }
 
+    /// `duplicateRecordsKept` above states this through `recordObservation`;
+    /// this states it of `addObservation` itself, whose doc comment claimed the
+    /// opposite ("exact duplicates collapse, matching re-import behavior") for
+    /// long enough to be worth pinning down. It doesn't, and mustn't: this is the
+    /// user writing a record by hand, not two sets of records being unioned, so
+    /// it falls on the `dedupe: false` side of the rule in
+    /// `LifeListStore.canonicalize`. Collapsing here would silently eat a second
+    /// sighting of one bird, at one spot, on one day — a thing people genuinely
+    /// log, with no warning and no undo.
+    @Test("addObservation keeps a sighting identical to one already on file")
+    func addObservationDoesNotDedupe() {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        store.add(scientificName: "X y", commonName: "X", firstSeen: may4,
+                  location: "Same", latitude: 1, longitude: 1)
+        store.addObservation(scientificName: "X y", date: may4,
+                             location: "Same", latitude: 1, longitude: 1)
+
+        #expect(store.entries[0].allObservations.count == 2)
+        let identities = Set(store.entries[0].allObservations.map(\.identity))
+        #expect(identities.count == 1, "the two really are indistinguishable, and both stand")
+    }
+
     /// A stored sighting is midnight UTC on the day it happened (see
     /// `ObservationDate`). A default argument is exactly the kind of place a
     /// wall-clock instant slips in unnoticed — nothing has to opt into it for it

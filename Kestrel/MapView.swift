@@ -49,6 +49,23 @@ nonisolated struct MapPoint: Identifiable, Hashable {
     }
 }
 
+/// Whether two coordinates are the same place, exactly.
+///
+/// `CLLocationCoordinate2D` is not `Equatable`, which is the *only* reason
+/// `RepInfo` and `BirdCluster` write their own `==` at all. Both used to settle
+/// for comparing ids instead, and that quietly turned "we can't compare the
+/// coordinate" into "we don't compare anything but the identity" — see the note
+/// on `MapView.RepInfo`. Exact comparison rather than a tolerance: these values
+/// are copied straight through from the stored sighting, never recomputed, so
+/// two that describe the same record are bit-identical and two that differ are a
+/// deliberate edit.
+private nonisolated func sameCoordinate(
+    _ a: CLLocationCoordinate2D,
+    _ b: CLLocationCoordinate2D
+) -> Bool {
+    a.latitude == b.latitude && a.longitude == b.longitude
+}
+
 /// Carries a request to focus the Map tab on a specific coordinate. Set from
 /// the full-screen photo viewer's "Show on Map" / "Pinpoint on Map" button;
 /// `MapView` observes `pendingFocus`, animates its camera there, then clears it.
@@ -402,16 +419,36 @@ struct MapView: View {
 
     /// Snapshot of a cluster's representative; what each annotation
     /// needs to know to render its label and respond to taps.
-    struct RepInfo: Equatable {
+    ///
+    /// **Compared by value, not by id.** This is only hand-written at all
+    /// because `CLLocationCoordinate2D` isn't `Equatable`; everything else here
+    /// is, and every field has to take part.
+    ///
+    /// `rebuildClusters` skips its write when the freshly computed set compares
+    /// equal to `visibleReps`, and a `MapPoint.id` is `"<species>"` or
+    /// `"<species>#<index>"` — which does *not* move when a sighting's date,
+    /// place, coordinates or provenance change. So an id-only comparison made an
+    /// edit look like nothing had happened, and `visibleReps` went on holding the
+    /// pre-edit record: the pin's menu re-opened the flow on the old date, and
+    /// confirming that resolved to nothing in `LifeListStore.locate` (identity is
+    /// made of exactly the fields the edit had just rewritten) and silently wrote
+    /// nothing at all. The photo the pin opened captioned itself with the old
+    /// place and date for the same reason.
+    /// `nonisolated` for the reason `MapPoint` and `BirdCluster` are: the project
+    /// defaults to MainActor isolation, which would otherwise pin this plain
+    /// value type — and the `==` that is the whole subject of the note above — to
+    /// the main actor, out of reach of the tests that check it.
+    nonisolated struct RepInfo: Equatable {
         let count: Int
         let coordinate: CLLocationCoordinate2D
         let representative: MapPoint
         let others: [MapPoint]
 
         static func == (lhs: RepInfo, rhs: RepInfo) -> Bool {
-            lhs.representative.id == rhs.representative.id
-                && lhs.count == rhs.count
-                && lhs.others.map(\.id) == rhs.others.map(\.id)
+            lhs.count == rhs.count
+                && lhs.representative == rhs.representative
+                && lhs.others == rhs.others
+                && sameCoordinate(lhs.coordinate, rhs.coordinate)
         }
     }
 
@@ -1728,11 +1765,22 @@ nonisolated struct BirdCluster: Identifiable, Hashable {
         return a.id < b.id
     }
 
+    /// Compared by value, for the reason spelled out on `MapView.RepInfo`: a
+    /// `MapPoint.id` doesn't move when the sighting behind it is edited, so an
+    /// id-only comparison let `recomposeOpenCard`'s "nothing changed" guard skip
+    /// an open card's refresh and leave its grid acting on the pre-edit record.
+    ///
+    /// Hand-written only because `CLLocationCoordinate2D` isn't `Equatable`.
     static func == (lhs: BirdCluster, rhs: BirdCluster) -> Bool {
-        lhs.id == rhs.id
-            && lhs.others.map(\.id) == rhs.others.map(\.id)
+        lhs.representative == rhs.representative
+            && lhs.others == rhs.others
+            && sameCoordinate(lhs.coordinate, rhs.coordinate)
     }
 
+    /// Hashed on the ids alone, which is deliberately *coarser* than `==`.
+    /// Equal values still hash equally — the requirement `Hashable` actually
+    /// makes — and two clusters that differ only in an edited sighting are rare
+    /// enough that the extra collision costs nothing.
     func hash(into hasher: inout Hasher) {
         hasher.combine(representative.id)
         hasher.combine(others.map(\.id))
