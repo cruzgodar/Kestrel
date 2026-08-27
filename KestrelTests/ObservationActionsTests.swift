@@ -226,4 +226,44 @@ struct ObservationActionsTests {
         #expect(actions.draft == nil)
         #expect(actions.pendingDelete == nil)
     }
+
+    // MARK: identifying a pending delete
+
+    /// `PendingObservationDelete` is `Identifiable`, and its id used to be the
+    /// species plus the sighting's "Place • Date" summary — which is exactly what
+    /// two *different* sightings are allowed to share. Every user-write path
+    /// passes `dedupe: false` to `LifeListEntry.make` so a pair differing only in
+    /// provenance can exist, and `LifeListStore.locate` exists because it does; an
+    /// id built out of what a sighting *prints* can't tell those two apart.
+    @Test("two sightings that print identically get different delete ids")
+    func pendingDeleteIdsAreDistinct() {
+        let day = utcDay(2026, 5, 4)
+        let native = LifeListEntry.Observation.at(day, "Sapsucker Woods", lat: 1, lon: 1)
+        let imported = LifeListEntry.Observation.at(
+            day, "Sapsucker Woods", lat: 1, lon: 1, imported: true
+        )
+        #expect(native != imported)
+        #expect(native.summaryText == imported.summaryText, "they print the same by design")
+
+        let first = PendingObservationDelete(
+            scientificName: "X y", commonName: "X", observation: native
+        )
+        let second = PendingObservationDelete(
+            scientificName: "X y", commonName: "X", observation: imported
+        )
+        #expect(first.id != second.id)
+    }
+
+    /// And two confirmations for the very same sighting are still two separate
+    /// questions — the id identifies the *asking*, not the record.
+    @Test("asking about one sighting twice raises two distinct questions")
+    func repeatedPendingDeletesAreDistinct() {
+        let observation = LifeListEntry.Observation.at(utcDay(2026, 5, 4), "Ithaca")
+        let ids = (0..<2).map { _ in
+            PendingObservationDelete(
+                scientificName: "X y", commonName: "X", observation: observation
+            ).id
+        }
+        #expect(ids[0] != ids[1])
+    }
 }

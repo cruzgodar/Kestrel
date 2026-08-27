@@ -8,18 +8,17 @@ struct ContentView: View {
     /// Fixed base size of the record control; the morph is a uniform
     /// `scaleEffect` of this so the circle and glyph shrink together as one unit.
     private static let buttonBaseSize: CGFloat = 110
-    /// Diameter of the stop and add buttons — the small buttons shown while
-    /// recording. Set this directly; the margin between the buttons and the
-    /// species name below them follows from this and the screen size.
+    /// Diameter of the corner stop button, and of the prompt's Discard / Save
+    /// buttons. Set this directly; the margin between a button and the species
+    /// name below it follows from this and the screen size.
     private static let cornerButtonSize: CGFloat = 42
-    /// Horizontal gap between the stop button and the add button beside it.
-    /// Doubles as the gap between the resume/discard/save buttons and their
-    /// captions, so the prompt's text lines up off the same column.
+    /// Gap between the resume/discard/save buttons and their captions, so the
+    /// prompt's text lines up off the same column the buttons sit in.
     private static let interButtonGap: CGFloat = 8
     /// Glyph diameter inside a corner button, as a fraction of the button. The
-    /// single knob for every small button's icon size — the add glyph uses it
-    /// directly, and the record control's stop/lock/play glyphs and the prompt
-    /// buttons' trash/check are pre-scaled to match it once shrunk.
+    /// single knob for every small button's icon size — the record control's
+    /// stop/lock/play glyphs and the prompt buttons' trash/check are all
+    /// pre-scaled to match it once shrunk.
     private static let cornerGlyphRatio: CGFloat = 0.46
     /// Point size a corner glyph must be drawn at *inside the full-size record
     /// button* to land at `cornerGlyphRatio` once scaled down to the corner.
@@ -175,13 +174,11 @@ struct ContentView: View {
                 .opacity(recording ? 1 : 0)
 
             // The record/stop control morphs from the centered mic into the
-            // top-left stop button; the add-to-life-list button sits just to
-            // its right (a `gap` apart) and is shown only for a new species.
-            // Both are sized + placed against the *full* screen (ignoring the
-            // safe area): shrunk so their bottom clears the species name by a
-            // `gap`, and positioned so the stop button sits a `gap` diagonally
-            // off the rounded bezel corner. `.position` interpolates linearly
-            // and the button scales uniformly (see `recordButton`), so the
+            // top-left stop button. It is sized + placed against the *full*
+            // screen (ignoring the safe area): shrunk so its bottom clears the
+            // species name by a `gap`, and positioned so it sits a `gap`
+            // diagonally off the rounded bezel corner. `.position` interpolates
+            // linearly and the button scales uniformly (see `recordButton`), so the
             // record control travels in a straight line between the centered
             // mic and the corner stop button — identically in both directions,
             // and on down to the prompt's Resume slot and back when the user

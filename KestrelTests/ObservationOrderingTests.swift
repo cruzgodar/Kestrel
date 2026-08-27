@@ -221,4 +221,125 @@ struct ObservationOrderingTests {
         let reopened = makeStore(scratch, defaults)
         #expect(reopened.observations(for: "X y") == before)
     }
+
+    // MARK: which sighting gets promoted
+
+    /// `LifeListEntry.make` picks the entry's displayed `first*` fields, and it
+    /// was the one date-first ordering in the app that stopped short of
+    /// `ordersBeforeAtSameDate`. Its comparator ran date, then completeness, and
+    /// then gave up — so two same-day sightings that are equally complete
+    /// compared *equal*, and which one got promoted was whatever `Array.sorted`
+    /// felt like doing with a pair it couldn't separate.
+    ///
+    /// Two eBird checklists from one outing, both carrying a place and
+    /// coordinates, are exactly that pair. Not exotic at all.
+    @Test("two same-day, equally complete sightings promote deterministically")
+    func promotionIsDecidedNotLeftToTheSort() {
+        let aardvark = LifeListEntry.Observation.at(may4, "Aardvark Pond", lat: 1, lon: 1)
+        let zebra = LifeListEntry.Observation.at(may4, "Zebra Marsh", lat: 2, lon: 2)
+        #expect(
+            LifeListEntry.Observation.ordersBeforeAtSameDate(aardvark, zebra),
+            "the shared tiebreaker orders these by place, ascending"
+        )
+        for order in permutations([aardvark, zebra]) {
+            let entry = LifeListEntry.make("X y", "Ex Why", order)
+            #expect(
+                entry.firstLocation == "Aardvark Pond",
+                "promotion must not depend on the order the observations went in"
+            )
+        }
+    }
+
+    /// The pair `ordersBeforeAtSameDate` exists for: same day, same place,
+    /// differing only in provenance — which `Identity` is blind to, so nothing
+    /// coarser can separate them either.
+    @Test("promotion separates a pair that differs only in provenance")
+    func promotionSeparatesProvenance() {
+        let native = LifeListEntry.Observation.at(may4, "Sapsucker Woods", lat: 1, lon: 1)
+        let imported = LifeListEntry.Observation.at(
+            may4, "Sapsucker Woods", lat: 1, lon: 1, imported: true
+        )
+        for order in permutations([native, imported]) {
+            let entry = LifeListEntry.make("X y", "Ex Why", order)
+            #expect(
+                entry.firstIsImported == false,
+                "Kestrel-native before imported, the same way ordersBeforeAtSameDate has it"
+            )
+        }
+    }
+
+    /// The one thing promotion does *not* share with the rest of the app's
+    /// orderings, and shouldn't: a same-date row carrying coordinates heals an
+    /// earliest sighting that has none. That step runs ahead of the tiebreaker, so
+    /// the place-name comparison never gets to overrule it.
+    @Test("completeness still outranks the tiebreaker")
+    func completenessOutranksTheTiebreak() {
+        // Alphabetically last, so the place tiebreak would put it second if it
+        // ever got a say.
+        let complete = LifeListEntry.Observation.at(may4, "Zebra Marsh", lat: 2, lon: 2)
+        let bare = LifeListEntry.Observation.at(may4, "Aardvark Pond")
+        for order in permutations([complete, bare]) {
+            let entry = LifeListEntry.make("X y", "Ex Why", order)
+            #expect(entry.firstLocation == "Zebra Marsh")
+            #expect(entry.firstLatitude == 2)
+        }
+    }
+
+    /// Promotion and the picker's order are two different sorts over the same
+    /// records; the bug was that only one of them tiebroke. With both falling
+    /// through to `ordersBeforeAtSameDate` they agree on which of a same-day group
+    /// comes first — the picker runs newest-first, so that group sits at the end
+    /// and the promoted sighting heads it.
+    @Test("the promoted sighting heads its date group in the picker's order")
+    @MainActor
+    func promotionAgreesWithThePicker() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        for place in ["Zebra Marsh", "Aardvark Pond"] {
+            store.recordObservation(
+                scientificName: "X y", commonName: "Ex Why",
+                date: may4, location: place, latitude: 1, longitude: 1
+            )
+        }
+        store.recordObservation(
+            scientificName: "X y", commonName: "Ex Why",
+            date: may5, location: "Later", latitude: 1, longitude: 1
+        )
+        let entry = try #require(store.entries.first)
+        let listed = store.observations(for: "X y")
+        #expect(listed.count == 3)
+        // Newest first, so the oldest day is the tail — and the promoted sighting
+        // is the head of that tail, not an arbitrary member of it.
+        let oldestDay = listed.filter { $0.date == may4 }
+        #expect(oldestDay.first?.location == entry.firstLocation)
+        #expect(entry.firstSeen == may4)
+    }
+
+    /// The property the promotion fix is really for: rebuilding an entry for a
+    /// reason that has nothing to do with the earliest sighting must not change
+    /// which sighting that is. Every edit and delete runs the whole entry back
+    /// through `make`.
+    @Test("deleting an unrelated sighting doesn't swap the promoted one")
+    @MainActor
+    func unrelatedDeleteKeepsThePromotedSighting() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        for place in ["Zebra Marsh", "Aardvark Pond"] {
+            store.recordObservation(
+                scientificName: "X y", commonName: "Ex Why",
+                date: may4, location: place, latitude: 1, longitude: 1
+            )
+        }
+        store.recordObservation(
+            scientificName: "X y", commonName: "Ex Why",
+            date: may5, location: "Later", latitude: 1, longitude: 1
+        )
+        let promoted = store.entries.first?.firstLocation
+
+        let later = try #require(store.observations(for: "X y").first { $0.date == may5 })
+        store.removeObservation(scientificName: "X y", observation: later)
+
+        #expect(store.entries.first?.firstLocation == promoted)
+        #expect(store.entries.first?.firstSeen == may4)
+    }
 }

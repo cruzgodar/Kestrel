@@ -820,12 +820,34 @@ final class LifeListStore {
                 dedupe: touchedKeys.contains(sci)
             )
         }
+        // **Sorted before canonicalizing, and that is load-bearing.** `prelim`
+        // comes off a `Dictionary`, whose iteration order Swift randomizes per
+        // process — and `canonicalize` resolves a collision by keeping whichever
+        // of two entries it met *first*: `collapseByCommonName` picks
+        // `existing.scientificName` when the catalog can't break the tie, and
+        // `collapseToSpecies` / `collapseByScientificName` pick a common name the
+        // same way. Handed an unordered array, which spelling of a bird survived
+        // an import was a coin flip between launches — and the survivor's name is
+        // the entry's id, its photo slug, and what a BirdNET detection matches
+        // against.
+        //
+        // Those three passes each keep an explicit `order` array so they don't
+        // *introduce* any order dependence of their own (see the note in
+        // `collapseToSpecies`); this is the input they were relying on someone
+        // else to make deterministic. `load()` always did, by handing over a
+        // decoded file in stored order. The import path is the one that didn't.
+        //
+        // `ordersBefore` rather than, say, plain name order, because it is the
+        // order the finished set comes out in anyway (below) and the order a
+        // `load()` of this same data would present it in — so an import resolves a
+        // collision exactly the way the next launch would have.
+        let ordered = prelim.sorted(by: Self.ordersBefore)
         // Canonicalize the same way `load()` does so freshly imported entries
         // pick up BirdNET-canonical scientific names immediately — otherwise an
         // eBird name like "Astur cooperii" (Cooper's Hawk) or "Spilopelia
         // chinensis" (Spotted Dove) would slug to a missing image and show the
         // placeholder until the next launch.
-        let merged = Self.canonicalize(prelim).sorted(by: Self.ordersBefore)
+        let merged = Self.canonicalize(ordered).sorted(by: Self.ordersBefore)
 
         // The tally is measured against the *finished* set rather than against
         // the row names, because canonicalization can fold an eBird spelling onto
@@ -1085,10 +1107,76 @@ final class LifeListStore {
             if needsDateMigration {
                 defaults.set(true, forKey: Self.dateMigrationKey)
             }
+        } catch let error as DecodingError {
+            // The file is there and readable but isn't a life list any more.
+            // Nothing is going to make those bytes decode, so the store starts
+            // empty — but they are not thrown away: `quarantineStore` moves them
+            // aside under a dated name, which is what makes it safe to go on
+            // saving over the (now absent) real file. Without that move, the
+            // user's first add or import would encode this empty list straight
+            // over their history.
+            Log.error("LifeListStore: life list is corrupt — \(error)")
+            if quarantineStore() {
+                if needsDateMigration {
+                    defaults.set(true, forKey: Self.dateMigrationKey)
+                }
+            } else {
+                loadFailed = true
+            }
         } catch {
+            // Couldn't *read* the file — a file-protection window before first
+            // unlock, a disk error, a file yanked mid-launch. Possibly transient,
+            // so nothing is moved and nothing is assumed about the contents; the
+            // store simply refuses to write until a launch manages to load it.
             Log.error("LifeListStore: load failed — \(error)")
+            loadFailed = true
         }
     }
+
+    /// Whether the last `load()` came back without the life list it was supposed
+    /// to read, in a way that leaves the on-disk copy still worth protecting.
+    ///
+    /// `entries` is empty in that state and does **not** describe the user's
+    /// history, so writing it out would destroy the thing that failed to load.
+    /// Every write path funnels through `save()`, which refuses while this is set;
+    /// the next launch retries the load. Deliberately *not* set for a corrupt file
+    /// that `quarantineStore()` managed to move aside — once the bad bytes are
+    /// safely parked under their own name, an empty store is the honest state and
+    /// saving over nothing is correct.
+    @ObservationIgnored private var loadFailed = false
+
+    /// Moves an undecodable life list aside as `life_list.corrupt-<stamp>.json`,
+    /// so the bytes survive for recovery while the app gets a clean slate to write
+    /// to. Returns whether the move succeeded — a failure leaves the original
+    /// exactly where it is and the store read-only for this launch.
+    private func quarantineStore() -> Bool {
+        guard let url = storeURL else { return false }
+        let stamp = Self.quarantineStampFormatter.string(from: Date())
+        let destination = url
+            .deletingLastPathComponent()
+            .appendingPathComponent("life_list.corrupt-\(stamp).json")
+        do {
+            try FileManager.default.moveItem(at: url, to: destination)
+            Log.error(
+                "LifeListStore: moved the unreadable life list to \(destination.lastPathComponent)"
+            )
+            return true
+        } catch {
+            Log.error("LifeListStore: couldn't quarantine the corrupt life list — \(error)")
+            return false
+        }
+    }
+
+    /// `yyyy-MM-dd-HHmmss` in UTC, POSIX — a filename stamp, so it has to sort and
+    /// parse the same whatever the device's locale and calendar are set to.
+    private static let quarantineStampFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
+        f.timeZone = ObservationDate.utc
+        f.dateFormat = "yyyy-MM-dd-HHmmss"
+        return f
+    }()
 
     /// Full canonicalization pipeline shared by `load()` and the import
     /// `merge()`: rewrite stale eBird scientific names through the alias table,
@@ -1312,6 +1400,15 @@ final class LifeListStore {
     }
 
     private func save() {
+        // A load that failed leaves `entries` empty and *wrong* — it describes
+        // nothing, least of all the file it couldn't read. Writing it out would
+        // replace the user's whole life list with an empty one, and an import
+        // landing in that state would replace it with the CSV alone. See
+        // `loadFailed`, which the next launch clears by loading successfully.
+        guard !loadFailed else {
+            Log.error("LifeListStore: refusing to save over a life list that failed to load")
+            return
+        }
         // Snapshot the entries on the main actor (value-type copy), then encode +
         // write on the IO queue so the whole-list JSON encode and atomic disk write
         // never block the main thread (the source of the star-tap / edit hitch).

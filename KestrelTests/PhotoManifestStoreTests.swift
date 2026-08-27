@@ -313,6 +313,60 @@ struct PhotoManifestStoreTests {
         #expect(!subject.needsMetadataBackfill)
     }
 
+    /// The backfill flag is what lets the foreground check skip its six-hour
+    /// throttle, so it has to be a migration that finishes — not a state the app
+    /// can be stuck in, refetching the manifest on every single foreground.
+    ///
+    /// The way it got stuck: bare hashes are only cleared by the withdrawal prune,
+    /// and `isPlausiblyComplete` vetoes that prune whenever the incoming manifest
+    /// has lost more than half the set. An upgrade from the bundled-metadata build
+    /// leaves the local set full of bare hashes, and the *first* manifest it
+    /// applies is very likely to trip that veto — at which point the prune never
+    /// runs, the bare hashes never go, and the flag never clears.
+    ///
+    /// Bare hashes are now dropped outside the guard. Nothing there deletes image
+    /// bytes (that's `removedSlugs`, which they stay out of), and a slug with no
+    /// metadata can't be shown or downloaded anyway, so the guard has nothing to
+    /// protect from it.
+    @Test("a vetoed prune still clears the backfill flag")
+    func vetoedPruneClearsBackfill() throws {
+        let scratch = ScratchDirectory()
+        // A snapshot in the shape the old build left behind: hashes on record,
+        // no metadata beside them.
+        let hashes = (0..<80).map { "\"legacy\($0)\": \"h\($0)\"" }.joined(separator: ",")
+        try Data("{\"hashes\":{\(hashes)},\"metadata\":{},\"validatedAt\":{}}".utf8)
+            .write(to: scratch.url.appendingPathComponent("photos_manifest_local.json"))
+
+        let subject = store(scratch)
+        #expect(subject.needsMetadataBackfill, "80 hashes, no metadata")
+
+        // A manifest naming none of them, and far too short to prune against.
+        let result = subject.apply(manifest(["cardinalis_cardinalis": ("h1", "Alice")]))
+        #expect(result.removedSlugs.isEmpty, "the completeness check vetoed the prune")
+
+        #expect(!subject.needsMetadataBackfill, "and yet the bare hashes are gone")
+        #expect(subject.recordedHash(forSlug: "legacy0") == nil)
+        #expect(subject.recordedHash(forSlug: "cardinalis_cardinalis") == "h1")
+    }
+
+    /// The clearing is scoped to hashes with *no* metadata. A slug that a previous
+    /// manifest described and this one omits is a withdrawal, and withdrawals stay
+    /// behind the completeness guard — that guard is the thing standing between a
+    /// half-published manifest and the user's cached photos.
+    @Test("clearing bare hashes doesn't smuggle attributed slugs past the prune guard")
+    func attributedSlugsStillNeedTheGuard() {
+        let scratch = ScratchDirectory()
+        let subject = store(scratch)
+        var entries: [String: (hash: String, credit: String?)] = [:]
+        for i in 0..<80 { entries["slug\(i)"] = ("h\(i)", "Alice") }
+        _ = subject.apply(manifest(entries))
+
+        let result = subject.apply(manifest(["slug0": ("h0", "Alice")]))
+        #expect(result.removedSlugs.isEmpty, "a manifest that lost most of the set does not prune")
+        #expect(subject.recordedHash(forSlug: "slug1") == "h1", "still on record")
+        #expect(subject.info(forSlug: "slug1") != nil, "and still attributed")
+    }
+
     // MARK: persistence
 
     /// The encode and the disk write happen on the IO queue, outside the lock —

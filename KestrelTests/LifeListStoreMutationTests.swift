@@ -329,24 +329,36 @@ struct LifeListStoreMutationTests {
             "precondition: these are indistinguishable by identity"
         )
         #expect(
-            store.entries[0].firstIsImported,
-            "precondition: the imported copy is the one an identity match finds first"
+            observations[0].isImported != observations[1].isImported,
+            "precondition: provenance is the only thing telling them apart"
         )
 
-        let native = try #require(observations.first { !$0.isImported })
+        // The trap is the copy an identity match would *not* land on — the second
+        // one, since `locate`'s fallback takes the first index whose identity
+        // matches. Which of the pair that is follows from the shared ordering
+        // (`ordersBeforeAtSameDate` puts Kestrel-native ahead of imported), so it
+        // is read off the loaded data rather than pinned here: this test is about
+        // `locate` preferring an exact match, not about which way the tie broke.
+        let target = observations[1]
+        let sibling = observations[0]
         store.replaceObservation(
-            scientificName: "X y", original: native,
+            scientificName: "X y", original: target,
             date: may5, location: "Corrected", latitude: 1, longitude: 1
         )
 
         let after = store.entries[0].allObservations
         #expect(after.count == 2, "an edit is not an add and not a delete")
         #expect(
-            after.contains { $0.date == may4 && $0.isImported },
-            "the imported sibling was not the record being edited"
+            after.contains { $0.date == may4 && $0.isImported == sibling.isImported },
+            "the sibling was not the record being edited"
         )
         let edited = try #require(after.first { $0.date == may5 })
-        #expect(!edited.isImported, "an edit must not inherit a sibling's provenance")
+        #expect(
+            edited.isImported == target.isImported,
+            "an edit must not inherit a sibling's provenance"
+        )
+        // Exactly one of the pair is Kestrel-native whichever one was edited, and
+        // that one still has to reach eBird.
         #expect(
             store.observationCount(for: .newOnly) == 1,
             "the user's own sighting still has to reach eBird"

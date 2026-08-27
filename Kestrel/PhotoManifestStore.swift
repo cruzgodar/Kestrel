@@ -129,6 +129,11 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     /// photo until the next manifest fetch, so the foreground check skips its
     /// throttle while this is true and the gap closes on the first launch of the
     /// new build.
+    ///
+    /// Guaranteed to go false after one successful `apply`, which is what keeps
+    /// the skipped throttle a one-time migration rather than a standing state:
+    /// every slug the manifest carries gets metadata, and every bare hash left
+    /// over is dropped. See the end of `apply`.
     var needsMetadataBackfill: Bool {
         lock.lock(); defer { lock.unlock() }
         return hashes.keys.contains { metadata[$0] == nil }
@@ -254,6 +259,34 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
                 validatedAt.removeValue(forKey: slug)
             }
             result.removedSlugs = withdrawn
+        }
+        // Hashes still sitting here with no metadata beside them, whatever the
+        // prune above did or didn't do. These are the leftovers of an install that
+        // upgraded from a build which bundled `species_photos.json` for
+        // attribution and seeded hashes from `photos_manifest.json` — the loop at
+        // the top has just given metadata to every slug this manifest carries, so
+        // anything still bare is a slug no published manifest describes.
+        //
+        // Dropped *outside* the `isPlausiblyComplete` guard on purpose, because
+        // this is the one thing that makes `needsMetadataBackfill` terminate. That
+        // property is what lets the foreground check skip its six-hour throttle,
+        // and it stays true for as long as one bare hash survives — so a prune
+        // vetoed by a short manifest (or by a set that has genuinely shrunk past
+        // the floor) left the app refetching the manifest on *every* single
+        // foreground, forever. The guard exists to stop a bad deploy deleting
+        // cached image bytes; nothing here deletes bytes, and a slug with no
+        // metadata can't be shown or downloaded anyway (see
+        // `RemoteSpeciesImageStore.isAttributed`), so there is nothing for it to
+        // protect. Deliberately not reported in `removedSlugs`, which is the
+        // caller's cue to delete files.
+        //
+        // Snapshotted before the loop, for the same reason `withdrawn` is above:
+        // removing from `hashes` while iterating its own keys view only works by
+        // accident of copy-on-write.
+        let unattributed = hashes.keys.filter { metadata[$0] == nil }
+        for slug in unattributed {
+            hashes.removeValue(forKey: slug)
+            validatedAt.removeValue(forKey: slug)
         }
         persistLocked()
         return result

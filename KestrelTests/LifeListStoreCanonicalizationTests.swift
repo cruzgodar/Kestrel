@@ -446,6 +446,107 @@ struct LifeListStoreCanonicalizationTests {
         #expect(store.entries.isEmpty)
     }
 
+    /// A load that comes back empty because it *failed* is not the same as one
+    /// that comes back empty because there was nothing there, and the difference
+    /// is the user's entire life list. `entries` is empty either way, and every
+    /// write path re-encodes `entries` over `life_list.json` — so the first add,
+    /// star toggle or import after a failed load used to replace the file it
+    /// couldn't read with an empty one.
+    ///
+    /// Undecodable bytes are moved aside rather than left in place: parking them
+    /// under their own name is what makes it safe to go on writing.
+    @Test("a corrupt life list is moved aside rather than overwritten")
+    func corruptFileIsQuarantined() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeRawLifeList("{ this is not JSON")
+        let store = makeStore(scratch, defaults)
+
+        #expect(scratch.data("life_list.json") == nil, "the unreadable file is no longer in the way")
+        let quarantined = try FileManager.default
+            .contentsOfDirectory(atPath: scratch.url.path)
+            .filter { $0.hasPrefix("life_list.corrupt-") && $0.hasSuffix(".json") }
+        #expect(quarantined.count == 1, "the bytes are kept for recovery, not deleted")
+        #expect(
+            try String(contentsOf: scratch.url.appendingPathComponent(quarantined[0]), encoding: .utf8)
+                == "{ this is not JSON"
+        )
+
+        // With the bad bytes parked, an empty store is the honest state and
+        // writing is correct again.
+        store.recordObservation(
+            scientificName: "X y", commonName: "Ex Why",
+            date: may4, location: "Ithaca", latitude: 42.44, longitude: -76.5
+        )
+        store.flushPendingWrites()
+        #expect(try scratch.readLifeList().map(\.scientificName) == ["X y"])
+    }
+
+    /// The other half: a file that couldn't be *read* at all, which — unlike
+    /// undecodable content — may well be transient (a file-protection window
+    /// before first unlock, a disk error). Nothing is moved and nothing is
+    /// assumed; the store simply refuses to write until a launch manages to load
+    /// it, so the next relaunch still finds the real data.
+    ///
+    /// Simulated with a directory where the file should be, which is the cheapest
+    /// thing `Data(contentsOf:)` reliably fails on while `fileExists` says yes.
+    @Test("an unreadable life list is never written over")
+    func unreadableFileIsNotOverwritten() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let path = scratch.url.appendingPathComponent("life_list.json")
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+
+        let store = makeStore(scratch, defaults)
+        #expect(store.entries.isEmpty)
+        #expect(
+            try FileManager.default.contentsOfDirectory(atPath: scratch.url.path)
+                .allSatisfy { !$0.hasPrefix("life_list.corrupt-") },
+            "a read failure is not a corruption diagnosis, so nothing is quarantined"
+        )
+
+        // Clear the obstruction, so a write would now *succeed* if one were
+        // attempted. Without this the assertion below would pass for the wrong
+        // reason — writing over a directory fails on its own, which proves
+        // nothing about whether the store tried.
+        try FileManager.default.removeItem(at: path)
+
+        store.recordObservation(
+            scientificName: "X y", commonName: "Ex Why",
+            date: may4, location: "Ithaca", latitude: 42.44, longitude: -76.5
+        )
+        store.removeAll()
+        store.flushPendingWrites()
+        #expect(
+            scratch.data("life_list.json") == nil,
+            "the store declined to write, rather than writing an empty list"
+        )
+
+        // And the refusal is scoped to this instance: a relaunch retries the load,
+        // finds nothing in the way, and is a normal working store again.
+        let reopened = makeStore(scratch, defaults)
+        reopened.recordObservation(
+            scientificName: "X y", commonName: "Ex Why",
+            date: may4, location: "Ithaca", latitude: 42.44, longitude: -76.5
+        )
+        reopened.flushPendingWrites()
+        #expect(try scratch.readLifeList().map(\.scientificName) == ["X y"])
+    }
+
+    /// Stars live in their own file precisely so they outlive the life list, and
+    /// that has to keep working while the life list is unreadable — the refusal is
+    /// scoped to the one file that failed.
+    @Test("an unreadable life list doesn't block the stars file")
+    func unreadableFileStillLetsStarsSave() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try FileManager.default.createDirectory(
+            at: scratch.url.appendingPathComponent("life_list.json"),
+            withIntermediateDirectories: true
+        )
+        let store = makeStore(scratch, defaults)
+        store.setStarred(scientificName: "X y", isStarred: true)
+        store.flushPendingWrites()
+        #expect(try scratch.readStars() == ["X y"])
+    }
+
     @Test("speciesNames matches entries after a load")
     func speciesNamesAfterLoad() throws {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()

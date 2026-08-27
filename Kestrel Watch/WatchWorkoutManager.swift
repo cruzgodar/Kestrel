@@ -379,7 +379,16 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
             // No live session to end — HealthKit never brought one up. The walk
             // itself still happened, so offer it on the same terms; `save()`
             // writes it retroactively.
-            park(started: started, end: end, builder: nil)
+            //
+            // `pendingBuilder`, not a bare nil: there may already be a *parked*
+            // builder here, holding a walk that was collected live and then had
+            // its session closed out by `endPausedSession()` (the ten-minute
+            // abandon timeout). Passing nil would drop that builder on the floor,
+            // and `save()` would then re-write the walk retroactively — same span,
+            // but with none of the distance or energy HealthKit had actually
+            // collected. Handing the existing one straight back is a no-op when
+            // there isn't one.
+            park(started: started, end: end, builder: pendingBuilder)
             return
         }
         // Clear our references first so a stop/start race can't end up finishing

@@ -752,8 +752,10 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         if enabled { enforceOtherImageLimit() }
     }
 
-    /// Mirrors the user's "Limit Cached Images" setting. Enforces immediately
-    /// when turned on so existing over-cap images are pruned right away.
+    /// Turns the "other images" cap on or off, enforcing it immediately when
+    /// turned on so existing over-cap images are pruned right away. Set once, to
+    /// `true`, at launch — it was a user-facing setting and is now simply how the
+    /// cache behaves.
     func setLimitOtherImages(_ enabled: Bool) {
         protectedLock.lock()
         limitOtherImages = enabled

@@ -219,11 +219,15 @@ extension SpeciesNotifications: UNUserNotificationCenterDelegate {
     /// applies, and the gap between them swallowed real alerts.
     /// `spectrogramVisible` means "on the Identify tab **and** active", so
     /// recording while looking at the Map, Life List or Settings tab posted a
-    /// new-species notification — spending its `notifyCooldown` — that was then
-    /// dropped here. The haptic still fired (the app is foregrounded, so
-    /// `RecordingManager.merge` buzzes the phone), leaving a pulse for a new
-    /// lifer with nothing anywhere naming the bird. "Watch disconnected" went the
-    /// same way.
+    /// new-species notification that was then dropped here. The haptic still
+    /// fired (the app is foregrounded, so `RecordingManager.merge` buzzes the
+    /// phone), leaving a pulse for a new lifer with nothing anywhere naming the
+    /// bird. "Watch disconnected" went the same way.
+    ///
+    /// The bird was not left un-announceable for the rest of its `notifyCooldown`,
+    /// though — `RecordingManager.merge` stamps `lastHeardAt` on every detection
+    /// whether or not it queued a notification, so the window was already running
+    /// regardless. What was lost was the one banner, not the ones after it.
     nonisolated func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,

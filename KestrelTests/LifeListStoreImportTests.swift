@@ -20,6 +20,108 @@ struct LifeListStoreImportTests {
         return try await store.importEBird(from: url)
     }
 
+
+    // MARK: collision resolution
+
+    /// Canonicalization resolves a collision it can't otherwise break by keeping
+    /// whichever entry it met **first** — `collapseByCommonName` takes
+    /// `existing.scientificName`, and the two spelling collapses pick a common
+    /// name the same way. Each of those passes keeps an explicit insertion-order
+    /// array so it doesn't introduce any order dependence of its own; what none of
+    /// them can do is fix the order they were handed.
+    ///
+    /// `load()` always handed over a decoded file, in stored order. The import
+    /// merge handed over a `Dictionary.map`, and Swift randomizes dictionary
+    /// iteration per process — so which scientific name a bird survived an import
+    /// under was a coin flip between launches. That name is the entry's `id`, its
+    /// photo slug, and what a BirdNET detection matches against.
+    ///
+    /// Two invented names, so neither is in the BirdNET catalog and the catalog
+    /// can't break the tie for us — which is precisely the case that fell through
+    /// to "whoever came first".
+    private static let collidingRows: [(String, String, String, String?, Double?, Double?)] = [
+        ("Fakea alpha", "Testudo Warbler", "2019-05-04", "Sapsucker Woods", 42.4791, -76.4512),
+        ("Fakea beta", "Testudo Warbler", "2020-06-01", "Ithaca", 42.4400, -76.5000),
+    ]
+
+    @Test("an unbreakable collision on import resolves by the entry order, not the dictionary's")
+    func importCollisionResolvesDeterministically() async throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        _ = try await importCSV(store, scratch, Self.collidingRows)
+
+        #expect(store.entries.count == 1, "one bird, two spellings, one entry")
+        // `ordersBefore` is newest-`firstSeen` first, so the 2020 spelling leads
+        // the sorted set and is the one canonicalization meets first. The merged
+        // entry still carries both sightings, so its own `firstSeen` is the 2019
+        // one — the name and the date come from different halves, which is exactly
+        // why the name has to be pinned by something.
+        #expect(store.entries[0].scientificName == "Fakea beta")
+        #expect(store.entries[0].firstSeen == utcDay(2019, 5, 4))
+        #expect(store.entries[0].allObservations.count == 2)
+    }
+
+    @Test("the row order in the file doesn't change which spelling survives")
+    func importCollisionIgnoresRowOrder() async throws {
+        var survivors: [String] = []
+        for rows in [Self.collidingRows, Self.collidingRows.reversed()] {
+            let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+            let store = makeStore(scratch, defaults)
+            _ = try await importCSV(store, scratch, Array(rows))
+            survivors.append(store.entries[0].scientificName)
+        }
+        #expect(survivors == ["Fakea beta", "Fakea beta"])
+    }
+
+    /// The same collision reached the other way round: one spelling already on the
+    /// list, the other arriving in the CSV. The merge seeds its accumulator from
+    /// the stored entries first, so this is a different insertion history — and it
+    /// has to land on the same answer.
+    @Test("a collision against a stored entry resolves the same way")
+    func importCollisionAgainstStoredEntry() async throws {
+        for storedFirst in [true, false] {
+            let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+            let stored = Self.collidingRows[storedFirst ? 0 : 1]
+            let incoming = Self.collidingRows[storedFirst ? 1 : 0]
+            // Each spelling keeps its own date, so the two entries stay orderable
+            // — pinning both to one date would leave `ordersBefore` tiebreaking on
+            // the scientific name instead, which is a different rule than the one
+            // under test.
+            let storedDate = storedFirst ? utcDay(2019, 5, 4) : utcDay(2020, 6, 1)
+            try scratch.writeLifeList([
+                .make(
+                    stored.0, stored.1,
+                    [.at(storedDate, stored.3, lat: stored.4, lon: stored.5, imported: true)]
+                )
+            ])
+            let store = makeStore(scratch, defaults)
+            #expect(store.entries.count == 1)
+            _ = try await importCSV(store, scratch, [incoming])
+            #expect(store.entries.count == 1)
+            #expect(
+                store.entries[0].scientificName == "Fakea beta",
+                "whichever side it arrived from"
+            )
+        }
+    }
+
+    /// The whole point of pinning the order to `ordersBefore`: an import resolves
+    /// a collision exactly the way a `load()` of the finished data would, so the
+    /// entry doesn't change identity on the next launch.
+    @Test("the surviving spelling survives the next launch unchanged")
+    func importCollisionSurvivesReload() async throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let afterImport: [LifeListEntry]
+        do {
+            let store = makeStore(scratch, defaults)
+            _ = try await importCSV(store, scratch, Self.collidingRows)
+            afterImport = store.entries
+            store.flushPendingWrites()
+        }
+        let reopened = makeStore(scratch, defaults)
+        #expect(reopened.entries == afterImport)
+    }
+
     // MARK: idempotency
 
     @Test("re-importing the same export changes nothing")

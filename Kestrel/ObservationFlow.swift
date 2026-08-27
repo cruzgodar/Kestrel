@@ -559,11 +559,17 @@ struct ObservationChoice: Identifiable {
 /// app funnels through this so the wording can't drift — and so no tap ever
 /// removes a sighting without being asked twice.
 struct PendingObservationDelete: Identifiable {
+    /// Fresh per question, for the same reason `ObservationChoice`'s is. The
+    /// obvious id — species plus the sighting's "Place • Date" summary — is
+    /// exactly the thing two *different* sightings are allowed to share: every
+    /// user-write path passes `dedupe: false` to `LifeListEntry.make` precisely so
+    /// a pair differing only in provenance can exist, and `LifeListStore.locate`
+    /// exists because it does. Identifying a delete by what it prints would give
+    /// those two the same id.
+    let id = UUID()
     let scientificName: String
     let commonName: String
     let observation: LifeListEntry.Observation
-
-    var id: String { scientificName + "|" + observation.summaryText }
 }
 
 /// The three things any Add / Edit / Delete affordance in the app can be

@@ -158,9 +158,13 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         /// Everything a sighting *is* apart from its date, as a total order:
         /// place name, then coordinates, then provenance.
         ///
-        /// Both of the app's date-first orderings fall through to this once the
-        /// dates match, so the two can't disagree about which of two same-day
-        /// sightings comes first.
+        /// All three of the app's date-first orderings bottom out here —
+        /// `ordersBefore` below, `LifeListStore.ordersBefore`, and `make`'s own
+        /// `promotionOrder` — so none of them can disagree about which of two
+        /// same-day sightings comes first. `promotionOrder` was the one that
+        /// didn't reach it, which left the sighting promoted into an entry's
+        /// displayed `first*` fields up to whatever `Array.sorted` happened to do
+        /// with two elements it considered equal.
         ///
         /// It has to be a *total* order, not merely a tiebreaker, because two
         /// sightings of one species are allowed to share a date **and** a place:
@@ -279,6 +283,39 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         return order.compactMap { byIdentity[$0] }
     }
 
+    /// How complete a sighting's record is: coordinates are worth more than a
+    /// place name, and both beat neither. The tiebreak that heals a coord-less
+    /// earliest sighting from a same-date row carrying coordinates.
+    private static func completeness(_ o: Observation) -> Int {
+        (o.latitude != nil && o.longitude != nil ? 2 : 0) + (o.location != nil ? 1 : 0)
+    }
+
+    /// The order `make` promotes from: earliest first, then the more complete
+    /// record, then — and this is the part that makes it a *total* order —
+    /// straight through to `Observation.ordersBeforeAtSameDate`.
+    ///
+    /// The completeness step is deliberate and is *not* shared with the app's
+    /// other orderings: it's what heals a coord-less earliest sighting from a
+    /// same-date row that does carry coordinates. What has to be shared is what
+    /// happens once even that ties, and it wasn't. Two sightings on one day with
+    /// equal completeness is not an exotic case — two eBird checklists on one
+    /// outing, both with a place and coordinates, produce exactly that — and
+    /// stopping at completeness left them comparing equal. `Array.sorted` makes no
+    /// promise about equal elements, so *which* of the pair was promoted into the
+    /// displayed `first*` fields was the sort's business rather than a decision
+    /// anything had made, and rebuilding the entry for an unrelated edit could
+    /// quietly swap which one the life-list row named.
+    ///
+    /// Falling through to `ordersBeforeAtSameDate` settles it with the same
+    /// tiebreakers `LifeListStore.observations(for:)` uses, so the two can't
+    /// disagree about which of two same-day sightings comes first.
+    private static func promotionOrder(_ a: Observation, _ b: Observation) -> Bool {
+        if a.date != b.date { return a.date < b.date }
+        let ca = completeness(a), cb = completeness(b)
+        if ca != cb { return ca > cb }
+        return Observation.ordersBeforeAtSameDate(a, b)
+    }
+
     /// Builds an entry from an unordered set of observations: the earliest one
     /// becomes the displayed `first*` fields and the remainder are stored in
     /// `otherObservations`. On a date tie the more complete observation (coords,
@@ -304,13 +341,7 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
         dedupe: Bool
     ) -> LifeListEntry {
         let resolved = dedupe ? collapseByIdentity(observations) : observations
-        let sorted = resolved.sorted { a, b in
-            if a.date != b.date { return a.date < b.date }
-            func completeness(_ o: Observation) -> Int {
-                (o.latitude != nil && o.longitude != nil ? 2 : 0) + (o.location != nil ? 1 : 0)
-            }
-            return completeness(a) > completeness(b)
-        }
+        let sorted = resolved.sorted(by: promotionOrder)
         let first = sorted.first
         return LifeListEntry(
             scientificName: scientificName,

@@ -438,6 +438,22 @@ final class WatchSessionManager: NSObject {
 
     private func start() {
         guard !isRecording, !isStarting else { return }
+        // A finished walk still waiting on save / discard / resume owns the
+        // screen, and starting over the top of it would strand it: the prompt
+        // would go on describing the *previous* walk while a new session ran
+        // underneath, and the next stop would overwrite `pendingSave`,
+        // `pendingSpan` and `pendingBuilder` with the new walk — quietly throwing
+        // away the one the user hadn't answered about yet.
+        //
+        // The record button can't reach here in that state (it is the prompt's
+        // Resume button, or absent when the walk can't be resumed), but
+        // `handleRemoteStart` can: a complication or widget tap runs the start
+        // intent whatever is on screen. Refuse, and let the user answer the
+        // question that is already in front of them.
+        guard WatchWorkoutManager.shared.pendingSave == nil else {
+            Log.warning("Ignoring a start request while a finished walk is awaiting an answer")
+            return
+        }
         withAnimation(.easeInOut(duration: 0.3)) {
             beginSession()
         }
@@ -450,8 +466,8 @@ final class WatchSessionManager: NSObject {
     /// having it blink out and a fresh one blink in.
     private func beginSession() {
         // Fresh session — drop any bird left over from the previous one so the
-        // "now hearing" screen starts on "Listening…", and clear the per-session
-        // add-to-life-list tracking.
+        // "now hearing" screen starts on "Listening…" rather than briefly
+        // flashing the last bird of the previous walk.
         lastBird = nil
         lastBirdImage = nil
         // Nothing but state flips happen on the tap: audio and the phone

@@ -442,10 +442,28 @@ struct MapView: View {
         )
     }
 
+    /// The plotted set as it currently stands — `derivedMapPoints`, recomputed
+    /// only when the life list actually changes.
+    ///
+    /// Held rather than derived on demand because both readers run on the same
+    /// beat: a camera settle calls `commitVisibleEntries`, which calls
+    /// `rebuildClusters` *and* `updateVisibleEntries`, and each of those used to
+    /// walk the whole life list and build a fresh array. For a hand-built list
+    /// that's nothing; for an imported one — eBird's export is one row per
+    /// observation, tens of thousands for an active birder — it is two full
+    /// allocations of the entire plotted set on every pan and pinch, on the main
+    /// actor. The clustering below was already taken off O(n²) for exactly that
+    /// user; this is the allocation it left behind.
+    ///
+    /// Refreshed in the two places the answer can change: on appear, and on
+    /// `store.entries` — which is the only thing `derivedMapPoints` reads, and
+    /// which the map already observes.
+    @State private var mapPoints: [MapPoint] = []
+
     /// All map points to plot: every recorded sighting that carries coordinates.
     /// That's each species' earliest one (its displayed `first*` fields) plus a
     /// point for each stored repeat, so a bird seen in five places pins all five.
-    private var mapPoints: [MapPoint] {
+    private var derivedMapPoints: [MapPoint] {
         var points: [MapPoint] = []
         for entry in store.entries {
             if let lat = entry.firstLatitude, let lon = entry.firstLongitude {
@@ -625,7 +643,10 @@ struct MapView: View {
                     // if it didn't.
                     reassertFocusIfNeeded(center: context.region.center)
                 }
-                .onAppear { viewSize = geo.size }
+                .onAppear {
+                    viewSize = geo.size
+                    mapPoints = derivedMapPoints
+                }
                 // Clusters before culling in every path (see handleCameraChange)
                 // so annotation hosts always mount with their content present.
                 .onChange(of: geo.size) { _, new in
@@ -634,6 +655,8 @@ struct MapView: View {
                     updateVisibleEntries(force: true)
                 }
                 .onChange(of: store.entries) { _, _ in
+                    // Before the two readers below, both of which read the cache.
+                    mapPoints = derivedMapPoints
                     rebuildClusters(animated: true, rehydrate: false, refreshCard: true)
                     updateVisibleEntries(force: true)
                 }
