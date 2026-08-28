@@ -1069,7 +1069,11 @@ struct MapView: View {
         let centerLon = camera.lastCenter.longitude
         let filtered = mapPoints.filter { point in
             abs(point.latitude - centerLat) <= latRange
-                && abs(point.longitude - centerLon) <= lonRange
+                // Wrapped, not a raw subtraction: longitude is periodic, and a
+                // camera sitting on the antimeridian is 359.8° from a pin two
+                // tenths of a degree away. Culled on the raw difference, every
+                // pin on the far side of the date line simply vanished.
+                && Self.longitudeDistance(point.longitude, centerLon) <= lonRange
         }
         visiblePoints = filtered
         camera.lastFilterCenter = camera.lastCenter
@@ -1093,6 +1097,7 @@ struct MapView: View {
             points: mapPoints,
             span: span,
             centerLatitude: camera.lastCenter.latitude,
+            centerLongitude: camera.lastCenter.longitude,
             viewSize: viewSize,
             footprint: Self.annotationFootprint,
             gutter: Self.clusterGutter
@@ -1290,10 +1295,40 @@ struct MapView: View {
         }
     }
 
+    /// Shortest distance in degrees between two longitudes, going the short way
+    /// round. Longitude is periodic and the app's stored values sit in
+    /// [-180, 180], so a plain subtraction reports two points either side of the
+    /// date line as ~360° apart when they are ~0° apart.
+    nonisolated static func longitudeDistance(_ a: Double, _ b: Double) -> Double {
+        let raw = abs(a - b).truncatingRemainder(dividingBy: 360)
+        return raw > 180 ? 360 - raw : raw
+    }
+
+    /// `longitude` re-expressed in a continuous frame centered on `reference` —
+    /// i.e. shifted by whole turns until it lies within 180° of it.
+    ///
+    /// The clustering below needs a *linear* coordinate: it buckets longitudes
+    /// into fixed-width cells and compares them by subtraction, neither of which
+    /// survives a wrap. Rotating every point into the camera's own frame first
+    /// makes both exact again for anything the camera can see, and leaves the
+    /// unavoidable seam 180° away — where two points can still be split, but
+    /// where nothing is on screen to notice. That is strictly better than the
+    /// seam sitting at ±180° whatever the camera is looking at.
+    nonisolated static func unwrappedLongitude(_ longitude: Double, near reference: Double) -> Double {
+        let turns = ((longitude - reference) / 360).rounded()
+        return longitude - turns * 360
+    }
+
     static func computeClusters(
         points: [MapPoint],
         span: MKCoordinateSpan,
         centerLatitude: Double,
+        // The camera's longitude, which the clustering frame is centered on so
+        // the cell math doesn't break across the date line — see
+        // `unwrappedLongitude`. Defaulted because it only changes the answer
+        // within 180° of the seam; every other camera position clusters
+        // identically with or without it.
+        centerLongitude: Double = 0,
         viewSize: CGSize,
         footprint: CGSize,
         gutter: CGFloat
@@ -1315,6 +1350,10 @@ struct MapView: View {
         struct WIP {
             let point: MapPoint
             let lat: Double
+            /// Longitude in the camera-centered frame (see `unwrappedLongitude`),
+            /// which is the only one the cell math and the comparison below are
+            /// valid in. The cluster's *published* coordinate comes from
+            /// `point` instead, so nothing downstream sees the shifted value.
             let lon: Double
             var others: [MapPoint] = []
         }
@@ -1349,12 +1388,16 @@ struct MapView: View {
         // among those candidates the *lowest index* is the one the linear scan
         // would have hit first — so the same point folds onto the same stack, in
         // the same order.
+        //
+        // Both the bucketing and the comparison run on longitudes rotated into
+        // the camera's frame, so they agree with each other and neither breaks
+        // at ±180° — see `unwrappedLongitude`.
         var cells: [Cell: [Int]] = [:]
         cells.reserveCapacity(sorted.count)
 
         for point in sorted {
             let lat = point.latitude
-            let lon = point.longitude
+            let lon = Self.unwrappedLongitude(point.longitude, near: centerLongitude)
             let cell = Cell(
                 lat: Int((lat / thresholdLat).rounded(.down)),
                 lon: Int((lon / thresholdLon).rounded(.down))
@@ -1387,9 +1430,13 @@ struct MapView: View {
         }
 
         return reps.map {
+            // The representative's own coordinate, not the working `lat`/`lon`:
+            // those carry the camera-frame longitude, which is a rotation of the
+            // real one and would put the card — and `sameCoordinate` — a whole
+            // turn off for a stack near the date line.
             BirdCluster(
                 representative: $0.point,
-                coordinate: CLLocationCoordinate2D(latitude: $0.lat, longitude: $0.lon),
+                coordinate: $0.point.coordinate,
                 others: $0.others
             )
         }

@@ -44,10 +44,15 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
     var isRunning: Bool { engine.isRunning }
 
     /// Schedules background audio prewarm. Idempotent — subsequent calls return
-    /// the existing in-flight task. The prewarm briefly activates the session,
-    /// touches the input node so iOS resolves the hardware audio route, then
-    /// deactivates. Route + format remain cached afterward so the next
-    /// `setActive` + `inputFormat` calls inside `start()` are fast.
+    /// the existing in-flight task.
+    ///
+    /// The prewarm sets the audio *category* and nothing else. That alone is the
+    /// expensive part to get out of the way: the first `setCategory` of a
+    /// process loads the session's server-side configuration, which is what made
+    /// the first Start Recording tap hitch. It deliberately does not activate the
+    /// session or touch the input node — doing so would take the microphone
+    /// before the user has asked to record, and `start()` re-sets the category
+    /// anyway, so nothing here has to survive.
     func startPrewarm() {
         prewarmLock.lock()
         defer { prewarmLock.unlock() }

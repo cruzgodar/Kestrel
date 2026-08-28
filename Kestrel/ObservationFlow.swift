@@ -586,8 +586,8 @@ final class ObservationActions {
     /// A sighting awaiting its delete confirmation.
     var pendingDelete: PendingObservationDelete?
 
-    /// Sighting → the sighting that replaced it, for every edit this
-    /// `ObservationActions` has driven.
+    /// A sighting a host might still be holding → the record that stands in its
+    /// place now.
     ///
     /// A host that holds a sighting *by value* — the full-screen viewer opened
     /// on a map pin, a menu built from a `MapPoint` — is holding a copy the
@@ -603,14 +603,39 @@ final class ObservationActions {
     /// Keeping the trail here rather than in each host is what makes one fix
     /// cover all of them: every add/edit/delete affordance in the app already
     /// funnels through this object.
+    ///
+    /// **Flat, not a chain.** Every entry points at the record that exists *now*,
+    /// so resolving is one lookup and `recordEdit` does the walking. It was a
+    /// chain — each edit filing one original → replacement link, with `current`
+    /// following them — and a chain cannot answer the question at all once an
+    /// edit is undone: A → B → A leaves every record in the loop holding an
+    /// outgoing link, so nothing in the structure says which write came last, and
+    /// the walk settles on whichever node it happened to start from. That is the
+    /// one value the store definitely does not hold, and it put the viewer and
+    /// the next edit straight back into the two failures above, one edit later.
     private var edits: [LifeListEntry.Observation: LifeListEntry.Observation] = [:]
 
     /// Records that `original` was rewritten as `replacement`. Called by the
     /// flow with the store's own return value, so only writes that actually
     /// landed are tracked.
+    ///
+    /// Re-points every sighting that resolved to `original` — not just
+    /// `original` itself — so the table stays one hop deep however many times a
+    /// record is corrected. The sweep is over the edits made from one screen in
+    /// one sitting, which is a handful; buying a flat table with it is worth far
+    /// more than the scan costs.
     func recordEdit(original: LifeListEntry.Observation, replacement: LifeListEntry.Observation) {
         guard original != replacement else { return }
+        // Snapshotted before the loop, for the reason `PhotoManifestStore.apply`
+        // spells out: writing to `edits` while iterating it works only by
+        // accident of copy-on-write.
+        let stale = edits.compactMap { $0.value == original ? $0.key : nil }
+        for held in stale { edits[held] = replacement }
         edits[original] = replacement
+        // `replacement` is on record, so nothing should redirect away from it —
+        // and an edit that restores an earlier value would otherwise leave it
+        // pointing at the very record it just replaced.
+        edits[replacement] = nil
     }
 
     /// `observation` as it now stands, following every edit made through this
@@ -618,16 +643,11 @@ final class ObservationActions {
     /// still lands on the record that exists now.
     ///
     /// Returns `observation` itself when nothing has touched it, which is the
-    /// overwhelmingly common case. The `seen` set is what keeps an edit that
-    /// restores a sighting's earlier values (A → B → A) from walking a cycle
-    /// forever.
+    /// overwhelmingly common case. One lookup, no walk: `edits` is kept flat by
+    /// `recordEdit`, which is also what makes an undone edit resolvable — see
+    /// the note on that property.
     func current(_ observation: LifeListEntry.Observation) -> LifeListEntry.Observation {
-        var current = observation
-        var seen: Set<LifeListEntry.Observation> = [current]
-        while let next = edits[current], seen.insert(next).inserted {
-            current = next
-        }
-        return current
+        edits[observation] ?? observation
     }
 
     /// Files a new sighting of a species.

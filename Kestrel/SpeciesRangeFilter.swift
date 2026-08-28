@@ -2,6 +2,11 @@ import Foundation
 import onnxruntime_objc
 
 private nonisolated struct CachedFilter: Codable {
+    /// Where and when the geo model was run to produce `allowedIndices`.
+    /// `latitude` / `longitude` / `speciesCount` are written for diagnostics
+    /// only — nothing reads them back, and they are kept because a cache file
+    /// that can't say what it describes is no use when something looks wrong.
+    /// `week` and `savedAt` are load-bearing: see `SpeciesRangeFilter.isCurrent`.
     let latitude: Double
     let longitude: Double
     let week: Int
@@ -85,8 +90,47 @@ actor SpeciesRangeFilter {
         return allowed
     }
 
-    /// Loads the most recently cached filter, if any. Does not run the model.
-    func loadCached() -> Set<Int>? {
+    // MARK: Cache validity
+
+    /// Past this age a cached filter is dropped by every reader.
+    ///
+    /// The BirdNET week repeats annually, so the week check below can't bound
+    /// age on its own: a list saved in week 18 of last year matches week 18 of
+    /// this one exactly. Thirty days is comfortably longer than the ~7.5 days a
+    /// single week spans, so this only ever catches a cache that has been sitting
+    /// unused for a season or more.
+    static let maxCacheAge: TimeInterval = 30 * 24 * 60 * 60
+
+    /// Whether a cached filter still describes *this* week, and isn't stale.
+    ///
+    /// Required by `loadCached`, which is the list a recording session actually
+    /// filters detections with. A species list for the wrong season isn't merely
+    /// old, it is wrong in both directions — it suppresses birds that are here
+    /// now and admits ones that aren't — and BirdNET's week is exactly the
+    /// seasonal axis the geo model turns on.
+    nonisolated static func isCurrent(
+        cachedWeek: Int, savedAt: Date, week: Int, now: Date = Date()
+    ) -> Bool {
+        cachedWeek == week && isWithinMaxAge(savedAt: savedAt, now: now)
+    }
+
+    /// Whether a cached filter is young enough to be worth anything at all.
+    nonisolated static func isWithinMaxAge(savedAt: Date, now: Date = Date()) -> Bool {
+        let age = now.timeIntervalSince(savedAt)
+        // A file stamped in the future is a clock change, not a fresh cache.
+        // Treat it as usable rather than throwing it away over a DST shift.
+        return age < maxCacheAge
+    }
+
+    /// Loads the most recently cached filter, if it still describes `week`. Does
+    /// not run the model.
+    ///
+    /// This is the "Using last-known list" fallback a recording session falls
+    /// back on when the live model can't run, so a cache from another season is
+    /// refused outright: the caller then drops through to the offline grid
+    /// filter (which is week-aware) or to "showing all species", both of which
+    /// are honest, where a wrong-season list quietly is not.
+    func loadCached(week: Int, now: Date = Date()) -> Set<Int>? {
         guard let url = try? Self.cacheURL(), FileManager.default.fileExists(atPath: url.path) else {
             return nil
         }
@@ -95,6 +139,12 @@ actor SpeciesRangeFilter {
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
             let cached = try decoder.decode(CachedFilter.self, from: data)
+            guard Self.isCurrent(
+                cachedWeek: cached.week, savedAt: cached.savedAt, week: week, now: now
+            ) else {
+                Log.info("SpeciesRangeFilter: cached filter is from week \(cached.week), not \(week) — ignoring")
+                return nil
+            }
             return Set(cached.allowedIndices)
         } catch {
             Log.error("SpeciesRangeFilter: failed to load cache — \(error)")
@@ -105,13 +155,22 @@ actor SpeciesRangeFilter {
     /// Reads the cached allowed-index set straight off disk without
     /// constructing an `ORTSession` — cheap enough to call from the main
     /// actor (e.g. the life list's "in this area" grouping). Returns `nil`
-    /// when no location filter has been computed yet.
-    nonisolated static func cachedAllowedIndices() -> Set<Int>? {
+    /// when no location filter has been computed yet, or when the one on disk
+    /// is older than `maxCacheAge`.
+    ///
+    /// Deliberately *not* week-gated, unlike `loadCached`. Its readers — the
+    /// photo prefetch's protected set and the life list's "found in this area"
+    /// grouping — want "roughly what lives around here", which a neighbouring
+    /// week answers perfectly well, and none of them gates a detection. Dropping
+    /// it on a week boundary would unprotect a whole region's cached photos and
+    /// re-download them, possibly over cellular, to fix a grouping heading.
+    nonisolated static func cachedAllowedIndices(now: Date = Date()) -> Set<Int>? {
         guard let url = try? cacheURL(),
               let data = try? Data(contentsOf: url) else { return nil }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let cached = try? decoder.decode(CachedFilter.self, from: data) else { return nil }
+        guard let cached = try? decoder.decode(CachedFilter.self, from: data),
+              isWithinMaxAge(savedAt: cached.savedAt, now: now) else { return nil }
         return Set(cached.allowedIndices)
     }
 

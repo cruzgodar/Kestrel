@@ -117,44 +117,94 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
 
 /// Process-wide latest known coordinate. Updated whenever any code path
 /// resolves a fresh fix (currently `RecordingManager.refreshSpeciesFilter`
-/// and the Map tab's first-appear), and read by the life-list add callsites
-/// so manually-added species pick up "where am I right now" without waiting
-/// for a new GPS lock.
+/// and the Map tab's first-appear), and read by the callsites that need
+/// "where am I right now" without waiting on a fresh GPS lock.
 @MainActor
 final class LocationCache {
     static let shared = LocationCache()
 
+    /// How long a fix is treated as *current*.
+    ///
+    /// This is not a memory cap, it is the correctness bound on the word
+    /// "current". The cache used to have none: it kept the first fix of the
+    /// process forever, refreshed only by a session start or an app foreground.
+    /// Everything that asks this class "where am I now" therefore answered with
+    /// where the user was when the session began — the map's recenter button
+    /// flew back to the trailhead, and, worse, the observation flow's map picker
+    /// seeded its pin (and `committableCoordinate`, which is what Save writes)
+    /// at the same stale spot. A bird logged an hour into a walk went onto the
+    /// life list a mile from where it was heard.
+    ///
+    /// A minute is short enough that no pin lands a walk away and long enough
+    /// that the launch warm-up, an immediate map open, and an add a few taps
+    /// later all share one fix.
+    static let freshness: TimeInterval = 60
+
+    /// The last coordinate resolved, *however old*. Deliberately not bounded by
+    /// `freshness`: its one reader is `RecordingManager`'s offline
+    /// species-filter fallback, which wants "the last place we know of" — a
+    /// coarse regional list from an hour ago beats no list at all.
     private(set) var lastLatitude: Double?
     private(set) var lastLongitude: Double?
-    private let provider = LocationProvider()
+    /// When `lastLatitude` / `lastLongitude` were written, so `current()` can
+    /// tell a fix that still describes where the user is from one that doesn't.
+    private(set) var lastFixAt: Date?
+
+    /// Resolves a fresh fix. Injected so a test can drive the freshness policy
+    /// without CoreLocation — `shared` wires it to a real `LocationProvider`.
+    private let fetch: @MainActor () async -> (latitude: Double, longitude: Double)?
     private var inflight: Task<(Double, Double)?, Never>?
 
-    private init() {}
-
-    func update(latitude: Double, longitude: Double) {
-        lastLatitude = latitude
-        lastLongitude = longitude
+    /// - Parameter fetch: `nil` (the default) means a real `LocationProvider`.
+    init(fetch: (@MainActor () async -> (latitude: Double, longitude: Double)?)? = nil) {
+        if let fetch {
+            self.fetch = fetch
+        } else {
+            let provider = LocationProvider()
+            self.fetch = {
+                guard let loc = await provider.currentLocation() else { return nil }
+                return (loc.coordinate.latitude, loc.coordinate.longitude)
+            }
+        }
     }
 
-    /// Returns a coordinate, requesting a fresh fix if we don't already
-    /// have one cached. `nil` if permission was denied or the request
-    /// timed out.
-    func current() async -> (latitude: Double, longitude: Double)? {
-        if let lat = lastLatitude, let lon = lastLongitude {
-            return (lat, lon)
-        }
+    func update(latitude: Double, longitude: Double, at now: Date = Date()) {
+        lastLatitude = latitude
+        lastLongitude = longitude
+        lastFixAt = now
+    }
+
+    /// Whether the cached coordinate is recent enough to stand for "here, now".
+    func isFresh(at now: Date = Date()) -> Bool {
+        guard let lastFixAt else { return false }
+        return now.timeIntervalSince(lastFixAt) < Self.freshness
+    }
+
+    /// Returns where the user is now: the cached coordinate while it is still
+    /// fresh, otherwise a newly resolved fix.
+    ///
+    /// A failed refresh falls back to the stale coordinate rather than returning
+    /// `nil` — offline, or with the fix timing out, a coordinate from earlier in
+    /// the walk is still the best answer available, and it is what the recenter
+    /// button and the picker's default pin had before. `nil` means we have never
+    /// had a fix at all.
+    func current(now: Date = Date()) async -> (latitude: Double, longitude: Double)? {
+        if let cached = cachedCoordinate, isFresh(at: now) { return cached }
         if let inflight { return await inflight.value }
-        let task = Task<(Double, Double)?, Never> { [provider] in
-            guard let loc = await provider.currentLocation() else { return nil }
-            return (loc.coordinate.latitude, loc.coordinate.longitude)
+        let task = Task<(Double, Double)?, Never> { [fetch] in
+            guard let fix = await fetch() else { return nil }
+            return (fix.latitude, fix.longitude)
         }
         inflight = task
         let result = await task.value
         inflight = nil
-        if let result {
-            lastLatitude = result.0
-            lastLongitude = result.1
-        }
-        return result
+        guard let result else { return cachedCoordinate }
+        update(latitude: result.0, longitude: result.1, at: now)
+        return (result.0, result.1)
+    }
+
+    private var cachedCoordinate: (latitude: Double, longitude: Double)? {
+        guard let lastLatitude, let lastLongitude else { return nil }
+        return (lastLatitude, lastLongitude)
     }
 }

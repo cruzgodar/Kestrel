@@ -680,4 +680,119 @@ struct MapClusteringTests {
         )
         #expect(recomposed == larger)
     }
+
+
+    // MARK: the date line
+
+    /// Longitude is periodic and the app stores it in [-180, 180], so a raw
+    /// subtraction calls two pins a fifth of a degree apart on either side of the
+    /// date line 359.8° apart. Both the viewport cull and the clustering used to
+    /// do exactly that: pins vanished on the far side of the line, and a stack
+    /// straddling it never formed.
+
+    @Test("wrapped longitude distance goes the short way round")
+    func longitudeDistanceWraps() {
+        #expect(MapView.longitudeDistance(179.9, -179.9).isApproximately(0.2))
+        #expect(MapView.longitudeDistance(-179.9, 179.9).isApproximately(0.2))
+        #expect(MapView.longitudeDistance(10, 12).isApproximately(2))
+        #expect(MapView.longitudeDistance(-76, -76).isApproximately(0))
+        #expect(MapView.longitudeDistance(0, 180).isApproximately(180),
+                "the antipode is the farthest two longitudes can be")
+    }
+
+    @Test("unwrapping puts a longitude in a continuous frame around the camera")
+    func unwrappingIsContinuousNearTheCamera() {
+        // A camera on the date line sees -179.9 as just past +180, not a world away.
+        #expect(MapView.unwrappedLongitude(-179.9, near: 179.9).isApproximately(180.1))
+        #expect(MapView.unwrappedLongitude(179.9, near: -179.9).isApproximately(-180.1))
+        // Away from the seam it changes nothing.
+        #expect(MapView.unwrappedLongitude(-76, near: -76.5).isApproximately(-76))
+        #expect(MapView.unwrappedLongitude(10, near: 0).isApproximately(10))
+    }
+
+    /// The clustering frame is centered on the camera, so a stack straddling the
+    /// date line folds exactly as it would anywhere else.
+    @Test("points either side of the date line cluster together")
+    func straddlingPointsCluster() {
+        let clusters = MapView.computeClusters(
+            points: [
+                point("a", "A a", may4, lat: 42.0, lon: 179.999),
+                point("b", "B b", may5, lat: 42.0, lon: -179.999),
+            ],
+            span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1),
+            centerLatitude: 42,
+            centerLongitude: 180,
+            viewSize: viewSize, footprint: footprint, gutter: 4
+        )
+        #expect(clusters.count == 1)
+        #expect(clusters.first?.all.count == 2)
+    }
+
+    /// …and a stack that folds there still publishes its representative's real
+    /// coordinate, not the shifted one the cell math ran on — the card and
+    /// `sameCoordinate` would otherwise be a whole turn out.
+    @Test("a stack near the date line keeps its true coordinate")
+    func straddlingClusterKeepsRealCoordinate() throws {
+        let clusters = MapView.computeClusters(
+            points: [
+                point("a", "A a", may4, lat: 42.0, lon: -179.999),
+                point("b", "B b", may5, lat: 42.0, lon: 179.999),
+            ],
+            span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1),
+            centerLatitude: 42,
+            centerLongitude: -180,
+            viewSize: viewSize, footprint: footprint, gutter: 4
+        )
+        let cluster = try #require(clusters.first)
+        #expect(cluster.coordinate.longitude == cluster.representative.longitude)
+        #expect(abs(cluster.coordinate.longitude) <= 180)
+    }
+
+    /// Genuinely distant points are still distant — the wrap must not fold the
+    /// whole world into one stack.
+    @Test("the wrap doesn't collapse genuinely distant points")
+    func wrapDoesNotOverCluster() {
+        let clusters = MapView.computeClusters(
+            points: [
+                point("a", "A a", may4, lat: 42.0, lon: 179.9),
+                point("b", "B b", may5, lat: 42.0, lon: 100.0),
+            ],
+            span: MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1),
+            centerLatitude: 42,
+            centerLongitude: 180,
+            viewSize: viewSize, footprint: footprint, gutter: 4
+        )
+        #expect(clusters.count == 2)
+    }
+
+    /// Away from the seam the camera's longitude changes nothing, which is what
+    /// lets every other test in this suite leave it defaulted.
+    @Test("clustering away from the date line ignores the camera longitude")
+    func cameraLongitudeIsInertAwayFromTheSeam() {
+        let points = [
+            point("a", "A a", may4, lat: 42.0, lon: -76.0),
+            point("b", "B b", may5, lat: 42.0, lon: -76.0),
+            point("c", "C c", may6, lat: 43.0, lon: -77.0),
+        ]
+        let span = MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
+        let defaulted = MapView.computeClusters(
+            points: points, span: span, centerLatitude: 42,
+            viewSize: viewSize, footprint: footprint, gutter: 4
+        )
+        let centered = MapView.computeClusters(
+            points: points, span: span, centerLatitude: 42, centerLongitude: -76,
+            viewSize: viewSize, footprint: footprint, gutter: 4
+        )
+        #expect(defaulted.map(\.id) == centered.map(\.id))
+        #expect(defaulted.map { $0.all.count } == centered.map { $0.all.count })
+    }
 }
+
+private extension Double {
+    /// Degrees compare to within a hair; these are exact-in-principle values
+    /// arrived at by subtraction.
+    func isApproximately(_ other: Double, tolerance: Double = 1e-9) -> Bool {
+        abs(self - other) < tolerance
+    }
+}
+

@@ -10,17 +10,15 @@ struct Kestrel_Watch_Watch_AppApp: App {
             // shown in its place, so the record control isn't torn down and
             // rebuilt — with its morph geometry re-measured — as it goes away.
             ZStack {
+                // Nothing here handles a start-recording deep link any more: the
+                // complication deliberately just opens the app rather than
+                // kicking off a walk on a stray tap (see
+                // `StartRecordingComplicationView`), so no shipped surface
+                // produces that URL. `StartRecordingIntent` — which Shortcuts can
+                // still run on the watch — reaches the app through
+                // `RecordingIntentRequest.fire()` instead, drained by
+                // `ContentView`'s scene-phase and notification handlers.
                 ContentView()
-                    // The Start Recording complication opens the app with this URL
-                    // (see `RecordingIntentRequest.startRecordingURL`). Delivered
-                    // in-process here, so `fire()` reliably reaches the app: the
-                    // flag covers a cold launch (drained on `scenePhase` active) and
-                    // the notification covers an already-active app.
-                    .onOpenURL { url in
-                        if url == RecordingIntentRequest.startRecordingURL {
-                            RecordingIntentRequest.fire()
-                        }
-                    }
                 if session.needsOnboarding {
                     WatchWelcomeView {
                         await session.requestOnboardingPermissions()

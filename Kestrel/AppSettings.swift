@@ -19,7 +19,10 @@ final class AppSettings {
     static let shared = AppSettings()
 
     /// How long a birding session may go without hearing any bird before Kestrel
-    /// automatically stops it to save battery. `.never` disables the auto-stop.
+    /// *asks* whether to end it, via the idle-timeout notification and its "End
+    /// Session" action (see `RecordingManager.checkIdleAndMaybePrompt`). It no
+    /// longer stops the session on its own — a walk through a quiet stretch is
+    /// not the app's decision to make. `.never` suppresses the prompt entirely.
     /// The raw value is the timeout in minutes (0 for `.never`), which is also
     /// what's persisted.
     enum NoBirdTimeout: Int, CaseIterable, Identifiable {
@@ -30,7 +33,7 @@ final class AppSettings {
 
         var id: Int { rawValue }
 
-        /// The timeout in seconds, or nil for `.never` (keep listening forever).
+        /// The timeout in seconds, or nil for `.never` (never ask; keep listening).
         var seconds: TimeInterval? {
             self == .never ? nil : TimeInterval(rawValue * 60)
         }
@@ -46,8 +49,9 @@ final class AppSettings {
         }
     }
 
-    /// Auto-stop timeout after a stretch with no detections. Defaults to 30
-    /// minutes — the value the watchdog was previously hardcoded to.
+    /// How long a silent stretch runs before the session asks to be ended.
+    /// Defaults to 30 minutes — the value the watchdog was previously hardcoded
+    /// to.
     var noBirdTimeout: NoBirdTimeout {
         didSet {
             defaults.set(noBirdTimeout.rawValue, forKey: SettingsKeys.noBirdTimeout)

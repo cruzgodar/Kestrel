@@ -156,22 +156,11 @@ final class RecordingManager {
     private var rangeFilterTask: Task<SpeciesRangeFilter, Error>?
     private var allowedIndices: Set<Int>?
     private var detectionMap: [String: Detection] = [:]
-    /// Per-species timestamp of the last visual flash; used to enforce a
-    /// 5-second cooldown so a species doesn't strobe on every overlapping
-    /// 1.5 s window of inference.
-    private var lastFlashAt: [String: Date] = [:]
-    /// Last time each species fired a *notification*. A species becomes
-    /// eligible for a fresh notification once it's been silent for the cooldown
-    /// window (30 s), letting a bird that comes back later re-fire instead
-    /// of staying muted for the rest of the session.
-    private var lastHeardAt: [String: Date] = [:]
-    /// Per-species timestamp of the last *haptic*. Haptics use a much shorter
-    /// cooldown than notifications so a still-singing new/starred bird keeps
-    /// buzzing on repeat detections instead of going quiet for the rest of the
-    /// notification window.
-    private var lastHapticAt: [String: Date] = [:]
-    private let hapticCooldown: TimeInterval = 5
-    private let notifyCooldown: TimeInterval = 30
+    /// The session's per-species flash / haptic / notification clocks. One value
+    /// rather than three dictionaries so `reset()` can't clear some of them and
+    /// miss another — which is exactly what happened to the notification clock.
+    /// See `DetectionCooldowns`.
+    private var cooldowns = DetectionCooldowns()
     /// Scientific name of the species currently shown on the watch's "now
     /// hearing" screen, so we only push an update when it actually changes.
     /// Reset at the start of every session.
@@ -255,12 +244,14 @@ final class RecordingManager {
     /// soon as audio resumes (`ingestWatchSamples16k`).
     private var watchStallNudged = false
 
-    /// Watchdog that auto-stops the recording once the session goes long enough
-    /// without any detection. The threshold is the user's "Timeout After No
-    /// Birds" setting (`AppSettings.noBirdTimeout`, 30 min by default; `.never`
-    /// disables the auto-stop). Reset each time `merge(_:)` sees at least one
-    /// result; armed in `startLocally`/`startFromWatch`; cancelled in `stop`/
-    /// `stopFromWatch`.
+    /// Watchdog that *asks* whether to end the recording once the session goes
+    /// long enough without any detection — it does not stop it (see
+    /// `checkIdleAndMaybePrompt`, which posts a notification carrying an "End
+    /// Session" action). The threshold is the user's "Timeout After No
+    /// Detections" setting (`AppSettings.noBirdTimeout`, 30 min by default;
+    /// `.never` suppresses the prompt). Reset each time `merge(_:)` sees at
+    /// least one result; armed in `startLocally`/`startFromWatch`; cancelled in
+    /// `stop`/`stopFromWatch`.
     private var idleTerminationTask: Task<Void, Never>?
     private var lastDetectionAt: Date?
     /// True once the idle-timeout *prompt* has been sent for the current silent
@@ -687,8 +678,7 @@ final class RecordingManager {
         detections = []
         detectionMap = [:]
         flashIDs = []
-        lastFlashAt = [:]
-        lastHapticAt = [:]
+        cooldowns.reset()
         lastWatchDisplaySci = nil
         lastWatchDisplayAt = nil
         spectrogram.reset()
@@ -733,8 +723,7 @@ final class RecordingManager {
             } catch {
                 let message = "Failed to start audio: \(error.localizedDescription)"
                 await MainActor.run { [weak self] in
-                    self?.errorMessage = message
-                    self?.isRecording = false
+                    self?.failLocalStart(message)
                 }
                 Log.error("Failed to start pipeline — \(error)")
             }
@@ -743,6 +732,31 @@ final class RecordingManager {
         preload()
         Task { await self.refreshSpeciesFilter() }
         startIdleWatchdog()
+    }
+
+    /// Rolls a local start back when the audio engine never came up.
+    ///
+    /// The start is announced optimistically — `isRecording` flips, the idle
+    /// watchdog is armed, and the watch is told `phoneStart` — *before* the
+    /// deferred engine bring-up, so the record button's morph isn't stuck behind
+    /// it. Every one of those has to be undone when the bring-up throws, and
+    /// clearing `isRecording` on its own isn't enough: `stop()` is what sends
+    /// `phoneStop`, and this path deliberately doesn't go through `stop()`
+    /// (there is no running engine to tear down). Without the rollback the watch
+    /// sat on "Listening on iPhone…" for a session that never began, with no
+    /// audio arriving and no way back except stopping it from the wrist.
+    ///
+    /// A no-op past the flags if the user already tapped stop while the engine
+    /// was coming up — `stop()` has then done all of this — but the error itself
+    /// is still worth showing, so it is set either way.
+    private func failLocalStart(_ message: String) {
+        errorMessage = message
+        guard isRecording else { return }
+        isRecording = false
+        // Nothing ran, so nothing counts toward the review threshold.
+        localSessionStart = nil
+        cancelIdleWatchdog()
+        sendToWatch(["cmd": "phoneStop"])
     }
 
     func stop() {
@@ -810,8 +824,7 @@ final class RecordingManager {
         detections = []
         detectionMap = [:]
         flashIDs = []
-        lastFlashAt = [:]
-        lastHapticAt = [:]
+        cooldowns.reset()
         lastWatchDisplaySci = nil
         lastWatchDisplayAt = nil
         watchWindowBuffer.removeAll(keepingCapacity: true)
@@ -1177,10 +1190,10 @@ final class RecordingManager {
     /// nothing left to tell them about it.
     ///
     /// Reading only the frozen snapshot for both is what made a bird the user had
-    /// just filed go on buzzing every `hapticCooldown` and re-notifying every
-    /// `notifyCooldown` for the rest of the walk. A starred bird still alerts
-    /// either way — a star is a standing "tell me again", not a gap in the user's
-    /// records.
+    /// just filed go on buzzing every `DetectionCooldowns.haptic` and
+    /// re-notifying every `DetectionCooldowns.notify` for the rest of the walk.
+    /// A starred bird still alerts either way — a star is a standing "tell me
+    /// again", not a gap in the user's records.
     nonisolated static func alertReason(
         scientificName: String,
         starred: Set<String>,
@@ -1204,14 +1217,13 @@ final class RecordingManager {
             // stretch asks again.
             idlePromptSent = false
         }
-        let cooldown: TimeInterval = 5
         var repeatedIDs: [String] = []
         // Detections that should fire a notification this batch: species heard
-        // with no detection in the last `notifyCooldown` s.
+        // with no detection in the last `DetectionCooldowns.notify` seconds.
         var notifications: [(common: String, scientific: String, reason: SpeciesNotifications.Reason)] = []
         // Detections that should buzz this batch — gated by the much shorter
-        // `hapticCooldown`, so a repeated new/starred bird keeps tapping even
-        // while its notification is still on cooldown.
+        // `DetectionCooldowns.haptic`, so a repeated new/starred bird keeps
+        // tapping even while its notification is still on cooldown.
         var haptics: [SpeciesNotifications.Reason] = []
         // When the "Haptic for All Birds" setting is on, a single soft haptic
         // also fires for any *known, non-starred* bird heard this batch — the
@@ -1229,10 +1241,8 @@ final class RecordingManager {
                     updated.lastSeen = d.lastSeen
                     detectionMap[d.id] = updated
                 }
-                let lastFlash = lastFlashAt[d.id]
-                if lastFlash == nil || now.timeIntervalSince(lastFlash!) >= cooldown {
+                if cooldowns.shouldFlash(d.id, at: now) {
                     repeatedIDs.append(d.id)
-                    lastFlashAt[d.id] = now
                 }
             } else {
                 detectionMap[d.id] = d
@@ -1241,9 +1251,10 @@ final class RecordingManager {
             // Notify when (a) the species is worth alerting about — see
             // `alertReason`, which is where "starred, or heard before you'd
             // recorded it and still unrecorded" is decided — and (b) it hasn't
-            // been heard for at least `notifyCooldown` seconds. The clock resets
-            // on every detection, so a continuously-singing bird only triggers
-            // once; a bird that goes silent and returns re-fires.
+            // been heard for at least `DetectionCooldowns.notify` seconds. The
+            // clock resets on every detection (`markHeard`, below), so a
+            // continuously-singing bird only triggers once; a bird that goes
+            // silent and returns re-fires.
             let recorded = lifeListStore?.speciesNames ?? lifeListSnapshot
             if let reason = Self.alertReason(
                 scientificName: d.scientificName,
@@ -1251,16 +1262,13 @@ final class RecordingManager {
                 snapshotAtSessionStart: lifeListSnapshot,
                 recordedNow: recorded
             ) {
-                let last = lastHeardAt[d.scientificName]
-                if last == nil || now.timeIntervalSince(last!) >= notifyCooldown {
+                if cooldowns.shouldNotify(d.scientificName, at: now) {
                     notifications.append((d.commonName, d.scientificName, reason))
                 }
                 // Haptic on its own, shorter clock so repeats still buzz while
                 // the notification stays muted for the rest of its window.
-                let lastBuzz = lastHapticAt[d.scientificName]
-                if lastBuzz == nil || now.timeIntervalSince(lastBuzz!) >= hapticCooldown {
+                if cooldowns.shouldBuzz(d.scientificName, at: now) {
                     haptics.append(reason)
-                    lastHapticAt[d.scientificName] = now
                 }
             } else if hapticForAllBirds {
                 // A known, non-starred bird — a single subtle haptic when the
@@ -1269,13 +1277,14 @@ final class RecordingManager {
                 // by anything the branch above passed over, which now includes a
                 // bird added mid-session: it *is* a known bird from the moment
                 // it's recorded, and the soft haptic is what known birds get.
-                let lastBuzz = lastHapticAt[d.scientificName]
-                if lastBuzz == nil || now.timeIntervalSince(lastBuzz!) >= hapticCooldown {
+                if cooldowns.shouldBuzz(d.scientificName, at: now) {
                     playSoftHaptic = true
-                    lastHapticAt[d.scientificName] = now
                 }
             }
-            lastHeardAt[d.scientificName] = now
+            // Stamped for every detection, alerted-on or not — that is what
+            // makes a continuously-singing bird push its next banner out rather
+            // than earn one every `DetectionCooldowns.notify` seconds.
+            cooldowns.markHeard(d.scientificName, at: now)
         }
 
         // Only surface to the user when the Identify spectrogram isn't on
@@ -1292,7 +1301,7 @@ final class RecordingManager {
             }
         }
         // Haptics fire for new/starred birds — including repeats, on the short
-        // `hapticCooldown` — since a tap signals something worth looking up,
+        // `DetectionCooldowns.haptic` — since a tap signals something worth looking up,
         // regardless of which microphone is the audio source. When the phone's
         // app is foregrounded the phone buzzes itself (the device in hand);
         // otherwise the wrist gets it.
@@ -1449,7 +1458,7 @@ final class RecordingManager {
                 Log.error("Geo inference failed — \(error)")
             }
         }
-        if let cached = await rangeFilter.loadCached() {
+        if let cached = await rangeFilter.loadCached(week: week) {
             allowedIndices = cached
             prefetchRegionImages(cached)
             locationStatus = "Using last-known list (\(cached.count) species)"

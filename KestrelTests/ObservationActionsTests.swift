@@ -59,18 +59,80 @@ struct ObservationActionsTests {
         #expect(actions.current(second) == third)
     }
 
-    /// Editing a sighting back to the values it started with closes a loop in
-    /// the trail. Walking it has to terminate.
-    @Test("an edit that restores the original values doesn't loop")
-    func cycleTerminates() {
+    /// Editing a sighting back to the values it started with used to close a
+    /// loop in the trail, and a loop is precisely what a chain can't resolve:
+    /// every record in it holds an outgoing link, so nothing says which write
+    /// came last. Whichever value a host is holding, the answer has to be the
+    /// record the store now has.
+    ///
+    /// This used to assert only that the walk returned at all, and accepted
+    /// either end — the bug wearing a passing test. See `ObservationActions.edits`.
+    @Test("an edit that restores the original values resolves back to it")
+    func cycleResolvesToTheRestoredRecord() {
         let actions = ObservationActions()
         let first = sighting(may4, "Sapsucker Woods")
         let second = sighting(may5, "Sapsucker Woods")
         actions.recordEdit(original: first, replacement: second)
         actions.recordEdit(original: second, replacement: first)
-        // Whichever end it settles on, it settles: the point is that it returns.
-        let resolved = actions.current(first)
-        #expect(resolved == first || resolved == second)
+        #expect(actions.current(first) == first)
+        #expect(actions.current(second) == first)
+    }
+
+    /// A longer loop closes the same way: three edits that end where they began
+    /// leave the first record live, whichever link the caller is holding.
+    @Test("a longer loop also resolves to the record that closed it")
+    func longCycleResolvesToTheRestoredRecord() {
+        let actions = ObservationActions()
+        let first = sighting(may4, "Sapsucker Woods")
+        let second = sighting(may5, "Sapsucker Woods")
+        let third = sighting(may6, "Mundy Wildflower Garden")
+        actions.recordEdit(original: first, replacement: second)
+        actions.recordEdit(original: second, replacement: third)
+        actions.recordEdit(original: third, replacement: first)
+        #expect(actions.current(first) == first)
+        #expect(actions.current(second) == first)
+        #expect(actions.current(third) == first)
+    }
+
+    /// The end-to-end shape of the revert bug, against a real store: correct a
+    /// sighting's date and then correct it back. The record on file is the
+    /// original again, so the screen holding it must resolve to something the
+    /// store can still find — otherwise the viewer reads it as deleted and shuts
+    /// itself, and the next Edit or Delete resolves to nothing and writes
+    /// nothing.
+    @Test("a reverted sighting is still found on the list")
+    func revertedSightingSurvives() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        store.recordObservation(scientificName: "X y", commonName: "X", date: may4,
+                                location: "Sapsucker Woods", latitude: 1, longitude: 1)
+        let held = store.entries[0].allObservations[0]
+
+        let actions = ObservationActions()
+        let edited = try #require(store.replaceObservation(
+            scientificName: "X y", original: held,
+            date: may5, location: "Sapsucker Woods", latitude: 1, longitude: 1
+        ))
+        actions.recordEdit(original: held, replacement: edited)
+
+        let reverted = try #require(store.replaceObservation(
+            scientificName: "X y", original: actions.current(held),
+            date: may4, location: "Sapsucker Woods", latitude: 1, longitude: 1
+        ))
+        actions.recordEdit(original: edited, replacement: reverted)
+
+        let live = actions.current(held)
+        let onRecord = store.observations(for: "X y")
+        #expect(onRecord.contains { $0.identity == live.identity },
+                "the followed sighting has to be one the store still holds")
+
+        // And a further edit aimed at the held copy actually writes, rather than
+        // resolving to nothing in `locate` and silently no-oping.
+        #expect(store.replaceObservation(
+            scientificName: "X y", original: live,
+            date: may6, location: "Sapsucker Woods", latitude: 1, longitude: 1
+        ) != nil)
+        #expect(store.observations(for: "X y").first?.date == may6)
     }
 
     /// Only writes that changed something are worth tracking, and a self-edge
