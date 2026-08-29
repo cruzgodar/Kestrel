@@ -121,7 +121,17 @@ nonisolated struct SpeciesPhotoInfo: Decodable {
 /// `nonisolated` so the attribution strings above — built off the main actor
 /// while a manifest is applied — can use it.
 private nonisolated extension String {
-    var nilIfEmpty: String? { isEmpty ? nil : self }
+    /// The string, or `nil` when it has nothing to show — which includes a value
+    /// that is only whitespace.
+    ///
+    /// Manifest fields come from a photo set assembled by hand, so a credit of
+    /// `" "` is a thing that reaches this. Testing `isEmpty` alone let it past,
+    /// and the viewer rendered a blank credit line instead of falling back to the
+    /// license — the fallback exists precisely for a photo with no named author.
+    var nilIfEmpty: String? {
+        let trimmed = trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
 }
 
 /// Metadata lookup for the photo set, backed solely by `PhotoManifestStore` —

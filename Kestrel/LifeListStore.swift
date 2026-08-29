@@ -905,6 +905,16 @@ final class LifeListStore {
         // cooperii"). Counting rows would report that as a species added when the
         // list didn't grow at all; comparing final entries to the ones we started
         // with gets it right without needing to know which names were rewritten.
+        //
+        // `touchedKeys` is the one part that *does* need to know: it is keyed on
+        // the names the CSV used, and the loop below asks it about names as they
+        // came out the far end. A row canonicalization rewrote answered "the CSV
+        // never mentioned this species" about a species the CSV was entirely
+        // about, so a re-import of an eBird export under eBird's own spelling
+        // reported fewer species "already known" than it had read — and with one
+        // species in the file, reported nothing at all. Follow the same renames
+        // the stars follow.
+        let touched = Set(touchedKeys.map { canonical.renames[$0] ?? $0 })
         var added = 0
         var gained = 0
         var revised = 0
@@ -935,7 +945,7 @@ final class LifeListStore {
                 newObservations += grew
             } else if earliestChanged {
                 revised += 1
-            } else if touchedKeys.contains(entry.scientificName) {
+            } else if touched.contains(entry.scientificName) {
                 // The CSV named it and had nothing new to say. Species the import
                 // never mentioned are simply not part of this tally.
                 skipped += 1
@@ -1309,6 +1319,46 @@ final class LifeListStore {
         return out
     }
 
+    /// Records `old → new` in a rename map a pass is building for itself,
+    /// **re-pointing anything that had already landed on `old`** so the map can
+    /// never contain a chain.
+    ///
+    /// `composeRenames` chains one pass's map onto the next one's. Nothing
+    /// chained a pass's map onto *itself*, and `collapseByCommonName` is a pass
+    /// that can move the same name twice: three entries sharing a common name
+    /// merge pairwise, and if the survivor's scientific name changes on the
+    /// second collision, the first collision's target is now a name no entry
+    /// holds. Written straight into the dictionary, that left `Z → X` beside
+    /// `X → Y` with nothing pointing `Z` at `Y`.
+    ///
+    /// The consequence was a star that vanished, and vanished *unpredictably*.
+    /// `migrateStars` walks the map with `for (old, new) in renames`, and
+    /// `Dictionary` iteration order is seeded per process — so `Z → X` before
+    /// `X → Y` carried the star the whole way, while the other order left the
+    /// surviving entry's name unstarred and `applyStarsToEntries` then cleared
+    /// the flag the merge had OR'd onto it. Same data, same code, different
+    /// answer on the next launch.
+    ///
+    /// Keeping the map flat at the point of insertion fixes it for every reader
+    /// at once, rather than teaching each one to chase chains.
+    nonisolated static func recordRename(
+        _ old: String,
+        to new: String,
+        in map: inout [String: String]
+    ) {
+        guard old != new else { return }
+        for (key, value) in map where value == old {
+            // A name that would now point at itself is dropped rather than
+            // recorded as an identity rename, matching `composeRenames`.
+            if key == new {
+                map.removeValue(forKey: key)
+            } else {
+                map[key] = new
+            }
+        }
+        map[old] = new
+    }
+
     /// Merge entries whose scientific names differ only in a trinomial subspecies
     /// token (e.g. "Dryobates villosus villosus" + "Dryobates villosus harrisi" →
     /// "Dryobates villosus"). Keeps the earliest first-seen date, OR-merges the
@@ -1331,7 +1381,7 @@ final class LifeListStore {
             // lands under its binomial whether it is the first entry to claim
             // that key or is merging into one that already has, and the star
             // that rode in on it has to follow either way.
-            if key != entry.scientificName { renames[entry.scientificName] = key }
+            Self.recordRename(entry.scientificName, to: key, in: &renames)
             guard let existing = byBinomial[key] else {
                 order.append(key)
                 // Already a binomial: nothing to rewrite, so pass the entry
@@ -1421,13 +1471,14 @@ final class LifeListStore {
                 scientificName = existing.scientificName
             }
             // Whichever of the pair didn't supply the surviving name has been
-            // moved onto the other's, and its star has to come with it.
-            if existing.scientificName != scientificName {
-                mergeRenames[existing.scientificName] = scientificName
-            }
-            if entry.scientificName != scientificName {
-                mergeRenames[entry.scientificName] = scientificName
-            }
+            // moved onto the other's, and its star has to come with it. Through
+            // `recordRename` — which no-ops when a name didn't actually move,
+            // and, crucially here, re-points anything an *earlier* collision had
+            // already sent to `existing.scientificName`. Three entries under one
+            // common name merge pairwise, so a name this pass moved once can be
+            // moved again; see `recordRename`.
+            Self.recordRename(existing.scientificName, to: scientificName, in: &mergeRenames)
+            Self.recordRename(entry.scientificName, to: scientificName, in: &mergeRenames)
             byCommon[key] = LifeListEntry.make(
                 scientificName: scientificName,
                 commonName: existing.commonName,
@@ -1448,7 +1499,7 @@ final class LifeListStore {
             guard let canonical = catalogByCommon[entry.commonName.lowercased()] else {
                 return entry
             }
-            relabelRenames[entry.scientificName] = canonical
+            Self.recordRename(entry.scientificName, to: canonical, in: &relabelRenames)
             return LifeListEntry.make(
                 scientificName: canonical,
                 commonName: entry.commonName,
@@ -1522,7 +1573,7 @@ final class LifeListStore {
         let mapped = entries.map { entry -> LifeListEntry in
             let canonical = TaxonomyAliases.canonical(entry.scientificName)
             guard canonical != entry.scientificName else { return entry }
-            renames[entry.scientificName] = canonical
+            Self.recordRename(entry.scientificName, to: canonical, in: &renames)
             return LifeListEntry.make(
                 scientificName: canonical,
                 commonName: entry.commonName,

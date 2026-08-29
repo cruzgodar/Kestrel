@@ -275,4 +275,110 @@ struct LifeListStoreStarMigrationTests {
         #expect(LifeListStore.composeRenames(["A": "B"], [:]) == ["A": "B"])
         #expect(LifeListStore.composeRenames([:], [:]).isEmpty)
     }
+
+    // MARK: a single pass moving one name twice
+
+    /// `composeRenames` chains one pass's map onto the next one's. Nothing
+    /// chained a pass's map onto *itself*, and `collapseByCommonName` is a pass
+    /// that can move the same name twice — see `recordRename`.
+    @Test("a name a pass moves twice ends up pointing at where it landed")
+    func recordRenameFlattensChains() {
+        var map: [String: String] = [:]
+        LifeListStore.recordRename("Z", to: "X", in: &map)
+        LifeListStore.recordRename("X", to: "Y", in: &map)
+        #expect(map["Z"] == "Y", "not at the intermediate it passed through")
+        #expect(map["X"] == "Y")
+    }
+
+    @Test("a name moved three times still reports only the final one")
+    func recordRenameFlattensLongChains() {
+        var map: [String: String] = [:]
+        LifeListStore.recordRename("A", to: "B", in: &map)
+        LifeListStore.recordRename("B", to: "C", in: &map)
+        LifeListStore.recordRename("C", to: "D", in: &map)
+        #expect(map == ["A": "D", "B": "D", "C": "D"])
+    }
+
+    @Test("a name that didn't move isn't recorded")
+    func recordRenameIgnoresIdentity() {
+        var map: [String: String] = [:]
+        LifeListStore.recordRename("A", to: "A", in: &map)
+        #expect(map.isEmpty)
+    }
+
+    /// The same rule `composeRenames` follows: a name that comes back to itself
+    /// isn't a rename, so it drops out rather than being recorded as one.
+    @Test("a name moved and moved back drops out")
+    func recordRenameDropsRoundTrips() {
+        var map: [String: String] = [:]
+        LifeListStore.recordRename("A", to: "B", in: &map)
+        LifeListStore.recordRename("B", to: "A", in: &map)
+        #expect(map["A"] == nil)
+        #expect(map["B"] == "A")
+    }
+
+    @Test("an unrelated rename is left alone")
+    func recordRenameLeavesUnrelatedEntries() {
+        var map: [String: String] = [:]
+        LifeListStore.recordRename("A", to: "B", in: &map)
+        LifeListStore.recordRename("P", to: "Q", in: &map)
+        #expect(map == ["A": "B", "P": "Q"])
+    }
+
+    /// The end-to-end failure the flattening prevents, and the reason it had to
+    /// be fixed at the map rather than at `migrateStars`.
+    ///
+    /// Three entries under one common name merge *pairwise*. The first collision
+    /// picks a survivor; the second can pick a different one, which moves the
+    /// first survivor's name again. Written straight into the dictionary that
+    /// left `stale2 → stale1` beside `stale1 → catalog`, with nothing pointing
+    /// `stale2` at the name the surviving entry actually holds.
+    ///
+    /// `migrateStars` walks that map with `for (old, new) in renames`, and
+    /// `Dictionary` iteration order is seeded per process — so the star reached
+    /// the survivor only when the walk happened to take the two links in order.
+    /// Same list, same code, a different answer on the next launch, and on the
+    /// launches that lost it `applyStarsToEntries` went on to clear the flag the
+    /// merge had OR'd onto the entry. The bird stopped raising alerts and its row
+    /// showed an empty star.
+    ///
+    /// Sixteen species rather than one: a single case would pass roughly half the
+    /// time under the old code, which is not a regression test.
+    @Test("a star survives three entries merging on one common name")
+    func starSurvivesThreeWayCommonNameMerge() throws {
+        let targets = SpeciesCatalog.shared.all
+            .lazy
+            .filter { !$0.commonName.contains("(") }
+            .prefix(16)
+        #expect(targets.count == 16, "the catalog has to be loaded for this to mean anything")
+
+        var entries: [LifeListEntry] = []
+        var stars: [String] = []
+        for (n, species) in targets.enumerated() {
+            // Two invented synonyms the catalog doesn't know, then the catalog's
+            // own name last — the order that makes the second collision move the
+            // first collision's survivor.
+            let stale1 = "Zzstale\(n)a species"
+            let stale2 = "Zzstale\(n)b species"
+            entries.append(.make(stale1, species.commonName, [.at(may4, "A", lat: 1, lon: 1)]))
+            entries.append(.make(stale2, species.commonName, [.at(may5, "B", lat: 2, lon: 2)],
+                                 starred: true))
+            entries.append(.make(species.scientificName, species.commonName,
+                                 [.at(may5, "C", lat: 3, lon: 3)]))
+            stars.append(stale2)
+        }
+
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeStars(stars)
+        try scratch.writeLifeList(entries)
+        let store = makeStore(scratch, defaults)
+
+        for species in targets {
+            let entry = store.entries.first { $0.scientificName == species.scientificName }
+            #expect(entry != nil, "\(species.commonName) must survive under the catalog's name")
+            #expect(entry?.isStarred == true, "\(species.commonName) must keep its star")
+            #expect(store.starredNames.contains(species.scientificName),
+                    "and the classifier must alert on the name the entry now holds")
+        }
+    }
 }

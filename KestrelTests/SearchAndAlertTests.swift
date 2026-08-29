@@ -541,3 +541,46 @@ struct NotificationPresentationTests {
         #expect(!SpeciesNotifications.speciesCategory.isEmpty)
     }
 }
+
+/// Which location the nearby-species filter is built from.
+///
+/// The watch sends its own GPS so a watch-first user — phone never opened, so
+/// the phone has no fix of its own — still gets a location-focused list. That
+/// coordinate was then preferred unconditionally, and nothing cleared it when
+/// the session ended, so the phone stopped consulting its own location for good:
+/// every later foreground refresh and every phone-only session rebuilt the list
+/// from wherever the watch last was. It is also written into `LocationCache` and
+/// stamped fresh, which turns a stale filter into a stale *default pin* under
+/// the next sighting the user adds.
+@Suite("Session coordinate")
+struct SessionCoordinateTests {
+
+    private let ithaca = (lat: 42.4534, lon: -76.4735)
+
+    @Test("the watch's coordinate is used while a watch session is running")
+    func watchCoordinateUsedDuringSession() {
+        let picked = RecordingManager.sessionCoordinate(
+            watchSupplied: ithaca, watchRecording: true
+        )
+        #expect(picked?.lat == ithaca.lat)
+        #expect(picked?.lon == ithaca.lon)
+    }
+
+    /// The regression: a coordinate that outlived its session.
+    @Test("a watch coordinate left over from a finished session is ignored")
+    func staleWatchCoordinateIgnored() {
+        #expect(RecordingManager.sessionCoordinate(
+            watchSupplied: ithaca, watchRecording: false
+        ) == nil, "the phone has to go ask where it is")
+    }
+
+    @Test("a watch session that hasn't sent a fix yet falls back to the phone")
+    func noWatchCoordinateFallsBack() {
+        #expect(RecordingManager.sessionCoordinate(
+            watchSupplied: nil, watchRecording: true
+        ) == nil)
+        #expect(RecordingManager.sessionCoordinate(
+            watchSupplied: nil, watchRecording: false
+        ) == nil)
+    }
+}

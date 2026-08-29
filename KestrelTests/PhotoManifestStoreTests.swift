@@ -704,3 +704,52 @@ struct PhotoAssetURLTests {
         #expect(targets.count == Set(targets).count)
     }
 }
+
+/// What the viewer prints under a photo.
+///
+/// The manifest is assembled by hand, so a field that is present but blank is a
+/// thing that reaches this — and "present but blank" has to mean the same as
+/// absent, or the fallbacks that exist for an unattributed photo never fire.
+@Suite("Photo attribution")
+struct PhotoAttributionTests {
+
+    private func info(credit: String?, license: String?) -> SpeciesPhotoInfo {
+        SpeciesPhotoInfo(credit: credit, license: license, pageURL: nil, code: nil)
+    }
+
+    @Test("a named photographer is credited with their license")
+    func namedCredit() {
+        let subject = info(credit: "A. Birder", license: "CC BY 4.0")
+        #expect(subject.attribution == "A. Birder")
+        #expect(subject.attributionWithLicense == "© A. Birder • CC BY 4.0")
+    }
+
+    @Test("no credit falls back to the license")
+    func missingCreditFallsBack() {
+        #expect(info(credit: nil, license: "CC0").attribution == "CC0")
+        #expect(info(credit: nil, license: nil).attribution == "Public domain")
+    }
+
+    /// The regression: `isEmpty` alone let a whitespace-only credit through, and
+    /// the viewer rendered a blank credit line instead of the license.
+    @Test("a whitespace-only credit is treated as no credit", arguments: ["", " ", "   ", "\n", "\t "])
+    func blankCreditFallsBack(_ blank: String) {
+        let subject = info(credit: blank, license: "CC BY-SA 4.0")
+        #expect(subject.attribution == "CC BY-SA 4.0")
+        #expect(subject.attributionWithLicense == "CC BY-SA 4.0",
+                "and not an empty © line")
+    }
+
+    @Test("a whitespace-only license is treated as no license")
+    func blankLicenseFallsBack() {
+        #expect(info(credit: "  ", license: "  ").attribution == "Public domain")
+        #expect(info(credit: "A. Birder", license: " ").attributionWithLicense == "© A. Birder")
+    }
+
+    /// Surrounding whitespace is trimmed rather than printed — the credit sits
+    /// inside a capsule, where a leading space is visible.
+    @Test("a padded credit is trimmed")
+    func paddedCreditIsTrimmed() {
+        #expect(info(credit: "  A. Birder  ", license: nil).attribution == "A. Birder")
+    }
+}

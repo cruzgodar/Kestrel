@@ -514,6 +514,61 @@ struct LifeListStoreImportTests {
         #expect(summary.skipped == 0)
     }
 
+    /// `touchedKeys` is keyed on the names the CSV used; the tally asks it about
+    /// names as they come out of canonicalization. A row canonicalization
+    /// rewrites therefore answered "the CSV never mentioned this species" about
+    /// the species the CSV was entirely about, and the sole thing that import had
+    /// to report went uncounted.
+    ///
+    /// The rename has to be one the **parser** doesn't already perform.
+    /// `EBirdCSVParser` strips parentheticals, collapses trinomials and applies
+    /// the alias table before a row ever reaches the merge, so an aliased name
+    /// like "Astur cooperii" arrives already canonical and never exercises this.
+    /// What survives the parser and still moves is `collapseByCommonName`'s final
+    /// relabel: a scientific name the BirdNET catalog doesn't list whose *common*
+    /// name it does. "Richmondena cardinalis" is a real former genus for the
+    /// Northern Cardinal and is deliberately absent from the alias table — the
+    /// table can't enumerate every synonym in existence, which is why that pass
+    /// exists at all.
+    @Test("a species the CSV named under a relabeled spelling still counts as skipped")
+    func skippedCountsARelabeledSpelling() async throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        let rows: [(String, String, String, String?, Double?, Double?)] = [
+            ("Richmondena cardinalis", "Northern Cardinal", "2019-05-04",
+             "Sapsucker Woods", 42.4791, -76.4512),
+        ]
+
+        let first = try await importCSV(store, scratch, rows)
+        #expect(first.added == 1)
+        #expect(store.entries.map(\.scientificName) == ["Cardinalis cardinalis"],
+                "canonicalization moved it, which is what makes this the interesting case")
+
+        let second = try await importCSV(store, scratch, rows)
+        #expect(second.added == 0 && second.gained == 0 && second.revised == 0)
+        #expect(second.newObservations == 0)
+        #expect(second.skipped == 1, "the CSV named it and it was already known")
+    }
+
+    /// The same undercount seen from the summary a user actually reads: every
+    /// species in a re-imported file has to land in exactly one bucket, whether
+    /// or not canonicalization moved its name.
+    @Test("every species in a re-imported CSV is accounted for in the tally")
+    func everyRelabeledSpeciesIsCounted() async throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+        let rows: [(String, String, String, String?, Double?, Double?)] = [
+            ("Richmondena cardinalis", "Northern Cardinal", "2019-05-04", "A", 42.47, -76.45),
+            ("Turdus migratorius", "American Robin", "2019-05-05", "B", 42.48, -76.46),
+        ]
+        _ = try await importCSV(store, scratch, rows)
+        let second = try await importCSV(store, scratch, rows)
+
+        #expect(second.added + second.gained + second.revised + second.skipped == 2,
+                "both rows' species have to land in exactly one bucket each")
+        #expect(second.skipped == 2)
+    }
+
     @Test("an empty CSV is a no-op with an all-zero tally")
     func emptyImport() async throws {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()

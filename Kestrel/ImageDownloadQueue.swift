@@ -62,6 +62,16 @@ actor ImageDownloadQueue {
     private let maxConcurrent: Int
 
     private var tiers: [[Request]]
+    /// Index of the next unclaimed request in each tier — the read cursor that
+    /// keeps `nextRequest` O(1).
+    ///
+    /// The tiers used to be drained with `removeFirst()`, which shifts every
+    /// remaining element down one. A prefetch wake enqueues one request per
+    /// species per size — several thousand on a full life list plus a dense
+    /// nearby set — so draining the queue was quadratic in the number of birds
+    /// the user has, on the actor that also serves every on-demand image the
+    /// scrolling lists ask for.
+    private var heads: [Int]
     private var queuedKeys: Set<Key> = []
     private var inFlight: [Key: Task<Data?, Never>] = [:]
     private var activeBulk = 0
@@ -73,6 +83,7 @@ actor ImageDownloadQueue {
         self.maxConcurrent = maxConcurrent
         self.download = download
         self.tiers = Tier.allCases.map { _ in [] }
+        self.heads = Tier.allCases.map { _ in 0 }
     }
 
     // MARK: - On-demand
@@ -90,6 +101,7 @@ actor ImageDownloadQueue {
     /// re-prioritize from scratch. In-flight downloads keep running.
     func resetPrefetch() {
         tiers = Tier.allCases.map { _ in [] }
+        heads = Tier.allCases.map { _ in 0 }
         queuedKeys.removeAll()
     }
 
@@ -121,10 +133,17 @@ actor ImageDownloadQueue {
     /// job is covered anyway: queued ones by `tiers`, running ones by `activeBulk`,
     /// which `drain` only decrements once its download has returned.
     func waitUntilIdle() async {
-        while activeBulk > 0 || tiers.contains(where: { !$0.isEmpty }) {
+        while activeBulk > 0 || hasQueuedWork {
             if Task.isCancelled { return }
             try? await Task.sleep(for: .milliseconds(250))
         }
+    }
+
+    /// Whether any tier still holds a request nothing has claimed. Asks the
+    /// cursors rather than `isEmpty`, since a partly-drained tier keeps its
+    /// already-dispatched entries until it empties.
+    private var hasQueuedWork: Bool {
+        tiers.indices.contains { heads[$0] < tiers[$0].count }
     }
 
     // MARK: - Internals
@@ -144,8 +163,17 @@ actor ImageDownloadQueue {
     }
 
     private func nextRequest() -> Request? {
-        for index in tiers.indices where !tiers[index].isEmpty {
-            let request = tiers[index].removeFirst()
+        for index in tiers.indices where heads[index] < tiers[index].count {
+            let request = tiers[index][heads[index]]
+            heads[index] += 1
+            // A fully-drained tier drops its backing storage rather than
+            // carrying a spent array until the next `resetPrefetch`. The cursor
+            // goes back to zero with it, so `enqueue` appending to this tier
+            // later still reads from the front.
+            if heads[index] == tiers[index].count {
+                tiers[index].removeAll(keepingCapacity: false)
+                heads[index] = 0
+            }
             queuedKeys.remove(Key(slug: request.slug, size: request.size))
             return request
         }

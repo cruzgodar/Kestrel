@@ -292,4 +292,51 @@ struct ImageDownloadQueueTests {
         let started = await gate.started
         #expect(started == ["filler", "fresh"], "\(started)")
     }
+
+    // MARK: draining order
+
+    /// The tiers are drained through a read cursor rather than `removeFirst()`,
+    /// which shifted every remaining element down one on each job — quadratic in
+    /// the number of birds on the life list, on the actor that also serves every
+    /// on-demand image the scrolling lists ask for.
+    ///
+    /// The cursor has to be invisible from outside: within a tier, jobs still go
+    /// out in the order they were enqueued.
+    @Test("a tier is drained front to back", .timeLimit(.minutes(1)))
+    func tierDrainsInOrder() async {
+        let gate = Gate(blocking: [])
+        let queue = ImageDownloadQueue(maxConcurrent: 1, download: downloader(gate))
+        await queue.enqueue((0..<8).map { request("s\($0)") }, tier: .nearbyThumb)
+        await queue.waitUntilIdle()
+        let started = await gate.started
+        #expect(started == (0..<8).map { "s\($0)" }, "\(started)")
+    }
+
+    /// A tier that empties resets its cursor along with its storage, so work
+    /// appended afterwards is read from the front rather than skipped past.
+    @Test("a tier refilled after draining runs its new work", .timeLimit(.minutes(1)))
+    func refilledTierRunsAgain() async {
+        let gate = Gate(blocking: [])
+        let queue = ImageDownloadQueue(maxConcurrent: 1, download: downloader(gate))
+        await queue.enqueue([request("first"), request("second")], tier: .nearbyThumb)
+        await queue.waitUntilIdle()
+        await queue.enqueue([request("third")], tier: .nearbyThumb)
+        await queue.waitUntilIdle()
+        let started = await gate.started
+        #expect(started == ["first", "second", "third"], "\(started)")
+    }
+
+    /// `waitUntilIdle` asks the cursors whether anything is unclaimed, not
+    /// whether the backing arrays are empty — a partly-drained tier keeps its
+    /// already-dispatched entries, and reading that as outstanding work would
+    /// hang a background task's runtime assertion open until it expired.
+    @Test("waitUntilIdle returns once a partly-drained tier is done", .timeLimit(.minutes(1)))
+    func idleAfterPartialDrain() async {
+        let gate = Gate(blocking: [])
+        let queue = ImageDownloadQueue(maxConcurrent: 2, download: downloader(gate))
+        await queue.enqueue((0..<5).map { request("s\($0)") }, tier: .lifeListMedium)
+        await queue.waitUntilIdle()
+        let started = await gate.started
+        #expect(started.count == 5)
+    }
 }

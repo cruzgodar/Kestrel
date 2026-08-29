@@ -190,7 +190,15 @@ final class RecordingManager {
     /// the bird would silently fall back to the placeholder. Bumped per push so
     /// every one is a distinct context that actually delivers; the watch de-dupes
     /// on it so a context re-delivered for an unrelated key change doesn't re-flash.
-    private var watchDisplaySeq = 0
+    ///
+    /// Seeded from the wall clock rather than starting at zero. The watch keeps
+    /// the last sequence it saw for as long as *its* process lives, which
+    /// routinely outlasts the phone app's — and a counter that restarted at zero
+    /// could hand back a number the watch had already retired, which the watch
+    /// would then correctly ignore, swallowing a real now-hearing update. Launch
+    /// time is monotonic across launches, so a fresh phone process always
+    /// out-numbers anything it said last time.
+    private var watchDisplaySeq = Int(Date().timeIntervalSince1970)
     /// Tracks the deferred audio engine start/stop task so rapid taps can
     /// cancel a pending transition before its sleep elapses.
     private var pendingTransitionTask: Task<Void, Never>?
@@ -209,7 +217,13 @@ final class RecordingManager {
     /// user — whose iPhone may never have been opened — still gets a nearby-species
     /// filter: the phone runs BirdNET but no longer needs its own location. When
     /// set, `refreshSpeciesFilter` builds the filter from here instead of the
-    /// phone's location. Reset at the start of each watch session.
+    /// phone's location.
+    ///
+    /// Cleared at both ends of a watch session — `startFromWatch` and
+    /// `stopFromWatch` — and read only through `sessionCoordinate`, which
+    /// ignores it outside a session anyway. Two guards for one invariant because
+    /// the failure was silent and long-lived: a coordinate that outlived its
+    /// session made the phone stop consulting its own location for good.
     private var watchSuppliedCoordinate: (lat: Double, lon: Double)?
     /// Silent-audio playback used to keep the iOS app alive in the
     /// background while the watch is the audio source.
@@ -465,11 +479,43 @@ final class RecordingManager {
     /// Merges `updates` into the watch application context and re-publishes it.
     /// The single owner of `updateApplicationContext` (see `watchAppContext`), so
     /// the now-hearing bird and the auth state coexist instead of overwriting.
+    ///
+    /// The dictionary is updated whether or not there is a watch to push it to,
+    /// so the context the next push carries is always the current one — the
+    /// alternative bails before the merge and silently drops state whenever the
+    /// watch happens to be unpaired at that moment.
     func mergeWatchAppContext(_ updates: [String: Any]) {
+        watchAppContext.merge(updates) { _, new in new }
+        pushWatchAppContext()
+    }
+
+    /// The keys `sendBirdDisplayToWatch` owns — the whole now-hearing slot.
+    private static let watchBirdContextKeys = ["birdCommon", "birdSci", "highlight", "birdSeq"]
+
+    /// Drops the now-hearing bird from the mirrored context at the end of a
+    /// session.
+    ///
+    /// The context is *latest state*, and without this the last bird of a
+    /// session stayed in it forever: nothing else removes a key, and every later
+    /// `mergeWatchAppContext` — `pushRecordingAuthorized` fires on any
+    /// watch-state change — re-published the whole dictionary, that bird
+    /// included. The watch's `birdSeq` de-dupe hid it right up until the watch
+    /// app was relaunched, which resets the watch's last-seen sequence: from
+    /// then on the first context to arrive announced a bird from a walk that had
+    /// already ended, as the one the phone was hearing now.
+    private func clearWatchBirdDisplay() {
+        var changed = false
+        for key in Self.watchBirdContextKeys where watchAppContext.removeValue(forKey: key) != nil {
+            changed = true
+        }
+        guard changed else { return }
+        pushWatchAppContext()
+    }
+
+    private func pushWatchAppContext() {
         guard WCSession.isSupported() else { return }
         let s = WCSession.default
         guard s.activationState == .activated, s.isPaired, s.isWatchAppInstalled else { return }
-        watchAppContext.merge(updates) { _, new in new }
         try? s.updateApplicationContext(watchAppContext)
     }
 
@@ -649,6 +695,16 @@ final class RecordingManager {
             // The stop that preceded this already banked the elapsed time (see
             // `stop`), so the resumed stretch is timed from here.
             if localSessionStart == nil { localSessionStart = Date() }
+            // Everything `stop` tore down has to come back, even though the
+            // audio engine never went away. It cancelled the idle watchdog and
+            // told the watch the phone had stopped, both unconditionally and
+            // both before it knew whether the engine would actually be stopped —
+            // so a resume that skipped this left the session running with no
+            // "no birds heard" timeout for the rest of the walk and a watch that
+            // had gone dark. Deliberately *not* the rest of a fresh start: the
+            // detections, cooldowns and spectrogram are this same session's and
+            // are meant to carry over.
+            announceLocalSessionStart()
             return
         }
 
@@ -688,9 +744,7 @@ final class RecordingManager {
         isRecording = true
         localSessionStart = Date()
 
-        // Mirror this phone-mic session onto the watch so its "now hearing"
-        // screen shows the same birds, as though the watch were the source.
-        sendToWatch(["cmd": "phoneStart"])
+        announceLocalSessionStart()
 
         // Audio engine startup secretly uses main-thread time even when called
         // from a detached task (AVAudioEngine posts route-change callbacks to
@@ -731,6 +785,23 @@ final class RecordingManager {
 
         preload()
         Task { await self.refreshSpeciesFilter() }
+    }
+
+    /// Everything a phone-mic session has to announce and arm once
+    /// `isRecording` is true, whether this is a fresh start or a resume of one
+    /// the pending-stop window caught mid-teardown.
+    ///
+    /// Both paths call it, and that is the point. `stop()` cancels the idle
+    /// watchdog and sends `phoneStop` before it knows whether the engine will
+    /// actually be stopped, so a resume has exactly as much to put back as a
+    /// fresh start does — but the resume path returns early by design (the
+    /// engine, the detections and the spectrogram are all still this session's)
+    /// and quietly returned past both of these. One function neither path can
+    /// skip is what keeps them from drifting again.
+    private func announceLocalSessionStart() {
+        // Mirror this phone-mic session onto the watch so its "now hearing"
+        // screen shows the same birds, as though the watch were the source.
+        sendToWatch(["cmd": "phoneStart"])
         startIdleWatchdog()
     }
 
@@ -757,6 +828,7 @@ final class RecordingManager {
         localSessionStart = nil
         cancelIdleWatchdog()
         sendToWatch(["cmd": "phoneStop"])
+        clearWatchBirdDisplay()
     }
 
     func stop() {
@@ -778,8 +850,10 @@ final class RecordingManager {
         }
         ReviewPrompt.requestIfDue()
 
-        // Tell the watch to drop its mirrored "now hearing" display.
+        // Tell the watch to drop its mirrored "now hearing" display, and take the
+        // bird out of the mirrored context so a later push can't resurrect it.
         sendToWatch(["cmd": "phoneStop"])
+        clearWatchBirdDisplay()
 
         // If the engine never actually started (we cancelled a pending start
         // task before its 280ms sleep elapsed), there's nothing to tear down.
@@ -879,9 +953,22 @@ final class RecordingManager {
         // whose fate is no longer ours to decide, so take it down.
         showWatchWorkoutPrompt = false
         watchWindowBuffer.removeAll(keepingCapacity: true)
+        watchLastSample = 0
+        // The watch's fix belongs to the session that just ended, and nothing
+        // else cleared it. `refreshSpeciesFilter` prefers it over the phone's own
+        // location unconditionally, so leaving it set meant the phone stopped
+        // asking where *it* was: every later foreground refresh and every
+        // phone-only session rebuilt the nearby-species list from wherever the
+        // watch last was, indefinitely. Worse, that stale fix was written into
+        // `LocationCache` and stamped fresh, so a sighting added just after a
+        // foreground could be pinned at it.
+        watchSuppliedCoordinate = nil
         watchKeepalive.stop()
         cancelWatchLifecycleWatchdogs()
         cancelIdleWatchdog()
+        // The wrist is no longer showing this session's bird, and the phone
+        // must not re-push it onto a watch that has since relaunched.
+        clearWatchBirdDisplay()
     }
 
     /// Called when the watch reports that the *system* killed its recording
@@ -1424,6 +1511,25 @@ final class RecordingManager {
         }
     }
 
+    /// Which coordinate the nearby-species filter should be built from: the
+    /// watch's, but **only while a watch session is actually running**.
+    ///
+    /// The `watchRecording` half is what makes this a rule rather than a
+    /// coincidence of when the field happens to be nil. `refreshSpeciesFilter`
+    /// runs on every foreground and at the start of every phone-only session,
+    /// long after any watch session has ended, and a watch coordinate consulted
+    /// then is a fix from another walk — possibly another day, possibly another
+    /// state. It also gets written into `LocationCache` and stamped fresh, so it
+    /// stops being merely a stale filter and starts being the default pin under
+    /// a new sighting.
+    nonisolated static func sessionCoordinate(
+        watchSupplied: (lat: Double, lon: Double)?,
+        watchRecording: Bool
+    ) -> (lat: Double, lon: Double)? {
+        guard watchRecording else { return nil }
+        return watchSupplied
+    }
+
     private func refreshSpeciesFilter() async {
         guard let rangeFilter = await getRangeFilter() else {
             allowedIndices = nil
@@ -1433,7 +1539,10 @@ final class RecordingManager {
         // Prefer a coordinate the watch supplied for this session — it's the only
         // location a watch-first user has — falling back to the phone's own fix.
         let location: CLLocation?
-        if let coord = watchSuppliedCoordinate {
+        if let coord = Self.sessionCoordinate(
+            watchSupplied: watchSuppliedCoordinate,
+            watchRecording: watchRecording
+        ) {
             location = CLLocation(latitude: coord.lat, longitude: coord.lon)
         } else {
             location = await locationProvider.currentLocation()
