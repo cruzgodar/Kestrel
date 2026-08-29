@@ -188,9 +188,18 @@ final class LocationCache {
     /// the walk is still the best answer available, and it is what the recenter
     /// button and the picker's default pin had before. `nil` means we have never
     /// had a fix at all.
+    ///
+    /// **The fallback belongs to every caller, not just the one that started the
+    /// fix.** A second caller arriving while a fix is in flight joins it rather
+    /// than starting a second, and that join used to hand back the task's raw
+    /// `nil` — so which of two callers got the stale coordinate came down to
+    /// which of them asked first. Concretely: opening the Map tab starts a
+    /// warm-up fix, and a recenter tap a moment later joins it; a fix that then
+    /// timed out left the button doing nothing at all while a perfectly usable
+    /// coordinate sat in the cache. Both paths coalesce to the same answer here.
     func current(now: Date = Date()) async -> (latitude: Double, longitude: Double)? {
         if let cached = cachedCoordinate, isFresh(at: now) { return cached }
-        if let inflight { return await inflight.value }
+        if let inflight { return await inflight.value ?? cachedCoordinate }
         let task = Task<(Double, Double)?, Never> { [fetch] in
             guard let fix = await fetch() else { return nil }
             return (fix.latitude, fix.longitude)

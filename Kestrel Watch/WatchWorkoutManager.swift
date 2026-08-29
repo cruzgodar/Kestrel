@@ -269,13 +269,37 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// though it recovered.
     @discardableResult
     func resume() -> Bool {
-        guard session != nil, pendingSave?.canResume == true else { return false }
+        guard Self.canPickBackUp(hasLiveSession: session != nil, pending: pendingSave) else {
+            return false
+        }
         cancelAbandonTimeout()
         // The builder keeps collecting into the same workout; nothing to reset.
         pendingBuilder = nil
         pendingSpan = nil
         pendingSave = nil
         return true
+    }
+
+    /// Whether a Resume tap can actually pick the walk back up: the prompt has to
+    /// be offering a resume *and* there has to be a live session left to un-pause.
+    ///
+    /// The second half is not redundant with the first, and the gap between them
+    /// is a window the user can land in rather than a theoretical race.
+    /// `endPausedSession()` — which the ten-minute abandon timeout runs — clears
+    /// `session` and only then re-parks `pendingSave` as non-resumable, with an
+    /// `await` on HealthKit's `endCollection` in between. For the whole of that
+    /// call the prompt still draws its Resume row and still takes taps, while the
+    /// session behind it is already gone.
+    ///
+    /// `WatchSessionManager.resumeBirding` treats a `false` from `resume()` as
+    /// "do not start anything": the walk is parked and unanswered, and beginning a
+    /// session over it would let the next stop overwrite it. Extracted as a static
+    /// so that window is pinned by a test rather than by a comment.
+    nonisolated static func canPickBackUp(
+        hasLiveSession: Bool,
+        pending: PendingWorkout?
+    ) -> Bool {
+        hasLiveSession && pending?.canResume == true
     }
 
     /// The HealthKit half of `resume()`, run after the morph. If the pause never

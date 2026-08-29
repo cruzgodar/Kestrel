@@ -1192,6 +1192,14 @@ struct MapView: View {
     private func recomposeOpenCard(from clusters: [BirdCluster]) {
         guard case .cluster(let open)? = mapCard else { return }
         guard let recomposed = Self.recomposedCluster(for: open, in: clusters) else {
+            // Clear the photo alongside the card, for the reason `onPinpoint`
+            // spells out: the full-screen cover is presented from *inside* the
+            // card's sheet, so dropping the card tears the cover down visually
+            // while `sheetPhoto` stays set — and the next card to open would
+            // re-present that stale photo on sight. This is the other path that
+            // closes a card out from under an open photo (every sighting it was
+            // showing was deleted or moved away), and it's the one that didn't.
+            sheetPhoto = nil
             mapCard = nil
             return
         }

@@ -128,4 +128,100 @@ struct LocationCacheTests {
         #expect(subject.isFresh(at: later(LocationCache.freshness - 1)))
         #expect(!subject.isFresh(at: later(LocationCache.freshness)))
     }
+
+    // MARK: two callers at once
+
+    /// A fix source that parks inside `fetch` until the test lets it go, so a
+    /// second caller genuinely arrives while the first is still in flight —
+    /// which is the only way to exercise the join branch at all.
+    private final class GatedFixes {
+        private(set) var calls = 0
+        private var waiting: CheckedContinuation<Void, Never>?
+        /// What the parked fetch returns once released.
+        var result: (latitude: Double, longitude: Double)?
+
+        func fetch() async -> (latitude: Double, longitude: Double)? {
+            calls += 1
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                waiting = c
+            }
+            return result
+        }
+
+        /// Releases the parked fetch, yielding until one has actually arrived so
+        /// the test can't open a gate nobody is standing at.
+        func release() async {
+            while waiting == nil { await Task.yield() }
+            let c = waiting
+            waiting = nil
+            c?.resume()
+        }
+    }
+
+    private func gatedCache(_ fixes: GatedFixes) -> LocationCache {
+        LocationCache(fetch: { await fixes.fetch() })
+    }
+
+    /// **The fallback belongs to every caller.** A second ask that lands while a
+    /// fix is in flight joins it rather than starting a second one — and that
+    /// join used to hand back the task's raw `nil`, so which of two callers got
+    /// the stale coordinate came down to which of them asked first.
+    ///
+    /// The shape on screen: opening the Map tab starts a warm-up fix, a recenter
+    /// tap a moment later joins it, and a fix that then times out left the button
+    /// doing nothing at all while a perfectly usable coordinate sat in the cache.
+    @Test("a caller that joins an in-flight fix gets the same stale fallback")
+    func joinerGetsTheStaleFallback() async {
+        let fixes = GatedFixes()
+        let subject = gatedCache(fixes)
+        subject.update(latitude: 42.45, longitude: -76.47, at: t0)
+        let now = later(LocationCache.freshness * 10)
+        fixes.result = nil                                   // the refresh will fail
+
+        async let first = subject.current(now: now)
+        async let second = subject.current(now: now)
+        await fixes.release()
+        let (a, b) = await (first, second)
+
+        #expect(a?.latitude == 42.45, "the caller that started it falls back")
+        #expect(b?.latitude == 42.45, "and so does the one that joined")
+        #expect(fixes.calls == 1, "they shared one fetch")
+    }
+
+    /// The same join, succeeding: both callers get the new fix, and only one
+    /// request went out. Coalescing is the whole reason the join branch exists,
+    /// so the fallback fix must not have cost it.
+    @Test("two callers at once share one fix and both get it")
+    func joinerGetsTheFreshFix() async {
+        let fixes = GatedFixes()
+        let subject = gatedCache(fixes)
+        fixes.result = (latitude: 43, longitude: -77)
+
+        async let first = subject.current(now: t0)
+        async let second = subject.current(now: t0)
+        await fixes.release()
+        let (a, b) = await (first, second)
+
+        #expect(a?.latitude == 43)
+        #expect(b?.latitude == 43)
+        #expect(fixes.calls == 1)
+    }
+
+    /// The fallback is the *cache*, not an invention: with nothing ever resolved
+    /// there is nothing to fall back to and both callers correctly get nothing.
+    @Test("a joined failure with no cache at all still reports nothing")
+    func joinerWithNoCacheGetsNil() async {
+        let fixes = GatedFixes()
+        let subject = gatedCache(fixes)
+        fixes.result = nil
+
+        async let first = subject.current(now: t0)
+        async let second = subject.current(now: t0)
+        await fixes.release()
+        let (a, b) = await (first, second)
+
+        #expect(a == nil)
+        #expect(b == nil)
+        #expect(fixes.calls == 1)
+    }
 }

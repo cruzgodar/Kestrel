@@ -43,9 +43,18 @@ enum WatchMetrics {
     /// To verify/populate a device: print `currentScreenSize` from the app, run
     /// it on that watch/simulator, read the size, then confirm the radius makes
     /// the bird image's corners hug the bezel and adjust the `case` if needed.
-    /// Constant nudge added to every radius below. The reverse-engineered radii
-    /// sit ~1pt inside what looks concentric against our `edgeMargin`, so this
-    /// pushes them all out by the same amount.
+
+    /// Constant nudge added to every radius in the table, including the
+    /// proportional fallback.
+    ///
+    /// The reverse-engineered radii read a hair tight against the physical
+    /// bezel, and the photo now runs flush to the left, right and bottom edges —
+    /// so `imageTopCornerRadius` is drawn *directly on top of* the hardware
+    /// curve rather than concentric inside an inset, where being a point under
+    /// reads as a visible step. (The original rationale here was concentricity
+    /// against `edgeMargin`, which stopped applying when the photo lost its
+    /// inset; `edgeMargin` is now only the corner buttons' diagonal clearance.)
+    /// Set to 0 to use the measured radii unmodified.
     private static let radiusAdjustment: CGFloat = 1
     /// Defaults applied to every device unless overridden in the table below.
     private static let defaultEdgeMargin: CGFloat = 12

@@ -852,22 +852,40 @@ final class WatchSessionManager: NSObject {
     /// stays one continuous session, then brings audio and the phone link back up
     /// through the normal start path (whose `WatchWorkoutManager.start()` is a
     /// no-op while a session is already live, so it won't open a second workout).
-    /// Falls through to a plain start if the workout couldn't be resumed, so the
-    /// user still gets a working session rather than a dead button.
     ///
     /// Clearing the prompt and flipping into recording share one transaction, so
     /// the Resume button animates back up into the stop button it came from. As
     /// everywhere else, the tap itself only animates: the HealthKit un-pause
     /// (`applyResume`) and the audio bring-up both wait out the morph.
+    ///
+    /// **Nothing starts if the resume didn't take.** `WatchWorkoutManager.resume()`
+    /// returns false when the session was closed out from under the button
+    /// between the frame that drew it and the tap, which the ten-minute abandon
+    /// timeout does routinely: `endPausedSession()` clears the session and only
+    /// re-parks `pendingSave` as non-resumable *after* an `await` on HealthKit's
+    /// `endCollection`, so the Resume row stays drawn and tappable for the whole
+    /// of that call. Starting anyway is exactly what `start()` refuses to do, for
+    /// the same reason — the walk is parked and unanswered, and the next stop
+    /// would overwrite `pendingSave`, `pendingSpan` and `pendingBuilder` with the
+    /// new one, silently throwing away the walk the user hadn't decided about.
+    /// Refusing leaves the prompt standing (minus the Resume row, which the
+    /// re-park drops a moment later), so the user answers the question instead.
     func resumeBirding() {
         guard !isRecording, !isStarting else { return }
         let resumed = withAnimation(.easeInOut(duration: 0.3)) { () -> Bool in
             let resumed = WatchWorkoutManager.shared.resume()
-            beginSession()
+            // Only flip into recording once the walk has actually come back —
+            // `resume()` clears `pendingSave` in this same transaction, which is
+            // what lets the Resume button morph up into the stop button.
+            if resumed { beginSession() }
             return resumed
         }
-        if !resumed {
-            Log.warning("Resume requested but the workout was no longer resumable — starting fresh")
+        guard resumed else {
+            Log.warning(
+                "Resume requested but the workout was no longer resumable — "
+                + "leaving the walk awaiting an answer"
+            )
+            return
         }
         Task { [weak self] in
             try? await Task.sleep(for: .milliseconds(320))

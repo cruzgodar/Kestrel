@@ -410,9 +410,11 @@ struct SpeciesPhotoFullScreen: View {
         }
         // Clear presentation background so the slide reveals the app behind.
         .presentationBackground(.clear)
-        // Vertical-down dismiss, alongside (not blocking) the TabView's
-        // horizontal paging. Disabled while zoomed so a downward pan of the
-        // photo doesn't dismiss.
+        // Vertical-down dismiss, recognized alongside (not blocking) `PhotoPager`'s
+        // horizontal paging. Not gated on zoom: a zoomed photo still dismisses on
+        // a downward drag *once it is at its top content edge* and can't be panned
+        // any farther, matching the Photos app — see `currentPageAtTopEdge` and
+        // the `guard` in `dismissDrag`.
         .simultaneousGesture(dismissDrag)
         // The "N Observations" list, and the edit flow it can raise. Presented
         // from the viewer itself so both open over the photo rather than making
@@ -931,10 +933,10 @@ struct SpeciesPhotoFullScreen: View {
         // alone and the loop is broken.
         //
         // Small `minimumDistance` so a downward drag engages — and thereby
-        // disables the TabView's paging (`scrollDisabled(... || dismissEngaged)`)
-        // — before the TabView's own pan threshold is crossed. Otherwise a
-        // diagonal close let the bird slide sideways for the first few points
-        // before paging was locked out.
+        // disables the pager (`PhotoPager(pagingDisabled: dismissEngaged)`, which
+        // clears its scroll view's `isScrollEnabled`) — before the pager's own pan
+        // threshold is crossed. Otherwise a diagonal close let the bird slide
+        // sideways for the first few points before paging was locked out.
         DragGesture(minimumDistance: 4, coordinateSpace: .global)
             .onChanged { value in
                 // Any movement past this gesture's minimumDistance marks the touch as
@@ -1780,8 +1782,8 @@ private struct ZoomableImageView: UIViewRepresentable {
 /// A `UIScrollView` that keeps its image fitted to the bounds at zoom 1, centers
 /// it when it's smaller than the bounds, and — crucially — only lets its own pan
 /// gesture begin while zoomed. At zoom 1 the pan never starts, so horizontal
-/// drags fall through to the SwiftUI paging TabView and downward drags to the
-/// swipe-to-dismiss; pinch (a separate recognizer) still works at any zoom.
+/// drags fall through to `PhotoPager`'s paging scroll view and downward drags to
+/// the swipe-to-dismiss; pinch (a separate recognizer) still works at any zoom.
 final class CenteringScrollView: UIScrollView {
     var imageView: UIImageView?
     private var fittedForBounds: CGSize = .zero

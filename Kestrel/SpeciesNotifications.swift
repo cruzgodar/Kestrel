@@ -242,10 +242,11 @@ extension SpeciesNotifications: UNUserNotificationCenterDelegate {
     /// phone), leaving a pulse for a new lifer with nothing anywhere naming the
     /// bird. "Watch disconnected" went the same way.
     ///
-    /// The bird was not left un-announceable for the rest of its `notifyCooldown`,
-    /// though — `RecordingManager.merge` stamps `lastHeardAt` on every detection
-    /// whether or not it queued a notification, so the window was already running
-    /// regardless. What was lost was the one banner, not the ones after it.
+    /// The bird was not left un-announceable for the rest of
+    /// `DetectionCooldowns.notify`, though — `RecordingManager.merge` calls
+    /// `DetectionCooldowns.markHeard` on every detection whether or not it queued
+    /// a notification, so the window was already running regardless. What was lost
+    /// was the one banner, not the ones after it.
     ///
     /// What it *doesn't* do is play a sound for a bird. See
     /// `presentationOptions(forCategory:)`.

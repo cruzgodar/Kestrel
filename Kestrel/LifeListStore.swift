@@ -181,7 +181,7 @@ final class LifeListStore {
         // than merely usually terminate — a caller writing faster than the merge
         // completes would otherwise retry forever. One brief hitch in a case that
         // shouldn't arise is a fair price for never silently dropping a record.
-        let result: (entries: [LifeListEntry], summary: ImportSummary)
+        let result: (entries: [LifeListEntry], renames: [String: String], summary: ImportSummary)
         var attempt = 1
         while true {
             let existing = entries
@@ -201,6 +201,11 @@ final class LifeListStore {
         }
         entries = result.entries
         refreshSpeciesNames()
+        // An import can fold an eBird spelling onto a name already on the list —
+        // that is what the canonicalization above is for — so follow the user's
+        // stars onto whatever it moved, *before* the re-stamp below overwrites
+        // them from a set still keyed to the old name. See `migrateStars`.
+        migrateStars(renames: result.renames)
         // Re-stamp stars from the persistent set so a wipe-and-reimport (or any
         // import) restores the user's "alert me" choices even though the cleared
         // entries no longer carried them.
@@ -548,8 +553,44 @@ final class LifeListStore {
         }
     }
 
+    /// Carries the user's stars across the scientific names canonicalization
+    /// moved, so a star survives its species being re-filed.
+    ///
+    /// **Runs before `applyStarsToEntries`, always.** Canonicalization OR-merges
+    /// `isStarred` onto the surviving entry, and that re-stamp then overwrites
+    /// every flag from `starredNames` — which is keyed to the name the bird had
+    /// *before* the move. So without this the re-stamp didn't just fail to notice
+    /// the star, it cleared the one the merge had carried over: a bird the user
+    /// had asked to be alerted about went quiet on the launch its name changed,
+    /// and the row showed an empty star with nothing to explain it.
+    ///
+    /// **Additive: the old name is kept.** Removing it could only lose
+    /// information, and leaving it costs nothing — a superseded name matches no
+    /// BirdNET detection (that is exactly why it was rewritten) and no entry, so
+    /// it sits inert, the same way a retired key sits in
+    /// `exportedObservationKeys`. It also can't resurrect anything: unstarring
+    /// removes the *current* name, and the next launch finds nothing left to
+    /// rename — the entry is already stored under it — so this never runs over
+    /// that pair again.
+    ///
+    /// Returns whether anything was added, so a caller can tell a launch that
+    /// migrated a star from one that had nothing to do.
+    @discardableResult
+    private func migrateStars(renames: [String: String]) -> Bool {
+        guard !renames.isEmpty else { return false }
+        var changed = false
+        for (old, new) in renames where starredNames.contains(old) {
+            if starredNames.insert(new).inserted { changed = true }
+        }
+        if changed { saveStars() }
+        return changed
+    }
+
     /// Re-stamps every entry's `isStarred` flag from the authoritative
     /// `starredNames` set, persisting the life list only if anything changed.
+    ///
+    /// Every caller runs `migrateStars` first — see that method for what happens
+    /// when they don't.
     private func applyStarsToEntries() {
         var changed = false
         for i in entries.indices {
@@ -753,7 +794,7 @@ final class LifeListStore {
     private nonisolated static func computeMergedEntries(
         rows: [EBirdRawRow],
         existing: [LifeListEntry]
-    ) -> (entries: [LifeListEntry], summary: ImportSummary) {
+    ) -> (entries: [LifeListEntry], renames: [String: String], summary: ImportSummary) {
         // Accumulate the *full* observation set per species — every CSV row is
         // kept, not just the earliest. Seeded from the existing entries' own
         // observations so a re-import folds new sightings in alongside the old.
@@ -855,7 +896,8 @@ final class LifeListStore {
         // eBird name like "Astur cooperii" (Cooper's Hawk) or "Spilopelia
         // chinensis" (Spotted Dove) would slug to a missing image and show the
         // placeholder until the next launch.
-        let merged = Self.canonicalize(ordered).sorted(by: Self.ordersBefore)
+        let canonical = Self.canonicalize(ordered)
+        let merged = canonical.entries.sorted(by: Self.ordersBefore)
 
         // The tally is measured against the *finished* set rather than against
         // the row names, because canonicalization can fold an eBird spelling onto
@@ -902,6 +944,7 @@ final class LifeListStore {
 
         return (
             merged,
+            canonical.renames,
             ImportSummary(
                 added: added,
                 gained: gained,
@@ -1092,8 +1135,12 @@ final class LifeListStore {
             let decoded = try decoder.decode([LifeListEntry].self, from: data)
             let normalized = needsDateMigration ? Self.normalizeDates(decoded) : decoded
             let collapsed = Self.canonicalize(normalized)
-            entries = collapsed.sorted(by: Self.ordersBefore)
+            entries = collapsed.entries.sorted(by: Self.ordersBefore)
             refreshSpeciesNames()
+            // Follow the user's stars onto whatever names this pass moved, before
+            // `init`'s `applyStarsToEntries` re-stamps from the set — see
+            // `migrateStars`.
+            migrateStars(renames: collapsed.renames)
             // Persist if anything actually changed — dates were migrated, rows
             // merged, a scientific name was rewritten to its catalog-canonical
             // form, or a merge picked a different common name.
@@ -1106,7 +1153,7 @@ final class LifeListStore {
             // compared only entry *counts* and scientific names, which missed a
             // changed common name or a re-sorted observation set and redid that
             // work, unpersisted, on every launch.
-            if collapsed != decoded {
+            if collapsed.entries != decoded {
                 save()
             }
             // Purely so the next launch can skip the pass; `normalizeDates` is
@@ -1202,8 +1249,64 @@ final class LifeListStore {
     /// duplicates *of*, and quietly dropping one would be losing data the user
     /// entered by hand. This pipeline runs on every launch, so getting that
     /// backwards would erode the list a little at a time.
-    private nonisolated static func canonicalize(_ entries: [LifeListEntry]) -> [LifeListEntry] {
-        collapseByCommonName(collapseToSpecies(applyAliases(entries)))
+    private nonisolated static func canonicalize(_ entries: [LifeListEntry]) -> Canonicalization {
+        let aliased = applyAliases(entries)
+        let species = collapseToSpecies(aliased.entries)
+        let common = collapseByCommonName(species.entries)
+        return Canonicalization(
+            entries: common.entries,
+            renames: composeRenames(
+                composeRenames(aliased.renames, species.renames),
+                common.renames
+            )
+        )
+    }
+
+    /// What a canonicalization produced: the finished entries, plus every
+    /// scientific name it *moved*.
+    nonisolated struct Canonicalization {
+        var entries: [LifeListEntry]
+        /// `old → new` for every name that went in and came out filed under a
+        /// different one — an alias rewrote it, a trinomial collapsed to its
+        /// binomial, or two spellings of one bird merged. Keys are names as they
+        /// stood on the way in; values are names present in `entries`. Empty on
+        /// the overwhelmingly common launch, where nothing moved.
+        ///
+        /// **This exists for `starredNames`**, which is keyed by scientific name
+        /// and persisted separately from the life list so a star can outlive the
+        /// entry (see that property). Every merge below OR-merges `isStarred`
+        /// onto the surviving entry — and then `applyStarsToEntries` re-stamps
+        /// every entry from `starredNames`, which is still keyed to the name the
+        /// bird *used* to have. Without carrying the rename across, that re-stamp
+        /// didn't merely fail to add the star, it actively cleared the one the
+        /// merge had just carried over: the user's "alert me" for that bird
+        /// vanished on the launch its name moved, with nothing to say why. See
+        /// `migrateStars`.
+        var renames: [String: String] = [:]
+    }
+
+    /// Chains two rename maps, so a name the first pass moved and the second
+    /// moved again ends up pointing at where it actually landed.
+    ///
+    /// A name that comes back to itself is dropped rather than recorded as an
+    /// identity rename — `migrateStars` would otherwise re-insert a star that is
+    /// already there, and, more to the point, a rename map is supposed to list
+    /// what changed.
+    nonisolated static func composeRenames(
+        _ first: [String: String],
+        _ second: [String: String]
+    ) -> [String: String] {
+        guard !first.isEmpty else { return second }
+        var out = second
+        for (old, middle) in first {
+            let final = second[middle] ?? middle
+            if final == old {
+                out.removeValue(forKey: old)
+            } else {
+                out[old] = final
+            }
+        }
+        return out
     }
 
     /// Merge entries whose scientific names differ only in a trinomial subspecies
@@ -1211,7 +1314,8 @@ final class LifeListStore {
     /// "Dryobates villosus"). Keeps the earliest first-seen date, OR-merges the
     /// star flag, and prefers a parenthetical-free common name when picking which
     /// row's display fields to keep.
-    private nonisolated static func collapseToSpecies(_ entries: [LifeListEntry]) -> [LifeListEntry] {
+    private nonisolated static func collapseToSpecies(_ entries: [LifeListEntry]) -> Canonicalization {
+        var renames: [String: String] = [:]
         var byBinomial: [String: LifeListEntry] = [:]
         // Insertion order, kept for the same reason `collapseByScientificName`
         // keeps one: `Dictionary.values` is unordered, and Swift seeds its
@@ -1223,6 +1327,11 @@ final class LifeListStore {
         var order: [String] = []
         for entry in entries {
             let key = speciesBinomial(entry.scientificName)
+            // Recorded once here rather than in each branch below: a trinomial
+            // lands under its binomial whether it is the first entry to claim
+            // that key or is merging into one that already has, and the star
+            // that rode in on it has to follow either way.
+            if key != entry.scientificName { renames[entry.scientificName] = key }
             guard let existing = byBinomial[key] else {
                 order.append(key)
                 // Already a binomial: nothing to rewrite, so pass the entry
@@ -1264,7 +1373,10 @@ final class LifeListStore {
                 dedupe: true
             )
         }
-        return order.compactMap { byBinomial[$0] }
+        return Canonicalization(
+            entries: order.compactMap { byBinomial[$0] },
+            renames: renames
+        )
     }
 
     /// Second-pass merge: collapse entries that share the same common name but
@@ -1272,7 +1384,7 @@ final class LifeListStore {
     /// a species moved genera (e.g. "Leuconotopicus villosus" → "Dryobates villosus"
     /// for Hairy Woodpecker). Prefers the scientific name that matches BirdNET's
     /// catalog so detection-driven lookups resolve to the canonical entry.
-    private nonisolated static func collapseByCommonName(_ entries: [LifeListEntry]) -> [LifeListEntry] {
+    private nonisolated static func collapseByCommonName(_ entries: [LifeListEntry]) -> Canonicalization {
         let catalogNames: Set<String> = Set(SpeciesCatalog.shared.all.map(\.scientificName))
         // Lowercased common name → catalog scientific name. Used to rewrite
         // singleton entries whose stored scientific name is a stale synonym
@@ -1288,6 +1400,10 @@ final class LifeListStore {
         // output has to be ordered or the *next* pass inherits a different input
         // order on every launch.
         var order: [String] = []
+        // The two rewrites below run in sequence — a name the merge moves can be
+        // moved again by the catalog relabel — so they are chained rather than
+        // unioned. See `composeRenames`.
+        var mergeRenames: [String: String] = [:]
         for entry in entries {
             let key = entry.commonName.lowercased()
             guard let existing = byCommon[key] else {
@@ -1304,6 +1420,14 @@ final class LifeListStore {
             } else {
                 scientificName = existing.scientificName
             }
+            // Whichever of the pair didn't supply the surviving name has been
+            // moved onto the other's, and its star has to come with it.
+            if existing.scientificName != scientificName {
+                mergeRenames[existing.scientificName] = scientificName
+            }
+            if entry.scientificName != scientificName {
+                mergeRenames[entry.scientificName] = scientificName
+            }
             byCommon[key] = LifeListEntry.make(
                 scientificName: scientificName,
                 commonName: existing.commonName,
@@ -1318,11 +1442,13 @@ final class LifeListStore {
         // fixes a lone Hairy Woodpecker entry stored under the old genus
         // (Leuconotopicus villosus) — the multi-entry merge above only fires
         // when there are two rows to collide.
-        let relabeled = order.compactMap { byCommon[$0] }.map { entry in
+        var relabelRenames: [String: String] = [:]
+        let relabeled = order.compactMap { byCommon[$0] }.map { entry -> LifeListEntry in
             if catalogNames.contains(entry.scientificName) { return entry }
             guard let canonical = catalogByCommon[entry.commonName.lowercased()] else {
                 return entry
             }
+            relabelRenames[entry.scientificName] = canonical
             return LifeListEntry.make(
                 scientificName: canonical,
                 commonName: entry.commonName,
@@ -1332,7 +1458,12 @@ final class LifeListStore {
                 dedupe: false
             )
         }
-        return collapseByScientificName(relabeled)
+        return Canonicalization(
+            entries: collapseByScientificName(relabeled),
+            // `collapseByScientificName` folds entries that already *share* a
+            // scientific name, so it can't move one and contributes nothing here.
+            renames: composeRenames(mergeRenames, relabelRenames)
+        )
     }
 
     /// Folds together any entries left sharing a scientific name.
@@ -1386,10 +1517,12 @@ final class LifeListStore {
     /// post-split Northern Yellow Warbler) → "Setophaga petechia" (BirdNET's
     /// Yellow Warbler) where neither the sci nor common name matches the
     /// catalog directly.
-    private nonisolated static func applyAliases(_ entries: [LifeListEntry]) -> [LifeListEntry] {
-        entries.map { entry in
+    private nonisolated static func applyAliases(_ entries: [LifeListEntry]) -> Canonicalization {
+        var renames: [String: String] = [:]
+        let mapped = entries.map { entry -> LifeListEntry in
             let canonical = TaxonomyAliases.canonical(entry.scientificName)
             guard canonical != entry.scientificName else { return entry }
+            renames[entry.scientificName] = canonical
             return LifeListEntry.make(
                 scientificName: canonical,
                 commonName: entry.commonName,
@@ -1399,6 +1532,7 @@ final class LifeListStore {
                 dedupe: false
             )
         }
+        return Canonicalization(entries: mapped, renames: renames)
     }
 
     private nonisolated static func speciesBinomial(_ s: String) -> String {

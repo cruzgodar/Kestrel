@@ -188,3 +188,58 @@ struct WorkoutEndInstantTests {
                 "Health must not record a walk that ran on after the user stopped birding")
     }
 }
+
+/// Whether a Resume tap can pick a parked walk back up.
+///
+/// The prompt's Resume row is drawn from `PendingWorkout.canResume`, but that
+/// flag alone isn't enough: `endPausedSession()` — which the ten-minute abandon
+/// timeout runs — clears the live session and only re-parks the walk as
+/// non-resumable *after* an `await` on HealthKit's `endCollection`. For the
+/// whole of that call the row is still on screen and still takes taps while the
+/// session behind it is gone.
+///
+/// `WatchSessionManager.resumeBirding` treats a refusal as "start nothing": the
+/// walk is parked and unanswered, and beginning a session over it would let the
+/// next stop overwrite `pendingSave` and throw it away — which is exactly what
+/// `start()` refuses to do, and used to be reachable through this button.
+@Suite("Workout resume precondition")
+struct WorkoutResumeTests {
+
+    private let start = Date(timeIntervalSince1970: 1_780_000_000)
+
+    private func pending(canResume: Bool) -> WatchWorkoutManager.PendingWorkout {
+        .init(start: start, end: start.addingTimeInterval(600), canResume: canResume)
+    }
+
+    @Test("a paused walk with a live session picks back up")
+    func livePausedWalkResumes() {
+        #expect(WatchWorkoutManager.canPickBackUp(
+            hasLiveSession: true, pending: pending(canResume: true)
+        ))
+    }
+
+    /// The window this exists for: the flag still says resumable, the session is
+    /// already gone.
+    @Test("a resumable-looking walk whose session has gone does not")
+    func lostSessionRefusesEvenWhenFlagged() {
+        #expect(!WatchWorkoutManager.canPickBackUp(
+            hasLiveSession: false, pending: pending(canResume: true)
+        ))
+    }
+
+    @Test("a walk that was never resumable does not, session or no session")
+    func nonResumableWalkRefuses() {
+        #expect(!WatchWorkoutManager.canPickBackUp(
+            hasLiveSession: true, pending: pending(canResume: false)
+        ))
+        #expect(!WatchWorkoutManager.canPickBackUp(
+            hasLiveSession: false, pending: pending(canResume: false)
+        ))
+    }
+
+    @Test("with no walk parked there is nothing to pick back up")
+    func nothingParkedRefuses() {
+        #expect(!WatchWorkoutManager.canPickBackUp(hasLiveSession: true, pending: nil))
+        #expect(!WatchWorkoutManager.canPickBackUp(hasLiveSession: false, pending: nil))
+    }
+}
