@@ -30,6 +30,16 @@ struct LifeListView: View {
     @State private var pendingExportScope: LifeListStore.ExportScope?
     @State private var exportMessage: String?
     @State private var showExportResult = false
+    /// The scope whose export turned out to have nothing to write — drives the
+    /// "Nothing to Export" alert, which is raised on the export sheet so it can
+    /// leave the sheet standing with the other button one tap away.
+    ///
+    /// Owned here rather than by the sheet because the sheet can no longer tell:
+    /// it used to ask `store.observationCount(for:)` before handing off, which
+    /// walked (and key-built) the whole life list on the main actor a second time
+    /// for every tap. The answer now comes from the payload the export already
+    /// produced — see `beginExport`.
+    @State private var emptyExportScope: LifeListStore.ExportScope?
     /// Title for the export result alert. The same alert reports a finished
     /// save and a "there was nothing new to write" no-op, which want different
     /// headings.
@@ -581,7 +591,7 @@ struct LifeListView: View {
             showResult: $showExportResult,
             resultTitle: $exportResultTitle,
             message: $exportMessage,
-            store: store,
+            emptyScope: $emptyExportScope,
             progress: exportProgress,
             onExport: { scope in Task { await beginExport(scope: scope) } },
             onExported: handleExport(_:)
@@ -888,9 +898,15 @@ struct LifeListView: View {
     }
 
     /// Builds the CSV for `scope` and raises the system save panel over the
-    /// export sheet, which stays up underneath while the picker is running. The
-    /// sheet vets emptiness before calling this (see `ExportInfoSheet.export`),
-    /// so there is always at least one row to write here.
+    /// export sheet, which stays up underneath while the picker is running.
+    ///
+    /// An export that turns out to have nothing to write never reaches the save
+    /// panel — a headerless empty .csv is a file eBird rejects, and the reason
+    /// it's empty is worth saying out loud. That is decided *here*, from the
+    /// finished payload, rather than by asking the store to count the rows first:
+    /// counting is the same walk as building them (see `LifeListStore.exportRows`)
+    /// and the pre-check made every tap pay for it twice, on the main actor,
+    /// before anything could be shown.
     ///
     /// The sheet does not survive the picker, however it ends: `handleExport`
     /// drops it on every path, cancellation included.
@@ -911,6 +927,13 @@ struct LifeListView: View {
             // rather than blinking out the instant the last row renders.
             try? await Task.sleep(for: .milliseconds(320))
             exportProgress.isVisible = false
+        }
+
+        // Nothing to hand eBird. Reported over the still-standing sheet, so the
+        // other button is one tap away.
+        guard payload.observationCount > 0 else {
+            emptyExportScope = scope
+            return
         }
 
         pendingExport = payload
@@ -1069,11 +1092,10 @@ private struct ExportPresentations: ViewModifier {
     @Binding var showResult: Bool
     @Binding var resultTitle: String
     @Binding var message: String?
-    /// The sheet reads observation counts off this to vet a scope before
-    /// starting, so "nothing to export" can be reported without tearing the
-    /// sheet down. Threaded rather than taken from the environment:
-    /// `@Observable` environment objects don't cross a sheet boundary.
-    let store: LifeListStore
+    /// Set once an export comes back with no rows, so the sheet can say so over
+    /// itself. Owned by the Life List rather than the sheet — see
+    /// `LifeListView.emptyExportScope`.
+    @Binding var emptyScope: LifeListStore.ExportScope?
     let progress: ExportProgress
     let onExport: (LifeListStore.ExportScope) -> Void
     let onExported: (Result<URL, Error>) -> Void
@@ -1082,10 +1104,10 @@ private struct ExportPresentations: ViewModifier {
         content
             .sheet(isPresented: $showInfo) {
                 ExportInfoSheet(
-                    store: store,
                     progress: progress,
                     isExporting: $isExporting,
                     document: document,
+                    emptyScope: $emptyScope,
                     onExport: onExport,
                     onExported: onExported
                 )
@@ -1168,23 +1190,19 @@ private struct ImportInfoSheet: View {
 /// someone top up their eBird account every few months without duplicating
 /// their history.
 private struct ExportInfoSheet: View {
-    /// Read for observation counts only — the sheet vets a scope before
-    /// starting so an empty result can be reported *here*, over the sheet,
-    /// rather than after tearing it down.
-    let store: LifeListStore
     let progress: ExportProgress
     /// The system save panel is presented from *this* sheet rather than from
     /// the Life List, so it layers over the buttons instead of making them
     /// leave first — cancelling the picker lands back here.
     @Binding var isExporting: Bool
     let document: EBirdCSVDocument?
-    /// Invoked with the scope of whichever button was tapped, once that scope
-    /// is known to produce at least one row.
+    /// Set by the Life List when an export came back with no rows — drives the
+    /// alert below, which is raised here so reporting it leaves this sheet
+    /// standing and the other button one tap away.
+    @Binding var emptyScope: LifeListStore.ExportScope?
+    /// Invoked with the scope of whichever button was tapped.
     let onExport: (LifeListStore.ExportScope) -> Void
     let onExported: (Result<URL, Error>) -> Void
-
-    /// The scope whose export came back empty — drives the alert below.
-    @State private var emptyScope: LifeListStore.ExportScope?
 
     var body: some View {
         VStack(spacing: 24) {
@@ -1215,7 +1233,7 @@ private struct ExportInfoSheet: View {
             // duplicate-risking one is deliberately the quieter button above.
             VStack(spacing: 12) {
                 Button {
-                    export(.everything)
+                    onExport(.everything)
                 } label: {
                     Text("Export All Observations")
                         .font(.title3.weight(.semibold))
@@ -1230,7 +1248,7 @@ private struct ExportInfoSheet: View {
                 .buttonStyle(NoDimButtonStyle())
 
                 Button {
-                    export(.newOnly)
+                    onExport(.newOnly)
                 } label: {
                     Text("Export New Observations")
                         .font(.title3.weight(.semibold))
@@ -1287,17 +1305,6 @@ private struct ExportInfoSheet: View {
         } message: { scope in
             Text(emptyMessage(for: scope))
         }
-    }
-
-    /// Vets the scope before handing off. An export that would write no rows
-    /// never reaches the save panel — a headerless empty .csv is a file eBird
-    /// rejects, and the reason it's empty is worth saying out loud.
-    private func export(_ scope: LifeListStore.ExportScope) {
-        guard store.observationCount(for: scope) > 0 else {
-            emptyScope = scope
-            return
-        }
-        onExport(scope)
     }
 
     private func emptyMessage(for scope: LifeListStore.ExportScope) -> String {

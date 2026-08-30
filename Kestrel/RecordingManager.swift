@@ -62,39 +62,17 @@ final class RecordingManager {
     private(set) var micAccessDenied = false
     /// Whether recording is currently blocked by a *denied* permission (mic or
     /// location). The record button is grayed (a locked, tap-to-open-Settings
-    /// state) on both phone and watch while this holds.
+    /// state) while this holds.
+    ///
+    /// The **phone's** button only. The watch used to be told this too, as a
+    /// tri-state pushed over the application context, back when the phone's
+    /// microphone and location were what a watch-started session ran on. They
+    /// aren't: the watch records with its own mic and sends its own coordinate,
+    /// and its record button is gated by `WatchSessionManager.permissionDenied` —
+    /// the watch's own permissions, which are per-device and can only be granted
+    /// from the wrist. Nothing on the watch has read the pushed state since. See
+    /// `watchAppContext`, which that push used to share.
     var recordingBlocked: Bool { locationAccessDenied || micAccessDenied }
-    /// Whether both permissions recording needs are actually granted. Pushed to
-    /// the watch (which can't prompt for either) so it knows when its own record
-    /// button is usable. `notDetermined`/`undetermined` counts as not-yet-granted,
-    /// since the phone must grant first.
-    var recordingAuthorized: Bool {
-        locationAuthorized && AVAudioApplication.shared.recordPermission == .granted
-    }
-    /// Tri-state recording authorization pushed to the watch. The watch can't
-    /// prompt for the phone's permissions, so it needs to tell a genuine *denial*
-    /// (a gray lock — the user must fix it in the phone's Settings) apart from
-    /// permissions that simply haven't been requested yet (they're deferred to the
-    /// first Start Recording). In the undetermined case the watch keeps a normal
-    /// record button rather than a confusing lock — tapping it lets the phone
-    /// prompt (if it's in hand) or falls back to the "open Kestrel on iPhone"
-    /// message. Raw values are the strings sent over the WCSession context.
-    enum WatchAuthState: String {
-        case authorized
-        case denied
-        case undetermined
-    }
-    /// Resolves the tri-state for the watch from the phone's current permissions:
-    /// a *denied* permission (mic or location) wins, then fully-granted, else
-    /// undetermined (nothing denied but not yet granted).
-    var recordingAuthorizationStateForWatch: WatchAuthState {
-        if recordingBlocked { return .denied }
-        if recordingAuthorized { return .authorized }
-        return .undetermined
-    }
-    /// Invoked whenever the phone's recording authorization (mic or location)
-    /// changes, so the app can push the new state to the watch (set in `KestrelApp`).
-    var onRecordingAuthorizationChanged: (() -> Void)?
     /// True while neither permission Kestrel needs has been answered yet, which
     /// is what puts the first-launch `WelcomeView` up over the app. Seeded in
     /// `preload()` and cleared by `requestOnboardingPermissions()`; see the
@@ -178,11 +156,16 @@ final class RecordingManager {
     /// the watch with margin to spare.
     private let watchDisplayRefreshInterval: TimeInterval = 30
     /// The application context mirrored to the watch. `updateApplicationContext`
-    /// *replaces* the whole dictionary each call, so every key (the now-hearing
-    /// bird, plus the recording-auth state) is merged through this single owner
-    /// rather than clobbering one another. Unlike a live `sendMessage`, the
-    /// application context is delivered even from a backgrounded phone — the case
-    /// where a watch-first session runs with the phone in a pocket.
+    /// *replaces* the whole dictionary each call, so every key is merged through
+    /// this single owner rather than clobbering the others. Unlike a live
+    /// `sendMessage`, the application context is delivered even from a
+    /// backgrounded phone — the case where a watch-first session runs with the
+    /// phone in a pocket.
+    ///
+    /// The now-hearing bird is currently its only occupant. It shared it with a
+    /// `recordingAuthState` key until that was removed as dead — see
+    /// `recordingBlocked` — and the merge is kept because the sharing is what
+    /// `clearWatchBirdDisplay` needs to be able to remove *only* its own keys.
     private var watchAppContext: [String: Any] = [:]
     /// Monotonic tag on each now-hearing push. `updateApplicationContext` de-dupes
     /// identical dictionaries, so without this a re-push of the *same* still-singing
@@ -295,22 +278,19 @@ final class RecordingManager {
     }
 
     /// Reacts to a location authorization change: refreshes the denied flag the
-    /// record button reads, and lets the app push the new state to the watch.
+    /// record button reads.
     private func handleLocationAuthorizationChange(_ status: CLAuthorizationStatus) {
         locationAccessDenied = (status == .denied || status == .restricted)
-        onRecordingAuthorizationChanged?()
     }
 
     /// Re-reads the microphone permission and refreshes `micAccessDenied`. There's
     /// no system callback for mic-permission changes (unlike location), so the app
     /// calls this whenever it returns to the foreground — the user may have flipped
-    /// the toggle in Settings while away. Pushes the new state to the watch when it
-    /// actually changed.
+    /// the toggle in Settings while away.
     func refreshMicrophoneAuthorization() {
         let denied = AVAudioApplication.shared.recordPermission == .denied
         guard denied != micAccessDenied else { return }
         micAccessDenied = denied
-        onRecordingAuthorizationChanged?()
     }
 
     /// Runs the first-launch permission sequence behind the welcome screen's Get
@@ -478,13 +458,13 @@ final class RecordingManager {
 
     /// Merges `updates` into the watch application context and re-publishes it.
     /// The single owner of `updateApplicationContext` (see `watchAppContext`), so
-    /// the now-hearing bird and the auth state coexist instead of overwriting.
+    /// keys coexist instead of overwriting one another.
     ///
     /// The dictionary is updated whether or not there is a watch to push it to,
     /// so the context the next push carries is always the current one — the
     /// alternative bails before the merge and silently drops state whenever the
     /// watch happens to be unpaired at that moment.
-    func mergeWatchAppContext(_ updates: [String: Any]) {
+    private func mergeWatchAppContext(_ updates: [String: Any]) {
         watchAppContext.merge(updates) { _, new in new }
         pushWatchAppContext()
     }
@@ -495,14 +475,19 @@ final class RecordingManager {
     /// Drops the now-hearing bird from the mirrored context at the end of a
     /// session.
     ///
-    /// The context is *latest state*, and without this the last bird of a
-    /// session stayed in it forever: nothing else removes a key, and every later
-    /// `mergeWatchAppContext` — `pushRecordingAuthorized` fires on any
-    /// watch-state change — re-published the whole dictionary, that bird
-    /// included. The watch's `birdSeq` de-dupe hid it right up until the watch
-    /// app was relaunched, which resets the watch's last-seen sequence: from
-    /// then on the first context to arrive announced a bird from a walk that had
-    /// already ended, as the one the phone was hearing now.
+    /// The context is *latest state*, and without this the last bird of a session
+    /// stayed in it forever: nothing else removes a key, and the context the watch
+    /// holds is re-delivered to it on relaunch. The watch's `birdSeq` de-dupe hid
+    /// that right up until the watch app *was* relaunched, which resets its
+    /// last-seen sequence: from then on the first context to arrive announced a
+    /// bird from a walk that had already ended, as the one the phone was hearing
+    /// now.
+    ///
+    /// The re-publish this does is now the only thing that can carry a stale bird
+    /// over. It used to be reached far more often, by every unrelated
+    /// `mergeWatchAppContext` — the dead `recordingAuthState` push fired on any
+    /// watch-state change and re-published the whole dictionary, that bird
+    /// included.
     private func clearWatchBirdDisplay() {
         var changed = false
         for key in Self.watchBirdContextKeys where watchAppContext.removeValue(forKey: key) != nil {
@@ -831,12 +816,39 @@ final class RecordingManager {
         clearWatchBirdDisplay()
     }
 
+    /// Whether a *phone-side* stop is about to end something this method owns.
+    ///
+    /// `isRecording` alone is not that question. It is true for a watch-sourced
+    /// session too, and `stop()` only knows how to tear down the phone's own half
+    /// — it clears `isRecording`, cancels the idle watchdog and tells the watch
+    /// the phone stopped, while leaving `watchRecording`, the silent keepalive and
+    /// the audio-liveness watchdogs running. The result is a session still
+    /// ingesting watch audio behind a UI that says nothing is recording, whose
+    /// record button then offers to save a birding walk. Ending a watch session
+    /// from the phone goes through `stopWatchSession` instead.
+    ///
+    /// This is reachable, not theoretical. `"stopPhone"` — the one watch command
+    /// routed straight to `stop()`, where `"start"` and `"stop"` go to guarded
+    /// entry points — is sent by the watch on *both* channels at once, live and
+    /// via `transferUserInfo`. The queued copy outlives app suspension, so it can
+    /// be flushed after a later watch session has already begun on the live
+    /// channel, at which point it arrives as a stop for a session that ended long
+    /// ago. Extracted as a static so that pairing is pinned by a test.
+    nonisolated static func localStopApplies(isRecording: Bool, watchRecording: Bool) -> Bool {
+        isRecording && !watchRecording
+    }
+
     func stop() {
+        // Before anything is torn down: a watch-sourced session's engine, idle
+        // watchdog and pending transition are not this method's to cancel.
+        guard Self.localStopApplies(
+            isRecording: isRecording, watchRecording: watchRecording
+        ) else { return }
+
         pendingTransitionTask?.cancel()
         pendingTransitionTask = nil
         cancelIdleWatchdog()
 
-        guard isRecording else { return }
         isRecording = false
 
         // Bank the session's length, then — since a stop that reaches here came
@@ -1614,14 +1626,9 @@ final class RecordingManager {
         case .denied: return false
         case .undetermined:
             let granted = await AVAudioApplication.requestRecordPermission()
-            // The prompt just resolved — refresh the grayed-button flag in case the
-            // user denied it. Also push the combined authorization to the watch
-            // unconditionally: an undetermined→granted transition doesn't flip
-            // `micAccessDenied` (it was already false), so `refreshMicrophoneAuthorization`
-            // wouldn't push on its own, leaving the watch blocked until some later
-            // event. (`updateApplicationContext` de-dupes, so a redundant push is free.)
+            // The prompt just resolved — refresh the grayed-button flag in case
+            // the user denied it.
             refreshMicrophoneAuthorization()
-            onRecordingAuthorizationChanged?()
             return granted
         @unknown default:
             return false

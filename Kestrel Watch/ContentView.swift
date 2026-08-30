@@ -649,8 +649,11 @@ struct ContentView: View {
     /// Distance from the screen corner to a zero-radius button's center that
     /// already accounts for the bezel curve + the diagonal corner gap.
     /// `cornerCenter` just adds the button's own `r / √2`. The diagonal
-    /// clearance reuses `edgeMargin`, so the stop button sits the same distance
-    /// off the bezel as the bird image's inset — both track the per-watch margin.
+    /// clearance is `edgeMargin`, so every corner button tracks the per-watch
+    /// margin. (It used to be shared with the bird image's inset, which is why
+    /// one knob covered both; the photo now runs flush to the left, right and
+    /// bottom edges and is bounded by `imageTopCornerRadius` instead — see
+    /// `WatchMetrics`.)
     private static var cornerConst: CGFloat {
         screenCornerRadius * (1 - 1 / sqrt2) + edgeMargin / sqrt2
     }

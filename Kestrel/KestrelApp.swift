@@ -135,12 +135,10 @@ struct KestrelApp: App {
         manager.preload()
         _recordingManager = State(wrappedValue: manager)
 
-        let bridge = WatchAudioBridge(manager: manager)
-        watchBridge = bridge
-        // Push the phone's recording-authorization state (mic + location) to the
-        // watch whenever it changes, so the watch's record screen reflects whether
-        // recording is possible.
-        manager.onRecordingAuthorizationChanged = { bridge.pushRecordingAuthorized() }
+        // The watch's own record screen is gated by the watch's own microphone and
+        // location permissions, so there is nothing about the phone's to tell it —
+        // see `WatchAudioBridge.sessionWatchStateDidChange`.
+        watchBridge = WatchAudioBridge(manager: manager)
 
         // Register the notification delegate + idle-timeout category, and wire its
         // "End Session" action to end whichever session is active. The idle

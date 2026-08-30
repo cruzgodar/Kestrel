@@ -584,3 +584,43 @@ struct SessionCoordinateTests {
         ) == nil)
     }
 }
+
+/// Which sessions a *phone-side* `stop()` is allowed to end.
+///
+/// `RecordingManager.stop()` only knows how to tear down the phone's own half of
+/// a session. Run against a watch-sourced one it would clear `isRecording` and
+/// cancel the idle watchdog while leaving `watchRecording`, the silent keepalive
+/// and the audio-liveness watchdogs running — a session still ingesting watch
+/// audio behind a UI that says nothing is recording, whose record button then
+/// offers to save a birding walk. Ending a watch session from the phone is
+/// `stopWatchSession`'s job.
+@Suite("Phone-side stop")
+struct LocalStopTests {
+
+    @Test("a phone-mic session is the one it ends")
+    func endsAPhoneSession() {
+        #expect(RecordingManager.localStopApplies(isRecording: true, watchRecording: false))
+    }
+
+    /// The regression. `"stopPhone"` is the one watch command routed straight to
+    /// `stop()` — `"start"` and `"stop"` go to entry points that check
+    /// `watchRecording` for themselves — and the watch sends it on *both* channels
+    /// at once, live and via `transferUserInfo`. The queued copy outlives app
+    /// suspension, so it can be flushed after a later watch session has already
+    /// begun on the live channel, arriving as a stop for a session that ended long
+    /// ago. `isRecording` is true for a watch session too, so it was not enough to
+    /// tell those apart.
+    @Test("a watch-sourced session is left alone")
+    func ignoresAWatchSession() {
+        #expect(
+            !RecordingManager.localStopApplies(isRecording: true, watchRecording: true),
+            "the phone half is not this stop's to tear down"
+        )
+    }
+
+    @Test("nothing running is nothing to stop")
+    func ignoresAnIdlePhone() {
+        #expect(!RecordingManager.localStopApplies(isRecording: false, watchRecording: false))
+        #expect(!RecordingManager.localStopApplies(isRecording: false, watchRecording: true))
+    }
+}

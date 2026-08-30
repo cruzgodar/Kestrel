@@ -1260,8 +1260,11 @@ struct MapView: View {
             pendingRehydrateIDs = []
             let saved = visiblePoints
             let remaining = saved.filter { !ids.contains($0.id) }
-            // Nothing to remount (the changed hosts aren't currently visible) — or
-            // they're the whole set, in which case there's nothing to keep mounted.
+            // Nothing to remount: none of the changed hosts is currently visible,
+            // so dropping and restoring the set would be pure flicker for no
+            // repaired hit area. (When the changed ids *are* the whole visible set
+            // this doesn't fire, and every host is remounted — there is nothing to
+            // hold back, and that is the case the repair is most needed in.)
             guard remaining.count != saved.count else { return }
             visiblePoints = remaining
             DispatchQueue.main.async { visiblePoints = saved }

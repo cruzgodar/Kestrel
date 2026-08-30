@@ -26,7 +26,6 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
                  error: Error?) {
         if let error { Log.error("WCSession activation error: \(error)") }
         refreshWatchAppInstalled(session)
-        pushRecordingAuthorized()
     }
 
     func sessionDidBecomeInactive(_ session: WCSession) {}
@@ -38,28 +37,20 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
 
     /// Fires when the user pairs/unpairs a watch or installs/removes the watch
     /// app — keep the manager's `isWatchAppInstalled` flag (and the UI it
-    /// drives) in sync, and (re)push the location state to the fresh watch.
+    /// drives) in sync.
+    ///
+    /// This used to also push the phone's recording-authorization state into the
+    /// watch's application context. Nothing on the watch ever read it: the watch
+    /// records with its own microphone and supplies its own coordinate, so its
+    /// record button is gated by its *own* permissions (see
+    /// `WatchSessionManager.permissionDenied`), which are per-device and can only
+    /// be granted from the wrist. The push was removed rather than left inert —
+    /// it re-published the entire application context on every watch-state
+    /// change, which is what could carry a finished session's now-hearing bird
+    /// back onto a relaunched watch (see
+    /// `RecordingManager.clearWatchBirdDisplay`).
     func sessionWatchStateDidChange(_ session: WCSession) {
         refreshWatchAppInstalled(session)
-        pushRecordingAuthorized()
-    }
-
-    /// Pushes the phone's current recording-authorization state to the watch via
-    /// the persisted application context. Sent as a tri-state (authorized / denied
-    /// / undetermined) so the watch can tell a genuine denial — which it shows as a
-    /// gray lock the user must fix on the phone — apart from permissions that simply
-    /// haven't been requested yet, where it keeps a normal record button rather than
-    /// a confusing lock. `updateApplicationContext` only re-delivers on a changed
-    /// payload, so this is cheap to call on every authorization change and
-    /// session/watch-state event.
-    func pushRecordingAuthorized() {
-        Task { @MainActor in
-            let state = manager.recordingAuthorizationStateForWatch
-            // Merge through the manager's single application-context owner so this
-            // doesn't clobber the now-hearing bird the manager also publishes there
-            // (`updateApplicationContext` replaces the whole dictionary).
-            manager.mergeWatchAppContext(["recordingAuthState": state.rawValue])
-        }
     }
 
     /// Pushes the current watch-app-installed state into the manager. Both

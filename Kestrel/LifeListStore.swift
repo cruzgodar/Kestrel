@@ -231,25 +231,48 @@ final class LifeListStore {
 
     // MARK: eBird export
 
-    /// Every sighting on the life list, flattened into one row per observation
-    /// and paired with its species. The unit of an eBird record is a single
+    /// The sightings `scope` covers, flattened into one row per observation and
+    /// paired with its species. The unit of an eBird record is a single
     /// observation, not a species, so repeat sightings each get their own row.
-    private var allExportRows: [EBirdCSVExporter.Row] {
-        entries.flatMap { entry in
-            entry.allObservations.map {
-                EBirdCSVExporter.Row(
+    ///
+    /// **`nonisolated static`, taking its inputs by value, so the whole walk can
+    /// run off the main actor** — which `makeEBirdExport` does. This is not a
+    /// cheap flatten: `.newOnly` asks the ledger about every row, and each of
+    /// those questions builds two keys, each of which renders a date, folds a
+    /// place name character by character (`EBirdCSVExporter.sanitize`) and
+    /// formats two coordinates. An eBird export is one row per *observation*, so
+    /// for an active birder's imported history that is tens of thousands of rows
+    /// and a hundred thousand-odd string allocations. Building the rows on the
+    /// main actor and detaching only the CSV rendering left the expensive half
+    /// exactly where the detaching was meant to keep it from being.
+    nonisolated static func exportRows(
+        from entries: [LifeListEntry],
+        scope: ExportScope,
+        exportedKeys: Set<String>
+    ) -> [EBirdCSVExporter.Row] {
+        var rows: [EBirdCSVExporter.Row] = []
+        for entry in entries {
+            for observation in entry.allObservations {
+                let row = EBirdCSVExporter.Row(
                     scientificName: entry.scientificName,
                     commonName: entry.commonName,
-                    observation: $0
+                    observation: observation
                 )
+                switch scope {
+                case .everything:
+                    rows.append(row)
+                case .newOnly:
+                    if isNewToEBird(row, exportedKeys: exportedKeys) { rows.append(row) }
+                }
             }
         }
+        return rows
     }
 
     /// The export ledger's key for one sighting. Wrapped so the export check and
     /// the edit path (which has to carry a key forward, see `replaceObservation`)
     /// can't drift apart on how a sighting is identified.
-    private static func exportKey(
+    private nonisolated static func exportKey(
         scientificName: String,
         observation: LifeListEntry.Observation
     ) -> String {
@@ -259,11 +282,15 @@ final class LifeListStore {
     /// Whether a sighting belongs in a `.newOnly` export. Two ways eBird can
     /// already have it: it came *from* eBird on an import, or a previous export
     /// handed it over.
-    private func isNewToEBird(_ row: EBirdCSVExporter.Row) -> Bool {
+    nonisolated static func isNewToEBird(
+        _ row: EBirdCSVExporter.Row,
+        exportedKeys: Set<String>
+    ) -> Bool {
         guard !row.observation.isImported else { return false }
         return !hasBeenExported(
             scientificName: row.scientificName,
-            observation: row.observation
+            observation: row.observation,
+            in: exportedKeys
         )
     }
 
@@ -275,17 +302,31 @@ final class LifeListStore {
     /// eBird does no deduplication, so a key that stops matching means the user's
     /// next "Export New Observations" hands them a second copy of records they
     /// already uploaded. Reading both formats costs a set lookup and cannot fail.
-    private func hasBeenExported(
+    private nonisolated static func hasBeenExported(
         scientificName: String,
-        observation: LifeListEntry.Observation
+        observation: LifeListEntry.Observation,
+        in exportedKeys: Set<String>
     ) -> Bool {
-        let key = Self.exportKey(scientificName: scientificName, observation: observation)
-        if exportedObservationKeys.contains(key) { return true }
+        let key = exportKey(scientificName: scientificName, observation: observation)
+        if exportedKeys.contains(key) { return true }
         let legacy = EBirdCSVExporter.legacyKey(
             scientificName: scientificName,
             observation: observation
         )
-        return exportedObservationKeys.contains(legacy)
+        return exportedKeys.contains(legacy)
+    }
+
+    /// `hasBeenExported` against this store's own ledger, for the main-actor
+    /// callers that have one to hand.
+    private func hasBeenExported(
+        scientificName: String,
+        observation: LifeListEntry.Observation
+    ) -> Bool {
+        Self.hasBeenExported(
+            scientificName: scientificName,
+            observation: observation,
+            in: exportedObservationKeys
+        )
     }
 
     /// Every recorded sighting on the life list, counted. A species contributes
@@ -295,19 +336,28 @@ final class LifeListStore {
         entries.reduce(0) { $0 + 1 + $1.otherObservations.count }
     }
 
-    /// How many rows an export of `scope` would produce. Drives the sheet's
-    /// "nothing to export" check before any work starts.
+    /// How many rows an export of `scope` would produce.
+    ///
+    /// Synchronous, and therefore on the main actor for the whole walk — see
+    /// `exportRows` for what that costs on a large list. Deliberately **not** on
+    /// the export button's path any more: the sheet used to call this to vet a
+    /// scope before starting, which meant every tap paid for the walk twice, once
+    /// here and once inside `makeEBirdExport`. The emptiness of an export is now
+    /// read off the payload it produced (see `LifeListView.beginExport`), so this
+    /// is left as the plain question it reads as, for tests and diagnostics.
     func observationCount(for scope: ExportScope) -> Int {
-        switch scope {
-        case .everything: return allExportRows.count
-        case .newOnly:    return allExportRows.count(where: isNewToEBird)
-        }
+        Self.exportRows(
+            from: entries, scope: scope, exportedKeys: exportedObservationKeys
+        ).count
     }
 
     /// Builds the eBird Record Format CSV for `scope`, reporting completion
-    /// through `progress` as it goes. Rendering runs on a detached task: a life
-    /// list of any size is thousands of string joins, and doing that inline on
-    /// the main actor would freeze the sheet mid-tap.
+    /// through `progress` as it goes.
+    ///
+    /// Everything runs on a detached task: selecting the rows is as expensive as
+    /// rendering them (see `exportRows`), and both would otherwise freeze the
+    /// sheet mid-tap. Only the two snapshots below happen on the main actor, and
+    /// both are `Array`/`Set` retains rather than walks.
     ///
     /// Nothing is marked as exported here — the caller does that via
     /// `markExported` only after the file is actually saved, so a cancelled
@@ -316,15 +366,13 @@ final class LifeListStore {
         scope: ExportScope,
         progress: ExportProgress? = nil
     ) async -> EBirdCSVExporter.Payload {
-        let rows: [EBirdCSVExporter.Row]
-        switch scope {
-        case .everything:
-            rows = allExportRows
-        case .newOnly:
-            rows = allExportRows.filter(isNewToEBird)
-        }
+        let entries = self.entries
+        let exportedKeys = exportedObservationKeys
         return await Task.detached(priority: .userInitiated) {
-            EBirdCSVExporter.makeCSV(rows: rows) { done, total in
+            let rows = Self.exportRows(
+                from: entries, scope: scope, exportedKeys: exportedKeys
+            )
+            return EBirdCSVExporter.makeCSV(rows: rows) { done, total in
                 guard let progress else { return }
                 let fraction = total > 0 ? Double(done) / Double(total) : 1
                 Task { @MainActor in progress.fraction = fraction }

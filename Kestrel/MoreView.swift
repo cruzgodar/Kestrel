@@ -327,4 +327,16 @@ struct MoreView: View {
     NavigationStack {
         MoreView()
     }
+    // Required, not decorative: the DEBUG-only cached-image readout reads the
+    // life list from the environment on appear, and a non-optional
+    // `@Environment(LifeListStore.self)` traps when nothing provided one — so
+    // without this the preview crashes in exactly the configuration previews are
+    // built in. Pointed at a scratch directory and a scratch defaults suite, for
+    // the reasons `LifeListStore.init` gives: the real ones belong to the
+    // install, and opening a preview must not read, overwrite, or consume them.
+    .environment(LifeListStore(
+        directory: FileManager.default.temporaryDirectory
+            .appendingPathComponent("KestrelPreview", isDirectory: true),
+        defaults: UserDefaults(suiteName: "KestrelPreview")
+    ))
 }

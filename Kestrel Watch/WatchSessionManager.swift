@@ -956,9 +956,14 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
 
     private func route(_ payload: [String: Any]) {
         if let cmd = payload["cmd"] as? String {
+            // Deliberately no `remoteStart`: the phone never asks the watch to
+            // begin capturing. Its own Start Birding button records on the phone's
+            // microphone and only *mirrors* the result here (`phoneStart`), and a
+            // watch capture is started from the wrist — the record button, or the
+            // start intent via `ContentView.startRecordingIfRequested`, both of
+            // which call `handleRemoteStart` directly.
             Task { @MainActor in
                 switch cmd {
-                case "remoteStart": WatchSessionManager.shared.handleRemoteStart()
                 case "remoteStop":
                     // The phone answers the save/resume/discard question itself
                     // when the user stops there, and rides the answer along on

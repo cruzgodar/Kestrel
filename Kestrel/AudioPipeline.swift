@@ -31,8 +31,14 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
         return fmt
     }()
 
+    /// Hardware format → `targetFormat`. Rebuilt by each `start()` from the input
+    /// node's *current* format, which is the only moment it can change: the tap is
+    /// installed for one explicit format, and `AVAudioEngine` tears a tap down on
+    /// a configuration change rather than delivering buffers in a new one. (There
+    /// was a `converterInputFormat` field here to detect a mid-flight change,
+    /// under a comment promising a reset. Nothing read it and nothing reset
+    /// anything; the reset is `start()`.)
     private var converter: AVAudioConverter?
-    private var converterInputFormat: AVAudioFormat?
 
     private let bufferLock = OSAllocatedUnfairLock(initialState: [Float]())
     private var onWindow: (@Sendable ([Float]) -> Void)?
@@ -100,9 +106,9 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
         let input = engine.inputNode
         let hwFormat = input.inputFormat(forBus: 0)
 
-        // Reset converter when format changes.
+        // Built here, against the format the tap below is installed for, so the
+        // two can't disagree.
         converter = AVAudioConverter(from: hwFormat, to: targetFormat)
-        converterInputFormat = hwFormat
 
         bufferLock.withLock { $0.removeAll(keepingCapacity: true) }
 
