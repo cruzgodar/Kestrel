@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The More tab — app settings up top, followed by the About section that
+/// The Settings tab — app settings up top, followed by the About section that
 /// explains what Kestrel does, introduces the developer, and credits the model,
 /// paper, and image sources it relies on.
 struct MoreView: View {

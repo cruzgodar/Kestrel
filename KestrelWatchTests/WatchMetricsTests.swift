@@ -1,5 +1,6 @@
 import CoreGraphics
 import Foundation
+import HealthKit
 import Testing
 @testable import Kestrel_Watch
 
@@ -241,5 +242,100 @@ struct WorkoutResumeTests {
     func nothingParkedRefuses() {
         #expect(!WatchWorkoutManager.canPickBackUp(hasLiveSession: true, pending: nil))
         #expect(!WatchWorkoutManager.canPickBackUp(hasLiveSession: false, pending: nil))
+    }
+}
+
+/// Whether a birding walk on this watch could reach HealthKit at all — the half
+/// of "is this walk worth offering to save?" that has nothing to do with the walk.
+///
+/// It exists as its own question because the *phone* needs the answer and cannot
+/// work it out: watchOS HealthKit authorization is per-device and grantable only
+/// from the wrist. The phone raises the save/discard prompt when a watch session
+/// is stopped there, and was gating it on duration alone — so a user who had
+/// declined workout sharing was offered "Save Workout", tapped it, and got
+/// nothing at all. The watch had already refused to park a walk it couldn't save,
+/// discarded it, and the relayed decision found neither a builder nor a span.
+@Suite("Workout savability")
+struct WorkoutSavabilityTests {
+
+    @Test("an authorized watch can save")
+    func authorizedCanSave() {
+        #expect(WatchWorkoutManager.canSaveWorkouts(
+            healthDataAvailable: true, sharing: .sharingAuthorized
+        ))
+    }
+
+    /// The case the phone has to be told about.
+    @Test("a denied watch cannot")
+    func deniedCannotSave() {
+        #expect(!WatchWorkoutManager.canSaveWorkouts(
+            healthDataAvailable: true, sharing: .sharingDenied
+        ))
+    }
+
+    /// Not yet asked is not the same as refused. The authorization sheet goes up
+    /// on the first `start()`, and declining to offer a save before the user has
+    /// even been asked would be its own kind of wrong — the push is repeated once
+    /// that resolves, so a denial still lands before the first stop.
+    @Test("an unasked watch is treated as able to save")
+    func notDeterminedCanSave() {
+        #expect(WatchWorkoutManager.canSaveWorkouts(
+            healthDataAvailable: true, sharing: .notDetermined
+        ))
+    }
+
+    @Test("no health store at all means no save")
+    func unavailableCannotSave() {
+        #expect(!WatchWorkoutManager.canSaveWorkouts(
+            healthDataAvailable: false, sharing: .sharingAuthorized
+        ))
+        #expect(!WatchWorkoutManager.canSaveWorkouts(
+            healthDataAvailable: false, sharing: .notDetermined
+        ))
+    }
+}
+
+/// Which now-hearing pushes the watch acts on.
+///
+/// The bird rides the application context, which re-delivers the *whole* context
+/// whenever any key in it changes — so the watch has to tell a genuine update
+/// from a replay. The phone tags each real push with a `birdSeq` that only rises,
+/// seeded from the wall clock so a fresh phone process out-numbers whatever it
+/// said last time.
+@Suite("Now-hearing push de-duplication")
+struct BirdPushSequenceTests {
+
+    @Test("a newer push applies")
+    func newerApplies() {
+        #expect(WatchSessionManager.shouldApplyBirdPush(seq: 11, lastApplied: 10))
+    }
+
+    @Test("the same push again is a re-delivery")
+    func repeatIsIgnored() {
+        #expect(!WatchSessionManager.shouldApplyBirdPush(seq: 10, lastApplied: 10))
+    }
+
+    /// The regression. Equality alone let an *older* context through: the context
+    /// carries a single now-hearing slot, so an out-of-order replay announced a
+    /// bird the phone had already moved on from as the one it was hearing now.
+    @Test("an older push is ignored, not just an identical one")
+    func staleIsIgnored() {
+        #expect(
+            !WatchSessionManager.shouldApplyBirdPush(seq: 9, lastApplied: 10),
+            "a replay of an earlier push is not news"
+        )
+    }
+
+    /// Nothing in the app sends an untagged push today, but dropping an update
+    /// that can't be ordered would be worse than repeating one.
+    @Test("an untagged push always applies")
+    func untaggedApplies() {
+        #expect(WatchSessionManager.shouldApplyBirdPush(seq: nil, lastApplied: 10))
+    }
+
+    /// The first push of a watch process, against the sentinel.
+    @Test("the first push of a process applies")
+    func firstPushApplies() {
+        #expect(WatchSessionManager.shouldApplyBirdPush(seq: 0, lastApplied: -1))
     }
 }

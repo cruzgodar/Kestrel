@@ -309,7 +309,12 @@ nonisolated struct LifeListEntry: Codable, Identifiable, Hashable {
     /// Falling through to `ordersBeforeAtSameDate` settles it with the same
     /// tiebreakers `LifeListStore.observations(for:)` uses, so the two can't
     /// disagree about which of two same-day sightings comes first.
-    private static func promotionOrder(_ a: Observation, _ b: Observation) -> Bool {
+    ///
+    /// Not private: `LifeListStore.computeMergedEntries` needs it to work out
+    /// which of two entries canonicalization folded together supplied the
+    /// displayed first sighting, and asking a *different* order would let the
+    /// import tally disagree with the entry it is describing.
+    nonisolated static func promotionOrder(_ a: Observation, _ b: Observation) -> Bool {
         if a.date != b.date { return a.date < b.date }
         let ca = completeness(a), cb = completeness(b)
         if ca != cb { return ca > cb }

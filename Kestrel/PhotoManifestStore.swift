@@ -112,6 +112,14 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
     /// - Parameter directory: `nil` (the default) means the app's real
     ///   Application Support directory.
     init(directory: URL? = nil) {
+        // `defaultSnapshotURL` resolves Application Support with `create: true`;
+        // an injected directory had nothing doing the same, so a store pointed at
+        // one that didn't exist yet could never persist a thing. Match the two.
+        if let directory {
+            try? FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true
+            )
+        }
         snapshotURL = directory.map { $0.appendingPathComponent("photos_manifest_local.json") }
             ?? Self.defaultSnapshotURL()
         // Persisted state from past applies, if any. There is no bundled seed:
@@ -347,11 +355,24 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
         // vetoed by a short manifest (or by a set that has genuinely shrunk past
         // the floor) left the app refetching the manifest on *every* single
         // foreground, forever. The guard exists to stop a bad deploy deleting
-        // cached image bytes; nothing here deletes bytes, and a slug with no
-        // metadata can't be shown or downloaded anyway (see
-        // `RemoteSpeciesImageStore.isAttributed`), so there is nothing for it to
-        // protect. Deliberately not reported in `removedSlugs`, which is the
-        // caller's cue to delete files.
+        // cached image bytes a species is still shown from; a slug with no
+        // metadata isn't one — it can't be shown or downloaded at all (see
+        // `RemoteSpeciesImageStore.isAttributed`), so there is nothing here for
+        // that guard to protect.
+        //
+        // **Reported in `removedSlugs`, so the caller deletes their bytes.** It
+        // used to skip that, on the grounds that nothing here deletes bytes — and
+        // that was the leak: the files stayed on disk, `cachedSlugs()` went on
+        // handing them to the revalidation pass, and with their `validatedAt`
+        // stamp dropped they were permanently stale. So `revalidateStaleImages`
+        // could never take its `stale.isEmpty` early exit and instead downloaded
+        // the whole manifest once an hour, forever, only to count them as
+        // withdrawn and skip them. Nothing could ever clean them up either: the
+        // next `apply` can't list them as `withdrawn`, because they are no longer
+        // in `hashes` to be found.
+        //
+        // No slug can be reported twice: when the prune above ran it already took
+        // these out of `hashes`, and when it didn't, it added nothing.
         //
         // Snapshotted before the loop, for the same reason `withdrawn` is above:
         // removing from `hashes` while iterating its own keys view only works by
@@ -362,6 +383,7 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
             pendingMetadata.removeValue(forKey: slug)
             validatedAt.removeValue(forKey: slug)
         }
+        result.removedSlugs.append(contentsOf: unattributed)
         persistLocked()
         return result
     }

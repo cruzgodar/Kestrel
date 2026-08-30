@@ -36,9 +36,13 @@ enum RecordingIntentRequest {
 /// actual start is performed by the app when it consumes the request — the
 /// app checks its own recording state, so a tap while recording is a no-op.
 struct StartRecordingIntent: AppIntent {
-    static var title: LocalizedStringResource = "Start Recording"
+    // "Start Birding", matching the app's own record button — every user-facing
+    // string for this action says the same thing, in Shortcuts, in the widget
+    // gallery and on screen. (The *type* keeps its name: it is the widget's
+    // stored `kind` and the app's own vocabulary for the mechanism.)
+    static var title: LocalizedStringResource = "Start Birding"
     static var description = IntentDescription(
-        "Start listening for birds if a recording isn\u{2019}t already in progress."
+        "Start listening for birds if a session isn\u{2019}t already in progress."
     )
     /// Foreground the app to run the intent and bring up the microphone.
     static var openAppWhenRun = true

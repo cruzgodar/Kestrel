@@ -167,6 +167,36 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         healthStore.authorizationStatus(for: HKQuantityType.workoutType())
     }
 
+    /// Whether a walk could be written to HealthKit at all, ignoring how long it
+    /// ran. The half of `canOfferSave` that has nothing to do with the walk —
+    /// and the half the *phone* can't work out for itself, so it is pushed across
+    /// (see `WatchSessionManager.sendWorkoutSavable`).
+    ///
+    /// Without that push the phone's stop prompt offered "Save Workout" to a user
+    /// who had denied workout sharing on the watch, and the tap did nothing at
+    /// all: `pause()` refuses to park an unsavable walk, `end()` discards it, and
+    /// `save()` then finds neither a builder nor a span to write. Silently.
+    var canSaveWorkouts: Bool {
+        Self.canSaveWorkouts(
+            healthDataAvailable: HKHealthStore.isHealthDataAvailable(),
+            sharing: workoutSharingStatus
+        )
+    }
+
+    /// The rule behind `canSaveWorkouts`, as a pure function of the two facts it
+    /// turns on, so both sides of the pair can be tested without a health store.
+    ///
+    /// `notDetermined` counts as savable: the authorization sheet hasn't been
+    /// shown yet (it goes up on the first `start()`), and refusing to offer a save
+    /// before the user has been asked would be its own kind of wrong. The push is
+    /// repeated once that resolves, so a denial lands before the first stop.
+    nonisolated static func canSaveWorkouts(
+        healthDataAvailable: Bool,
+        sharing: HKAuthorizationStatus
+    ) -> Bool {
+        healthDataAvailable && sharing != .sharingDenied
+    }
+
     private static func describe(_ status: HKAuthorizationStatus) -> String {
         switch status {
         case .notDetermined:      return "not determined"
@@ -185,12 +215,13 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         guard let started else { return false }
         let elapsed = end.timeIntervalSince(started)
         guard elapsed >= minimumDuration else { return false }
-        guard HKHealthStore.isHealthDataAvailable() else {
-            Log.warning("No save prompt for a \(Int(elapsed))s walk — HealthKit unavailable")
-            return false
-        }
-        guard workoutSharingStatus != .sharingDenied else {
-            Log.warning("No save prompt for a \(Int(elapsed))s walk — workout sharing is denied in Health")
+        guard canSaveWorkouts else {
+            Log.warning(
+                "No save prompt for a \(Int(elapsed))s walk — "
+                + (HKHealthStore.isHealthDataAvailable()
+                    ? "workout sharing is denied in Health"
+                    : "HealthKit unavailable")
+            )
             return false
         }
         return true

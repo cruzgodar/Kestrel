@@ -130,6 +130,17 @@ final class LifeListStore {
     init(directory: URL? = nil, defaults: UserDefaults? = nil) {
         self.directory = directory ?? Self.applicationSupport()
         self.defaults = defaults ?? .standard
+        // The default path resolves Application Support with `create: true`; an
+        // injected one had nothing doing the same, so a store pointed at a
+        // directory that didn't exist yet could read and write nothing — every
+        // `save()` failing with "the folder doesn't exist", silently, since the
+        // write is on the IO queue and its error only reaches the log. Make the
+        // two paths behave alike.
+        if let directory = self.directory {
+            try? FileManager.default.createDirectory(
+                at: directory, withIntermediateDirectories: true
+            )
+        }
         if let saved = loadStars() {
             starredNames = saved
             load()
@@ -380,8 +391,34 @@ final class LifeListStore {
         }.value
     }
 
+    /// Whether saving this export counts as handing its observations to eBird.
+    ///
+    /// Two conditions, and the second is the subtle one.
+    ///
+    /// **The scope must be `.newOnly`.** Exporting everything is a "give me the
+    /// whole list" operation — a backup, a re-upload, a file for something other
+    /// than eBird — and treating it as a handover would silently empty out Export
+    /// New, which is the one thing the user relies on to not duplicate their
+    /// history.
+    ///
+    /// **The file must be one eBird will actually accept.** Saving is not
+    /// uploading, and the ledger deliberately takes a save as good enough — but
+    /// past eBird's 1 MB import limit the app *knows* the file can't be uploaded
+    /// as it stands (it says so, in the same alert). Marking those rows handed
+    /// over anyway left the user with a file eBird refuses, an Export New that now
+    /// writes nothing, and no way to get the missing records out except Export All
+    /// — which is the whole imported history, and the duplicate risk the ledger
+    /// exists to prevent.
+    nonisolated static func recordsHandover(
+        scope: ExportScope,
+        exceedsSizeLimit: Bool
+    ) -> Bool {
+        scope == .newOnly && !exceedsSizeLimit
+    }
+
     /// Records that these observations are now in eBird's hands, so the next
-    /// `.newOnly` export skips them. Call only on a successful save.
+    /// `.newOnly` export skips them. Call only on a successful save, and only
+    /// when `recordsHandover` says so.
     func markExported(_ keys: Set<String>) {
         let before = exportedObservationKeys.count
         exportedObservationKeys.formUnion(keys)
@@ -834,6 +871,50 @@ final class LifeListStore {
         save()
     }
 
+    /// What the life list held for one species before an import, reduced to the
+    /// two things the tally compares against.
+    nonisolated struct PriorEntry {
+        /// Every sighting the species had on record, earliest included.
+        var observationCount: Int
+        /// The sighting that was showing as its first — i.e. the entry's
+        /// `first*` fields, reconstituted.
+        var first: LifeListEntry.Observation
+    }
+
+    /// The pre-import life list keyed by the name each species will come out
+    /// under, following `renames` so a species canonicalization re-files is
+    /// compared against itself rather than looking brand new.
+    ///
+    /// Two entries can land on one name — that is exactly what a rename-and-merge
+    /// is — so a collision sums the sightings and keeps whichever first sighting
+    /// `LifeListEntry.make` would have promoted. Using `promotionOrder` rather
+    /// than a date comparison of its own is what stops this from disagreeing with
+    /// the entry it is describing when two same-day sightings differ only in how
+    /// complete they are.
+    nonisolated static func priorEntries(
+        _ existing: [LifeListEntry],
+        renames: [String: String]
+    ) -> [String: PriorEntry] {
+        var priors: [String: PriorEntry] = [:]
+        priors.reserveCapacity(existing.count)
+        for entry in existing {
+            let name = renames[entry.scientificName] ?? entry.scientificName
+            let observations = entry.allObservations
+            // `allObservations` always leads with the displayed first sighting,
+            // and is never empty — an entry with no observations can't exist.
+            guard let first = observations.first else { continue }
+            guard let prior = priors[name] else {
+                priors[name] = PriorEntry(observationCount: observations.count, first: first)
+                continue
+            }
+            priors[name] = PriorEntry(
+                observationCount: prior.observationCount + observations.count,
+                first: LifeListEntry.promotionOrder(first, prior.first) ? first : prior.first
+            )
+        }
+        return priors
+    }
+
     /// Pure merge: folds `rows` into `existing` and returns the canonicalized,
     /// sorted entry set plus the import tally. `nonisolated static` so the heavy
     /// work (full canonicalization against the ~6.5k-species catalog) can run off
@@ -858,12 +939,6 @@ final class LifeListStore {
             starredBySci[e.scientificName] = e.isStarred
         }
 
-        // The life list as it stood before this import began, so the tally at the
-        // bottom can say which species the import actually changed and how many
-        // sightings it wrote.
-        let originalBySci: [String: LifeListEntry] = Dictionary(
-            uniqueKeysWithValues: existing.map { ($0.scientificName, $0) }
-        )
         // Every species the CSV said anything about, whether or not it was
         // already on the list. Only these can be reported as "already known" —
         // the rest of the life list is untouched and has nothing to report.
@@ -963,13 +1038,26 @@ final class LifeListStore {
         // species in the file, reported nothing at all. Follow the same renames
         // the stars follow.
         let touched = Set(touchedKeys.map { canonical.renames[$0] ?? $0 })
+        // The life list as it stood before this import began, keyed by the name
+        // each species came out under — so the comparison below is against the
+        // *same* species, not against whatever happened to be filed under that
+        // name before.
+        //
+        // `touchedKeys` above follows the renames; this used to not, and the
+        // asymmetry showed. Canonicalization can fold an entry already on the list
+        // onto an imported spelling and keep the *imported* name (that is what
+        // `collapseByCommonName` does when only the incoming name is in the
+        // catalog), and a lookup keyed by the pre-import name then found nothing —
+        // so a species the user already had was reported as new to their life
+        // list, with every sighting it had ever held counted as freshly added.
+        let priorBySci = Self.priorEntries(existing, renames: canonical.renames)
         var added = 0
         var gained = 0
         var revised = 0
         var skipped = 0
         var newObservations = 0
         for entry in merged {
-            guard let before = originalBySci[entry.scientificName] else {
+            guard let before = priorBySci[entry.scientificName] else {
                 // New to the list: every sighting it carries is one we just wrote.
                 added += 1
                 newObservations += entry.allObservations.count
@@ -980,11 +1068,11 @@ final class LifeListStore {
             // under species already on the list without touching their
             // first-seen fields, and every one of them was counted as "already
             // known" while the map quietly grew pins.
-            let grew = entry.allObservations.count - before.allObservations.count
-            let earliestChanged = before.firstSeen != entry.firstSeen
-                || before.firstLocation != entry.firstLocation
-                || before.firstLatitude != entry.firstLatitude
-                || before.firstLongitude != entry.firstLongitude
+            let grew = entry.allObservations.count - before.observationCount
+            let earliestChanged = before.first.date != entry.firstSeen
+                || before.first.location != entry.firstLocation
+                || before.first.latitude != entry.firstLatitude
+                || before.first.longitude != entry.firstLongitude
             // Growing wins over a revised earliest when both happened: the
             // species is already accounted for by the "added N observations"
             // clause, and naming it twice would double-count it.

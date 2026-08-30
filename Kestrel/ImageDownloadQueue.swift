@@ -72,7 +72,16 @@ actor ImageDownloadQueue {
     /// the user has, on the actor that also serves every on-demand image the
     /// scrolling lists ask for.
     private var heads: [Int]
+    /// Keys sitting in a tier, waiting for a worker slot.
     private var queuedKeys: Set<Key> = []
+    /// Keys a worker has claimed but whose download hasn't finished.
+    ///
+    /// Held separately from `queuedKeys` because `nextRequest` hands a request to
+    /// a *spawned task*, which doesn't reach `run` — and so doesn't appear in
+    /// `inFlight` — until it is scheduled. For that window the key was in none of
+    /// the three sets, and an `enqueue` landing inside it queued a second copy of
+    /// a download already under way. Dropped by `drain` once the download returns.
+    private var dispatchedKeys: Set<Key> = []
     private var inFlight: [Key: Task<Data?, Never>] = [:]
     private var activeBulk = 0
 
@@ -98,7 +107,9 @@ actor ImageDownloadQueue {
     // MARK: - Background prefetch
 
     /// Drops all not-yet-started background jobs so a fresh wake can
-    /// re-prioritize from scratch. In-flight downloads keep running.
+    /// re-prioritize from scratch. In-flight downloads keep running — and keep
+    /// their keys in `dispatchedKeys`, so the re-prioritized queue doesn't ask for
+    /// them a second time.
     func resetPrefetch() {
         tiers = Tier.allCases.map { _ in [] }
         heads = Tier.allCases.map { _ in 0 }
@@ -106,14 +117,41 @@ actor ImageDownloadQueue {
     }
 
     /// Appends background jobs to a tier, skipping any whose (slug, size) is
-    /// already queued or in flight (so a species that's both nearby and on the
-    /// life list is fetched once, at its earlier tier). Kicks the pump.
+    /// already queued, dispatched, or in flight (so a species that's both nearby
+    /// and on the life list is fetched once, at its earlier tier). Kicks the pump.
     func enqueue(_ requests: [Request], tier: Tier) {
         for request in requests {
             let key = Key(slug: request.slug, size: request.size)
-            guard !queuedKeys.contains(key), inFlight[key] == nil else { continue }
+            guard !queuedKeys.contains(key),
+                  !dispatchedKeys.contains(key),
+                  inFlight[key] == nil else { continue }
             queuedKeys.insert(key)
             tiers[tier.rawValue].append(request)
+        }
+        pump()
+    }
+
+    /// Replaces the whole background queue in one actor-isolated step: reset, then
+    /// fill every tier, then pump once.
+    ///
+    /// The alternative — `resetPrefetch()` followed by four `enqueue` calls — is
+    /// four more suspension points, and a second prefetch wave arriving inside them
+    /// interleaves its own reset with the first one's tiers. Both the background
+    /// refresh task and the foreground photo check can start a wave, so that is a
+    /// real ordering, not a hypothetical one: the loser's `waitUntilIdle` returned
+    /// on a queue the winner had emptied, and the background window closed with
+    /// downloads still owed. Doing it all in one call makes a wave atomic.
+    func replacePrefetch(_ groups: [(tier: Tier, requests: [Request])]) {
+        resetPrefetch()
+        for group in groups {
+            for request in group.requests {
+                let key = Key(slug: request.slug, size: request.size)
+                guard !queuedKeys.contains(key),
+                      !dispatchedKeys.contains(key),
+                      inFlight[key] == nil else { continue }
+                queuedKeys.insert(key)
+                tiers[group.tier.rawValue].append(request)
+            }
         }
         pump()
     }
@@ -174,7 +212,11 @@ actor ImageDownloadQueue {
                 tiers[index].removeAll(keepingCapacity: false)
                 heads[index] = 0
             }
-            queuedKeys.remove(Key(slug: request.slug, size: request.size))
+            // Queued → dispatched, in the same actor-isolated step, so the key is
+            // never in neither set — see `dispatchedKeys`.
+            let key = Key(slug: request.slug, size: request.size)
+            queuedKeys.remove(key)
+            dispatchedKeys.insert(key)
             return request
         }
         return nil
@@ -189,7 +231,9 @@ actor ImageDownloadQueue {
     }
 
     private func drain(_ request: Request) async {
-        _ = await run(Key(slug: request.slug, size: request.size), name: request.name)
+        let key = Key(slug: request.slug, size: request.size)
+        _ = await run(key, name: request.name)
+        dispatchedKeys.remove(key)
         activeBulk -= 1
         pump()
     }

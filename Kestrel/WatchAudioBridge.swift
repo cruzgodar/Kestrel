@@ -94,10 +94,26 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
         switch cmd {
         case "start":
             Task { @MainActor in await manager.startFromWatch() }
+        case "watchWorkoutSavable":
+            // Whether the watch can write a birding walk to HealthKit — per-device
+            // authorization the phone can't read for itself, and the half of the
+            // stop prompt's question it was getting wrong. See
+            // `RecordingManager.shouldPromptForWatchWorkout`.
+            //
+            // Its own message rather than a field on the start handshake, on
+            // purpose: the watch only sends it once the authorization has settled,
+            // so the two channels can't deliver disagreeing answers out of order.
+            if let savable = payload["workoutSavable"] as? Bool {
+                Task { @MainActor in manager.updateWatchWorkoutSavable(savable) }
+            }
         case "stopPhone":
             // User tapped Stop on the watch while it was mirroring a phone-mic
-            // session — stop the phone's local recording.
-            Task { @MainActor in manager.stop() }
+            // session — stop the phone's local recording. The token names *which*
+            // phone session the watch was mirroring, so a copy of this that sat on
+            // the background queue can't end a later one; see
+            // `RecordingManager.stopLocalSession(fromWatchMirror:)`.
+            let token = payload["session"] as? Int
+            Task { @MainActor in manager.stopLocalSession(fromWatchMirror: token) }
         case "stop":
             Task { @MainActor in manager.stopFromWatch() }
         case "watchLocation":

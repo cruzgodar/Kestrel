@@ -972,15 +972,13 @@ struct LifeListView: View {
                 return
             }
             exportResultTitle = "Export Complete"
-            // Only a saved `.newOnly` file counts as handing observations over.
-            // Two conditions, both required: the save actually happened (so a
-            // cancelled picker doesn't hide anything from the next export), and
-            // the scope was Export New. Exporting everything is a "give me the
-            // whole list" operation — a backup, a re-upload, a file for
-            // something other than eBird — and treating it as a handover would
-            // silently empty out Export New, which is the one thing the user
-            // relies on to not duplicate their eBird history.
-            if pendingExportScope == .newOnly {
+            // Only a saved file eBird can actually take counts as handing
+            // observations over — see `LifeListStore.recordsHandover`. The save
+            // having happened at all is this branch; the rest is that call.
+            if let scope = pendingExportScope,
+               LifeListStore.recordsHandover(
+                   scope: scope, exceedsSizeLimit: payload.exceedsEBirdSizeLimit
+               ) {
                 store.markExported(payload.exportedKeys)
             }
             var parts = [
@@ -997,6 +995,16 @@ struct LifeListView: View {
                 parts.append(
                     "Heads up: the file is over eBird\u{2019}s 1 MB import limit, so you\u{2019}ll need to split it before uploading."
                 )
+                // Say so explicitly. These observations are deliberately *not*
+                // marked as handed over (see `LifeListStore.recordsHandover`),
+                // and a user who splits and uploads this file by hand needs to
+                // know the next Export New will offer them again rather than
+                // come back empty.
+                if pendingExportScope == .newOnly {
+                    parts.append(
+                        "They\u{2019}re still counted as new, so Export New Observations will include them again."
+                    )
+                }
             }
             exportMessage = parts.joined(separator: " ")
         case .failure(let error):

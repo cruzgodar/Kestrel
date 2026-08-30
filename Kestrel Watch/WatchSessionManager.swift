@@ -79,6 +79,9 @@ final class WatchSessionManager: NSObject {
         await WatchNotifications.requestAuthorizationIfNeeded()
         await WatchWorkoutManager.shared.requestAuthorization()
         refreshPermissionState()
+        // The workout sheet has just been answered, so the phone's stop prompt
+        // can be told what it means before the first session even starts.
+        sendWorkoutSavable()
         needsOnboarding = false
     }
 
@@ -291,14 +294,21 @@ final class WatchSessionManager: NSObject {
         stop(decision: decision)
     }
 
+    /// The phone's name for the session being mirrored, echoed back on
+    /// `stopPhone` so the phone can tell a stop meant for *that* session from one
+    /// its background queue delivered late — see
+    /// `RecordingManager.localSessionToken`. `nil` when the phone sent none.
+    private var mirroredPhoneSession: Int?
+
     /// Phone started recording with its own mic — mirror its now-hearing screen
     /// without capturing any audio here. No-op if a real watch recording is in
     /// progress (the watch's own capture wins).
-    func handlePhoneRecordingStarted() {
+    func handlePhoneRecordingStarted(session token: Int? = nil) {
         guard !isRecording, !isStarting else { return }
         lastBird = nil
         lastBirdImage = nil
         mirroringPhone = true
+        mirroredPhoneSession = token
         withAnimation(.easeInOut(duration: 0.3)) {
             isRecording = true
         }
@@ -311,10 +321,16 @@ final class WatchSessionManager: NSObject {
     }
 
     /// Tells the phone to stop its mic recording, then drops the mirror locally.
+    ///
+    /// The payload names the session it means. Both channels fire, and the queued
+    /// copy can be delivered long after the live one — by which time the phone may
+    /// have started a different recording, which this must not end.
     private func stopMirroring() {
         let session = WCSession.default
-        session.sendMessage(["cmd": "stopPhone"], replyHandler: nil, errorHandler: nil)
-        session.transferUserInfo(["cmd": "stopPhone"])
+        var payload: [String: Any] = ["cmd": "stopPhone"]
+        if let mirroredPhoneSession { payload["session"] = mirroredPhoneSession }
+        session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+        session.transferUserInfo(payload)
         endMirrorDisplay()
     }
 
@@ -322,6 +338,7 @@ final class WatchSessionManager: NSObject {
     /// retained bird once it's hidden so the next session doesn't flash it.
     private func endMirrorDisplay() {
         mirroringPhone = false
+        mirroredPhoneSession = nil
         withAnimation(.easeInOut(duration: 0.3)) {
             isRecording = false
         }
@@ -364,15 +381,12 @@ final class WatchSessionManager: NSObject {
     /// hearing" display and resolves its image — from the local cache if we've
     /// seen this species before, otherwise by asking the phone to send it.
     func handleBirdHeard(commonName: String, scientificName: String, highlight: BirdHighlight, seq: Int? = nil) {
-        // The bird now arrives via the application context, which re-delivers the
-        // *whole* context whenever any key changes (e.g. an auth-state update). The
-        // phone tags each genuine now-hearing push with a rising `birdSeq`; ignore a
-        // context that carries one we've already applied so an unrelated re-delivery
-        // doesn't re-flash the same bird. Untagged calls (none today) always apply.
-        if let seq {
-            if seq == lastBirdSeq { return }
-            lastBirdSeq = seq
-        }
+        // The bird arrives via the application context, which re-delivers the
+        // *whole* context whenever any key changes. The phone tags each genuine
+        // now-hearing push with a rising `birdSeq`; anything at or below the last
+        // one applied is a re-delivery, not news. Untagged calls always apply.
+        guard Self.shouldApplyBirdPush(seq: seq, lastApplied: lastBirdSeq) else { return }
+        if let seq { lastBirdSeq = seq }
         lastBird = HeardBird(
             commonName: commonName,
             scientificName: scientificName,
@@ -385,6 +399,25 @@ final class WatchSessionManager: NSObject {
             requestImage(scientificName: scientificName)
         }
         scheduleIdleDisplayReset()
+    }
+
+    /// Whether a now-hearing push is newer than the last one applied.
+    ///
+    /// **Strictly greater, not merely different.** The phone's `birdSeq` only ever
+    /// rises within a launch, and is seeded from the wall clock so a fresh phone
+    /// process out-numbers whatever it said last time — which is what makes "at or
+    /// below" a safe test for "already seen". Comparing for *equality* alone,
+    /// which this used to do, let a re-delivered older context through: the
+    /// context carries a single now-hearing slot, so an out-of-order replay
+    /// announced a bird the phone had already moved on from as the one it was
+    /// hearing right now.
+    ///
+    /// An untagged push (no `seq`) always applies — nothing in the app sends one
+    /// today, and dropping an unidentifiable update would be worse than repeating
+    /// one.
+    nonisolated static func shouldApplyBirdPush(seq: Int?, lastApplied: Int) -> Bool {
+        guard let seq else { return true }
+        return seq > lastApplied
     }
 
     /// (Re)arms the idle-display timer so the now-hearing screen falls back to
@@ -501,10 +534,53 @@ final class WatchSessionManager: NSObject {
     /// both apps are foreground; transferUserInfo is the background-tolerant
     /// fallback that can wake the iOS app from suspension. Both fire — duplicates
     /// are no-ops on the iOS side.
+    ///
+    /// Deliberately carries **no** `workoutSavable`. That would be the obvious
+    /// place for it — it is the one payload guaranteed to precede any stop — but
+    /// it is sent before HealthKit's authorization sheet has been answered, and
+    /// both channels fire at once. The queued copy can be delivered *after* the
+    /// standalone `sendWorkoutSavable` that follows the sheet, at which point it
+    /// would overwrite a settled `false` with the optimistic `true` it was built
+    /// from. Every send of that flag now happens after authorization has resolved,
+    /// so all copies agree and out-of-order delivery is harmless.
     private func notifyPhoneStarted() {
         let session = WCSession.default
         session.sendMessage(["cmd": "start"], replyHandler: nil, errorHandler: nil)
         session.transferUserInfo(["cmd": "start"])
+    }
+
+    /// Tells the phone whether a birding walk on this watch could be written to
+    /// HealthKit at all.
+    ///
+    /// The phone raises the save/discard prompt when the user stops a watch
+    /// session there, and it was gating that on duration alone — the only half of
+    /// the question it can answer by itself. The other half is the watch's
+    /// HealthKit authorization, which is per-device and can only be granted from
+    /// the wrist, so a user who had declined workout sharing was offered "Save
+    /// Workout" and got nothing: the watch refuses to park an unsavable walk,
+    /// discards it, and the relayed `.save` then has neither a builder nor a span
+    /// to write.
+    ///
+    /// **Only ever sent once the authorization it describes has settled** — after
+    /// `WatchWorkoutManager.start()`, which is where the sheet goes up, and after
+    /// the onboarding sequence's own request. That is what makes it safe to send
+    /// on both channels: every copy carries the same answer, so a queued one
+    /// arriving late can't undo a live one. See `notifyPhoneStarted`, which is
+    /// pointedly not the carrier for it.
+    ///
+    /// Until the first of these lands the phone has no answer, and treats that as
+    /// "ask" — the behavior it had before. A walk has to run 15 seconds to be
+    /// worth prompting about at all, so the gap is not one a user can fall into.
+    private func sendWorkoutSavable() {
+        guard WCSession.isSupported() else { return }
+        let s = WCSession.default
+        guard s.activationState == .activated else { return }
+        let payload: [String: Any] = [
+            "cmd": "watchWorkoutSavable",
+            "workoutSavable": WatchWorkoutManager.shared.canSaveWorkouts,
+        ]
+        s.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+        s.transferUserInfo(payload)
     }
 
     /// Rollback handshake for when an optimistically-announced start fails to
@@ -562,6 +638,10 @@ final class WatchSessionManager: NSObject {
         // The phone was already told we're recording (optimistically, in
         // `start()`), so audio it receives lines up with its UI state.
         await WatchWorkoutManager.shared.start()
+        // `start()` is where HealthKit's authorization sheet goes up, so the
+        // answer the handshake carried a moment ago may be out of date. Re-state
+        // it now, well before any stop can raise the phone's prompt.
+        sendWorkoutSavable()
 
         // Capture is truly live now — start watching for the phone's heartbeat.
         startHeartbeatWatchdog()
@@ -974,7 +1054,12 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                     let decision = raw.flatMap(WatchSessionManager.WorkoutDecision.init(rawValue:))
                         ?? WatchSessionManager.WorkoutDecision.ask
                     WatchSessionManager.shared.handleRemoteStop(decision: decision)
-                case "phoneStart":  WatchSessionManager.shared.handlePhoneRecordingStarted()
+                case "phoneStart":
+                    // The token names the phone session being mirrored; it rides
+                    // back on `stopPhone`. Absent from an older phone build.
+                    WatchSessionManager.shared.handlePhoneRecordingStarted(
+                        session: payload["session"] as? Int
+                    )
                 case "phoneStop":   WatchSessionManager.shared.handlePhoneRecordingStopped()
                 case "phoneHeartbeat":  WatchSessionManager.shared.handlePhoneHeartbeat()
                 case "restartCapture":  WatchSessionManager.shared.handleRestartCapture()

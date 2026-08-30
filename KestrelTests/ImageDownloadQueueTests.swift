@@ -339,4 +339,90 @@ struct ImageDownloadQueueTests {
         let started = await gate.started
         #expect(started.count == 5)
     }
+
+    // MARK: replacing a whole wave
+
+    /// A prefetch wake is a reset plus four tier fills, and it used to be five
+    /// separate calls — five suspension points a second wave could land inside.
+    /// Both the background refresh task and the foreground photo check can start
+    /// one, so a wave interleaving its reset with another's tiers is a real
+    /// ordering: the loser's `waitUntilIdle` returned on a queue the winner had
+    /// emptied, and its background window closed with downloads still owed.
+    ///
+    /// `replacePrefetch` does the whole thing in one actor-isolated step. What can
+    /// be asserted from outside is that it behaves like the sequence it replaces —
+    /// stale work dropped, tier priority preserved.
+    @Test("replacePrefetch drops stale work and keeps tier order", .timeLimit(.minutes(1)))
+    func replacePrefetchReplacesTheWave() async {
+        let gate = Gate(blocking: ["filler"])
+        // One worker, so start order is drain order.
+        let queue = ImageDownloadQueue(maxConcurrent: 1, download: downloader(gate))
+        await queue.enqueue([request("filler")], tier: .nearbyThumb)
+        await gate.waitForStarts(1)
+
+        // A wave that is about to be superseded.
+        await queue.enqueue((0..<3).map { request("stale\($0)") }, tier: .lifeListMedium)
+
+        // The replacement, handed over in reverse priority order so tier — not
+        // arrival — has to decide what runs first.
+        await queue.replacePrefetch([
+            (.lifeListMedium, [request("late", .medium)]),
+            (.nearbyMedium, [request("middle", .medium)]),
+            (.lifeListThumb, [request("second")]),
+            (.nearbyThumb, [request("first")]),
+        ])
+
+        await gate.openGate()
+        await queue.waitUntilIdle()
+        let started = await gate.started
+        #expect(started == ["filler", "first", "second", "middle", "late"], "\(started)")
+    }
+
+    /// A species in two of the four groups is still fetched once, at its earlier
+    /// tier — the same coalescing `enqueue` does, since a wake routinely hands
+    /// over a nearby list and a life list that overlap.
+    @Test("replacePrefetch coalesces across its groups", .timeLimit(.minutes(1)))
+    func replacePrefetchCoalescesAcrossGroups() async {
+        let gate = Gate(blocking: ["filler"])
+        let queue = ImageDownloadQueue(maxConcurrent: 1, download: downloader(gate))
+        await queue.enqueue([request("filler")], tier: .nearbyThumb)
+        await gate.waitForStarts(1)
+
+        await queue.replacePrefetch([
+            (.nearbyThumb, [request("bird")]),
+            (.lifeListThumb, [request("bird"), request("other")]),
+        ])
+
+        await gate.openGate()
+        await queue.waitUntilIdle()
+        #expect(await gate.started == ["filler", "bird", "other"])
+    }
+
+    /// A download the previous wave already handed to a worker keeps its claim
+    /// across the replacement, so the new wave doesn't fetch the same bytes again.
+    ///
+    /// The claim is what `dispatchedKeys` is for. `nextRequest` moves a key out of
+    /// `queuedKeys` the moment a worker takes it, but the worker doesn't reach
+    /// `inFlight` until the task it spawned is scheduled — so for that window the
+    /// key was in none of the three sets and an `enqueue` landing inside it queued
+    /// a second copy. That window isn't observable from out here; what is, is the
+    /// invariant it breaks.
+    @Test("a claimed download survives a replacement", .timeLimit(.minutes(1)))
+    func replacePrefetchKeepsClaimedWork() async {
+        let gate = Gate(blocking: ["bird"])
+        let queue = ImageDownloadQueue(maxConcurrent: 1, download: downloader(gate))
+        await queue.enqueue([request("bird")], tier: .nearbyThumb)
+        await gate.waitForStarts(1)
+
+        // A fresh wake that asks for the very thing already downloading.
+        await queue.replacePrefetch([
+            (.nearbyThumb, [request("bird"), request("other")]),
+        ])
+
+        await gate.openGate()
+        await queue.waitUntilIdle()
+        let started = await gate.started
+        #expect(started.filter { $0 == "bird" }.count == 1, "\(started)")
+        #expect(started.contains("other"), "the rest of the wave still ran: \(started)")
+    }
 }

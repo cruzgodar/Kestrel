@@ -784,3 +784,115 @@ struct LifeListStoreImportTests {
         #expect(reopened.entries[0].firstIsImported)
     }
 }
+
+/// The import summary's "before" side: what the life list held for each species,
+/// keyed by the name that species comes out of canonicalization under.
+///
+/// The tally is measured against the *finished* entry set rather than against the
+/// CSV's row names, because canonicalization can fold an eBird spelling onto a
+/// species already on the list. That only works if the "before" lookup follows
+/// the same renames the finished names went through — `touchedKeys` does, and
+/// this is the half that didn't.
+@Suite("Import tally priors")
+@MainActor
+struct ImportTallyPriorTests {
+
+    private let may4 = utcDay(2019, 5, 4)
+    private let jun1 = utcDay(2020, 6, 1)
+
+    @Test("an untouched name is keyed by itself")
+    func passesThroughWithoutRenames() {
+        let entry = LifeListEntry.make(
+            "Cardinalis cardinalis", "Northern Cardinal",
+            [.at(may4, "Sapsucker Woods"), .at(jun1, "Ithaca")]
+        )
+        let priors = LifeListStore.priorEntries([entry], renames: [:])
+        #expect(priors.count == 1)
+        #expect(priors["Cardinalis cardinalis"]?.observationCount == 2)
+        #expect(priors["Cardinalis cardinalis"]?.first.date == may4)
+    }
+
+    /// The fix. A species canonicalization re-files has to be found under its new
+    /// name, or the tally compares a species against nothing and calls it new.
+    @Test("a renamed species is found under the name it came out under")
+    func followsARename() {
+        let entry = LifeListEntry.make("Astur cooperii", "Cooper's Hawk", [.at(may4, "Ithaca")])
+        let priors = LifeListStore.priorEntries(
+            [entry], renames: ["Astur cooperii": "Accipiter cooperii"]
+        )
+        #expect(priors["Accipiter cooperii"]?.observationCount == 1)
+        #expect(priors["Astur cooperii"] == nil, "the old name describes nothing now")
+    }
+
+    /// Two entries can land on one name — that is what a rename-and-merge *is* —
+    /// and the merged entry holds both their sightings, so the prior has to as
+    /// well or the import would look like it grew the species by the size of the
+    /// entry it absorbed.
+    @Test("two entries merging onto one name sum their sightings")
+    func mergesCollidingPriors() {
+        let kept = LifeListEntry.make("Accipiter cooperii", "Cooper's Hawk", [.at(jun1, "Ithaca")])
+        let moved = LifeListEntry.make("Astur cooperii", "Cooper's Hawk", [.at(may4, "Sapsucker Woods")])
+        let priors = LifeListStore.priorEntries(
+            [kept, moved], renames: ["Astur cooperii": "Accipiter cooperii"]
+        )
+        #expect(priors.count == 1)
+        #expect(priors["Accipiter cooperii"]?.observationCount == 2)
+        // The earlier of the two is what `LifeListEntry.make` would promote, so
+        // it is what the merged entry's `firstSeen` will read — and therefore what
+        // "did the earliest sighting change?" has to be asked against.
+        #expect(priors["Accipiter cooperii"]?.first.date == may4)
+    }
+}
+
+/// The tally reported for an import that canonicalization re-files a species
+/// during — the case where the "before" and "after" names differ.
+@Suite("Import tally across a rename")
+@MainActor
+struct ImportTallyRenameTests {
+
+    /// A life-list entry under a scientific name the BirdNET catalog doesn't
+    /// carry, whose common name it doesn't carry either — so nothing on the
+    /// launch path relabels it and it survives `load()` as it was stored. That is
+    /// the only state from which an *import* can move an existing entry's name.
+    private static let strandedEntry = LifeListEntry.make(
+        "Fakea gamma", "Testudo Warbler",
+        [.at(utcDay(2020, 6, 1), "Ithaca", lat: 42.44, lon: -76.50)]
+    )
+
+    /// The same bird, spelled the way the catalog spells it, on an earlier date so
+    /// the stored entry is the one canonicalization meets first — which is what
+    /// makes it the entry that gets moved rather than the one that stays put.
+    private static let incomingRow: [(String, String, String, String?, Double?, Double?)] = [
+        ("Cardinalis cardinalis", "Testudo Warbler", "2019-05-04", "Sapsucker Woods", 42.4791, -76.4512),
+    ]
+
+    /// The regression. `collapseByCommonName` prefers the name BirdNET emits, so
+    /// the surviving entry is filed under the *imported* spelling — a name the
+    /// life list didn't hold before. The tally's "what did we have?" lookup was
+    /// keyed by the pre-import name, found nothing, and reported a bird the user
+    /// had recorded last year as new to their life list, with every sighting it
+    /// had ever held counted as freshly added.
+    @Test("a species the import re-files is not reported as new")
+    func renamedSpeciesIsNotNew() async throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeLifeList([Self.strandedEntry])
+        let store = makeStore(scratch, defaults)
+        #expect(store.entries.map(\.scientificName) == ["Fakea gamma"], "the entry survived load()")
+
+        let url = scratch.url.appendingPathComponent("import.csv")
+        try eBirdCSV(Self.incomingRow).write(to: url)
+        let summary = try await store.importEBird(from: url)
+
+        // One bird, one entry, under the catalog's spelling.
+        #expect(store.entries.count == 1)
+        #expect(store.entries[0].scientificName == "Cardinalis cardinalis")
+        #expect(store.entries[0].allObservations.count == 2)
+
+        #expect(summary.added == 0, "the user already had this bird, under another name")
+        #expect(summary.gained == 1)
+        #expect(
+            summary.newObservations == 1,
+            "one row was written, not the whole entry over again"
+        )
+    }
+}

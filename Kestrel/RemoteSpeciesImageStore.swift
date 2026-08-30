@@ -358,11 +358,16 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         let nearbySlugs = Set(nearby.map { SpeciesImage.slug(for: $0) })
         let lifeListOnly = lifeList.filter { !nearbySlugs.contains(SpeciesImage.slug(for: $0)) }
 
-        await queue.resetPrefetch()
-        await queue.enqueue(requests(nearby, .thumb), tier: .nearbyThumb)
-        await queue.enqueue(requests(lifeListOnly, .thumb), tier: .lifeListThumb)
-        await queue.enqueue(requests(nearby, .medium), tier: .nearbyMedium)
-        await queue.enqueue(requests(lifeListOnly, .medium), tier: .lifeListMedium)
+        // One call, not a reset plus four enqueues: two prefetch waves can be in
+        // flight at once (the background refresh task and the foreground photo
+        // check both start one), and interleaving their resets left a wave
+        // watching a queue the other had emptied. See `replacePrefetch`.
+        await queue.replacePrefetch([
+            (.nearbyThumb, requests(nearby, .thumb)),
+            (.lifeListThumb, requests(lifeListOnly, .thumb)),
+            (.nearbyMedium, requests(nearby, .medium)),
+            (.lifeListMedium, requests(lifeListOnly, .medium)),
+        ])
     }
 
     /// Builds the download requests for a group at one size: de-duplicated by

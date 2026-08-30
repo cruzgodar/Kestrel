@@ -469,10 +469,10 @@ struct PhotoManifestStoreTests {
     /// applies is very likely to trip that veto — at which point the prune never
     /// runs, the bare hashes never go, and the flag never clears.
     ///
-    /// Bare hashes are now dropped outside the guard. Nothing there deletes image
-    /// bytes (that's `removedSlugs`, which they stay out of), and a slug with no
-    /// metadata can't be shown or downloaded anyway, so the guard has nothing to
-    /// protect from it.
+    /// Bare hashes are dropped outside the guard. The guard exists to stop a
+    /// half-published manifest deleting cached bytes a species is still *shown*
+    /// from; a slug with no metadata isn't one — it can't be shown or downloaded
+    /// at all — so there is nothing there for it to protect.
     @Test("a vetoed prune still clears the backfill flag")
     func vetoedPruneClearsBackfill() throws {
         let scratch = ScratchDirectory()
@@ -487,11 +487,60 @@ struct PhotoManifestStoreTests {
 
         // A manifest naming none of them, and far too short to prune against.
         let result = subject.apply(manifest(["cardinalis_cardinalis": ("h1", "Alice")]))
-        #expect(result.removedSlugs.isEmpty, "the completeness check vetoed the prune")
+        #expect(
+            !result.removedSlugs.contains("cardinalis_cardinalis"),
+            "the completeness check vetoed the withdrawal prune"
+        )
 
         #expect(!subject.needsMetadataBackfill, "and yet the bare hashes are gone")
         #expect(subject.recordedHash(forSlug: "legacy0") == nil)
         #expect(subject.recordedHash(forSlug: "cardinalis_cardinalis") == "h1")
+    }
+
+    /// Dropping a bare hash has to take its cached bytes with it, and the only way
+    /// to say so is `removedSlugs` — the caller's cue to delete files.
+    ///
+    /// It used to stay out of that list, on the grounds that nothing in the prune
+    /// deletes bytes. That was the leak. The JPEGs stayed on disk;
+    /// `RemoteSpeciesImageStore.cachedSlugs()` went on handing them to the
+    /// revalidation pass; and with their validation stamp dropped they were
+    /// *permanently* stale — so `revalidateStaleImages` could never take its
+    /// `stale.isEmpty` early exit and instead downloaded the whole manifest once an
+    /// hour, forever, only to count them as withdrawn and skip them. Nothing could
+    /// ever clean them up either: the next `apply` can't list them as withdrawn,
+    /// because they are no longer in `hashes` to be found.
+    @Test("a dropped bare hash reports its slug so the bytes go with it")
+    func bareHashesReportTheirSlugs() throws {
+        let scratch = ScratchDirectory()
+        let hashes = (0..<80).map { "\"legacy\($0)\": \"h\($0)\"" }.joined(separator: ",")
+        try Data("{\"hashes\":{\(hashes)},\"metadata\":{},\"validatedAt\":{}}".utf8)
+            .write(to: scratch.url.appendingPathComponent("photos_manifest_local.json"))
+
+        let subject = store(scratch)
+        let result = subject.apply(manifest(["cardinalis_cardinalis": ("h1", "Alice")]))
+
+        #expect(result.removedSlugs.count == 80)
+        #expect(Set(result.removedSlugs) == Set((0..<80).map { "legacy\($0)" }))
+    }
+
+    /// A slug can't be reported twice: by the time the bare-hash sweep runs, the
+    /// withdrawal prune has already taken anything it claimed out of `hashes`.
+    @Test("a withdrawn slug with no metadata is reported once")
+    func withdrawnBareHashIsNotDoubleReported() throws {
+        let scratch = ScratchDirectory()
+        // 60 attributed slugs so the baseline clears `pruneFloor`, plus one bare
+        // hash — and a manifest long enough that the prune actually runs.
+        var entries: [String: (hash: String, credit: String?)] = [:]
+        for i in 0..<60 { entries["slug\(i)"] = ("h\(i)", "Alice") }
+        let subject = store(scratch)
+        _ = subject.apply(manifest(entries))
+
+        subject.markValidated([], advancedHashes: ["orphan": "hx"])
+        #expect(subject.needsMetadataBackfill, "a hash with nothing beside it")
+
+        // Drops only `orphan`: everything else is still listed and attributed.
+        let result = subject.apply(manifest(entries))
+        #expect(result.removedSlugs == ["orphan"], "\(result.removedSlugs)")
     }
 
     /// The clearing is scoped to hashes with *no* metadata. A slug that a previous

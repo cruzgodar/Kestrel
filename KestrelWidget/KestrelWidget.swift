@@ -54,7 +54,7 @@ struct StartRecordingWidget: Widget {
         ) { _ in
             StartRecordingWidgetView()
         }
-        .configurationDisplayName("Start Recording")
+        .configurationDisplayName("Start Birding")
         .description("Start listening for birds.")
         .supportedFamilies([.accessoryCircular])
     }
@@ -68,10 +68,12 @@ struct StartRecordingControl: ControlWidget {
     var body: some ControlWidgetConfiguration {
         StaticControlConfiguration(kind: "com.cruzgodar.Kestrel.StartRecordingControl") {
             ControlWidgetButton(action: StartRecordingIntent()) {
-                Label("Record", systemImage: "bird")
+                // Control Center gives a button one short line; "Birding" is the
+                // longest form that fits without truncating.
+                Label("Birding", systemImage: "bird")
             }
         }
-        .displayName("Start Recording")
+        .displayName("Start Birding")
         .description("Start listening for birds.")
     }
 }

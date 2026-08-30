@@ -176,3 +176,41 @@ struct ExportRowSelectionTests {
         #expect(count == 1)
     }
 }
+
+/// Whether a saved export counts as handing its observations to eBird.
+///
+/// The ledger is the one piece of state whose loss can't be undone — eBird does
+/// no deduplication, so a key that stops matching hands the user a second copy of
+/// records they already uploaded — and this is the decision that writes to it.
+@Suite("Export handover")
+struct ExportHandoverTests {
+
+    @Test("a saved Export New hands its observations over")
+    func newOnlyRecordsHandover() {
+        #expect(LifeListStore.recordsHandover(scope: .newOnly, exceedsSizeLimit: false))
+    }
+
+    /// Export All is a backup / re-upload / file-for-something-else operation.
+    /// Treating it as a handover would silently empty out Export New, which is
+    /// the one thing standing between a repeat upload and a doubled history.
+    @Test("Export All never hands anything over")
+    func everythingNeverRecordsHandover() {
+        #expect(!LifeListStore.recordsHandover(scope: .everything, exceedsSizeLimit: false))
+        #expect(!LifeListStore.recordsHandover(scope: .everything, exceedsSizeLimit: true))
+    }
+
+    /// The regression. Saving isn't uploading, and the ledger deliberately takes a
+    /// save as good enough — except past eBird's 1 MB import limit, where the app
+    /// *knows* the file can't be uploaded as it stands and says so in the same
+    /// alert. Marking those rows handed over anyway left the user holding a file
+    /// eBird refuses, an Export New that now writes nothing, and no way to get the
+    /// missing records out except Export All — the whole imported history, and
+    /// exactly the duplicate risk the ledger exists to prevent.
+    @Test("an over-limit Export New keeps its observations new")
+    func overLimitDoesNotRecordHandover() {
+        #expect(
+            !LifeListStore.recordsHandover(scope: .newOnly, exceedsSizeLimit: true),
+            "a file eBird will reject cannot count as having been given to eBird"
+        )
+    }
+}

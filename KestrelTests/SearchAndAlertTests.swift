@@ -624,3 +624,88 @@ struct LocalStopTests {
         #expect(!RecordingManager.localStopApplies(isRecording: false, watchRecording: true))
     }
 }
+
+/// Whether stopping a watch session on the phone should offer to save the walk.
+///
+/// The phone can answer half of that on its own — how long the session ran — and
+/// was answering only that half. The other half is whether the *watch* can write
+/// a workout to HealthKit at all, which is per-device authorization it can only
+/// be told about. Getting that wrong wasn't a cosmetic mismatch: the prompt
+/// appeared, "Save Workout" was tapped, and nothing happened. The watch had
+/// already refused to park a walk it couldn't save (`canOfferSave`), discarded
+/// it, and the relayed decision then found neither a builder nor a span to write.
+@Suite("Watch workout prompt")
+struct WatchWorkoutPromptTests {
+
+    @Test("a long enough walk on a watch that can save is offered")
+    func offersASavableWalk() {
+        #expect(RecordingManager.shouldPromptForWatchWorkout(
+            elapsed: 60, watchReportsSavable: true
+        ))
+    }
+
+    @Test("a walk too short to be real is never offered")
+    func skipsAShortWalk() {
+        // Below the watch's own `minimumDuration`, where it discards the walk
+        // without asking either.
+        #expect(!RecordingManager.shouldPromptForWatchWorkout(
+            elapsed: 5, watchReportsSavable: true
+        ))
+        #expect(!RecordingManager.shouldPromptForWatchWorkout(
+            elapsed: 5, watchReportsSavable: nil
+        ))
+    }
+
+    /// The regression. Workout sharing denied on the watch means Save cannot do
+    /// anything, so asking is a promise the pair can't keep.
+    @Test("a watch that cannot save is not asked about")
+    func skipsAnUnsavableWalk() {
+        #expect(
+            !RecordingManager.shouldPromptForWatchWorkout(
+                elapsed: 3600, watchReportsSavable: false
+            ),
+            "an hour of birding is still unsavable if Health won't take it"
+        )
+    }
+
+    /// Only an explicit refusal suppresses the prompt. An older watch build sends
+    /// nothing, and a handshake can be in flight — neither is evidence the walk
+    /// can't be saved, and treating them as such would cost a user a real walk.
+    @Test("an unheard-from watch keeps the prompt")
+    func unknownStillAsks() {
+        #expect(RecordingManager.shouldPromptForWatchWorkout(
+            elapsed: 60, watchReportsSavable: nil
+        ))
+    }
+}
+
+/// Which phone session a `stopPhone` from the watch is allowed to end.
+///
+/// The watch sends it on both channels at once and the queued copy outlives app
+/// suspension, so it can arrive after the session it was about has ended.
+/// `localStopApplies` catches the case where the session running *now* is
+/// watch-sourced; it cannot see the case where it is simply a different phone-mic
+/// session, which is what the token is for.
+@Suite("Mirrored stop token")
+struct MirrorStopTests {
+
+    @Test("a stop for the running session applies")
+    func appliesToTheCurrentSession() {
+        #expect(RecordingManager.mirrorStopApplies(requestToken: 7, currentToken: 7))
+    }
+
+    @Test("a stop for a session that has already ended is ignored")
+    func ignoresAStaleStop() {
+        #expect(
+            !RecordingManager.mirrorStopApplies(requestToken: 6, currentToken: 7),
+            "a queued stop must not end the recording that replaced its own"
+        )
+    }
+
+    /// An older watch build sends no token. Dropping those would leave its Stop
+    /// button dead, which is worse than the race they'd close.
+    @Test("an untokened stop still applies")
+    func appliesWithoutAToken() {
+        #expect(RecordingManager.mirrorStopApplies(requestToken: nil, currentToken: 7))
+    }
+}

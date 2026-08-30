@@ -47,7 +47,9 @@ final class RecordingManager {
     private var localSessionStart: Date?
     /// Mirrors `WatchWorkoutManager.minimumDuration`: shorter than this and the
     /// watch throws the walk away regardless, so there's nothing to ask about.
-    private static let minimumWorkoutDuration: TimeInterval = 15
+    /// `nonisolated` so `shouldPromptForWatchWorkout` — which is, so a test can
+    /// drive it — can read it.
+    private nonisolated static let minimumWorkoutDuration: TimeInterval = 15
     /// True when location access is explicitly *denied* or *restricted* (not merely
     /// undetermined). The Identify tab grays the record button and shows a lock
     /// glyph in this state; undetermined keeps the normal button so the first tap
@@ -626,10 +628,47 @@ final class RecordingManager {
 
     /// Whether a stop should raise the save/resume/discard prompt: only for a
     /// watch session that has run long enough for the watch to be holding a walk
-    /// worth deciding about.
+    /// worth deciding about, and only when the watch can actually write it.
     private var watchWalkIsSaveable: Bool {
         guard watchRecording, let start = watchSessionStart else { return false }
-        return Date().timeIntervalSince(start) >= Self.minimumWorkoutDuration
+        return Self.shouldPromptForWatchWorkout(
+            elapsed: Date().timeIntervalSince(start),
+            watchReportsSavable: watchWorkoutSavable
+        )
+    }
+
+    /// The two facts a stop prompt turns on, as a pure function so the pairing
+    /// with the watch's own `canOfferSave` is pinned by a test.
+    ///
+    /// Duration is the half the phone can answer for itself. The other half is the
+    /// watch's HealthKit authorization — per-device, grantable only from the wrist
+    /// — and asking about it was the whole bug: the phone offered "Save Workout"
+    /// to a user who had denied workout sharing, and the tap did nothing at all,
+    /// because the watch had already refused to park the walk and discarded it.
+    ///
+    /// `nil` means the watch hasn't said (an older watch build, or a handshake
+    /// that hasn't landed) and keeps the previous behavior of asking. Only an
+    /// explicit `false` suppresses the prompt, so a missing message can't cost the
+    /// user a walk they could have saved.
+    nonisolated static func shouldPromptForWatchWorkout(
+        elapsed: TimeInterval,
+        watchReportsSavable: Bool?
+    ) -> Bool {
+        elapsed >= minimumWorkoutDuration && watchReportsSavable != false
+    }
+
+    /// Whether the paired watch can write a birding walk to HealthKit, as it last
+    /// reported. `nil` until it says.
+    ///
+    /// Deliberately **not** cleared between sessions: it describes the watch's
+    /// standing HealthKit authorization, not anything about one walk, so the last
+    /// answer stays the best answer until a newer one arrives.
+    private(set) var watchWorkoutSavable: Bool?
+
+    /// The watch reported whether it could save a walk. See
+    /// `shouldPromptForWatchWorkout`.
+    func updateWatchWorkoutSavable(_ savable: Bool) {
+        watchWorkoutSavable = savable
     }
 
     /// The user answered the phone's prompt. Relays the decision to the watch
@@ -728,6 +767,10 @@ final class RecordingManager {
         // refreshSpeciesFilter overwrites it, otherwise the text flickers.
         isRecording = true
         localSessionStart = Date()
+        // A *fresh* session, so it gets a fresh name. The resume path above
+        // deliberately doesn't bump this: it is the same session carrying on, and
+        // the watch is still holding the token it was given.
+        localSessionToken &+= 1
 
         announceLocalSessionStart()
 
@@ -772,6 +815,45 @@ final class RecordingManager {
         Task { await self.refreshSpeciesFilter() }
     }
 
+    /// Names the current phone-mic session, so a `stopPhone` the watch sent about
+    /// an *earlier* one can be recognized and ignored.
+    ///
+    /// The watch sends `stopPhone` on both channels at once, and the queued copy
+    /// outlives app suspension — so it can be flushed after a later session has
+    /// already begun and end a recording the user never asked to stop.
+    /// `localStopApplies` closes the half of this where the later session is
+    /// watch-sourced; the token closes the half where it is another phone-mic one,
+    /// which that guard cannot see.
+    ///
+    /// Seeded from the wall clock rather than zero, for the reason
+    /// `watchDisplaySeq` is: the watch keeps the token for as long as *its*
+    /// process lives, which routinely outlasts the phone app's, and a counter that
+    /// restarted at zero could reissue one the watch is still holding from a
+    /// previous launch — at which point a genuinely stale stop would look current.
+    private var localSessionToken = Int(Date().timeIntervalSince1970)
+
+    /// Whether a `stopPhone` relayed by the watch still describes the session
+    /// that is running now.
+    ///
+    /// A `nil` token is an older watch build, which sends none; those keep the
+    /// previous behavior of applying unconditionally rather than being dropped,
+    /// since refusing them would leave the watch's Stop button dead.
+    nonisolated static func mirrorStopApplies(requestToken: Int?, currentToken: Int) -> Bool {
+        requestToken == nil || requestToken == currentToken
+    }
+
+    /// Ends the phone's own recording on behalf of the watch's Stop button, when
+    /// the watch was mirroring *this* session. See `localSessionToken`.
+    func stopLocalSession(fromWatchMirror token: Int?) {
+        guard Self.mirrorStopApplies(
+            requestToken: token, currentToken: localSessionToken
+        ) else {
+            Log.info("Ignoring a stopPhone for a session that has already ended")
+            return
+        }
+        stop()
+    }
+
     /// Everything a phone-mic session has to announce and arm once
     /// `isRecording` is true, whether this is a fresh start or a resume of one
     /// the pending-stop window caught mid-teardown.
@@ -785,8 +867,10 @@ final class RecordingManager {
     /// skip is what keeps them from drifting again.
     private func announceLocalSessionStart() {
         // Mirror this phone-mic session onto the watch so its "now hearing"
-        // screen shows the same birds, as though the watch were the source.
-        sendToWatch(["cmd": "phoneStart"])
+        // screen shows the same birds, as though the watch were the source. The
+        // token comes back on the watch's `stopPhone` so a stale one can be told
+        // from a current one — see `localSessionToken`.
+        sendToWatch(["cmd": "phoneStart", "session": localSessionToken])
         startIdleWatchdog()
     }
 

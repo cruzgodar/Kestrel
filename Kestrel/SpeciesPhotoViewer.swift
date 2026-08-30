@@ -1340,6 +1340,16 @@ private struct ZoomablePhotoPage: View {
     /// The in-flight full-resolution download, so it can be cancelled if the page
     /// scrolls away before it finishes.
     @State private var fullResTask: Task<Void, Never>?
+    /// Whether a full-resolution download is under way, set *before* the task is
+    /// created and cleared when it finishes.
+    ///
+    /// The gate used to be `fullResTask == nil`, cleared from a `defer` inside the
+    /// task — which is an ordering the language doesn't guarantee: a body that
+    /// returned before its first suspension would run that `defer` before
+    /// `fullResTask` had been assigned, leaving a stale handle that no later
+    /// settle could get past. A flag written on this side of the task can't race
+    /// its own assignment.
+    @State private var fullResInFlight = false
 
     var body: some View {
         imageLayer
@@ -1362,14 +1372,14 @@ private struct ZoomablePhotoPage: View {
     /// it hasn't already loaded. The download itself is held until then, not just
     /// the swap, so no full-res network/decoding competes with the animation.
     private func startFullResIfNeeded() {
-        guard paging.settled, !fullResLoaded, fullResTask == nil, image != nil else { return }
+        guard paging.settled, !fullResLoaded, !fullResInFlight, image != nil else { return }
         let name = item.scientificName
+        fullResInFlight = true
         fullResTask = Task {
-            defer { fullResTask = nil }
-            guard let full = await RemoteSpeciesImageStore.shared.fullResolutionImage(for: name) else {
-                return
-            }
-            guard !Task.isCancelled else { return }
+            let full = await RemoteSpeciesImageStore.shared.fullResolutionImage(for: name)
+            fullResInFlight = false
+            fullResTask = nil
+            guard let full, !Task.isCancelled else { return }
             // Settled may have changed during the download (e.g. a new swipe began);
             // only swap while still settled, otherwise the next settle re-runs this.
             guard paging.settled else { return }
@@ -1408,6 +1418,9 @@ private struct ZoomablePhotoPage: View {
     private func load() async {
         fullResTask?.cancel()
         fullResTask = nil
+        // Cleared alongside the handle: a cancelled download's own clear may never
+        // run, and leaving this set would block the new bird's full-res load.
+        fullResInFlight = false
         image = nil
         loadFailed = false
         fullResLoaded = false

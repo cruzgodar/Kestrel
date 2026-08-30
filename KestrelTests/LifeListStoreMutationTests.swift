@@ -896,3 +896,37 @@ struct LifeListStoreMutationTests {
         #expect(store.speciesNames.isEmpty)
     }
 }
+/// Where the store's three files live, and whether it can write them at all.
+@Suite("LifeListStore storage directory")
+@MainActor
+struct LifeListStoreDirectoryTests {
+
+    /// The default path resolves Application Support with `create: true`. An
+    /// injected directory had nothing doing the same, so a store pointed at one
+    /// that didn't exist yet could never persist a thing — and said so only in the
+    /// log, because the write is on the IO queue and its error never reaches the
+    /// caller. The two paths have to behave alike, or a store built for a preview
+    /// or a test is quietly a different store from the app's.
+    @Test("an injected directory that doesn't exist yet is created")
+    func createsAnInjectedDirectory() throws {
+        let scratch = ScratchDirectory()
+        // A path under the scratch root that nothing has made.
+        let nested = scratch.url.appendingPathComponent("nested/store", isDirectory: true)
+        #expect(!FileManager.default.fileExists(atPath: nested.path))
+
+        let store = LifeListStore(directory: nested, defaults: ScratchDefaults().defaults)
+        var isDirectory: ObjCBool = false
+        #expect(FileManager.default.fileExists(atPath: nested.path, isDirectory: &isDirectory))
+        #expect(isDirectory.boolValue)
+
+        // And it can actually write there.
+        store.recordObservation(
+            scientificName: "Cardinalis cardinalis", commonName: "Northern Cardinal",
+            date: utcDay(2026, 5, 4), location: "Sapsucker Woods",
+            latitude: 42.4791, longitude: -76.4512
+        )
+        store.flushPendingWrites()
+        let written = try Data(contentsOf: nested.appendingPathComponent("life_list.json"))
+        #expect(!written.isEmpty, "the life list reached disk")
+    }
+}
