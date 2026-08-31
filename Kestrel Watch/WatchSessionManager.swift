@@ -312,6 +312,12 @@ final class WatchSessionManager: NSObject {
         withAnimation(.easeInOut(duration: 0.3)) {
             isRecording = true
         }
+        // The mirror needs the same liveness check a capture does. `phoneStop`
+        // is the only thing that clears this state, and a phone that has been
+        // killed sends none — so without a watchdog the wrist showed
+        // "Listening on iPhone…" for a session that had already ended, until the
+        // user happened to tap Stop.
+        startHeartbeatWatchdog()
     }
 
     /// Phone stopped its mic recording — drop the mirrored display.
@@ -337,6 +343,7 @@ final class WatchSessionManager: NSObject {
     /// Shared mirror teardown: fade the now-hearing screen out, then clear the
     /// retained bird once it's hidden so the next session doesn't flash it.
     private func endMirrorDisplay() {
+        cancelHeartbeatWatchdog()
         mirroringPhone = false
         mirroredPhoneSession = nil
         withAnimation(.easeInOut(duration: 0.3)) {
@@ -480,9 +487,10 @@ final class WatchSessionManager: NSObject {
         //
         // The record button can't reach here in that state (it is the prompt's
         // Resume button, or absent when the walk can't be resumed), but
-        // `handleRemoteStart` can: a complication or widget tap runs the start
-        // intent whatever is on screen. Refuse, and let the user answer the
-        // question that is already in front of them.
+        // `handleRemoteStart` can: `StartRecordingIntent` runs from Shortcuts
+        // whatever is on screen. (The complication deliberately only opens the
+        // app — see `StartRecordingComplicationView`.) Refuse, and let the user
+        // answer the question that is already in front of them.
         guard WatchWorkoutManager.shared.pendingSave == nil else {
             Log.warning("Ignoring a start request while a finished walk is awaiting an answer")
             return
@@ -865,7 +873,11 @@ final class WatchSessionManager: NSObject {
     /// prolonged silence (`phoneGoneThreshold`) counts — transient gaps are
     /// tolerated so the session survives normal reachability churn.
     private func checkPhoneHeartbeat() -> Bool {
-        guard isRecording, !mirroringPhone, let last = lastPhoneHeartbeatAt else { return false }
+        // Deliberately *not* gated on `!mirroringPhone`: a mirrored phone-mic
+        // session is the case this was most needed for, since nothing else on
+        // the watch can notice the phone going away. The two cases differ only
+        // in the teardown at the bottom.
+        guard isRecording, let last = lastPhoneHeartbeatAt else { return false }
         let now = Date()
 
         // Were *we* asleep? The watchdog is a `Task.sleep` chain, so it stops
@@ -901,15 +913,32 @@ final class WatchSessionManager: NSObject {
         guard now.timeIntervalSince(probed) >= phoneProbeGrace else { return true }
 
         // The phone ignored a direct probe too — consider it genuinely gone.
-        // Restarting our capture wouldn't reach it, so stop cleanly and say why.
-        Log.warning("No phone heartbeat for \(Int(gap))s and no answer to a probe — stopping watch session")
-        connectionAlert = "Lost the connection to your iPhone. Recording stopped."
-        WatchNotifications.notifySessionEnded(
-            body: "Lost the connection to your iPhone. Re-tap to keep listening."
-        )
-        // Not resumable: with the phone gone there's nothing to resume *into*,
-        // so the walk is genuinely over.
-        stop(resumable: false)
+        Log.warning("No phone heartbeat for \(Int(gap))s and no answer to a probe — ending watch session")
+        if mirroringPhone {
+            // Nothing of *ours* was running — no capture, no workout — so there
+            // is nothing to tear down but the display, and `endMirrorDisplay`
+            // cancels this watchdog, which is what stops the polling loop.
+            //
+            // The wording matters here and is not the wording below. All that is
+            // established is that we can no longer see the phone; it may well
+            // still be recording on its own microphone, which is what a mirrored
+            // session *is*. Claiming its recording stopped would be a guess, and
+            // usually a wrong one. No notification either: a phone-mic session is
+            // one the user is most likely holding, and a buzz about a link they
+            // can't act on from the wrist is noise.
+            connectionAlert = "Lost the connection to your iPhone."
+            endMirrorDisplay()
+        } else {
+            // Our own capture, whose audio has nowhere to go. Restarting it
+            // wouldn't reach the phone either, so stop cleanly and say why — and
+            // not resumable, since with the phone gone there is nothing to
+            // resume *into*.
+            connectionAlert = "Lost the connection to your iPhone. Recording stopped."
+            WatchNotifications.notifySessionEnded(
+                body: "Lost the connection to your iPhone. Re-tap to keep listening."
+            )
+            stop(resumable: false)
+        }
         return false
     }
 

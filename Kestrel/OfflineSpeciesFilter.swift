@@ -10,9 +10,9 @@ import Foundation
 /// listen-start, inference failure, etc.).
 ///
 /// Entirely inert unless `offline_species_filter.bin` is present in the bundle:
-/// with no file, `isAvailable` is false and `allowedIndices` returns `nil`, so
-/// callers fall through to their existing behavior. Species indices match
-/// `SpeciesCatalog.all` / `SpeciesRangeFilter` (same labels order).
+/// with no file, `allowedIndices` returns `nil` and callers fall through to
+/// their existing behavior. Species indices match `SpeciesCatalog.all` /
+/// `SpeciesRangeFilter` (same labels order).
 ///
 /// `nonisolated` + `@unchecked Sendable`: built once, immutable after init, so
 /// it can be read off any actor like `SpeciesCatalog`.
@@ -20,7 +20,6 @@ final class OfflineSpeciesFilter: @unchecked Sendable {
     nonisolated static let shared = OfflineSpeciesFilter()
 
     private struct Grid {
-        let speciesCount: Int
         let latMin: Double
         let lonMin: Double
         let step: Double
@@ -34,8 +33,6 @@ final class OfflineSpeciesFilter: @unchecked Sendable {
     private let body: [UInt8]
     /// Start index in `body` for each row, indexed `(i*lonCells + j)*weeks + w`.
     private let rowOffsets: [Int]
-
-    var isAvailable: Bool { grid != nil }
 
     private init() {
         guard let url = Bundle.main.url(forResource: "offline_species_filter", withExtension: "bin"),
@@ -137,7 +134,7 @@ final class OfflineSpeciesFilter: @unchecked Sendable {
         let version = u8()
         guard version == 2 else { return nil }
         _ = f32()                 // threshold (informational)
-        let speciesCount = u32()
+        _ = u32()                 // speciesCount (unused at lookup)
         let latMin = f32()
         _ = f32()                 // latMax (unused at lookup)
         let lonMin = f32()
@@ -173,7 +170,6 @@ final class OfflineSpeciesFilter: @unchecked Sendable {
         }
 
         let grid = Grid(
-            speciesCount: speciesCount,
             latMin: latMin,
             lonMin: lonMin,
             step: step,

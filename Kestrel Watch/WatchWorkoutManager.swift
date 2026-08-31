@@ -47,11 +47,6 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// to put up the confirmation. Nothing reaches HealthKit until `save()`.
     private(set) var pendingSave: PendingWorkout?
 
-    /// Set when the *system* (not us) ended the session out from under a live
-    /// recording — an OS-side termination we'd otherwise be blind to. Logged and
-    /// surfaced so the failure is diagnosable instead of just "audio went quiet".
-    private(set) var endedUnexpectedly = false
-
     /// The metadata a pending walk needs to describe itself in the confirmation
     /// prompt, so the view never has to touch the builder.
     struct PendingWorkout: Equatable, Identifiable {
@@ -143,7 +138,6 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
 
             self.session = session
             self.builder = builder
-            self.endedUnexpectedly = false
 
             let start = startDate ?? Date()
             session.startActivity(with: start)
@@ -613,8 +607,9 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// The session changed state without us asking. `.ended` while we still
     /// think we're recording is exactly the failure mode we were blind to
     /// before: the OS pulled our background runtime, so the mic is about to stop
-    /// producing audio. Flag it so the session manager can tear down cleanly and
-    /// tell the user, rather than leaving a dead-but-apparently-live recording.
+    /// producing audio. Log it, wind the walk down, and hand off to the session
+    /// manager — which tells the user — rather than leaving a
+    /// dead-but-apparently-live recording.
     nonisolated func workoutSession(
         _ workoutSession: HKWorkoutSession,
         didChangeTo toState: HKWorkoutSessionState,
@@ -627,7 +622,6 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
             // a still-set session here means this end came from the system.
             guard self.session === workoutSession else { return }
             Log.warning("Workout session ended by the system (from \(fromState.rawValue))")
-            self.endedUnexpectedly = true
             await self.end()
             // Our background runtime went with the session, so the mic is about
             // to stop producing audio. Tear the recording down deliberately
@@ -643,7 +637,6 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         Task { @MainActor in
             Log.error("Workout session failed: \(error)")
             guard self.session === workoutSession else { return }
-            self.endedUnexpectedly = true
             await self.end()
             // Our background runtime went with the session, so the mic is about
             // to stop producing audio. Tear the recording down deliberately

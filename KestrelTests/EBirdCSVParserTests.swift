@@ -131,28 +131,85 @@ struct EBirdCSVParserTests {
                 "\(name.common.debugDescription) should not reach the life list")
     }
 
-    /// Worth pinning explicitly, because it is not obvious from either function
-    /// alone: the scientific name is collapsed to its binomial *before* the
-    /// unidentified check runs, so `"Anas platyrhynchos x rubripes"` is already
-    /// `"Anas platyrhynchos"` by the time the `" x "` test sees it. What actually
-    /// catches hybrids is the **common name**, which is not collapsed — and which
-    /// is how eBird writes them ("Mallard x American Black Duck").
+    /// The check has to run on the columns as eBird wrote them, because both
+    /// transforms that follow destroy the evidence: `speciesBinomial` collapses
+    /// `"Anas platyrhynchos x rubripes"` to a clean-looking `"Anas
+    /// platyrhynchos"`, and `stripParens` removes the parenthetical eBird puts
+    /// the marker in for its *named* hybrids.
     ///
-    /// So the two checks are not redundant, and dropping the common-name half
-    /// would silently start filing hybrids as their first parent species.
-    @Test("the common-name column is what actually catches a hybrid")
-    func hybridCaughtByCommonName() throws {
-        // Marker only in the scientific name: collapsed away, so the row survives.
-        let sciOnly = try parse([
-            ("Anas platyrhynchos x rubripes", "Some Duck", "2019-05-04", "P", 1.0, 1.0),
+    /// Asked afterwards, both halves were blind and the row was filed as its
+    /// first parent species — a Brewster's Warbler landing on the user's
+    /// Golden-winged Warbler entry, and (see `LifeListStoreImportTests`)
+    /// renaming it.
+    @Test(
+        "a hybrid is filtered however eBird marks it",
+        arguments: [
+            // Marker only in the scientific name: survived the binomial collapse.
+            (sci: "Anas platyrhynchos x rubripes", common: "Some Duck"),
+            // Marker in the common name too, as eBird usually writes it.
+            (sci: "Anas platyrhynchos x rubripes", common: "Mallard x American Black Duck"),
+            // eBird's *named* hybrids: the only marker is inside a parenthetical,
+            // which `stripParens` removes, and the scientific name is the cross.
+            (sci: "Vermivora chrysoptera x cyanoptera",
+             common: "Brewster's Warbler (Golden-winged x Blue-winged)"),
+            (sci: "Vermivora cyanoptera x chrysoptera", common: "Lawrence's Warbler (hybrid)"),
+            // A hybrid eBird labelled but did not cross the scientific name of —
+            // the second net in `isNonSpecies`.
+            (sci: "Vermivora chrysoptera", common: "Some Warbler (hybrid)"),
+        ]
+    )
+    func hybridsFiltered(name: (sci: String, common: String)) throws {
+        let rows = try parse([
+            (name.sci, name.common, "2019-05-04", "P", 1.0, 1.0),
+            ("Cardinalis cardinalis", "Northern Cardinal", "2019-05-04", "P", 1.0, 1.0),
         ])
-        #expect(sciOnly.map(\.scientificName) == ["Anas platyrhynchos"])
+        #expect(rows.map(\.scientificName) == ["Cardinalis cardinalis"],
+                "\(name.common.debugDescription) should not reach the life list")
+    }
 
-        // Marker in the common name, as eBird writes it: filtered.
-        let realistic = try parse([
-            ("Anas platyrhynchos x rubripes", "Mallard x American Black Duck", "2019-05-04", "P", 1.0, 1.0),
-        ])
-        #expect(realistic.isEmpty)
+    /// The other side of the same rule, and why it can't be a plain substring
+    /// test: at *subspecies* rank an `x` or a `/` doesn't make the species
+    /// uncertain. An intergrade of two Yellow-rumped Warbler races is still a
+    /// Yellow-rumped Warbler, and a record narrowed to "one of these two races"
+    /// still names the bird — both belong on the life list, collapsed onto the
+    /// binomial like any other subspecies row.
+    @Test(
+        "subspecies-level crosses and slashes are still real species",
+        arguments: [
+            (sci: "Setophaga coronata auduboni x coronata",
+             common: "Yellow-rumped Warbler (Myrtle x Audubon's)"),
+            (sci: "Setophaga coronata coronata/auduboni",
+             common: "Yellow-rumped Warbler (Myrtle/Audubon's)"),
+            (sci: "Junco hyemalis hyemalis x oreganus",
+             common: "Dark-eyed Junco (Slate-colored x Oregon)"),
+        ]
+    )
+    func subspeciesCrossesKept(name: (sci: String, common: String)) throws {
+        let rows = try parse([(name.sci, name.common, "2019-05-04", "P", 1.0, 1.0)])
+        #expect(rows.count == 1, "\(name.common.debugDescription) is a real sighting")
+        #expect(rows.first?.scientificName == name.sci.split(separator: " ").prefix(2).joined(separator: " "))
+    }
+
+    /// `namesOneSpecies` decides by *position*, so the unit cases are worth
+    /// pinning directly — the parser-level tests above can only reach it through
+    /// a whole CSV.
+    @Test(
+        "namesOneSpecies reads the rank the marker sits at",
+        arguments: [
+            (name: "Cardinalis cardinalis", isSpecies: true),
+            (name: "Larus", isSpecies: true),
+            (name: "Dryobates villosus harrisi", isSpecies: true),
+            (name: "Setophaga coronata auduboni x coronata", isSpecies: true),
+            (name: "Setophaga coronata coronata/auduboni", isSpecies: true),
+            (name: "Vermivora chrysoptera x cyanoptera", isSpecies: false),
+            (name: "Anas platyrhynchos x rubripes", isSpecies: false),
+            (name: "Aythya marila/affinis", isSpecies: false),
+            (name: "Larus sp.", isSpecies: false),
+            (name: "", isSpecies: false),
+        ]
+    )
+    func namesOneSpeciesByRank(c: (name: String, isSpecies: Bool)) {
+        #expect(EBirdCSVParser.namesOneSpecies(c.name) == c.isSpecies)
     }
 
     /// The other half of the same rule, and the reason the filter can't simply

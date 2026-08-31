@@ -21,7 +21,6 @@ final class RecordingManager {
     private(set) var isWatchAppInstalled = false
     private(set) var detections: [Detection] = []
     private(set) var errorMessage: String?
-    private(set) var locationStatus: String?
     /// Set when a recording attempt was refused because location access — and so
     /// the nearby-species filter — is unavailable. Drives an alert offering to
     /// open Settings. The view clears it on dismiss (hence not `private(set)`).
@@ -219,9 +218,15 @@ final class RecordingManager {
     /// session is active, we ask the watch to tear down and restart its capture.
     private var watchHeartbeatTask: Task<Void, Never>?
     /// Sends a periodic "phone is alive and considers the session active" beat to
-    /// the watch, which runs its own watchdog on it. Only ticks while
-    /// `watchRecording` is true — so the watch can distinguish "phone still here"
-    /// from "phone gone / session ended."
+    /// the watch, which runs its own watchdog on it. Ticks for the whole of
+    /// *either* kind of session — the watch capturing, or the watch mirroring a
+    /// phone-mic one — so the watch can distinguish "phone still here" from
+    /// "phone gone / session ended."
+    ///
+    /// It used to tick only while `watchRecording`, which left the mirror with no
+    /// liveness signal at all: kill the phone app mid-session and the wrist sat
+    /// on "Listening on iPhone…" indefinitely, because the `phoneStop` that
+    /// clears it is something only a living app sends.
     private var phoneHeartbeatTask: Task<Void, Never>?
     /// Timestamp of the most recent audio chunk delivered by the watch.
     private var lastWatchAudioAt: Date?
@@ -379,16 +384,27 @@ final class RecordingManager {
         // session itself, so the two can't race on the shared AVAudioSession.
         pipeline.startPrewarm()
 
-        // Kick off the location/range-filter lookup at launch so the
-        // "Filtered to N species" caption is ready to fade in before the
-        // user taps Start Recording, instead of appearing mid-session and
-        // shoving the record button down. Only when location is *already*
-        // authorized — a fresh install must not surface the location prompt at
-        // launch; that's deferred to the first Start Recording tap.
-        if locationStatus == nil, locationAuthorized {
+        // Warm the location/range-filter lookup once per launch, so the first
+        // session starts with a nearby list already computed rather than waiting
+        // on a fix. Only when location is *already* authorized — a fresh install
+        // must not surface the location prompt at launch; that's deferred to the
+        // first Start Recording tap.
+        //
+        // `preload()` runs on every session start too, hence the flag: without
+        // one this would re-request on every start, on top of the request the
+        // start path makes itself. It used to be gated on `locationStatus`
+        // instead — a caption string that no view has read for some time — which
+        // worked only by accident and made the double-request above depend on
+        // which of the two got there first.
+        if !didWarmSpeciesFilter, locationAuthorized {
+            didWarmSpeciesFilter = true
             Task { await self.refreshSpeciesFilter() }
         }
     }
+
+    /// Whether `preload()` has already asked for this launch's first species
+    /// filter. See the note at the call site.
+    @ObservationIgnored private var didWarmSpeciesFilter = false
 
     func toggle() async {
         if watchRecording {
@@ -763,8 +779,6 @@ final class RecordingManager {
         lastWatchDisplayAt = nil
         spectrogram.reset()
         refreshLifeListFromStore()
-        // Don't clear locationStatus — leave the previous filter visible until
-        // refreshSpeciesFilter overwrites it, otherwise the text flickers.
         isRecording = true
         localSessionStart = Date()
         // A *fresh* session, so it gets a fresh name. The resume path above
@@ -871,6 +885,10 @@ final class RecordingManager {
         // token comes back on the watch's `stopPhone` so a stale one can be told
         // from a current one — see `localSessionToken`.
         sendToWatch(["cmd": "phoneStart", "session": localSessionToken])
+        // The mirror needs a heartbeat as much as a watch-sourced session does —
+        // see `phoneHeartbeatTask`. There is no audio-liveness watchdog to pair
+        // it with here, because no audio crosses the link in this direction.
+        startPhoneHeartbeat()
         startIdleWatchdog()
     }
 
@@ -896,6 +914,7 @@ final class RecordingManager {
         // Nothing ran, so nothing counts toward the review threshold.
         localSessionStart = nil
         cancelIdleWatchdog()
+        cancelPhoneHeartbeat()
         sendToWatch(["cmd": "phoneStop"])
         clearWatchBirdDisplay()
     }
@@ -932,6 +951,7 @@ final class RecordingManager {
         pendingTransitionTask?.cancel()
         pendingTransitionTask = nil
         cancelIdleWatchdog()
+        cancelPhoneHeartbeat()
 
         isRecording = false
 
@@ -1024,10 +1044,21 @@ final class RecordingManager {
     /// of its own) still get a location-focused list. No-op unless a watch session
     /// is active.
     func updateWatchLocation(lat: Double, lon: Double) {
-        LocationCache.shared.update(latitude: lat, longitude: lon)
+        // Inside the guard, not before it. `stopFromWatch` clears
+        // `watchSuppliedCoordinate` precisely so a finished session's fix can't
+        // go on standing for "here" — but this write escaped that, and both
+        // channels carry `watchLocation`, so the queued copy can land after the
+        // session ended. It would then stamp the phone's cache *fresh* with a
+        // coordinate from a walk that is over, which is what the map picker
+        // seeds its pin from.
         guard watchRecording else { return }
+        LocationCache.shared.update(latitude: lat, longitude: lon)
         watchSuppliedCoordinate = (lat, lon)
-        Task { await self.refreshSpeciesFilter() }
+        // `force`, because this call carries something the run in flight doesn't
+        // have: the watch's own coordinate. Joining that run would quietly build
+        // the filter from wherever the *phone* thinks it is — which for a
+        // watch-first user is nowhere at all.
+        Task { await self.refreshSpeciesFilter(force: true) }
     }
 
     /// Called when the watch sends a "stop" handshake.
@@ -1160,9 +1191,13 @@ final class RecordingManager {
             }
         }
 
-        // Phone-side heartbeat sender: tells the watch the phone is alive and
-        // still considers this session active, so the watch's own watchdog can
-        // tell "phone here" from "phone gone."
+        startPhoneHeartbeat()
+    }
+
+    /// Starts the phone-side heartbeat sender. Called by both session kinds —
+    /// `startWatchLifecycleWatchdogs` for a watch-sourced session and
+    /// `announceLocalSessionStart` for a mirrored phone-mic one.
+    private func startPhoneHeartbeat() {
         phoneHeartbeatTask?.cancel()
         phoneHeartbeatTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -1173,11 +1208,15 @@ final class RecordingManager {
         }
     }
 
+    private func cancelPhoneHeartbeat() {
+        phoneHeartbeatTask?.cancel()
+        phoneHeartbeatTask = nil
+    }
+
     private func cancelWatchLifecycleWatchdogs() {
         watchHeartbeatTask?.cancel()
         watchHeartbeatTask = nil
-        phoneHeartbeatTask?.cancel()
-        phoneHeartbeatTask = nil
+        cancelPhoneHeartbeat()
         lastWatchAudioAt = nil
         watchStallNudged = false
     }
@@ -1187,7 +1226,8 @@ final class RecordingManager {
     /// otherwise so the watch still sees it (queued) when both apps are
     /// backgrounded — the case where audio tends to stall.
     private func sendPhoneHeartbeat() {
-        guard watchRecording, WCSession.isSupported() else { return }
+        guard Self.shouldSendPhoneHeartbeat(isRecording: isRecording),
+              WCSession.isSupported() else { return }
         let s = WCSession.default
         guard s.activationState == .activated, s.isPaired, s.isWatchAppInstalled else { return }
         let payload: [String: Any] = ["cmd": "phoneHeartbeat"]
@@ -1198,6 +1238,26 @@ final class RecordingManager {
         } else {
             s.transferUserInfo(payload)
         }
+    }
+
+    /// Whether the phone owes the watch a beat right now.
+    ///
+    /// **Either kind of live session, not just a watch-sourced one.** The watch
+    /// shows a recording screen for both — its own capture, and the mirror of a
+    /// phone-mic session — and runs the same watchdog over both. Beating only
+    /// while `watchRecording` left the mirror with no liveness signal at all,
+    /// and `phoneStop` (the one thing that clears it) is something only a living
+    /// app sends: kill the phone app mid-session and the wrist sat on
+    /// "Listening on iPhone…" until the user happened to tap Stop.
+    ///
+    /// So the rule is `isRecording` alone, and pointedly *not* `watchRecording`
+    /// — the distinction every other watch-facing guard in this file draws is
+    /// the one this must not. Extracted as a static, thin as it is, so that
+    /// tightening it back is a change a test objects to rather than one that
+    /// silently reopens the hole. See `localStopApplies`, which is its opposite
+    /// number and does need both flags.
+    nonisolated static func shouldSendPhoneHeartbeat(isRecording: Bool) -> Bool {
+        isRecording
     }
 
     /// Replies to the watch's "are you still there?" probe with an out-of-band
@@ -1626,10 +1686,39 @@ final class RecordingManager {
         return watchSupplied
     }
 
-    private func refreshSpeciesFilter() async {
+    /// Serializes the species-filter refresh — see `refreshSpeciesFilter(force:)`.
+    @ObservationIgnored private lazy var speciesFilterJob = CoalescedJob { [weak self] in
+        await self?.performSpeciesFilterRefresh()
+    }
+
+    /// Recomputes the nearby-species filter, coalescing concurrent requests.
+    ///
+    /// **This has to coalesce, because the app asks for it from four places and
+    /// the answer is one shared value.** A session start asks, `preload()` asks
+    /// for the launch warm-up, an app foreground asks, and the watch asks when
+    /// its coordinate lands — and the first two fire together on the first
+    /// session after location is granted. Run in parallel they each resolve a
+    /// location, each build a list, and each assign `allowedIndices`, so the
+    /// filter the session ran under was whichever finished last rather than
+    /// whichever knew the most.
+    ///
+    /// The losing runs are the ones that come back *without* a location, which
+    /// is what made this more than wasted work: `LocationProvider` answered a
+    /// second concurrent caller `nil` outright (it now joins the fix instead),
+    /// and a run told there is no fix falls all the way through to
+    /// `allowedIndices = nil` — which hands BirdNET all 6,522 labels at the
+    /// in-range threshold for the rest of the walk.
+    ///
+    /// `force` is for a caller whose inputs differ from the run in flight —
+    /// today only `updateWatchLocation`, which arrives holding a coordinate that
+    /// run was started without.
+    private func refreshSpeciesFilter(force: Bool = false) async {
+        await speciesFilterJob.request(force: force)
+    }
+
+    private func performSpeciesFilterRefresh() async {
         guard let rangeFilter = await getRangeFilter() else {
             allowedIndices = nil
-            locationStatus = "Showing all species"
             return
         }
         // Prefer a coordinate the watch supplied for this session — it's the only
@@ -1657,7 +1746,6 @@ final class RecordingManager {
                 )
                 allowedIndices = allowed
                 prefetchRegionImages(allowed)
-                locationStatus = "Filtered to \(allowed.count) nearby species"
                 return
             } catch {
                 Log.error("Geo inference failed — \(error)")
@@ -1666,7 +1754,6 @@ final class RecordingManager {
         if let cached = await rangeFilter.loadCached(week: week) {
             allowedIndices = cached
             prefetchRegionImages(cached)
-            locationStatus = "Using last-known list (\(cached.count) species)"
             return
         }
         // Offline fallback: the precomputed grid (birds by location + week),
@@ -1681,10 +1768,8 @@ final class RecordingManager {
            let offline = OfflineSpeciesFilter.shared.allowedIndices(lat: lat, lon: lon, week: week) {
             allowedIndices = offline
             prefetchRegionImages(offline)
-            locationStatus = "Using offline list (\(offline.count) species)"
         } else {
             allowedIndices = nil
-            locationStatus = "Showing all species (no location yet)"
         }
     }
 

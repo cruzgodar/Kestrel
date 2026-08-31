@@ -6,7 +6,17 @@ import Foundation
 @MainActor
 final class LocationProvider: NSObject, CLLocationManagerDelegate {
     private let manager = CLLocationManager()
-    private var continuation: CheckedContinuation<CLLocation?, Never>?
+    /// Everyone waiting on the current fix.
+    ///
+    /// A list, not a single slot. It used to be one continuation, and a second
+    /// caller arriving while a fix was in flight was answered `nil` outright —
+    /// which reads as "there is no location" and is acted on as such. That is
+    /// how a redundant `RecordingManager.refreshSpeciesFilter` could drop the
+    /// nearby-species filter for a whole session: it asked while another refresh
+    /// was already asking, was told there was no fix, and wrote its "showing all
+    /// species" answer over the real one. Callers now join the fix in flight and
+    /// all get the same answer.
+    private var waiters: [CheckedContinuation<CLLocation?, Never>] = []
     private var timeoutTask: Task<Void, Never>?
 
     override init() {
@@ -49,10 +59,10 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
     }
 
     /// Returns a single `CLLocation` fix, or `nil` on denial/timeout/error.
+    ///
+    /// Concurrent callers share one request: the first starts it, the rest wait
+    /// on the same answer. See `waiters`.
     func currentLocation(timeout: Duration = .seconds(5)) async -> CLLocation? {
-        // If we already have a pending request, don't start another one.
-        if continuation != nil { return nil }
-
         // Bail out early if we know permission is denied.
         switch manager.authorizationStatus {
         case .denied, .restricted:
@@ -70,8 +80,13 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
             return nil
         }
 
+        // Read before the append below, with no suspension in between: a
+        // non-empty list means someone else already asked and we only have to
+        // wait for the answer.
+        let alreadyRequesting = !waiters.isEmpty
         return await withCheckedContinuation { (cont: CheckedContinuation<CLLocation?, Never>) in
-            self.continuation = cont
+            self.waiters.append(cont)
+            guard !alreadyRequesting else { return }
             self.manager.requestLocation()
             self.timeoutTask = Task { [weak self] in
                 try? await Task.sleep(for: timeout)
@@ -80,13 +95,16 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    /// Hands `location` to everyone waiting and clears the list. Safe to call
+    /// more than once for one request — a fix that arrives just as the timeout
+    /// fires finds no waiters left and does nothing.
     private func finish(with location: CLLocation?) {
         timeoutTask?.cancel()
         timeoutTask = nil
-        if let cont = continuation {
-            continuation = nil
-            cont.resume(returning: location)
-        }
+        guard !waiters.isEmpty else { return }
+        let pending = waiters
+        waiters.removeAll()
+        for cont in pending { cont.resume(returning: location) }
     }
 
     // MARK: CLLocationManagerDelegate

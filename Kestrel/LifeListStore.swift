@@ -554,13 +554,46 @@ final class LifeListStore {
     /// within `meters`. Drives the naming step's default: a spot you've already
     /// named is almost certainly the same spot you're pinning again, and
     /// reusing your own wording beats a reverse-geocoded street address.
-    /// Scans every observation of every species — the life list is at most a
-    /// few thousand entries, so this stays well under a frame.
+    ///
+    /// **Async, and the walk runs off the main actor**, for the reason
+    /// `exportRows` and `MapView.computeClusters` do. This scans every
+    /// *observation*, not every entry — and an eBird export is one row per
+    /// observation, so for an active birder's imported history that is tens of
+    /// thousands of iterations, each allocating a `CLLocation` and running a
+    /// geodesic. Its one caller is the naming sheet's `.task`, which is on the
+    /// main actor and runs while that sheet is animating in.
     func nearestObservationName(
         to coordinate: CLLocationCoordinate2D,
         within meters: CLLocationDistance
+    ) async -> String? {
+        // A value copy of the entry array (a retain, not a walk) is all that
+        // happens on the main actor.
+        let snapshot = entries
+        let latitude = coordinate.latitude
+        let longitude = coordinate.longitude
+        return await Task.detached(priority: .userInitiated) {
+            Self.nearestObservationName(
+                toLatitude: latitude,
+                longitude: longitude,
+                within: meters,
+                in: snapshot
+            )
+        }.value
+    }
+
+    /// The pure walk behind `nearestObservationName(to:within:)`. `nonisolated
+    /// static`, taking its inputs by value, so it can run on a detached task —
+    /// and so a test can drive it without a store.
+    ///
+    /// Takes bare coordinates rather than a `CLLocationCoordinate2D` so nothing
+    /// about crossing an isolation boundary depends on that type's conformances.
+    nonisolated static func nearestObservationName(
+        toLatitude targetLatitude: Double,
+        longitude targetLongitude: Double,
+        within meters: CLLocationDistance,
+        in entries: [LifeListEntry]
     ) -> String? {
-        let target = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
+        let target = CLLocation(latitude: targetLatitude, longitude: targetLongitude)
         var best: (distance: CLLocationDistance, name: String)?
         for entry in entries {
             for observation in entry.allObservations {

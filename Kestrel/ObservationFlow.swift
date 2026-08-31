@@ -492,7 +492,7 @@ struct ObservationNameSheet: View {
     /// pin landed, and short enough to type over.
     private func defaultName() async -> String? {
         guard let coordinate else { return nil }
-        if let nearby = store.nearestObservationName(to: coordinate, within: Self.reuseRadius) {
+        if let nearby = await store.nearestObservationName(to: coordinate, within: Self.reuseRadius) {
             return nearby
         }
         let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)

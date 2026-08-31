@@ -811,8 +811,11 @@ struct LifeListStoreMutationTests {
 
     /// The naming step's default: a spot you've already named is almost certainly
     /// the same spot you're pinning again, and your own wording beats a geocoder's.
+    ///
+    /// `async` because the walk runs off the main actor — it scans every
+    /// *observation*, and an eBird import is one row per observation.
     @Test("nearestObservationName reuses a nearby name and ignores a distant one")
-    func nearestObservationName() {
+    func nearestObservationName() async {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()
         let store = makeStore(scratch, defaults)
         store.recordObservation(scientificName: "X y", commonName: "X", date: may4,
@@ -820,14 +823,14 @@ struct LifeListStoreMutationTests {
 
         // ~100 m away.
         let close = CLLocationCoordinate2D(latitude: 42.4800, longitude: -76.4512)
-        #expect(store.nearestObservationName(to: close, within: 1609.344) == "Sapsucker Woods")
+        #expect(await store.nearestObservationName(to: close, within: 1609.344) == "Sapsucker Woods")
         // Another continent.
         let far = CLLocationCoordinate2D(latitude: 51.5, longitude: -0.12)
-        #expect(store.nearestObservationName(to: far, within: 1609.344) == nil)
+        #expect(await store.nearestObservationName(to: far, within: 1609.344) == nil)
     }
 
     @Test("nearestObservationName picks the closest of several named spots")
-    func nearestPicksClosest() {
+    func nearestPicksClosest() async {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()
         let store = makeStore(scratch, defaults)
         store.recordObservation(scientificName: "A a", commonName: "A", date: may4,
@@ -835,17 +838,17 @@ struct LifeListStoreMutationTests {
         store.recordObservation(scientificName: "B b", commonName: "B", date: may4,
                                 location: "Near End", latitude: 42.4792, longitude: -76.4512)
         let target = CLLocationCoordinate2D(latitude: 42.4791, longitude: -76.4512)
-        #expect(store.nearestObservationName(to: target, within: 5000) == "Near End")
+        #expect(await store.nearestObservationName(to: target, within: 5000) == "Near End")
     }
 
     @Test("a sighting with no place name is not offered as a nearby name")
-    func nearestIgnoresUnnamed() {
+    func nearestIgnoresUnnamed() async {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()
         let store = makeStore(scratch, defaults)
         store.recordObservation(scientificName: "X y", commonName: "X", date: may4,
                                 location: nil, latitude: 42.4791, longitude: -76.4512)
         let target = CLLocationCoordinate2D(latitude: 42.4791, longitude: -76.4512)
-        #expect(store.nearestObservationName(to: target, within: 5000) == nil)
+        #expect(await store.nearestObservationName(to: target, within: 5000) == nil)
     }
 
     // MARK: persistence

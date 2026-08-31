@@ -21,6 +21,62 @@ struct LifeListStoreImportTests {
     }
 
 
+    // MARK: non-species rows
+
+    /// The second-order cost of letting a hybrid through, and the reason the
+    /// filter has to catch it at the parser rather than being tidied up later:
+    /// `computeMergedEntries` takes the **earliest** row's common name, so a
+    /// hybrid dated before the user's real sighting doesn't merely add a row —
+    /// it renames the species they already had.
+    ///
+    /// eBird files Brewster's Warbler under Golden-winged Warbler's genus and
+    /// epithet ("Vermivora chrysoptera x cyanoptera") and marks the cross only
+    /// in a parenthetical, which is exactly the pair of places the old filter
+    /// had already looked away from by the time it asked.
+    @Test("a named hybrid can't be imported over the species it is half of")
+    func namedHybridDoesNotRenameItsParent() async throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+
+        _ = try await importCSV(store, scratch, [
+            ("Vermivora chrysoptera", "Golden-winged Warbler", "2020-06-01", "Ithaca", 42.44, -76.50),
+            // Earlier, so it would win the common name if it were let through.
+            ("Vermivora chrysoptera x cyanoptera", "Brewster's Warbler (Golden-winged x Blue-winged)",
+             "2019-05-04", "Sapsucker Woods", 42.4791, -76.4512),
+        ])
+
+        #expect(store.entries.count == 1)
+        let entry = try #require(store.entries.first)
+        #expect(entry.scientificName == "Vermivora chrysoptera")
+        #expect(entry.commonName == "Golden-winged Warbler",
+                "the hybrid must not supply the entry's name")
+        #expect(entry.allObservations.count == 1,
+                "and must not supply it a sighting either")
+        #expect(entry.firstSeen == utcDay(2020, 6, 1))
+    }
+
+    /// The mirror of the above: a subspecies intergrade *is* a sighting of its
+    /// species, so it has to keep landing on the entry. Same shape of name, one
+    /// rank down — which is the whole distinction `namesOneSpecies` draws.
+    @Test("a subspecies intergrade is still filed under its species")
+    func intergradeStillCounts() async throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let store = makeStore(scratch, defaults)
+
+        _ = try await importCSV(store, scratch, [
+            ("Setophaga coronata", "Yellow-rumped Warbler", "2020-06-01", "Ithaca", 42.44, -76.50),
+            ("Setophaga coronata auduboni x coronata", "Yellow-rumped Warbler (Myrtle x Audubon's)",
+             "2019-05-04", "Sapsucker Woods", 42.4791, -76.4512),
+        ])
+
+        #expect(store.entries.count == 1)
+        let entry = try #require(store.entries.first)
+        #expect(entry.scientificName == "Setophaga coronata")
+        #expect(entry.commonName == "Yellow-rumped Warbler")
+        #expect(entry.allObservations.count == 2, "both outings are real sightings")
+        #expect(entry.firstSeen == utcDay(2019, 5, 4))
+    }
+
     // MARK: collision resolution
 
     /// Canonicalization resolves a collision it can't otherwise break by keeping

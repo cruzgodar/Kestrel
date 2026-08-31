@@ -25,9 +25,9 @@ nonisolated struct EBirdRawRow {
 
 nonisolated enum EBirdCSVParser {
     /// Parses an eBird "My eBird Data" CSV. Skips rows with unparseable dates,
-    /// empty scientific names, or names that look like spuhs / hybrids / slash
-    /// forms — see `isUnidentified`, which filters them here so the store doesn't
-    /// have to.
+    /// empty scientific names, and anything that isn't a single species — spuhs,
+    /// hybrids, slash forms — see `isNonSpecies`, which filters them here so the
+    /// store doesn't have to.
     ///
     /// Domestic and feral forms are deliberately *not* skipped. Their
     /// parenthetical is stripped ("Mallard (Domestic type)" → "Mallard", "Rock
@@ -89,6 +89,11 @@ nonisolated enum EBirdCSVParser {
 
         for row in rows.dropFirst() {
             guard row.count > max(sciIdx, comIdx, dateIdx) else { continue }
+            // Whether this row describes one species is decided **before** either
+            // transform below, on the columns as eBird wrote them — see
+            // `isNonSpecies`, and the note there on why asking afterwards
+            // couldn't work.
+            if isNonSpecies(rawScientific: row[sciIdx], rawCommon: row[comIdx]) { continue }
             // Strip parenthesized clarifiers ("Rock Pigeon (Feral Pigeon)" → "Rock Pigeon").
             // Then collapse trinomials to the binomial so eBird's subspecies-group splits
             // ("Hairy Woodpecker (Eastern)" + "(Pacific)") merge into one species entry
@@ -103,7 +108,6 @@ nonisolated enum EBirdCSVParser {
             let com = stripParens(row[comIdx])
             let dateStr = row[dateIdx].trimmingCharacters(in: .whitespacesAndNewlines)
             if sci.isEmpty { continue }
-            if isUnidentified(sci) || isUnidentified(com) { continue }
             guard let date = parseDate(dateStr) else {
                 continue
             }
@@ -129,9 +133,81 @@ nonisolated enum EBirdCSVParser {
         return result
     }
 
+    /// Whether a row describes something other than a single species — a spuh
+    /// ("Buteo sp."), a cross between two species ("Brewster’s Warbler"), or a
+    /// record that couldn’t be narrowed past a pair ("Greater/Lesser Scaup").
+    /// None of those belongs on a life list.
+    ///
+    /// **Asked of the raw columns, before `stripParens` and `speciesBinomial`
+    /// run**, because both of those destroy the evidence:
+    ///
+    ///   • `speciesBinomial` collapses `"Vermivora chrysoptera x cyanoptera"` to
+    ///     `"Vermivora chrysoptera"`, so a `" x "` test downstream sees a clean
+    ///     binomial.
+    ///   • `stripParens` removes the parenthetical eBird puts the marker in —
+    ///     `"Brewster’s Warbler (Golden-winged x Blue-winged)"` and
+    ///     `"Lawrence’s Warbler (hybrid)"` both fold to a plain-looking name.
+    ///
+    /// With both halves blind, such a row was imported *as its first parent
+    /// species*, and — because `LifeListStore.computeMergedEntries` takes the
+    /// earliest row’s common name — an early-dated hybrid could rename the
+    /// user’s existing Golden-winged Warbler entry to "Brewster’s Warbler".
+    static func isNonSpecies(rawScientific: String, rawCommon: String) -> Bool {
+        if !namesOneSpecies(stripParens(rawScientific)) { return true }
+        // The common name is tested *stripped*, which is deliberate and is why
+        // the scientific rule above has to carry the weight: eBird writes
+        // legitimate subspecies-level ambiguity in parentheses too
+        // ("Yellow-rumped Warbler (Myrtle/Audubon’s)"), and that bird is a
+        // Yellow-rumped Warbler whatever race it was. Testing the raw common
+        // name would throw those away.
+        if isUnidentified(stripParens(rawCommon)) { return true }
+        // The one keyword worth reading through a parenthetical: no real bird is
+        // called a hybrid. A free second net, in case eBird ever labels one
+        // without also crossing its scientific name.
+        if rawCommon.lowercased().contains("hybrid") { return true }
+        return false
+    }
+
+    /// Whether a scientific name names one *species*, rather than a cross
+    /// between two or an uncertainty about which it was.
+    ///
+    /// **Position is the whole rule**, because the same token means opposite
+    /// things at different ranks — which is exactly why this can’t be a plain
+    /// substring test:
+    ///
+    ///   • `"Vermivora chrysoptera x cyanoptera"` — the `x` joins two *epithets*,
+    ///     so this is a cross between two species and belongs on no life list.
+    ///   • `"Setophaga coronata auduboni x coronata"` — the `x` joins two
+    ///     *subspecies* of one species. That bird is a Yellow-rumped Warbler and
+    ///     does belong; `speciesBinomial` collapses it to one.
+    ///   • `"Aythya marila/affinis"` — the slash is in the epithet, so which
+    ///     species it was is unknown.
+    ///   • `"Setophaga coronata coronata/auduboni"` — the slash is below the
+    ///     binomial, so the species is known.
+    ///
+    /// So only the genus, the epithet, and a third token of exactly `x` are
+    /// examined. Everything past that describes a subspecies and is collapsed
+    /// away by `speciesBinomial`, as it always was.
+    static func namesOneSpecies(_ scientificName: String) -> Bool {
+        let parts = scientificName.split(whereSeparator: { $0.isWhitespace })
+        // No genus at all: the row names nothing. (`parse` also drops these on
+        // the empty-name check; answering here keeps this function total.)
+        guard let genus = parts.first else { return false }
+        if genus.contains("/") { return false }
+        // A bare genus is as far as the name goes; nothing here contradicts it.
+        guard parts.count >= 2 else { return true }
+        let epithet = parts[1]
+        if epithet.contains("/") { return false }
+        if epithet.lowercased().hasPrefix("sp.") { return false }
+        // "Genus epithet x otherEpithet" — two species crossed.
+        if parts.count >= 3, parts[2].lowercased() == "x" { return false }
+        return true
+    }
+
     /// Skip spuhs ("Gull sp."), hybrids ("Mallard x American Black Duck"),
-    /// and slash forms ("Greater/Lesser Scaup"). Parenthesized clarifiers
-    /// ("Rock Pigeon (Feral Pigeon)") are *not* filtered — they're stripped instead.
+    /// and slash forms ("Greater/Lesser Scaup"). Applied to the *common* name,
+    /// stripped of its parenthetical — see `isNonSpecies` for why that is the
+    /// right input for this half and the wrong one for the scientific half.
     private static func isUnidentified(_ name: String) -> Bool {
         let lower = name.lowercased()
         if lower.contains(" sp.") { return true }

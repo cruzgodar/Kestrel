@@ -625,6 +625,46 @@ struct LocalStopTests {
     }
 }
 
+/// Whether the phone owes the watch a heartbeat.
+///
+/// The watch shows a recording screen for two different things — its own
+/// capture, and the mirror of a phone-mic session — and runs one watchdog over
+/// both. The phone was beating for only the first, so the mirror had no liveness
+/// signal: `phoneStop` is the only message that clears it, and a phone app that
+/// has been killed sends none. The wrist then sat on "Listening on iPhone…" for
+/// a session that had already ended, until the user happened to tap Stop.
+@Suite("Phone heartbeat")
+struct PhoneHeartbeatTests {
+
+    /// Both kinds of live session beat, which is the whole point: the rule is
+    /// `isRecording` and pointedly not `watchRecording`, so a mirrored phone-mic
+    /// session — the case the old gate excluded — is covered by the same
+    /// expression as a watch-sourced one.
+    @Test("either kind of live session is beaten to")
+    func beatsForALiveSession() {
+        #expect(
+            RecordingManager.shouldSendPhoneHeartbeat(isRecording: true),
+            "the wrist is showing this session, and can't otherwise tell it ended"
+        )
+    }
+
+    @Test("nothing running earns no beat")
+    func silentWhenIdle() {
+        #expect(!RecordingManager.shouldSendPhoneHeartbeat(isRecording: false))
+    }
+
+    /// The pairing worth stating outright, since the two guards sit in the same
+    /// file and read almost alike: a stop relayed from the watch *is* the
+    /// watch-vs-phone distinction, and a heartbeat is deliberately not.
+    @Test("the heartbeat gate is not the local-stop gate")
+    func differsFromLocalStopApplies() {
+        // A watch-sourced session: the phone must beat, and must not tear its
+        // own half down.
+        #expect(RecordingManager.shouldSendPhoneHeartbeat(isRecording: true))
+        #expect(!RecordingManager.localStopApplies(isRecording: true, watchRecording: true))
+    }
+}
+
 /// Whether stopping a watch session on the phone should offer to save the walk.
 ///
 /// The phone can answer half of that on its own — how long the session ran — and
