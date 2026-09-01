@@ -22,6 +22,19 @@ final class ScratchDirectory {
     }
 
     deinit {
+        // Let the life list's IO queue finish first. Its persistence is
+        // deliberately asynchronous — a mutation snapshots on the main actor and
+        // encodes + writes on a shared serial queue — so a test that ends without
+        // flushing leaves writes queued against the directory this is about to
+        // delete. Every one of them then fails with "the folder doesn't exist",
+        // which is what filled the test log with `LifeListStore: save failed`
+        // errors from tests that had passed.
+        //
+        // Tests that *read a file back* still flush explicitly, and must: this
+        // barrier runs at the end of a test, not in the middle of one. What it
+        // buys is that no test can leave work in flight for the next one to trip
+        // over, without every test having to remember a cleanup call.
+        LifeListStore.drainPendingWrites()
         try? FileManager.default.removeItem(at: url)
     }
 

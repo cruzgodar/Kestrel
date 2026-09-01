@@ -93,7 +93,12 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
         guard let cmd = payload["cmd"] as? String else { return }
         switch cmd {
         case "start":
-            Task { @MainActor in await manager.startFromWatch() }
+            // The token names the watch's capture session. Both channels carry
+            // this handshake, so the phone sees every start twice and can see a
+            // queued one flushed after its session has ended — neither of which
+            // may bring a session up. See `RecordingManager.watchStartOutcome`.
+            let startToken = payload["session"] as? Int
+            Task { @MainActor in await manager.startFromWatch(session: startToken) }
         case "watchWorkoutSavable":
             // Whether the watch can write a birding walk to HealthKit — per-device
             // authorization the phone can't read for itself, and the half of the
@@ -115,7 +120,11 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
             let token = payload["session"] as? Int
             Task { @MainActor in manager.stopLocalSession(fromWatchMirror: token) }
         case "stop":
-            Task { @MainActor in manager.stopFromWatch() }
+            // Likewise: a queued stop for a session the user has already
+            // restarted past must not tear the new one down. See
+            // `RecordingManager.watchStopApplies`.
+            let stopToken = payload["session"] as? Int
+            Task { @MainActor in manager.stopFromWatch(session: stopToken) }
         case "watchLocation":
             // The watch supplied its own GPS for this session so the phone can
             // build the nearby-species filter from where the watch is.

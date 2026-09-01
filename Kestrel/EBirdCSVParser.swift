@@ -103,7 +103,7 @@ nonisolated enum EBirdCSVParser {
             // "Setophaga petechia") flows through the rest of the pipeline as
             // the canonical name.
             let sci = TaxonomyAliases.canonical(
-                speciesBinomial(stripParens(row[sciIdx]))
+                TaxonomyAliases.speciesBinomial(stripParens(row[sciIdx]))
             )
             let com = stripParens(row[comIdx])
             let dateStr = row[dateIdx].trimmingCharacters(in: .whitespacesAndNewlines)
@@ -217,16 +217,6 @@ nonisolated enum EBirdCSVParser {
         return false
     }
 
-    /// Collapses a scientific name to its species-level binomial — `"Genus species"`.
-    /// eBird exports subspecies groups as trinomials (`"Dryobates villosus harrisi"`),
-    /// which would otherwise show up as duplicate species rows once the parenthetical
-    /// common-name suffix is stripped. Names with fewer than two tokens pass through.
-    private static func speciesBinomial(_ s: String) -> String {
-        let parts = s.split(whereSeparator: { $0.isWhitespace })
-        guard parts.count >= 2 else { return s }
-        return "\(parts[0]) \(parts[1])"
-    }
-
     /// Removes `(...)` segments, then collapses the whitespace removing them
     /// leaves behind.
     ///
@@ -263,6 +253,12 @@ nonisolated enum EBirdCSVParser {
         // fall through to `default`, embed the break as field content, and collapse
         // the entire file into one row. eBird's own export uses bare "\n". Fold
         // CRLF and lone CR down to "\n" so the scan below sees real row breaks.
+        //
+        // Between them these two cover every carriage return there can be, so the
+        // scan below never sees one and has no case for it — a "\r" arm in either
+        // branch would be dead code claiming to handle something that cannot
+        // arrive. A break *inside* a quoted field is folded the same way and kept
+        // as field content, which is what RFC 4180 asks for.
         let normalized = text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
@@ -272,20 +268,16 @@ nonisolated enum EBirdCSVParser {
             if inQuotes {
                 if c == "\"" {
                     // peek next character
-                    let saved = field
                     if let next = iter.next() {
                         if next == "\"" {
                             field.append("\"")
                         } else {
                             inQuotes = false
                             // process `next` as a normal character
-                            field = saved
                             if next == "," {
                                 row.append(field); field = ""
                             } else if next == "\n" {
                                 row.append(field); rows.append(row); row = []; field = ""
-                            } else if next == "\r" {
-                                // swallow; \n handled on next iter if present
                             } else {
                                 field.append(next)
                             }
@@ -304,8 +296,6 @@ nonisolated enum EBirdCSVParser {
                     row.append(field); field = ""
                 case "\n":
                     row.append(field); rows.append(row); row = []; field = ""
-                case "\r":
-                    break
                 default:
                     field.append(c)
                 }

@@ -102,6 +102,17 @@ final class LocationProvider: NSObject, CLLocationManagerDelegate {
         timeoutTask?.cancel()
         timeoutTask = nil
         guard !waiters.isEmpty else { return }
+        // Cancel any fix still outstanding. `requestLocation()` delivers exactly
+        // one callback and that callback carries no idea of *which* request it
+        // belongs to — so a request we gave up on goes on running and answers
+        // whatever batch of waiters exists when it finally lands. Concretely: a
+        // fix that times out resolves everyone `nil`, a fresh caller arrives and
+        // starts a new request, and the abandoned one's callback then resolves
+        // *that* caller with a coordinate resolved for the previous one.
+        // `stopUpdatingLocation()` is the documented cancel for a pending
+        // `requestLocation()`; on the paths where the fix already arrived it is
+        // simply a no-op.
+        manager.stopUpdatingLocation()
         let pending = waiters
         waiters.removeAll()
         for cont in pending { cont.resume(returning: location) }

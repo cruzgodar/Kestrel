@@ -1375,17 +1375,31 @@ private struct ZoomablePhotoPage: View {
         guard paging.settled, !fullResLoaded, !fullResInFlight, image != nil else { return }
         let name = item.scientificName
         fullResInFlight = true
-        fullResTask = Task {
+        // Assigned from out here, not inside the body: this method and the task
+        // are both main-actor isolated, so the assignment is guaranteed to land
+        // before the body can run and the handle can never be missed.
+        let task = Task {
             let full = await RemoteSpeciesImageStore.shared.fullResolutionImage(for: name)
+            // **Cancellation is checked before the clears, not after.**
+            // `fullResolutionImage` has no cancellation point of its own, so a
+            // cancelled download still runs to completion and resumes here — by
+            // which time `load()` has already cleared both of these *and* may
+            // have started a newer download for the bird now on screen. Clearing
+            // them here would nil that task's handle (leaving `onDisappear` with
+            // nothing to cancel) and claim nothing was in flight, so the next
+            // settle would start a second full-resolution download — several
+            // megabytes — of a photo already being fetched. There is nothing to
+            // clean up either way: `load()` did it.
+            guard !Task.isCancelled else { return }
             fullResInFlight = false
             fullResTask = nil
-            guard let full, !Task.isCancelled else { return }
             // Settled may have changed during the download (e.g. a new swipe began);
             // only swap while still settled, otherwise the next settle re-runs this.
-            guard paging.settled else { return }
+            guard let full, paging.settled else { return }
             image = full
             fullResLoaded = true
         }
+        fullResTask = task
     }
 
     @ViewBuilder

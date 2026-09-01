@@ -289,8 +289,20 @@ final class WatchSessionManager: NSObject {
     }
 
     /// Called when the phone asks the watch to stop streaming. Idempotent.
-    func handleRemoteStop(decision: WorkoutDecision = .ask) {
+    ///
+    /// `session` names the capture session the phone means. It sends this on
+    /// both channels, so a queued copy always exists and can be delivered after
+    /// the session it was about has ended — and this one carries a *decision*,
+    /// so a stale `.discard` would throw away the walk of whatever session is
+    /// running now. See `captureCommandApplies`.
+    func handleRemoteStop(decision: WorkoutDecision = .ask, session token: Int? = nil) {
         guard isRecording else { return }
+        guard Self.captureCommandApplies(
+            requestToken: token, currentToken: watchSessionToken
+        ) else {
+            Log.warning("Ignoring a remoteStop for a capture session that has already ended")
+            return
+        }
         stop(decision: decision)
     }
 
@@ -300,29 +312,151 @@ final class WatchSessionManager: NSObject {
     /// `RecordingManager.localSessionToken`. `nil` when the phone sent none.
     private var mirroredPhoneSession: Int?
 
-    /// Phone started recording with its own mic — mirror its now-hearing screen
-    /// without capturing any audio here. No-op if a real watch recording is in
-    /// progress (the watch's own capture wins).
-    func handlePhoneRecordingStarted(session token: Int? = nil) {
-        guard !isRecording, !isStarting else { return }
-        lastBird = nil
-        lastBirdImage = nil
-        mirroringPhone = true
-        mirroredPhoneSession = token
-        withAnimation(.easeInOut(duration: 0.3)) {
-            isRecording = true
-        }
-        // The mirror needs the same liveness check a capture does. `phoneStop`
-        // is the only thing that clears this state, and a phone that has been
-        // killed sends none — so without a watchdog the wrist showed
-        // "Listening on iPhone…" for a session that had already ended, until the
-        // user happened to tap Stop.
-        startHeartbeatWatchdog()
+    /// This watch's name for the capture session it is running, carried on the
+    /// `start` and `stop` handshakes and echoed back by the phone on every
+    /// command aimed at that session (`remoteStop`, `restartCapture`).
+    ///
+    /// The exact counterpart of `RecordingManager.localSessionToken`, and for
+    /// the same reason: both handshakes go out on *both* channels at once, so a
+    /// queued copy of one always exists and can be flushed long after the
+    /// session it describes has ended. A user who stops and immediately
+    /// restarts on the wrist got the old session's queued `stop` delivered after
+    /// the new one's live `start`, and the phone — whose only guard was "is a
+    /// watch session running" — tore the new session down while this watch went
+    /// on capturing into it. Every chunk was then dropped on the phone's
+    /// `watchRecording` guard, and the wrist showed a live recording that
+    /// reached nothing until the 90-second give-up watchdog noticed.
+    ///
+    /// Seeded from the wall clock rather than zero, for the reason
+    /// `RecordingManager.localSessionToken` is: the phone process routinely
+    /// outlives this one, and a counter that restarted at zero could reissue a
+    /// token the phone had already retired.
+    private var watchSessionToken = Int(Date().timeIntervalSince1970)
+
+    /// Whether a phone command aimed at this watch's capture session still
+    /// describes the session running now.
+    ///
+    /// A `nil` request token is an older phone build, which sends none; those
+    /// keep applying unconditionally rather than being dropped, since refusing
+    /// them would leave the phone's Stop button unable to end a watch session.
+    nonisolated static func captureCommandApplies(requestToken: Int?, currentToken: Int) -> Bool {
+        requestToken == nil || requestToken == currentToken
     }
 
-    /// Phone stopped its mic recording — drop the mirrored display.
-    func handlePhoneRecordingStopped() {
+    /// Whether a `phoneStop` still describes the phone session being mirrored.
+    ///
+    /// The other half of the pair `phoneStartOutcome` opens. `phoneStop` travels
+    /// on whichever channel `RecordingManager.sendToWatch` picks *at that
+    /// moment*, so a stop sent while this app was unreachable is queued while
+    /// the phone's next start goes out live — and the queued stop then lands on
+    /// top of the newer session, dropping the mirror for a recording that is
+    /// still running, with nothing to bring it back.
+    ///
+    /// A `nil` on either side means there is no token to disagree about (an
+    /// older phone build, or a mirror adopted without one) and the stop applies.
+    nonisolated static func phoneStopApplies(requestToken: Int?, mirroredToken: Int?) -> Bool {
+        guard let requestToken, let mirroredToken else { return true }
+        return requestToken == mirroredToken
+    }
+
+    /// What a `phoneStart` means for a watch that may already be doing something.
+    ///
+    /// `nonisolated` for the reason the phone's `MapPoint` is: the watch target
+    /// defaults to MainActor isolation, which would otherwise pin this plain enum
+    /// — and its synthesized `==` — to the main actor, out of reach of the tests
+    /// that check `phoneStartOutcome`.
+    nonisolated enum PhoneStartOutcome: Hashable {
+        /// The watch's own capture (or a bring-up on its way to one) owns the
+        /// session; the mirror never takes it away.
+        case ignore
+        /// Nothing running — begin mirroring.
+        case beginMirroring
+        /// Already mirroring the session this names. Both channels can carry one
+        /// start (`sendToWatch` falls back to `transferUserInfo` when a live send
+        /// errors), so a duplicate is ordinary and must change nothing —
+        /// re-running the setup would blank the now-hearing bird mid-session.
+        case alreadyMirroring
+        /// Already mirroring, but this names a *different* phone session: the
+        /// previous one's `phoneStop` never arrived. Re-target the mirror.
+        case retargetMirror
+    }
+
+    /// Which of those a `phoneStart` is.
+    ///
+    /// **`retargetMirror` is the case worth having.** `phoneStop` is sent on the
+    /// background-tolerant channel as well as the live one, and either can be
+    /// dropped or delivered late; the phone meanwhile is free to start a fresh
+    /// mic session. Simply bailing on "already recording" left the mirror holding
+    /// the *old* `mirroredPhoneSession`, so the watch's Stop echoed a token that
+    /// `RecordingManager.mirrorStopApplies` correctly rejected — the phone kept
+    /// recording and the Stop button on the wrist did nothing at all, with the
+    /// screen still claiming to be listening.
+    ///
+    /// A `nil` token is an older phone build, which sends none: two nils compare
+    /// as the same session, since there is nothing to tell them apart and
+    /// re-targeting on every duplicate would flash the display for no reason.
+    nonisolated static func phoneStartOutcome(
+        isRecording: Bool,
+        isStarting: Bool,
+        mirroringPhone: Bool,
+        mirroredSession: Int?,
+        incomingSession: Int?
+    ) -> PhoneStartOutcome {
+        guard !isStarting else { return .ignore }
+        if mirroringPhone {
+            return mirroredSession == incomingSession ? .alreadyMirroring : .retargetMirror
+        }
+        return isRecording ? .ignore : .beginMirroring
+    }
+
+    /// Phone started recording with its own mic — mirror its now-hearing screen
+    /// without capturing any audio here. A real watch recording wins; a mirror
+    /// already running is re-pointed at the new session (see
+    /// `phoneStartOutcome`).
+    func handlePhoneRecordingStarted(session token: Int? = nil) {
+        switch Self.phoneStartOutcome(
+            isRecording: isRecording,
+            isStarting: isStarting,
+            mirroringPhone: mirroringPhone,
+            mirroredSession: mirroredPhoneSession,
+            incomingSession: token
+        ) {
+        case .ignore, .alreadyMirroring:
+            return
+        case .retargetMirror:
+            // A session we never saw end has been replaced by a new one. Adopt
+            // its token — that is what the watch's Stop echoes back — and clear
+            // the bird, which belonged to the walk that quietly finished.
+            mirroredPhoneSession = token
+            clearHeardBird()
+            startHeartbeatWatchdog()
+        case .beginMirroring:
+            lastBird = nil
+            lastBirdImage = nil
+            mirroringPhone = true
+            mirroredPhoneSession = token
+            withAnimation(.easeInOut(duration: 0.3)) {
+                isRecording = true
+            }
+            // The mirror needs the same liveness check a capture does.
+            // `phoneStop` is the only thing that clears this state, and a phone
+            // that has been killed sends none — so without a watchdog the wrist
+            // showed "Listening on iPhone…" for a session that had already
+            // ended, until the user happened to tap Stop.
+            startHeartbeatWatchdog()
+        }
+    }
+
+    /// Phone stopped its mic recording — drop the mirrored display, unless the
+    /// stop names a session this is no longer mirroring (see `phoneStopApplies`).
+    func handlePhoneRecordingStopped(session token: Int? = nil) {
         guard mirroringPhone else { return }
+        guard Self.phoneStopApplies(
+            requestToken: token, mirroredToken: mirroredPhoneSession
+        ) else {
+            Log.warning("Ignoring a phoneStop for a session we are no longer mirroring")
+            return
+        }
         endMirrorDisplay()
     }
 
@@ -332,11 +466,9 @@ final class WatchSessionManager: NSObject {
     /// copy can be delivered long after the live one — by which time the phone may
     /// have started a different recording, which this must not end.
     private func stopMirroring() {
-        let session = WCSession.default
         var payload: [String: Any] = ["cmd": "stopPhone"]
         if let mirroredPhoneSession { payload["session"] = mirroredPhoneSession }
-        session.sendMessage(payload, replyHandler: nil, errorHandler: nil)
-        session.transferUserInfo(payload)
+        sendToPhoneOnBothChannels(payload)
         endMirrorDisplay()
     }
 
@@ -463,12 +595,34 @@ final class WatchSessionManager: NSObject {
         requestImage(scientificName: scientificName)
     }
 
+    /// The phone's session, or `nil` when there is nothing to send to.
+    ///
+    /// The single gate every send on this side passes through. Unlike the phone,
+    /// watchOS has no `isPaired` / `isWatchAppInstalled` to add — activation is
+    /// the whole check — but it used to be written out at some call sites and
+    /// simply omitted at others (`stopMirroring`, both start/stop handshakes, the
+    /// teardown's `stop`), which is the shape a real omission hides in.
+    private var activePhoneSession: WCSession? {
+        guard WCSession.isSupported() else { return nil }
+        let s = WCSession.default
+        guard s.activationState == .activated else { return nil }
+        return s
+    }
+
+    /// Sends on **both** channels at once: the live message for immediacy, and
+    /// the queued transfer so a suspended phone still gets it. The handshakes a
+    /// session's lifecycle turns on go this way, and the phone is idempotent
+    /// about receiving both.
+    private func sendToPhoneOnBothChannels(_ payload: [String: Any]) {
+        guard let s = activePhoneSession else { return }
+        s.sendMessage(payload, replyHandler: nil, errorHandler: nil)
+        s.transferUserInfo(payload)
+    }
+
     /// Asks the phone for a species image we don't have cached. Live path when
     /// reachable, queued fallback otherwise.
     private func requestImage(scientificName: String) {
-        guard WCSession.isSupported() else { return }
-        let s = WCSession.default
-        guard s.activationState == .activated else { return }
+        guard let s = activePhoneSession else { return }
         if s.isReachable {
             s.sendMessage(["needImage": scientificName], replyHandler: nil, errorHandler: nil)
         } else {
@@ -506,6 +660,13 @@ final class WatchSessionManager: NSObject {
     /// beat, sending the Resume button back up into the stop button rather than
     /// having it blink out and a fresh one blink in.
     private func beginSession() {
+        // Name the session before anything announces it. Monotonic, so the phone
+        // can tell a fresh start from a queued duplicate of an old one — see
+        // `watchSessionToken` and `RecordingManager.watchStartOutcome`. A Resume
+        // off the save prompt reaches here too and takes a new token: it re-runs
+        // the whole start handshake, so the phone has to be told which name the
+        // stop that eventually follows will carry.
+        watchSessionToken &+= 1
         // Fresh session — drop any bird left over from the previous one so the
         // "now hearing" screen starts on "Listening…" rather than briefly
         // flashing the last bird of the previous walk.
@@ -552,9 +713,7 @@ final class WatchSessionManager: NSObject {
     /// from. Every send of that flag now happens after authorization has resolved,
     /// so all copies agree and out-of-order delivery is harmless.
     private func notifyPhoneStarted() {
-        let session = WCSession.default
-        session.sendMessage(["cmd": "start"], replyHandler: nil, errorHandler: nil)
-        session.transferUserInfo(["cmd": "start"])
+        sendToPhoneOnBothChannels(["cmd": "start", "session": watchSessionToken])
     }
 
     /// Tells the phone whether a birding walk on this watch could be written to
@@ -580,23 +739,16 @@ final class WatchSessionManager: NSObject {
     /// "ask" — the behavior it had before. A walk has to run 15 seconds to be
     /// worth prompting about at all, so the gap is not one a user can fall into.
     private func sendWorkoutSavable() {
-        guard WCSession.isSupported() else { return }
-        let s = WCSession.default
-        guard s.activationState == .activated else { return }
-        let payload: [String: Any] = [
+        sendToPhoneOnBothChannels([
             "cmd": "watchWorkoutSavable",
             "workoutSavable": WatchWorkoutManager.shared.canSaveWorkouts,
-        ]
-        s.sendMessage(payload, replyHandler: nil, errorHandler: nil)
-        s.transferUserInfo(payload)
+        ])
     }
 
     /// Rollback handshake for when an optimistically-announced start fails to
     /// bring audio up (permission denied, engine error).
     private func notifyPhoneStopped() {
-        let session = WCSession.default
-        session.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
-        session.transferUserInfo(["cmd": "stop"])
+        sendToPhoneOnBothChannels(["cmd": "stop", "session": watchSessionToken])
     }
 
     private func startWithPermission() async {
@@ -678,9 +830,7 @@ final class WatchSessionManager: NSObject {
     /// Ships the watch's coordinate to the phone. Live `sendMessage` when
     /// reachable, background-tolerant `transferUserInfo` otherwise.
     private func sendWatchLocation(lat: Double, lon: Double) {
-        guard WCSession.isSupported() else { return }
-        let s = WCSession.default
-        guard s.activationState == .activated else { return }
+        guard let s = activePhoneSession else { return }
         let payload: [String: Any] = ["cmd": "watchLocation", "lat": lat, "lon": lon]
         if s.isReachable {
             s.sendMessage(payload, replyHandler: nil, errorHandler: { _ in
@@ -758,9 +908,7 @@ final class WatchSessionManager: NSObject {
             // Tell the phone so it tears down too, after flushing any
             // background-queued audio.
             self.flushBackgroundBuffer()
-            let session = WCSession.default
-            session.sendMessage(["cmd": "stop"], replyHandler: nil, errorHandler: nil)
-            session.transferUserInfo(["cmd": "stop"])
+            self.notifyPhoneStopped()
 
             audioQueue.async { streamer.stop() }
             // Now-hearing screen is hidden — drop the retained bird so the next
@@ -839,7 +987,16 @@ final class WatchSessionManager: NSObject {
     }
 
     /// Phone (its own audio-liveness watchdog) asked us to restart capture.
-    func handleRestartCapture() {
+    /// Tokened like the stop beside it: this also rides both channels, and a
+    /// queued copy landing on a later session would tear a healthy audio engine
+    /// down and build it back up for nothing.
+    func handleRestartCapture(session token: Int? = nil) {
+        guard Self.captureCommandApplies(
+            requestToken: token, currentToken: watchSessionToken
+        ) else {
+            Log.warning("Ignoring a restartCapture for a capture session that has already ended")
+            return
+        }
         restartCapture(reason: "phone requested capture restart")
     }
 
@@ -1008,12 +1165,7 @@ final class WatchSessionManager: NSObject {
     /// `RecordingManager`), which resets our clock. Sent both live and via the
     /// queued channel so a backgrounded phone still gets it.
     private func probePhone() {
-        guard WCSession.isSupported() else { return }
-        let s = WCSession.default
-        guard s.activationState == .activated else { return }
-        let payload: [String: Any] = ["cmd": "watchPing"]
-        s.sendMessage(payload, replyHandler: nil, errorHandler: nil)
-        s.transferUserInfo(payload)
+        sendToPhoneOnBothChannels(["cmd": "watchPing"])
     }
 
     /// Tears the audio engine down and brings it straight back up, without
@@ -1082,16 +1234,30 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                     let raw = payload["workout"] as? String
                     let decision = raw.flatMap(WatchSessionManager.WorkoutDecision.init(rawValue:))
                         ?? WatchSessionManager.WorkoutDecision.ask
-                    WatchSessionManager.shared.handleRemoteStop(decision: decision)
+                    // The token names the capture session this stop is about, so
+                    // a queued copy can't end (or discard the walk of) a later
+                    // one. Absent from an older phone build.
+                    WatchSessionManager.shared.handleRemoteStop(
+                        decision: decision,
+                        session: payload["session"] as? Int
+                    )
                 case "phoneStart":
                     // The token names the phone session being mirrored; it rides
                     // back on `stopPhone`. Absent from an older phone build.
                     WatchSessionManager.shared.handlePhoneRecordingStarted(
                         session: payload["session"] as? Int
                     )
-                case "phoneStop":   WatchSessionManager.shared.handlePhoneRecordingStopped()
+                case "phoneStop":
+                    // Names the phone session being ended, so a queued copy
+                    // can't drop the mirror of a *later* one.
+                    WatchSessionManager.shared.handlePhoneRecordingStopped(
+                        session: payload["session"] as? Int
+                    )
                 case "phoneHeartbeat":  WatchSessionManager.shared.handlePhoneHeartbeat()
-                case "restartCapture":  WatchSessionManager.shared.handleRestartCapture()
+                case "restartCapture":
+                    WatchSessionManager.shared.handleRestartCapture(
+                        session: payload["session"] as? Int
+                    )
                 case "clearImageCache": WatchSessionManager.shared.handleClearImageCache()
                 default: break
                 }

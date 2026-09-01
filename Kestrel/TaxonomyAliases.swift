@@ -46,4 +46,28 @@ nonisolated enum TaxonomyAliases {
     static func canonical(_ scientificName: String) -> String {
         ebirdToBirdNET[scientificName] ?? scientificName
     }
+
+    /// Collapses a scientific name to its species-level binomial —
+    /// `"Genus species"`. Names with fewer than two tokens pass through.
+    ///
+    /// eBird exports subspecies groups as trinomials
+    /// (`"Dryobates villosus harrisi"`), which would otherwise show up as
+    /// duplicate species rows once the parenthetical common-name suffix is
+    /// stripped. BirdNET and the rest of the app key off the binomial.
+    ///
+    /// **One definition, because this is one decision.** It was two — a private
+    /// copy in `EBirdCSVParser`, where an import decides what a row's species
+    /// *is*, and another in `LifeListStore.collapseToSpecies`, where a launch
+    /// decides which stored entries are the same species. The two agreeing was
+    /// load-bearing and unenforced: a trinomial the parser collapsed one way and
+    /// the store collapsed another would file the imported row under a name no
+    /// entry holds, and the merge that was supposed to fold them together would
+    /// simply not fire. The rest of this area already works this way — the
+    /// export's `sanitize` and `canonicalCoordinate` each have exactly one home,
+    /// for exactly this reason.
+    static func speciesBinomial(_ scientificName: String) -> String {
+        let parts = scientificName.split(whereSeparator: { $0.isWhitespace })
+        guard parts.count >= 2 else { return scientificName }
+        return "\(parts[0]) \(parts[1])"
+    }
 }

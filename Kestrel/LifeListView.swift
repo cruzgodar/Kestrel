@@ -16,30 +16,16 @@ struct LifeListView: View {
     @State private var importMessage: String?
     @State private var showImportResult = false
     /// Drives the explanatory export modal opened from the toolbar button. The
-    /// system save panel (`isExporting`) is launched from its bottom button,
-    /// mirroring the import flow.
+    /// system save panel (`ExportSession.isSaving`) is launched from its bottom
+    /// button, mirroring the import flow.
     @State private var showExportInfo = false
-    @State private var isExporting = false
-    /// The CSV built when the user tapped Export, held while the save panel is
-    /// up. Kept alongside `pendingExport` so a successful save can mark exactly
-    /// the observations in *this* file as exported.
-    @State private var exportDocument: EBirdCSVDocument?
-    @State private var pendingExport: EBirdCSVExporter.Payload?
-    /// The scope `pendingExport` was built for. Only a `.newOnly` save marks
-    /// its observations as exported — see `handleExport`.
-    @State private var pendingExportScope: LifeListStore.ExportScope?
+    /// Everything one trip through the export sheet is partway through: the
+    /// finished CSV, the scope it was built for, whether the save panel is up,
+    /// and the run token that lets a render outlive its sheet without leaving
+    /// any of that behind. See `ExportSession`.
+    @State private var export = ExportSession()
     @State private var exportMessage: String?
     @State private var showExportResult = false
-    /// The scope whose export turned out to have nothing to write — drives the
-    /// "Nothing to Export" alert, which is raised on the export sheet so it can
-    /// leave the sheet standing with the other button one tap away.
-    ///
-    /// Owned here rather than by the sheet because the sheet can no longer tell:
-    /// it used to ask `store.observationCount(for:)` before handing off, which
-    /// walked (and key-built) the whole life list on the main actor a second time
-    /// for every tap. The answer now comes from the payload the export already
-    /// produced — see `beginExport`.
-    @State private var emptyExportScope: LifeListStore.ExportScope?
     /// Title for the export result alert. The same alert reports a finished
     /// save and a "there was nothing new to write" no-op, which want different
     /// headings.
@@ -586,12 +572,10 @@ struct LifeListView: View {
         // three more presentations inline push it over.
         .modifier(ExportPresentations(
             showInfo: $showExportInfo,
-            isExporting: $isExporting,
-            document: $exportDocument,
+            session: export,
             showResult: $showExportResult,
             resultTitle: $exportResultTitle,
             message: $exportMessage,
-            emptyScope: $emptyExportScope,
             progress: exportProgress,
             onExport: { scope in Task { await beginExport(scope: scope) } },
             onExported: handleExport(_:)
@@ -910,7 +894,19 @@ struct LifeListView: View {
     ///
     /// The sheet does not survive the picker, however it ends: `handleExport`
     /// drops it on every path, cancellation included.
+    ///
+    /// **The render outlives the sheet, and is allowed to.** This is an
+    /// unstructured task with no tie to the sheet's lifetime, and the sheet is
+    /// swipe-dismissable throughout — so on the large life list the progress
+    /// card exists for, the user can perfectly well swipe it away mid-render.
+    /// Everything below the `applies` check writes state that sheet owns, and
+    /// once it is gone nothing would ever read or clear it again: the save panel
+    /// would be armed with nowhere to present, and the next visit to Export would
+    /// open onto the previous run's file (or its "Nothing to Export" alert). So
+    /// the run is tagged on the way in and the result is dropped if the sheet it
+    /// belonged to has since been dismissed. See `ExportSession`.
     private func beginExport(scope: LifeListStore.ExportScope) async {
+        let run = export.begin()
         exportProgress.fraction = 0
         // Reveal the progress card only if the render is still going a beat
         // later. A short life list finishes inside a frame or two, and flashing
@@ -922,38 +918,39 @@ struct LifeListView: View {
         }
         let payload = await store.makeEBirdExport(scope: scope, progress: exportProgress)
         reveal.cancel()
+        let applies = export.applies(run)
         if exportProgress.isVisible {
             // It got far enough to appear, so hold it long enough to read
-            // rather than blinking out the instant the last row renders.
-            try? await Task.sleep(for: .milliseconds(320))
+            // rather than blinking out the instant the last row renders — but
+            // only while there is still a sheet drawing it.
+            if applies { try? await Task.sleep(for: .milliseconds(320)) }
             exportProgress.isVisible = false
         }
+        guard applies else { return }
 
         // Nothing to hand eBird. Reported over the still-standing sheet, so the
         // other button is one tap away.
         guard payload.observationCount > 0 else {
-            emptyExportScope = scope
+            export.reportEmpty(scope: scope)
             return
         }
 
-        pendingExport = payload
-        pendingExportScope = scope
-        exportDocument = EBirdCSVDocument(data: payload.csv)
         // The sheet stays up and the save panel comes up over it, rather than
         // the sheet leaving first and the picker following it a beat later.
         // `.fileExporter` is attached to the sheet's own content for exactly
         // that reason — see `ExportInfoSheet`. The sheet is then dropped by
         // `handleExport` whichever way the picker ends.
-        isExporting = true
+        export.present(payload: payload, scope: scope)
     }
 
     private func handleExport(_ result: Result<URL, Error>) {
+        // Read before the `defer` clears them.
+        let payload = export.payload
+        let scope = export.scope
         // Cleared by the cancellation path below, which has nothing to report.
         var shouldReportResult = true
         defer {
-            pendingExport = nil
-            pendingExportScope = nil
-            exportDocument = nil
+            export.finish()
             // The picker was presented from the export sheet, so the sheet is
             // still standing underneath. Drop it, then let it finish leaving
             // before the alert goes up — an alert raised from a view that's on
@@ -967,7 +964,7 @@ struct LifeListView: View {
         }
         switch result {
         case .success:
-            guard let payload = pendingExport else {
+            guard let payload else {
                 shouldReportResult = false
                 return
             }
@@ -975,7 +972,7 @@ struct LifeListView: View {
             // Only a saved file eBird can actually take counts as handing
             // observations over — see `LifeListStore.recordsHandover`. The save
             // having happened at all is this branch; the rest is that call.
-            if let scope = pendingExportScope,
+            if let scope,
                LifeListStore.recordsHandover(
                    scope: scope, exceedsSizeLimit: payload.exceedsEBirdSizeLimit
                ) {
@@ -1000,7 +997,7 @@ struct LifeListView: View {
                 // and a user who splits and uploads this file by hand needs to
                 // know the next Export New will offer them again rather than
                 // come back empty.
-                if pendingExportScope == .newOnly {
+                if scope == .newOnly {
                     parts.append(
                         "They\u{2019}re still counted as new, so Export New Observations will include them again."
                     )
@@ -1095,15 +1092,13 @@ struct NoDimButtonStyle: ButtonStyle {
 /// its modifier chain inside the type-checker's budget.
 private struct ExportPresentations: ViewModifier {
     @Binding var showInfo: Bool
-    @Binding var isExporting: Bool
-    @Binding var document: EBirdCSVDocument?
+    /// Everything the sheet is partway through. Held as the object rather than
+    /// as a fistful of bindings so dismissing the sheet can put *all* of it back
+    /// — see `ExportSession.abandon`.
+    @Bindable var session: ExportSession
     @Binding var showResult: Bool
     @Binding var resultTitle: String
     @Binding var message: String?
-    /// Set once an export comes back with no rows, so the sheet can say so over
-    /// itself. Owned by the Life List rather than the sheet — see
-    /// `LifeListView.emptyExportScope`.
-    @Binding var emptyScope: LifeListStore.ExportScope?
     let progress: ExportProgress
     let onExport: (LifeListStore.ExportScope) -> Void
     let onExported: (Result<URL, Error>) -> Void
@@ -1111,19 +1106,18 @@ private struct ExportPresentations: ViewModifier {
     func body(content: Content) -> some View {
         content
             .sheet(isPresented: $showInfo, onDismiss: {
-                // The empty-export result belongs to the sheet it is reported
-                // on. Nothing else cleared it, and the render it describes runs
-                // for as long as the life list is large — so swiping the sheet
-                // away mid-render left the flag set with nothing to show it, and
-                // the *next* time the user opened Export they were told "Nothing
-                // to Export" about an attempt they had already abandoned.
-                emptyScope = nil
+                // Everything the export sheet owns goes with the export sheet.
+                // Its render is not tied to its lifetime and routinely outlives
+                // it (see `LifeListView.beginExport`), so anything left set here
+                // is state nothing on screen can show, clear, or answer for —
+                // an armed save panel with nowhere to present, or a "Nothing to
+                // Export" alert about an attempt the user already abandoned.
+                session.abandon()
+                progress.isVisible = false
             }) {
                 ExportInfoSheet(
                     progress: progress,
-                    isExporting: $isExporting,
-                    document: document,
-                    emptyScope: $emptyScope,
+                    session: session,
                     onExport: onExport,
                     onExported: onExported
                 )
@@ -1237,15 +1231,12 @@ private struct SheetCloseButton: View {
 /// their history.
 private struct ExportInfoSheet: View {
     let progress: ExportProgress
-    /// The system save panel is presented from *this* sheet rather than from
-    /// the Life List, so it layers over the buttons instead of making them
-    /// leave first — cancelling the picker lands back here.
-    @Binding var isExporting: Bool
-    let document: EBirdCSVDocument?
-    /// Set by the Life List when an export came back with no rows — drives the
-    /// alert below, which is raised here so reporting it leaves this sheet
-    /// standing and the other button one tap away.
-    @Binding var emptyScope: LifeListStore.ExportScope?
+    /// What this trip through the sheet is partway through. The save panel is
+    /// presented from *this* sheet rather than from the Life List, so it layers
+    /// over the buttons instead of making them leave first — cancelling the
+    /// picker lands back here — and the "Nothing to Export" alert is raised here
+    /// for the same reason, leaving the other button one tap away.
+    @Bindable var session: ExportSession
     /// Invoked with the scope of whichever button was tapped.
     let onExport: (LifeListStore.ExportScope) -> Void
     let onExported: (Result<URL, Error>) -> Void
@@ -1322,8 +1313,8 @@ private struct ExportInfoSheet: View {
         .presentationDetents([.fraction(0.62)])
         .presentationDragIndicator(.hidden)
         .fileExporter(
-            isPresented: $isExporting,
-            document: document,
+            isPresented: $session.isSaving,
+            document: session.document,
             contentType: .commaSeparatedText,
             defaultFilename: EBirdCSVExporter.defaultFilename()
         ) { result in
@@ -1345,12 +1336,12 @@ private struct ExportInfoSheet: View {
         .alert(
             "Nothing to Export",
             isPresented: Binding(
-                get: { emptyScope != nil },
-                set: { if !$0 { emptyScope = nil } }
+                get: { session.emptyScope != nil },
+                set: { if !$0 { session.emptyScope = nil } }
             ),
-            presenting: emptyScope
+            presenting: session.emptyScope
         ) { _ in
-            Button("OK", role: .cancel) { emptyScope = nil }
+            Button("OK", role: .cancel) { session.emptyScope = nil }
         } message: { scope in
             Text(emptyMessage(for: scope))
         }
@@ -1363,6 +1354,105 @@ private struct ExportInfoSheet: View {
         case .everything:
             return "Your life list is empty, so there is nothing to export."
         }
+    }
+}
+
+/// Everything one trip through the export sheet is partway through, and the run
+/// token that keeps a render from outliving it.
+///
+/// **Why this is one object rather than five `@State` flags.** The CSV render is
+/// an unstructured task started from a button in the sheet, and nothing ties it
+/// to the sheet's lifetime — the sheet is swipe-dismissable for the whole of it,
+/// and on the large life list the progress card exists for that is seconds of
+/// opportunity. Every field here is written *after* the render finishes, and
+/// every one of them is read only by the sheet, so a result that lands after the
+/// sheet has gone leaves state nothing can show, clear, or answer for:
+///
+///   • `isSaving` arms a `.fileExporter` attached to the unmounted sheet. It
+///     never presents, and SwiftUI only clears an `isPresented` binding when the
+///     presentation it drives actually dismisses — so it stays armed, and the
+///     *next* visit to Export opens straight into a save panel for the previous
+///     run's file, still carrying `payload` and `scope` to mark exported.
+///   • `emptyScope` pops "Nothing to Export" on that next visit, about an attempt
+///     the user abandoned. (Clearing it from the sheet's `onDismiss` alone did
+///     not fix this: dismissal completes in a third of a second and the render it
+///     is racing runs for seconds, so the clear happens *first* and the stale
+///     write lands after it.)
+///
+/// So a run is tagged on the way in (`begin`), checked on the way out
+/// (`applies`), and `abandon` — which the sheet's `onDismiss` calls — retires the
+/// token along with everything else. A run whose token has been retired drops its
+/// result on the floor, which is the only correct thing left to do with it.
+///
+/// A reference type for the same reason `ExportProgress` is: it is handed to a
+/// `ViewModifier` and a sheet that both need the live value, and it is
+/// main-actor isolated by the project's default.
+@Observable
+final class ExportSession {
+    /// Names the run in flight. Monotonic; `abandon` bumps it to retire whatever
+    /// was outstanding, so a stale run can never be mistaken for the current one.
+    private(set) var run = 0
+    /// Whether the system save panel is up.
+    var isSaving = false
+    /// The CSV the save panel is writing.
+    private(set) var document: EBirdCSVDocument?
+    /// The payload behind `document`, kept so a successful save can mark exactly
+    /// the observations in *this* file as exported.
+    private(set) var payload: EBirdCSVExporter.Payload?
+    /// The scope `payload` was built for. Only a `.newOnly` save marks its
+    /// observations as exported — see `LifeListView.handleExport`.
+    private(set) var scope: LifeListStore.ExportScope?
+    /// The scope whose export turned out to have nothing to write, driving the
+    /// sheet's "Nothing to Export" alert.
+    ///
+    /// Decided out here rather than by the sheet, because the sheet can no longer
+    /// tell: it used to ask `LifeListStore.observationCount(for:)` before handing
+    /// off, which walked (and key-built) the whole life list on the main actor a
+    /// second time for every tap. The answer now comes from the payload the
+    /// export already produced — see `LifeListView.beginExport`.
+    var emptyScope: LifeListStore.ExportScope?
+
+    /// Starts a run and returns its token. Also retires any earlier run, so two
+    /// taps in quick succession can't both land.
+    @discardableResult
+    func begin() -> Int {
+        run &+= 1
+        return run
+    }
+
+    /// Whether a finished run is still the one the sheet is waiting on.
+    func applies(_ token: Int) -> Bool { token == run }
+
+    /// The run produced a file; arm the save panel over it.
+    func present(payload: EBirdCSVExporter.Payload, scope: LifeListStore.ExportScope) {
+        self.payload = payload
+        self.scope = scope
+        document = EBirdCSVDocument(data: payload.csv)
+        isSaving = true
+    }
+
+    /// The run produced nothing; say so over the sheet.
+    func reportEmpty(scope: LifeListStore.ExportScope) {
+        emptyScope = scope
+    }
+
+    /// The save panel closed, however it closed. Drops the file but leaves the
+    /// run token alone — nothing is outstanding at this point.
+    func finish() {
+        payload = nil
+        scope = nil
+        document = nil
+    }
+
+    /// The sheet went away. Retires the run in flight and clears everything it
+    /// could still have written.
+    func abandon() {
+        run &+= 1
+        isSaving = false
+        payload = nil
+        scope = nil
+        document = nil
+        emptyScope = nil
     }
 }
 

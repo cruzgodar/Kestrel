@@ -1207,7 +1207,18 @@ final class LifeListStore {
     /// Not part of the app's own flow, and shouldn't be: blocking the main actor
     /// on disk IO is the hitch this queue exists to avoid.
     func flushPendingWrites() {
-        Self.ioQueue.sync { }
+        Self.drainPendingWrites()
+    }
+
+    /// `flushPendingWrites` without a store to hand.
+    ///
+    /// The queue is shared by every instance, so "everything queued so far" is a
+    /// question about the queue rather than about any one store — which is what
+    /// lets a test's scratch directory drain it on the way out, after the store
+    /// that queued the writes is already gone. Same reasoning, same barrier:
+    /// a `sync` behind the queued writes can only run once they have.
+    nonisolated static func drainPendingWrites() {
+        ioQueue.sync { }
     }
 
     /// Mirrors `saveStars`: snapshot on the main actor, encode + write on the
@@ -1545,7 +1556,7 @@ final class LifeListStore {
         // entry's id, and its id is its photo slug.
         var order: [String] = []
         for entry in entries {
-            let key = speciesBinomial(entry.scientificName)
+            let key = TaxonomyAliases.speciesBinomial(entry.scientificName)
             // Recorded once here rather than in each branch below: a trinomial
             // lands under its binomial whether it is the first entry to claim
             // that key or is merging into one that already has, and the star
@@ -1753,12 +1764,6 @@ final class LifeListStore {
             )
         }
         return Canonicalization(entries: mapped, renames: renames)
-    }
-
-    private nonisolated static func speciesBinomial(_ s: String) -> String {
-        let parts = s.split(whereSeparator: { $0.isWhitespace })
-        guard parts.count >= 2 else { return s }
-        return "\(parts[0]) \(parts[1])"
     }
 
     private func save() {

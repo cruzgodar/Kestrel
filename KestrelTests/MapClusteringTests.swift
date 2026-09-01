@@ -788,6 +788,127 @@ struct MapClusteringTests {
     }
 }
 
+/// When a *pan* invalidates the cluster set.
+///
+/// `computeClusters` reads the camera center as well as its span — for the
+/// `cosLat` that scales the longitude threshold, and for the frame
+/// `unwrappedLongitude` rotates every point into — but the rebuild was triggered
+/// by the discrete zoom step alone. So both went stale on a pure pan: labels
+/// crowded or spread wrongly after a long north-south move, and, worse, panning
+/// across the date line without crossing a zoom step left the frame centred
+/// where the last zoom happened, which is exactly the wrap the unwrapping
+/// exists to fix.
+@Suite("Cluster recentering")
+struct ClusterRecenteringTests {
+
+    private func coord(_ lat: Double, _ lon: Double) -> CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: lat, longitude: lon)
+    }
+
+    private func needed(
+        from previous: CLLocationCoordinate2D?,
+        to next: CLLocationCoordinate2D
+    ) -> Bool {
+        MapView.clustersNeedRecentering(from: previous, to: next)
+    }
+
+    /// The common case by far, and the one that has to stay cheap: the rebuild
+    /// walks every plotted point on the main actor, so ordinary panning must not
+    /// trip it.
+    @Test("an ordinary pan does not rebuild")
+    func ordinaryPanIsInert() {
+        #expect(!needed(from: coord(42.45, -76.47), to: coord(42.46, -76.48)))
+        #expect(!needed(from: coord(42.45, -76.47), to: coord(42.9, -77.1)))
+    }
+
+    @Test("nothing clustered yet is nothing to recenter")
+    func noBaselineIsInert() {
+        #expect(!needed(from: nil, to: coord(42, -76)))
+    }
+
+    /// The latitude half. `cosLat` scales the longitude threshold, so a long
+    /// north-south move leaves the clustering measuring in the wrong units.
+    @Test("a long north-south pan rebuilds")
+    func latitudePanRebuilds() {
+        #expect(needed(from: coord(10, 0), to: coord(50, 0)))
+        #expect(needed(from: coord(50, 0), to: coord(10, 0)))
+    }
+
+    /// Tested through the same clamped cosine the threshold is built from, so it
+    /// tightens toward the poles exactly where the scaling does — the tolerance
+    /// is on the quantity that matters, not on raw degrees.
+    @Test("the latitude tolerance tightens toward the poles")
+    func latitudeToleranceFollowsTheScaling() {
+        // Ten degrees of latitude at the equator barely moves the cosine...
+        #expect(!needed(from: coord(0, 0), to: coord(10, 0)))
+        // ...and the same ten degrees high up moves it a great deal.
+        #expect(needed(from: coord(60, 0), to: coord(70, 0)))
+    }
+
+    /// The longitude half, and the one with teeth: this is the date-line fix
+    /// reached by panning instead of by a raw subtraction.
+    @Test("a long east-west pan rebuilds")
+    func longitudePanRebuilds() {
+        #expect(needed(from: coord(42, 0), to: coord(42, 40)))
+    }
+
+    /// Measured the short way round, like everything else about longitude here,
+    /// so a camera crossing the seam reads as having moved two degrees rather
+    /// than three hundred and fifty-eight.
+    @Test("crossing the date line is a short move, not a whole turn")
+    func seamCrossingIsShort() {
+        #expect(!needed(from: coord(42, 179), to: coord(42, -179)))
+    }
+
+    /// The threshold has to be grounded in the thing it protects: a pan large
+    /// enough to trip it is a pan large enough to change the clustering. Two
+    /// pins either side of the seam cluster when the frame is centred near them
+    /// and refuse to when it is a world away — and the pan between those two
+    /// frames is one this rule catches.
+    @Test("a pan the rule catches is one that changes the answer")
+    func theThresholdMatchesTheFailure() {
+        let viewSize = CGSize(width: 390, height: 780)
+        let footprint = CGSize(width: 110, height: 102)
+        let span = MKCoordinateSpan(latitudeDelta: 0.1, longitudeDelta: 0.1)
+        let day = Date(timeIntervalSince1970: 1_556_928_000)
+        let points = [
+            MapPoint(id: "a", scientificName: "A a", commonName: "A", date: day,
+                     location: nil, latitude: 42, longitude: 179.999),
+            MapPoint(id: "b", scientificName: "B b", commonName: "B", date: day,
+                     location: nil, latitude: 42, longitude: -179.999),
+        ]
+        // The frame the camera zoomed at, half a world away from where it has
+        // since panned to.
+        let stale = MapView.computeClusters(
+            points: points, span: span, centerLatitude: 42, centerLongitude: 0,
+            viewSize: viewSize, footprint: footprint, gutter: 4
+        )
+        // The frame it should be using now.
+        let fresh = MapView.computeClusters(
+            points: points, span: span, centerLatitude: 42, centerLongitude: 180,
+            viewSize: viewSize, footprint: footprint, gutter: 4
+        )
+        #expect(stale.count == 2, "the wrong frame splits a stack two thousandths of a degree wide")
+        #expect(fresh.count == 1, "the right frame folds it")
+        #expect(
+            needed(from: coord(42, 0), to: coord(42, 180)),
+            "and the pan between those two frames is one the rule rebuilds for"
+        )
+    }
+
+    /// The rebuild trigger and the threshold it protects read the same quantity,
+    /// so they cannot drift into disagreeing about what a latitude means.
+    @Test("the clamped cosine is shared with the clustering itself")
+    func cosineIsShared() {
+        #expect(MapView.clusterCosLatitude(0).isApproximately(1))
+        #expect(MapView.clusterCosLatitude(60).isApproximately(0.5, tolerance: 1e-6))
+        // Clamped, so a near-polar camera can't drive the threshold to zero (and
+        // the spatial hash's divisor to infinity).
+        #expect(MapView.clusterCosLatitude(89.999).isApproximately(0.05))
+        #expect(MapView.clusterCosLatitude(-89.999).isApproximately(0.05))
+    }
+}
+
 private extension Double {
     /// Degrees compare to within a hair; these are exact-in-principle values
     /// arrived at by subtraction.

@@ -98,6 +98,71 @@ struct EBirdCSVParserTests {
         #expect(rows[0].latitude == 42.4791, "the comma must not have shifted the columns")
     }
 
+    // MARK: line endings
+
+    /// Swift iterates a `String` by grapheme cluster, and CRLF is a *single*
+    /// `Character` equal to neither "\n" nor "\r" — so an export re-saved by
+    /// Excel or Numbers would fall straight through to the default arm, embed
+    /// every row break as field content, and collapse the whole file into one
+    /// row. Normalizing up front is what makes the scan see real breaks, and it
+    /// is also why neither branch of that scan carries a "\r" arm any more:
+    /// there is no carriage return left for one to handle.
+    @Test("a CRLF export parses the same as an LF one")
+    func crlfIsNormalized() throws {
+        let lf = """
+        Scientific Name,Common Name,Date,Location,Latitude,Longitude
+        Cardinalis cardinalis,Northern Cardinal,2019-05-04,Ithaca,42.4791,-76.4512
+        Cyanocitta cristata,Blue Jay,2019-05-05,Ithaca,42.4791,-76.4512
+        """
+        let crlf = lf.replacingOccurrences(of: "\n", with: "\r\n")
+
+        let rows = try EBirdCSVParser.parse(Data(crlf.utf8))
+        #expect(rows.count == 2)
+        #expect(rows[0].scientificName == "Cardinalis cardinalis")
+        #expect(rows[1].scientificName == "Cyanocitta cristata")
+        #expect(rows[1].commonName == "Blue Jay", "no stray carriage return glued to the field")
+        #expect(rows[0].longitude == -76.4512)
+    }
+
+    /// Classic-Mac line endings, which some spreadsheet exports still produce.
+    @Test("a lone-CR export parses too")
+    func loneCarriageReturnIsNormalized() throws {
+        let cr = "Scientific Name,Common Name,Date\r"
+            + "Cardinalis cardinalis,Northern Cardinal,2019-05-04\r"
+        let rows = try EBirdCSVParser.parse(Data(cr.utf8))
+        #expect(rows.count == 1)
+        #expect(rows[0].commonName == "Northern Cardinal")
+    }
+
+    /// A break *inside* quotes is field content, not a row break — RFC 4180 says
+    /// so, and the normalization has to leave that property alone rather than
+    /// turning a two-line place name into two records.
+    @Test("a CRLF inside a quoted field stays inside the field")
+    func quotedLineBreakIsContent() throws {
+        let csv = "Scientific Name,Common Name,Date,Location\r\n"
+            + "Cardinalis cardinalis,Northern Cardinal,2019-05-04,\"Sapsucker\r\nWoods\"\r\n"
+        let rows = try EBirdCSVParser.parse(Data(csv.utf8))
+        #expect(rows.count == 1, "the quoted break must not have split the record")
+        #expect(rows[0].location == "Sapsucker\nWoods", "folded to LF, kept as content")
+    }
+
+    /// The quote-scanning branch peeks one character past a closing quote and
+    /// handles it inline. It used to save and restore `field` around that peek —
+    /// a no-op, since nothing between the two touched it — which made the branch
+    /// read as though it were undoing something. These are the three characters
+    /// that can follow a closing quote.
+    @Test("a closing quote hands off correctly to comma, newline, and end of file")
+    func closingQuoteHandOff() throws {
+        let csv = "Scientific Name,Common Name,Date,Location\n"
+            + "Cardinalis cardinalis,\"Northern Cardinal\",2019-05-04,\"Ithaca NY\"\n"
+            + "Cyanocitta cristata,Blue Jay,2019-05-05,\"Ithaca NY\""
+        let rows = try EBirdCSVParser.parse(Data(csv.utf8))
+        #expect(rows.count == 2)
+        #expect(rows[0].commonName == "Northern Cardinal", "quote then comma")
+        #expect(rows[0].location == "Ithaca NY", "quote then newline")
+        #expect(rows[1].location == "Ithaca NY", "quote then end of file")
+    }
+
     @Test("an empty file parses to no rows")
     func emptyFile() throws {
         #expect(try EBirdCSVParser.parse(Data()).isEmpty)
@@ -338,5 +403,74 @@ struct EBirdCSVParserTests {
              location: "Place \(i)" as String?, lat: 42.0 as Double?, lon: -76.0 as Double?)
         }
         #expect(try parse(rows).count == 2_000)
+    }
+}
+
+/// The species-level binomial collapse, which the import and the launch-time
+/// canonicalization both key on.
+///
+/// It was written out twice — a private copy in `EBirdCSVParser`, deciding what
+/// species a CSV row *is*, and another in `LifeListStore.collapseToSpecies`,
+/// deciding which stored entries are the same species. The two agreeing was
+/// load-bearing and nothing enforced it: a trinomial the parser collapsed one
+/// way and the store collapsed another files the imported row under a name no
+/// entry holds, and the merge meant to fold them together simply never fires.
+/// One definition, on `TaxonomyAliases`, next to the other name-normalizing
+/// decision — the same shape the export's `sanitize` and `canonicalCoordinate`
+/// already have.
+@Suite("Species binomial")
+struct SpeciesBinomialTests {
+
+    @Test("a trinomial collapses to its species")
+    func trinomialCollapses() {
+        #expect(TaxonomyAliases.speciesBinomial("Dryobates villosus harrisi") == "Dryobates villosus")
+        #expect(TaxonomyAliases.speciesBinomial("Setophaga coronata auduboni") == "Setophaga coronata")
+    }
+
+    @Test("a binomial passes through unchanged")
+    func binomialUnchanged() {
+        #expect(TaxonomyAliases.speciesBinomial("Dryobates villosus") == "Dryobates villosus")
+    }
+
+    /// A name too short to have a species half is left alone rather than being
+    /// mangled into one — a bare genus is as far as that record goes.
+    @Test("a name with fewer than two tokens passes through")
+    func shortNamesUnchanged() {
+        #expect(TaxonomyAliases.speciesBinomial("Buteo") == "Buteo")
+        #expect(TaxonomyAliases.speciesBinomial("") == "")
+    }
+
+    /// Runs of whitespace are separators, not content, so an untidily-spaced
+    /// name collapses to the same binomial a tidy one does.
+    @Test("irregular whitespace still yields the same binomial")
+    func whitespaceIsNormalized() {
+        #expect(TaxonomyAliases.speciesBinomial("  Dryobates   villosus  harrisi ")
+                == "Dryobates villosus")
+    }
+
+    /// The property that made two copies dangerous: collapsing an
+    /// already-collapsed name changes nothing, so it does not matter how many
+    /// times the pipeline applies it.
+    @Test("collapsing is idempotent")
+    func idempotent() {
+        for name in ["Dryobates villosus harrisi", "Dryobates villosus", "Buteo", ""] {
+            let once = TaxonomyAliases.speciesBinomial(name)
+            #expect(TaxonomyAliases.speciesBinomial(once) == once)
+        }
+    }
+
+    /// The agreement the single definition buys, stated end to end: a
+    /// subspecies row imported from eBird comes out under exactly the name the
+    /// store's own collapse would file it under.
+    @Test("the importer and the store agree on what a trinomial is")
+    func importerAgreesWithTheStore() throws {
+        let rows = try EBirdCSVParser.parse(eBirdCSV([
+            (sci: "Dryobates villosus harrisi", common: "Hairy Woodpecker (Pacific)",
+             date: "2019-05-04", location: "P" as String?,
+             lat: 42.0 as Double?, lon: -76.0 as Double?),
+        ]))
+        #expect(rows.count == 1)
+        #expect(rows[0].scientificName
+                == TaxonomyAliases.speciesBinomial("Dryobates villosus harrisi"))
     }
 }

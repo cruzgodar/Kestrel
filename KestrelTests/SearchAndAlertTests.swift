@@ -749,3 +749,152 @@ struct MirrorStopTests {
         #expect(RecordingManager.mirrorStopApplies(requestToken: nil, currentToken: 7))
     }
 }
+
+/// What a watch `start` handshake means to a phone that may already be doing
+/// something.
+///
+/// The watch announces a session on *both* channels at once, so the phone sees
+/// every start twice — and the queued copy outlives app suspension, so it can be
+/// flushed long after the session it describes has ended. The old guard was
+/// `if isRecording && !watchRecording { return }; guard !watchRecording`, which
+/// answers "is anything running" and cannot answer "is this start still current".
+/// A stale copy therefore brought a whole session up for a watch that had
+/// stopped: the silent keepalive draining the battery, the watchdogs armed, no
+/// audio ever arriving, until the 90-second give-up threshold tore it down and
+/// told the user the watch had disconnected.
+@Suite("Watch start token")
+struct WatchStartOutcomeTests {
+
+    private typealias Outcome = RecordingManager.WatchStartOutcome
+
+    private func outcome(
+        watchRecording: Bool = false,
+        phoneRecording: Bool = false,
+        lastSeen: Int? = nil,
+        incoming: Int? = nil
+    ) -> Outcome {
+        RecordingManager.watchStartOutcome(
+            watchRecording: watchRecording,
+            phoneRecording: phoneRecording,
+            lastSeenToken: lastSeen,
+            incomingToken: incoming
+        )
+    }
+
+    @Test("an idle phone brings the session up")
+    func idleBegins() {
+        #expect(outcome(incoming: 7) == .begin)
+    }
+
+    /// The phone's own microphone owns a session; the watch only ever *mirrors*
+    /// one of those (`phoneStart`), never takes it over.
+    @Test("a phone-mic session is not displaced")
+    func phoneSessionWins() {
+        #expect(outcome(phoneRecording: true, incoming: 7) == .ignore)
+    }
+
+    /// Both channels carry the handshake, so the second copy of a live start is
+    /// ordinary and must change nothing.
+    @Test("the duplicate copy of a live start is inert")
+    func duplicateIsInert() {
+        #expect(outcome(watchRecording: true, lastSeen: 7, incoming: 7) == .ignore)
+    }
+
+    /// The regression. `watchRecording` is false again by the time this lands,
+    /// so nothing about the *present state* distinguishes it from a real start —
+    /// only the token does.
+    @Test("a start for a session that has already ended brings nothing up")
+    func staleStartIsRefused() {
+        #expect(
+            outcome(lastSeen: 7, incoming: 7) == .ignore,
+            "a queued start must not raise a session for a watch that has stopped"
+        )
+        #expect(outcome(lastSeen: 9, incoming: 7) == .ignore)
+    }
+
+    /// A Resume off the watch's save prompt re-runs the whole start handshake
+    /// while the phone still believes the session is live. There is nothing to
+    /// bring up — but the token has moved, and the stop that eventually follows
+    /// will carry the new one, so holding the old one would make
+    /// `watchStopApplies` refuse the real stop and leave the phone recording
+    /// forever.
+    @Test("a newer start over a live session moves the token")
+    func liveSessionAdoptsANewerToken() {
+        #expect(outcome(watchRecording: true, lastSeen: 7, incoming: 8) == .adoptToken)
+    }
+
+    /// Staleness is decided before anything else: a retired token describes a
+    /// session that is over and is not evidence about what is running now.
+    @Test("a stale token is refused even while a session is live")
+    func stalenessOutranksTheLiveSession() {
+        #expect(outcome(watchRecording: true, lastSeen: 9, incoming: 7) == .ignore)
+    }
+
+    /// An older watch build sends no token. Refusing those would leave its record
+    /// button dead, which is worse than the race they would close.
+    @Test("an untokened start always applies")
+    func untokenedStartApplies() {
+        #expect(outcome(incoming: nil) == .begin)
+        #expect(outcome(lastSeen: 9, incoming: nil) == .begin)
+        #expect(outcome(watchRecording: true, incoming: nil) == .adoptToken)
+    }
+
+    /// Nothing has been seen yet — a first session on this launch — so there is
+    /// no baseline to call anything stale against.
+    @Test("the first start of a launch is never stale")
+    func firstStartApplies() {
+        #expect(outcome(lastSeen: nil, incoming: 7) == .begin)
+    }
+}
+
+/// Which watch session a `stop` relayed from the wrist is allowed to end.
+///
+/// The counterpart of `mirrorStopApplies`, for the other kind of session, and
+/// the hole it was left with. `notifyPhoneStopped` sends on both channels
+/// unconditionally, so a queued copy of every stop always exists — and stopping
+/// and immediately restarting on the wrist gets it delivered *after* the new
+/// session's live `start`. The phone then tore the new session down while the
+/// watch went on capturing into it: every chunk dropped on
+/// `ingestWatchSamples16k`'s `watchRecording` guard, the wrist showing a live
+/// recording that reached nothing, until its own watchdog gave up 90 seconds
+/// later and blamed the connection.
+@Suite("Watch stop token")
+struct WatchStopTokenTests {
+
+    @Test("a stop for the running session applies")
+    func appliesToTheCurrentSession() {
+        #expect(RecordingManager.watchStopApplies(requestToken: 7, currentToken: 7))
+    }
+
+    @Test("a stop for a session that has already ended is ignored")
+    func ignoresAStaleStop() {
+        #expect(
+            !RecordingManager.watchStopApplies(requestToken: 6, currentToken: 7),
+            "a queued stop must not end the session that replaced its own"
+        )
+    }
+
+    /// An older watch build sends no token, and the phone's own teardown paths
+    /// (`stopWatchSession`, the liveness watchdog) pass none either — they are
+    /// ending the session in front of them, not relaying a message about one.
+    @Test("an untokened stop applies whichever side is missing it")
+    func appliesWithoutAToken() {
+        #expect(RecordingManager.watchStopApplies(requestToken: nil, currentToken: 7))
+        #expect(RecordingManager.watchStopApplies(requestToken: 7, currentToken: nil))
+        #expect(RecordingManager.watchStopApplies(requestToken: nil, currentToken: nil))
+    }
+
+    /// The pairing worth stating: the two stop guards in this file are about
+    /// different sessions, and a token minted for one says nothing about the
+    /// other. They are deliberately separate counters.
+    @Test("the watch-capture stop gate is not the mirrored-stop gate")
+    func differsFromMirrorStopApplies() {
+        // Same shape, different subject: `mirrorStopApplies` is about the
+        // phone-mic session the watch was mirroring, this one about the watch's
+        // own capture.
+        #expect(!RecordingManager.watchStopApplies(requestToken: 6, currentToken: 7))
+        #expect(!RecordingManager.mirrorStopApplies(requestToken: 6, currentToken: 7))
+        // Only this one tolerates a phone that never adopted a token.
+        #expect(RecordingManager.watchStopApplies(requestToken: 7, currentToken: nil))
+    }
+}

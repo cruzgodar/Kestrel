@@ -1035,6 +1035,12 @@ struct MapView: View {
         if let step = camera.pendingZoomStep, step != camera.lastZoomStep {
             camera.lastZoomStep = step
             rebuildClusters(animated: false)
+        } else if Self.clustersNeedRecentering(
+            from: camera.lastClusterCenter, to: camera.lastCenter
+        ) {
+            // A pan, at unchanged zoom, that has moved far enough to invalidate
+            // the clustering's own frame. See `clustersNeedRecentering`.
+            rebuildClusters(animated: false)
         }
 
         // Refresh the viewport-culled set whenever pan or zoom crosses a
@@ -1102,6 +1108,10 @@ struct MapView: View {
             footprint: Self.annotationFootprint,
             gutter: Self.clusterGutter
         )
+        // Recorded on every rebuild, whichever path asked for it, so
+        // `clustersNeedRecentering` is always measured against the camera the
+        // live cluster set actually belongs to.
+        camera.lastClusterCenter = camera.lastCenter
         // Re-point an open card at the stack as it now stands. Before the
         // `next != visibleReps` guard below, because an edit that leaves every
         // pin where it was still changes what the card's menus should act on.
@@ -1350,7 +1360,7 @@ struct MapView: View {
 
         let degPerPoint = span.latitudeDelta / Double(viewSize.height)
         let thresholdLat = degPerPoint * Double(footprint.height + gutter)
-        let cosLat = max(cos(centerLatitude * .pi / 180), 0.05)
+        let cosLat = clusterCosLatitude(centerLatitude)
         let thresholdLon = (degPerPoint * Double(footprint.width + gutter)) / cosLat
 
         // Deterministic order (date desc, then stable tiebreakers) so the
@@ -1463,6 +1473,66 @@ struct MapView: View {
     /// latitude. Below this nothing could cluster anyway, and the quotient starts
     /// running out of `Int`.
     private static let minimumClusterThreshold: Double = 1e-9
+
+    /// How much the longitude threshold's latitude scaling may drift before the
+    /// clusters it produced stop describing the camera. A tenth is well inside
+    /// what a pin's own footprint absorbs.
+    private static let clusterCosLatTolerance: Double = 0.1
+
+    /// How far the clustering frame's center may slide in longitude before the
+    /// wrap it fixes stops being fixed. Generous: the frame only has to keep the
+    /// camera well inside the 180° half-turn where `unwrappedLongitude` is
+    /// exact, and a ten-degree pan is an enormous move at any zoom where
+    /// clustering is doing anything.
+    private static let clusterFrameLongitudeTolerance: Double = 10
+
+    /// Whether the cluster set has to be rebuilt because the *camera center*
+    /// moved, at unchanged zoom.
+    ///
+    /// `computeClusters` reads the center as well as the span, in two places, and
+    /// the rebuild was triggered by the zoom step alone — so both went stale on a
+    /// pure pan:
+    ///
+    ///   • `cosLat` scales the longitude threshold by latitude. Panning a long
+    ///     way north or south left the thresholds computed for the latitude the
+    ///     user *was* at, so pins that should have folded into one stack drew
+    ///     over each other's labels (and vice versa).
+    ///   • `centerLongitude` is the frame `unwrappedLongitude` rotates every
+    ///     point into, and it is the whole of the date-line fix. Panning across
+    ///     the seam without crossing a zoom step left the frame centered where
+    ///     the last zoom happened, at which point two pins a couple of degrees
+    ///     apart on screen were still 358° apart in the frame and refused to
+    ///     cluster — the very failure the unwrapping was added for, just reached
+    ///     by panning instead of by the raw subtraction.
+    ///
+    /// Deliberately coarse. `rebuildClusters` walks every plotted point on the
+    /// main actor, so this must not fire on ordinary panning — and it doesn't
+    /// need to: both inputs tolerate a lot of movement, and the answer only
+    /// changes when the camera has gone somewhere genuinely different.
+    /// `nil` means nothing has been clustered yet, which the zoom-step path
+    /// covers on the first settle.
+    nonisolated static func clustersNeedRecentering(
+        from previous: CLLocationCoordinate2D?,
+        to center: CLLocationCoordinate2D
+    ) -> Bool {
+        guard let previous else { return false }
+        // Compared through the same clamped cosine the threshold is built from,
+        // rather than through a raw degree difference, so the test tightens
+        // toward the poles exactly where the scaling does.
+        let before = clusterCosLatitude(previous.latitude)
+        let now = clusterCosLatitude(center.latitude)
+        if abs(now - before) > before * clusterCosLatTolerance { return true }
+        return longitudeDistance(previous.longitude, center.longitude)
+            > clusterFrameLongitudeTolerance
+    }
+
+    /// The latitude scaling the longitude threshold divides by, clamped so a
+    /// near-polar camera can't drive it to zero. Shared by `computeClusters` and
+    /// `clustersNeedRecentering` so the rebuild trigger is measured in the same
+    /// quantity the threshold is built from.
+    nonisolated static func clusterCosLatitude(_ latitude: Double) -> Double {
+        max(cos(latitude * .pi / 180), 0.05)
+    }
 }
 
 /// The haptic-touch menu behind a single bird on the map — a pinned thumbnail
@@ -1812,7 +1882,9 @@ nonisolated struct BirdCluster: Identifiable, Hashable {
     /// of them; this is the list its menu asks over instead (see
     /// `MapPointMenu`).
     func sightings(of scientificName: String) -> [LifeListEntry.Observation] {
-        all.lazy.filter { $0.scientificName == scientificName }.map(\.observation)
+        // Not `.lazy`: the declared return type picks `Sequence.map`, so the
+        // chain was eager anyway and the annotation only claimed otherwise.
+        all.filter { $0.scientificName == scientificName }.map(\.observation)
     }
 
     /// Deterministic "newest first" ordering with stable tiebreakers, so equal
@@ -2406,6 +2478,11 @@ private final class CameraTracker {
     var pendingZoomStep: Int?
     var lastFilterCenter: CLLocationCoordinate2D?
     var lastFilterSpan: MKCoordinateSpan?
+    /// The camera center the current cluster set was computed for. Clustering
+    /// reads the center as well as the span (see
+    /// `MapView.clustersNeedRecentering`), so this is what says whether a pan
+    /// has invalidated it.
+    var lastClusterCenter: CLLocationCoordinate2D?
 }
 
 /// A circular liquid-glass map control, matching the search field's glass

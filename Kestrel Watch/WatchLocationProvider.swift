@@ -12,7 +12,18 @@ final class WatchLocationProvider: NSObject, CLLocationManagerDelegate {
     static let shared = WatchLocationProvider()
 
     private let manager = CLLocationManager()
-    private var continuation: CheckedContinuation<CLLocation?, Never>?
+    /// Everyone waiting on the current fix.
+    ///
+    /// A list, not a single slot — the same fix the phone's `LocationProvider`
+    /// carries, and for the same reason. A second caller arriving while a fix was
+    /// in flight used to be answered `nil` outright, which reads as "there is no
+    /// location" and is acted on as such: `resolveLocationAndNotifications` would
+    /// simply never send `watchLocation`, and the phone would build its
+    /// nearby-species filter from its own location — which for a watch-first user
+    /// is nowhere at all. Reachable by stopping and restarting a session inside
+    /// the eight-second fix window. Callers now join the fix in flight and all get
+    /// the same answer.
+    private var waiters: [CheckedContinuation<CLLocation?, Never>] = []
     private var timeoutTask: Task<Void, Never>?
     private var authContinuation: CheckedContinuation<CLAuthorizationStatus, Never>?
 
@@ -49,8 +60,10 @@ final class WatchLocationProvider: NSObject, CLLocationManagerDelegate {
     }
 
     /// Returns a single `CLLocation` fix, or `nil` on denial / timeout / error.
+    ///
+    /// Concurrent callers share one request: the first starts it, the rest wait
+    /// on the same answer. See `waiters`.
     func currentLocation(timeout: Duration = .seconds(8)) async -> CLLocation? {
-        if continuation != nil { return nil }
         switch manager.authorizationStatus {
         case .denied, .restricted, .notDetermined:
             return nil
@@ -59,8 +72,14 @@ final class WatchLocationProvider: NSObject, CLLocationManagerDelegate {
         @unknown default:
             return nil
         }
+
+        // Read before the append below, with no suspension in between: a
+        // non-empty list means someone else already asked and we only have to
+        // wait for the answer.
+        let startsRequest = Self.startsNewRequest(pendingWaiters: waiters.count)
         return await withCheckedContinuation { (cont: CheckedContinuation<CLLocation?, Never>) in
-            self.continuation = cont
+            self.waiters.append(cont)
+            guard startsRequest else { return }
             self.manager.requestLocation()
             self.timeoutTask = Task { [weak self] in
                 try? await Task.sleep(for: timeout)
@@ -69,13 +88,39 @@ final class WatchLocationProvider: NSObject, CLLocationManagerDelegate {
         }
     }
 
+    /// Whether a caller has to start a fix of its own, or can simply wait on one
+    /// already in flight.
+    ///
+    /// Trivial, and extracted anyway: the thing that was wrong here was not the
+    /// arithmetic but the *answer given to the second caller*, which was `nil`
+    /// rather than a place in the queue. Stated as a function so narrowing it
+    /// back to "one caller at a time" is a change a test objects to. The phone's
+    /// `LocationProvider` carries the same shape.
+    nonisolated static func startsNewRequest(pendingWaiters: Int) -> Bool {
+        pendingWaiters == 0
+    }
+
+    /// Hands `location` to everyone waiting and clears the list. Safe to call
+    /// more than once for one request — a fix that arrives just as the timeout
+    /// fires finds no waiters left and does nothing.
     private func finish(with location: CLLocation?) {
         timeoutTask?.cancel()
         timeoutTask = nil
-        if let cont = continuation {
-            continuation = nil
-            cont.resume(returning: location)
-        }
+        guard !waiters.isEmpty else { return }
+        // Cancel any fix still outstanding. `requestLocation()` delivers exactly
+        // one callback and that callback carries no idea of *which* request it
+        // belongs to — so a request we gave up on goes on running and answers
+        // whatever batch of waiters exists when it finally lands. Concretely: a
+        // fix that times out resolves everyone `nil`, a fresh caller arrives and
+        // starts a new request, and the abandoned one's callback then resolves
+        // *that* caller with a coordinate resolved for the previous one.
+        // `stopUpdatingLocation()` is the documented cancel for a pending
+        // `requestLocation()`; on the paths where the fix already arrived it is
+        // simply a no-op.
+        manager.stopUpdatingLocation()
+        let pending = waiters
+        waiters.removeAll()
+        for cont in pending { cont.resume(returning: location) }
     }
 
     private func finishAuth(with status: CLAuthorizationStatus) {
