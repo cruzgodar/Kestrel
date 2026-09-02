@@ -802,3 +802,149 @@ struct PhotoAttributionTests {
         #expect(info(credit: "  A. Birder  ", license: nil).attribution == "A. Birder")
     }
 }
+
+/// Settling a republished photo the app holds **no bytes** for.
+///
+/// `PhotoManifestStore` parks a republished credit so the caption can't run ahead
+/// of the picture — which is right while the old picture is still on disk, and
+/// wrong the moment it isn't. Every asset URL is unversioned, so with nothing
+/// cached the very next load fetches the *new* photo; the parked credit then
+/// captions it with the previous photographer and license.
+///
+/// `clearValidationStamps` already promotes everything for the wipe-the-cache
+/// case. This is the same rule reached one slug at a time: a species whose photo
+/// was republished before the app ever downloaded it.
+///
+/// The decision lives in `RemoteSpeciesImageStore.uncachedChangeAdvances` because
+/// the store itself is a singleton over the app's real container and the real
+/// CDN — that pure function is the only part a test can reach, so the two halves
+/// are checked here together: the selector picks the right slugs, and feeding its
+/// answer to `markValidated` is what actually turns the credit over.
+@Suite("Uncached republish settling")
+struct UncachedChangeSettlingTests {
+
+    private func manifest(_ entries: [String: (hash: String, credit: String?)]) -> PhotoManifest {
+        let files = entries.map { slug, value -> String in
+            let credit = value.credit.map { "\"\($0)\"" } ?? "null"
+            return """
+            "\(slug)": {"hash":"\(value.hash)","credit":\(credit),
+                        "license":"CC BY-SA 4.0","pageURL":"https://example.org/\(slug)","code":"\(slug)1"}
+            """
+        }.joined(separator: ",")
+        return PhotoManifest(data: Data("{\"files\":{\(files)}}".utf8))!
+    }
+
+    /// The published hashes as `settleUncachedChanges` passes them in.
+    private func published(_ entries: [String: (hash: String, credit: String?)]) -> [String: String] {
+        entries.mapValues(\.hash)
+    }
+
+    // MARK: the selector
+
+    @Test("a changed slug with nothing cached is advanced")
+    func uncachedChangeAdvances() {
+        let advances = RemoteSpeciesImageStore.uncachedChangeAdvances(
+            changedSlugs: ["a"],
+            publishedHashes: ["a": "h2"],
+            hasCachedBytes: { _ in false }
+        )
+        #expect(advances == ["a": "h2"])
+    }
+
+    /// The case the parking exists for, and the one this must not disturb: the
+    /// old bytes are still being served, so the old credit still describes them.
+    @Test("a changed slug whose bytes are cached is left alone")
+    func cachedChangeIsLeftParked() {
+        let advances = RemoteSpeciesImageStore.uncachedChangeAdvances(
+            changedSlugs: ["a"],
+            publishedHashes: ["a": "h2"],
+            hasCachedBytes: { _ in true }
+        )
+        #expect(advances.isEmpty, "the photo on disk is still the one the old credit names")
+    }
+
+    @Test("a mixed set advances only the uncached half")
+    func onlyTheUncachedHalfAdvances() {
+        let advances = RemoteSpeciesImageStore.uncachedChangeAdvances(
+            changedSlugs: ["cached", "uncached"],
+            publishedHashes: ["cached": "h2", "uncached": "h2"],
+            hasCachedBytes: { $0 == "cached" }
+        )
+        #expect(advances == ["uncached": "h2"])
+    }
+
+    /// A slug the manifest no longer lists is withdrawn, not changed — `apply` has
+    /// already dropped it and `discardWithdrawn` its bytes, so there is no hash to
+    /// advance to and nothing left to credit.
+    @Test("a slug the manifest no longer names is not advanced")
+    func withdrawnSlugIsNotAdvanced() {
+        let advances = RemoteSpeciesImageStore.uncachedChangeAdvances(
+            changedSlugs: ["gone"],
+            publishedHashes: [:],
+            hasCachedBytes: { _ in false }
+        )
+        #expect(advances.isEmpty)
+    }
+
+    @Test("nothing changed, nothing advanced")
+    func emptyInputIsEmpty() {
+        #expect(RemoteSpeciesImageStore.uncachedChangeAdvances(
+            changedSlugs: [],
+            publishedHashes: ["a": "h2"],
+            hasCachedBytes: { _ in false }
+        ).isEmpty)
+    }
+
+    // MARK: the invariant it protects
+
+    /// The whole point, end to end: a photo republished before the app ever
+    /// downloaded it is credited to its *new* photographer from the moment the
+    /// manifest lands — because the next load will fetch the new photo.
+    @Test("an uncached republish turns its credit over on the same pass")
+    func uncachedRepublishPromotesItsCredit() {
+        let scratch = ScratchDirectory()
+        let subject = PhotoManifestStore(directory: scratch.url)
+        _ = subject.apply(manifest(["a": ("h1", "Alice")]))
+
+        // Alice's photo was never downloaded, and upstream has replaced it.
+        let republished: [String: (hash: String, credit: String?)] = ["a": ("h2", "Bob")]
+        let applied = subject.apply(manifest(republished))
+        #expect(applied.changedSlugs == ["a"])
+        #expect(subject.info(forSlug: "a")?.credit == "Alice", "parked, for now")
+
+        subject.markValidated([], advancedHashes: RemoteSpeciesImageStore.uncachedChangeAdvances(
+            changedSlugs: applied.changedSlugs,
+            publishedHashes: published(republished),
+            hasCachedBytes: { _ in false }
+        ))
+
+        #expect(subject.info(forSlug: "a")?.credit == "Bob",
+                "the next load fetches Bob's photo, so it must not be captioned Alice")
+        #expect(subject.recordedHash(forSlug: "a") == "h2",
+                "and the hash moves with it, so nothing re-reports this as changed")
+    }
+
+    /// The mirror: with the old bytes still on disk the credit stays parked, which
+    /// is the behavior `republishedCreditWaitsForItsBytes` pins. Settling must not
+    /// quietly become "promote everything".
+    @Test("a cached republish still waits for its bytes")
+    func cachedRepublishStillWaits() {
+        let scratch = ScratchDirectory()
+        let subject = PhotoManifestStore(directory: scratch.url)
+        _ = subject.apply(manifest(["a": ("h1", "Alice")]))
+
+        let republished: [String: (hash: String, credit: String?)] = ["a": ("h2", "Bob")]
+        let applied = subject.apply(manifest(republished))
+
+        subject.markValidated([], advancedHashes: RemoteSpeciesImageStore.uncachedChangeAdvances(
+            changedSlugs: applied.changedSlugs,
+            publishedHashes: published(republished),
+            hasCachedBytes: { _ in true }
+        ))
+
+        #expect(subject.info(forSlug: "a")?.credit == "Alice",
+                "Alice's photo is still the one on disk")
+        #expect(subject.recordedHash(forSlug: "a") == "h1",
+                "so the slug stays changed and a later refresh still has work to do")
+    }
+}

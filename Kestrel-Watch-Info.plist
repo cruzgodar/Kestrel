@@ -2,17 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleURLTypes</key>
-	<array>
-		<dict>
-			<key>CFBundleURLName</key>
-			<string>com.cruzgodar.Kestrel.watchkitapp</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>kestrel</string>
-			</array>
-		</dict>
-	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Kestrel uses your location to focus identification on birds in your area.</string>
 	<key>NSHealthShareUsageDescription</key>

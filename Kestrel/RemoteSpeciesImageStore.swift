@@ -462,6 +462,10 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// reported and left alone, so metered data isn't spent re-fetching images the
     /// user already has, and a later high-power pass still sees them as changed.
     ///
+    /// The exception is a changed species the app holds **no bytes** for, which is
+    /// settled on every pass — see `settleUncachedChanges`, which is why that call
+    /// sits above the `includeChanged` guard rather than inside the refresh loop.
+    ///
     /// A refresh is all-or-nothing and non-destructive: the replacement bytes are
     /// downloaded and only then written over the old ones, and the slug's hash
     /// advances only once they have. A failure leaves the species with the photo
@@ -487,23 +491,93 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
             manifest: remote
         )
 
+        // Before the guard below, and on every pass: a changed species with
+        // nothing cached costs no network to settle, and leaving it parked is
+        // actively wrong. See `settleUncachedChanges`.
+        let settled = settleUncachedChanges(applied.changedSlugs, in: remote)
+
         guard includeChanged else { return result }
 
         var advanced: [String: String] = [:]
-        for slug in applied.changedSlugs {
+        for slug in applied.changedSlugs where !settled.contains(slug) {
             guard let published = remote.files[slug]?.hash else { continue }
             if await refreshCachedSizes(slug: slug) {
                 advanced[slug] = published
                 result.refreshedCount += 1
-            } else if !hasCachedBytes(slug: slug) {
-                // Nothing cached to go stale, so there is nothing to protect and
-                // no download to get wrong: record the new hash and let the next
-                // lazy load fetch the new photo.
-                advanced[slug] = published
             }
         }
         PhotoManifestStore.shared.markValidated([], advancedHashes: advanced)
         return result
+    }
+
+    /// Records the published hash — and with it the held-back credit — for every
+    /// changed slug the app holds no bytes for. Returns the slugs it settled, so
+    /// a caller's refresh loop can skip them.
+    ///
+    /// **Runs on every pass, cellular included**, because it downloads nothing:
+    /// there are no cached bytes for the incoming credit to mis-describe, so the
+    /// reason a republished photo's attribution is normally held back (see
+    /// `PhotoManifestStore.pendingMetadata`) simply doesn't apply.
+    ///
+    /// Leaving these parked is not the neutral choice it looks like. Every asset
+    /// URL is unversioned (see `assetBaseURL`), so the *next* load of one of these
+    /// slugs fetches the **republished** image — and `downloadAndStore` then
+    /// stamps it fresh for a full `cacheFreshness` window, so the revalidation
+    /// pass won't look at it for a day. With the credit still parked, the app
+    /// spends that day showing photo v2 under photo v1's photographer and license.
+    ///
+    /// That next load is not hypothetical: `BackgroundRefreshCoordinator`'s
+    /// prefetch task runs `checkForPhotoUpdates(includeChanged: false)` and then
+    /// immediately prefetches the life list and the nearby region, which downloads
+    /// exactly the changed slugs that had no bytes. And it is the same
+    /// mis-crediting `PhotoManifestStore.clearValidationStamps` promotes to avoid
+    /// — reached one slug at a time rather than all at once.
+    @discardableResult
+    private func settleUncachedChanges(
+        _ changedSlugs: [String],
+        in remote: PhotoManifest
+    ) -> Set<String> {
+        guard !changedSlugs.isEmpty else { return [] }
+        // Only the changed slugs' hashes, not the whole manifest's: this runs on
+        // every pass and the manifest carries an entry per photographed species.
+        var publishedHashes: [String: String] = [:]
+        publishedHashes.reserveCapacity(changedSlugs.count)
+        for slug in changedSlugs {
+            publishedHashes[slug] = remote.files[slug]?.hash
+        }
+        let advanced = Self.uncachedChangeAdvances(
+            changedSlugs: changedSlugs,
+            publishedHashes: publishedHashes,
+            hasCachedBytes: { self.hasCachedBytes(slug: $0) }
+        )
+        guard !advanced.isEmpty else { return [] }
+        PhotoManifestStore.shared.markValidated([], advancedHashes: advanced)
+        return Set(advanced.keys)
+    }
+
+    /// The rule behind `settleUncachedChanges`, as a pure function of the two
+    /// facts it turns on: which slugs changed, and which of those the app holds
+    /// bytes for.
+    ///
+    /// Extracted so the rule is pinned by a test rather than by a comment — the
+    /// same shape `LifeListStore.recordsHandover` and
+    /// `RecordingManager.shouldPromptForWatchWorkout` take, and for the same
+    /// reason: the store itself is a singleton over the app's real container and
+    /// the real CDN, so this is the only part of the decision a test can reach.
+    nonisolated static func uncachedChangeAdvances(
+        changedSlugs: [String],
+        publishedHashes: [String: String],
+        hasCachedBytes: (String) -> Bool
+    ) -> [String: String] {
+        var advanced: [String: String] = [:]
+        for slug in changedSlugs where !hasCachedBytes(slug) {
+            // A slug the manifest no longer lists isn't "changed" any more, it is
+            // withdrawn — `apply` has already dropped it and `discardWithdrawn`
+            // its bytes, so there is no hash to advance to.
+            guard let published = publishedHashes[slug] else { continue }
+            advanced[slug] = published
+        }
+        return advanced
     }
 
     /// Whether either persisted size of a slug is on disk.
@@ -640,6 +714,13 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         // their hash + attribution recorded, and credit fixes propagate.
         let applied = PhotoManifestStore.shared.apply(remote)
         discardWithdrawn(applied.removedSlugs)
+        // Including the settling of changed species with nothing cached. This
+        // pass fetches the same manifest the discovery check does, so it parks
+        // the same held-back credits and has to release the same ones — a slug
+        // with no bytes is never in `stale` (which comes from `cachedSlugs()`),
+        // so the loop below would otherwise never reach it. See
+        // `settleUncachedChanges`.
+        settleUncachedChanges(applied.changedSlugs, in: remote)
 
         var result = RevalidationResult()
         result.discoveredSlugs = applied.newSlugs

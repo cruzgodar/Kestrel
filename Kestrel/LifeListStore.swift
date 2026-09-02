@@ -1194,7 +1194,16 @@ final class LifeListStore {
     /// of the whole list on the main thread was a visible lag (e.g. the full-screen
     /// viewer's star button stalling on tap). A serial queue keeps writes ordered
     /// so a later save can't land before an earlier one.
-    private static let ioQueue = DispatchQueue(label: "com.kestrel.lifelist.io", qos: .utility)
+    ///
+    /// `nonisolated` because the queue is not the main actor's to own — it exists
+    /// precisely so writes happen off it — and because `drainPendingWrites` is
+    /// nonisolated and has to reach it. Without this the project's MainActor
+    /// default isolation pinned the queue to the main actor, which that barrier
+    /// referenced anyway: a warning today and an error under the Swift 6 language
+    /// mode. `DispatchQueue` is `Sendable`, so there is nothing to make safe.
+    private nonisolated static let ioQueue = DispatchQueue(
+        label: "com.kestrel.lifelist.io", qos: .utility
+    )
 
     /// Blocks until every write queued so far has landed on disk.
     ///

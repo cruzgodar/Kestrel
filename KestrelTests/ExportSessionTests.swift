@@ -163,6 +163,74 @@ struct ExportSessionTests {
         #expect(session.applies(second))
     }
 
+    // MARK: the progress card
+
+    /// The card is the one piece of a run's state that is *shared* between runs,
+    /// so it is the one a superseded run can damage rather than merely waste.
+    /// Both taps land inside the 180 ms before the card appears — after which it
+    /// dims the sheet and swallows the second tap — so this is the window.
+
+    @Test("the run the sheet is waiting on can raise and lower the card")
+    func liveRunDrivesTheCard() {
+        let session = ExportSession()
+        let progress = ExportProgress()
+        let run = session.begin()
+
+        #expect(session.setProgressVisible(true, run: run, on: progress))
+        #expect(progress.isVisible)
+        #expect(session.setProgressVisible(false, run: run, on: progress))
+        #expect(!progress.isVisible)
+    }
+
+    /// The regression: run one finishes while run two is still rendering. Run
+    /// two's reveal has already fired and will not fire again, so hiding the card
+    /// here left it rendering behind a blank sheet until it finished.
+    @Test("a superseded run cannot hide the card its successor raised")
+    func supersededRunLeavesTheCardAlone() {
+        let session = ExportSession()
+        let progress = ExportProgress()
+        let first = session.begin()
+        let second = session.begin()
+        session.setProgressVisible(true, run: second, on: progress)
+
+        #expect(!session.setProgressVisible(false, run: first, on: progress),
+                "the write is refused")
+        #expect(progress.isVisible, "so the live run's card stays up")
+    }
+
+    /// The other half: the sheet is swiped away 100 ms in, and the reveal fires at
+    /// 180 ms. A card raised then has nothing drawing it, and nothing left to
+    /// clear it — the *next* visit to Export opened onto it.
+    @Test("an abandoned run cannot raise the card after its sheet has gone")
+    func abandonedRunCannotRaiseTheCard() {
+        let session = ExportSession()
+        let progress = ExportProgress()
+        let run = session.begin()
+        session.abandon()
+
+        #expect(!session.setProgressVisible(true, run: run, on: progress))
+        #expect(!progress.isVisible)
+    }
+
+    /// A run can lose the sheet *between* the guard and the write — the hide waits
+    /// out a 320 ms beat so the finished bar is readable, and the sheet is
+    /// dismissable across it. The gate lives on the write for that reason.
+    @Test("a run that loses its sheet mid-beat stops writing")
+    func runLosingItsSheetMidBeatStopsWriting() {
+        let session = ExportSession()
+        let progress = ExportProgress()
+        let run = session.begin()
+        session.setProgressVisible(true, run: run, on: progress)
+        #expect(session.applies(run), "still the sheet's run when the beat starts")
+
+        // The sheet goes away while the beat is running; `onDismiss` puts the
+        // card away with everything else it owned.
+        session.abandon()
+        progress.isVisible = false
+
+        #expect(!session.setProgressVisible(false, run: run, on: progress))
+    }
+
     @Test("the run token keeps rising, so a retired token is never reissued")
     func tokensAreMonotonic() {
         let session = ExportSession()

@@ -144,6 +144,84 @@ struct WatchMetricsTests {
     }
 }
 
+/// When a birding walk is recorded as having *begun*, and why it is the tap.
+///
+/// The watch and the phone keep the same 15-second threshold under the same name
+/// — `WatchWorkoutManager.minimumDuration` and
+/// `RecordingManager.minimumWorkoutDuration` — and act on it in opposite
+/// directions: the phone decides whether to offer "Save Workout" when the user
+/// stops a watch session from the phone, and the watch decides whether the walk
+/// it relays that answer to is worth keeping. They are in different targets and
+/// so cannot be compared by a test; what *can* be pinned is the event each one
+/// counts from, and that is where they used to disagree.
+///
+/// The phone counts from the `start` handshake, which the watch sends 320 ms
+/// after the tap and **before** the microphone prompt and the audio-engine
+/// bring-up. Dating the walk from `WatchWorkoutManager.start()`'s own clock put
+/// the watch seconds *behind* the phone, and the band between them swallowed
+/// walks: the phone offered Save for a 16-second walk, the user tapped it, and
+/// the watch — which made the same walk 13 seconds — refused to park it,
+/// discarded it, and left the relayed `.save` with nothing to write.
+@Suite("Workout start instant")
+struct WorkoutStartInstantTests {
+
+    private let tap = Date(timeIntervalSince1970: 1_780_000_000)
+    /// What a cold start costs between the tap and HealthKit coming up: the morph,
+    /// the microphone prompt, and `AVAudioEngine.start()`.
+    private let coldBringUp: TimeInterval = 3
+
+    @Test("a walk past the threshold is long enough")
+    func longWalkQualifies() {
+        #expect(WatchWorkoutManager.isLongEnough(
+            walkStartedAt: tap, endedAt: tap.addingTimeInterval(60)
+        ))
+    }
+
+    @Test("a walk short of it is not")
+    func shortWalkDoesNot() {
+        #expect(!WatchWorkoutManager.isLongEnough(
+            walkStartedAt: tap, endedAt: tap.addingTimeInterval(5)
+        ))
+    }
+
+    @Test("the threshold itself counts")
+    func exactThresholdQualifies() {
+        #expect(WatchWorkoutManager.isLongEnough(
+            walkStartedAt: tap,
+            endedAt: tap.addingTimeInterval(WatchWorkoutManager.minimumDuration)
+        ))
+    }
+
+    /// The regression, stated as the two answers the same stop used to get. A
+    /// 16-second walk is one the phone will offer to save; timed from the
+    /// bring-up instead of the tap, this side made it 13 and threw it away.
+    @Test("a walk is timed from the tap, not from the workout bring-up")
+    func walkIsTimedFromTheTap() {
+        let stop = tap.addingTimeInterval(16)
+
+        #expect(WatchWorkoutManager.isLongEnough(walkStartedAt: tap, endedAt: stop),
+                "the phone offers Save here, so this side has to have a walk to save")
+        #expect(!WatchWorkoutManager.isLongEnough(
+            walkStartedAt: tap.addingTimeInterval(coldBringUp), endedAt: stop
+        ), "and timed from the bring-up it would fall short — the band walks fell through")
+    }
+
+    /// The safe direction, kept: the tap is *earlier* than the handshake the
+    /// phone counts from, so the watch's elapsed is the larger of the two. The
+    /// only disagreement left is the phone declining to prompt for a walk this
+    /// side would keep — which sends `.ask` and puts the question on the wrist.
+    @Test("the watch's clock is never behind the phone's")
+    func watchClockLeadsThePhones() {
+        // The phone starts counting when the handshake lands, 320 ms after the tap.
+        let handshake = tap.addingTimeInterval(0.32)
+        let stop = tap.addingTimeInterval(WatchWorkoutManager.minimumDuration + 0.1)
+
+        #expect(WatchWorkoutManager.isLongEnough(walkStartedAt: tap, endedAt: stop))
+        #expect(stop.timeIntervalSince(tap) >= stop.timeIntervalSince(handshake),
+                "so a walk the phone thinks is long enough always is here too")
+    }
+}
+
 /// When a birding walk is recorded as having ended.
 @Suite("Workout end instant")
 struct WorkoutEndInstantTests {

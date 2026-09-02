@@ -35,12 +35,44 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     private let healthStore = HKHealthStore()
     private var session: HKWorkoutSession?
     private var builder: HKLiveWorkoutBuilder?
-    /// When the current workout began, so `end()` can discard walks shorter
+    /// When the current walk began, so `end()` can discard walks shorter
     /// than `minimumDuration` rather than offering to log a trivially short one.
+    ///
+    /// The instant the record button was tapped, handed in by
+    /// `start(walkStartedAt:)` — *not* the instant this method runs. See that
+    /// parameter.
     private var startDate: Date?
     /// Birding walks this short aren't worth saving to HealthKit — they're
     /// usually an accidental start/stop, not a real walk.
-    private let minimumDuration: TimeInterval = 15
+    ///
+    /// `static`, and measured from the tap (see `isLongEnough`), because the
+    /// phone keeps the same threshold under the same name
+    /// (`RecordingManager.minimumWorkoutDuration`) and the two have to agree
+    /// about which walks are worth prompting over.
+    nonisolated static let minimumDuration: TimeInterval = 15
+
+    /// Whether a walk that began at `walkStartedAt` and ended at `endedAt` ran
+    /// long enough to be worth keeping.
+    ///
+    /// **`walkStartedAt` is the tap, not the HealthKit bring-up**, and that is the
+    /// whole point of stating this as a function. The phone measures its own copy
+    /// of this threshold from the `start` handshake, which the watch sends 320 ms
+    /// after the tap and *before* the microphone prompt and the audio-engine
+    /// bring-up — seconds, on a cold start. Timed from `start()`'s own `Date()`
+    /// the watch's clock therefore ran *behind* the phone's, and the band between
+    /// them was a hole a walk fell through: the phone offered "Save Workout" for a
+    /// 16-second walk, the user tapped Save, and the watch — which made it 13
+    /// seconds — refused to park it, discarded it in `end()`, and left the relayed
+    /// `.save` with neither a builder nor a span to write. Silently.
+    ///
+    /// Starting the walk at the tap puts the watch's clock *ahead* of the phone's
+    /// by the handshake delay instead, which is the safe direction: the phone may
+    /// decline to prompt for a walk the watch would have kept, and the `.ask` it
+    /// sends then puts the question on the wrist, which is the documented
+    /// fallback. See `WatchSessionManager.beginSession`.
+    nonisolated static func isLongEnough(walkStartedAt: Date, endedAt: Date) -> Bool {
+        endedAt.timeIntervalSince(walkStartedAt) >= minimumDuration
+    }
 
     /// A walk waiting on the user's decision. Non-nil only between
     /// `pause()`/`end()` and `save()`/`discard()`/`resume()`; the view observes it
@@ -95,9 +127,17 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// and written after the fact (see `pause()` / `save()`). Before this, an
     /// unauthorized or otherwise failed `HKWorkoutSession` meant no prompt ever
     /// appeared — a device-only failure that never reproduced in the simulator.
-    func start() async {
+    ///
+    /// - Parameter walkStartedAt: when the user tapped record, which is when the
+    ///   walk began — not when this runs, which is after the morph, the
+    ///   microphone prompt and the audio-engine bring-up. Passing it in is what
+    ///   keeps this side's `minimumDuration` from being reached later than the
+    ///   phone's copy of the same threshold; see `isLongEnough`. HealthKit takes
+    ///   the slightly-past instant for both `startActivity` and `beginCollection`,
+    ///   and it is the more honest start for the workout anyway.
+    func start(walkStartedAt: Date) async {
         guard session == nil else { return }
-        startDate = Date()
+        startDate = walkStartedAt
 
         guard HKHealthStore.isHealthDataAvailable() else {
             Log.warning("HealthKit unavailable — birding walk can't be collected or saved")
@@ -208,7 +248,7 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     private func canOfferSave(started: Date?, end: Date) -> Bool {
         guard let started else { return false }
         let elapsed = end.timeIntervalSince(started)
-        guard elapsed >= minimumDuration else { return false }
+        guard Self.isLongEnough(walkStartedAt: started, endedAt: end) else { return false }
         guard canSaveWorkouts else {
             Log.warning(
                 "No save prompt for a \(Int(elapsed))s walk — "

@@ -333,6 +333,16 @@ final class WatchSessionManager: NSObject {
     /// token the phone had already retired.
     private var watchSessionToken = Int(Date().timeIntervalSince1970)
 
+    /// The instant the record button was last tapped, stamped by `beginSession`
+    /// and handed to `WatchWorkoutManager.start(walkStartedAt:)` once the
+    /// bring-up gets that far. See `WatchWorkoutManager.isLongEnough` for why the
+    /// tap, and not the bring-up, is the moment a walk is dated from.
+    ///
+    /// Not cleared when a session ends: every start overwrites it before anything
+    /// reads it, and the workout manager holds the copy that actually matters
+    /// (`startDate`, which it clears itself).
+    private var walkStartedAt: Date?
+
     /// Whether a phone command aimed at this watch's capture session still
     /// describes the session running now.
     ///
@@ -667,6 +677,18 @@ final class WatchSessionManager: NSObject {
         // the whole start handshake, so the phone has to be told which name the
         // stop that eventually follows will carry.
         watchSessionToken &+= 1
+        // The walk begins *here*, on the tap — not seconds later when the audio
+        // engine and HealthKit are finally up. Everything that follows in this
+        // method is deferred by design (the morph, then the microphone prompt,
+        // then the engine), and the phone starts its own copy of the same
+        // 15-second threshold from the `start` handshake sent at the front of
+        // that. Stamping the walk from the tap is what keeps the two clocks in
+        // the safe order. See `WatchWorkoutManager.isLongEnough`.
+        //
+        // Written on a resume too, and ignored there: `WatchWorkoutManager.start`
+        // no-ops while a session is live, so a resumed walk keeps the start it
+        // already had rather than being restarted from the Resume tap.
+        walkStartedAt = Date()
         // Fresh session — drop any bird left over from the previous one so the
         // "now hearing" screen starts on "Listening…" rather than briefly
         // flashing the last bird of the previous walk.
@@ -797,7 +819,12 @@ final class WatchSessionManager: NSObject {
         // engine is up, so the rollback paths above never have a workout to undo.
         // The phone was already told we're recording (optimistically, in
         // `start()`), so audio it receives lines up with its UI state.
-        await WatchWorkoutManager.shared.start()
+        //
+        // The walk itself is dated from the *tap*, not from this moment —
+        // everything between the two is bring-up, and the phone's copy of the
+        // 15-second threshold has been counting since the handshake went out.
+        // See `WatchWorkoutManager.isLongEnough`.
+        await WatchWorkoutManager.shared.start(walkStartedAt: walkStartedAt ?? Date())
         // `start()` is where HealthKit's authorization sheet goes up, so the
         // answer the handshake carried a moment ago may be out of date. Re-state
         // it now, well before any stop can raise the phone's prompt.

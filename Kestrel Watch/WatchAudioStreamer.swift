@@ -17,7 +17,13 @@ import os
 /// spins up. The sample buffer they share with the audio render thread is
 /// guarded by `bufferLock` — see `handleTap` and `stop`.
 final class WatchAudioStreamer: @unchecked Sendable {
-    static let targetSampleRate: Double = 16_000
+    // `nonisolated`, exactly as `AudioPipeline`'s equivalents are and for the same
+    // reason: the project defaults to MainActor isolation, and these compile-time
+    // constants are read from the audio tap's nonisolated closure — off the main
+    // actor entirely. Without it `handleTap`'s read of `chunkSamples` warns today
+    // and is an error under the Swift 6 language mode. Immutable value types, so
+    // there is nothing to make safe.
+    nonisolated static let targetSampleRate: Double = 16_000
     /// 8000 samples @ 16 kHz = 500 ms per chunk → 2 messages/sec.
     ///
     /// Was 200 ms / 5 messages a second. Each `sendMessageData` is a full IPC +
@@ -26,12 +32,12 @@ final class WatchAudioStreamer: @unchecked Sendable {
     /// has to live under. Halving-and-then-some the message rate is the single
     /// cheapest win available; the cost is 300 ms more latency to the now-hearing
     /// display, invisible against BirdNET's 3-second analysis window.
-    static let chunkSamples: Int = 8_000
+    nonisolated static let chunkSamples: Int = 8_000
 
     /// Frames per input tap. At a 48 kHz hardware rate the old 1024 meant ~47
     /// converter invocations a second; 4800 makes it ~10 for the same audio, with
     /// the buffering that used to happen downstream now happening in the tap.
-    private static let tapBufferSize: AVAudioFrameCount = 4_800
+    private nonisolated static let tapBufferSize: AVAudioFrameCount = 4_800
 
     private let engine = AVAudioEngine()
 

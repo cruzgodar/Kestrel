@@ -48,6 +48,18 @@ final class RecordingManager {
     /// watch throws the walk away regardless, so there's nothing to ask about.
     /// `nonisolated` so `shouldPromptForWatchWorkout` — which is, so a test can
     /// drive it — can read it.
+    ///
+    /// **The two are measured from different events, and the order matters.**
+    /// This one counts from `watchSessionStart`, stamped when the watch's `start`
+    /// handshake arrives; the watch counts from the tap that sent it, 320 ms
+    /// earlier. So the watch's elapsed is always the larger of the two, and the
+    /// only disagreement possible is the phone declining to prompt for a walk the
+    /// watch would have kept — which sends `.ask` and puts the question on the
+    /// wrist instead. The opposite order is the one that loses data: the phone
+    /// offering Save for a walk the watch then discards as too short, with the
+    /// relayed `.save` finding nothing to write. That is what the watch dating
+    /// its walk from the tap prevents — see `WatchWorkoutManager.isLongEnough`,
+    /// which used to date it from the audio-engine bring-up seconds later.
     private nonisolated static let minimumWorkoutDuration: TimeInterval = 15
     /// True when location access is explicitly *denied* or *restricted* (not merely
     /// undetermined). The Identify tab grays the record button and shows a lock

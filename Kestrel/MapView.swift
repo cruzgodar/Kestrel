@@ -1477,14 +1477,20 @@ struct MapView: View {
     /// How much the longitude threshold's latitude scaling may drift before the
     /// clusters it produced stop describing the camera. A tenth is well inside
     /// what a pin's own footprint absorbs.
-    private static let clusterCosLatTolerance: Double = 0.1
+    ///
+    /// `nonisolated`, like the constant below it, because their only reader is
+    /// `clustersNeedRecentering`, which is `nonisolated` so a test can drive it.
+    /// The project's MainActor default isolation otherwise pins a plain `static
+    /// let` to the main actor, which that function then can't reach — a warning
+    /// today and an error under the Swift 6 language mode.
+    private nonisolated static let clusterCosLatTolerance: Double = 0.1
 
     /// How far the clustering frame's center may slide in longitude before the
     /// wrap it fixes stops being fixed. Generous: the frame only has to keep the
     /// camera well inside the 180° half-turn where `unwrappedLongitude` is
     /// exact, and a ten-degree pan is an enormous move at any zoom where
     /// clustering is doing anything.
-    private static let clusterFrameLongitudeTolerance: Double = 10
+    private nonisolated static let clusterFrameLongitudeTolerance: Double = 10
 
     /// Whether the cluster set has to be rebuilt because the *camera center*
     /// moved, at unchanged zoom.

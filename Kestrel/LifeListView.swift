@@ -911,22 +911,29 @@ struct LifeListView: View {
         // Reveal the progress card only if the render is still going a beat
         // later. A short life list finishes inside a frame or two, and flashing
         // a progress bar for one frame reads as a glitch.
+        //
+        // Raised through `setProgressVisible`, not written directly: cancellation
+        // alone doesn't say whether this run is still the sheet's. This fires
+        // 180 ms in, long before the render it belongs to finishes and cancels it,
+        // so an export abandoned inside that window would otherwise leave the card
+        // up with no sheet mounted to draw it.
         let reveal = Task {
             try? await Task.sleep(for: .milliseconds(180))
             guard !Task.isCancelled else { return }
-            exportProgress.isVisible = true
+            export.setProgressVisible(true, run: run, on: exportProgress)
         }
         let payload = await store.makeEBirdExport(scope: scope, progress: exportProgress)
         reveal.cancel()
-        let applies = export.applies(run)
+        // Everything below belongs to the sheet this run started from.
+        guard export.applies(run) else { return }
         if exportProgress.isVisible {
             // It got far enough to appear, so hold it long enough to read
-            // rather than blinking out the instant the last row renders — but
-            // only while there is still a sheet drawing it.
-            if applies { try? await Task.sleep(for: .milliseconds(320)) }
-            exportProgress.isVisible = false
+            // rather than blinking out the instant the last row renders. The
+            // sheet can go away across that sleep, which is why the hide is
+            // gated too rather than trusting the guard above.
+            try? await Task.sleep(for: .milliseconds(320))
+            export.setProgressVisible(false, run: run, on: exportProgress)
         }
-        guard applies else { return }
 
         // Nothing to hand eBird. Reported over the still-standing sheet, so the
         // other button is one tap away.
@@ -1422,6 +1429,32 @@ final class ExportSession {
 
     /// Whether a finished run is still the one the sheet is waiting on.
     func applies(_ token: Int) -> Bool { token == run }
+
+    /// Shows or hides the render's progress card on behalf of `token` — and does
+    /// nothing if that run is no longer the sheet's.
+    ///
+    /// The card is the one piece of a run's state that is *shared*, so it needs a
+    /// gate of its own rather than relying on the caller's. Two renders can be in
+    /// flight against one sheet — Export All and then Export New, tapped inside
+    /// the 180 ms before the card appears and starts swallowing taps — and the
+    /// card on screen belongs to whichever started last. A superseded run hiding
+    /// it left that render running behind a blank sheet, with its own reveal
+    /// already fired and no second one coming. A run whose sheet has since been
+    /// dismissed must not raise it either, or `isVisible` stays true with nothing
+    /// mounted to draw it and the next visit to Export opens onto a progress card
+    /// over nothing.
+    ///
+    /// Returns whether the write landed, so a caller can tell the two apart.
+    @discardableResult
+    func setProgressVisible(
+        _ visible: Bool,
+        run token: Int,
+        on progress: ExportProgress
+    ) -> Bool {
+        guard applies(token) else { return false }
+        progress.isVisible = visible
+        return true
+    }
 
     /// The run produced a file; arm the save panel over it.
     func present(payload: EBirdCSVExporter.Payload, scope: LifeListStore.ExportScope) {
