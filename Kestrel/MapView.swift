@@ -49,6 +49,47 @@ nonisolated struct MapPoint: Identifiable, Hashable {
     }
 }
 
+/// A bird the map is about to open the full-screen viewer on: the point whose
+/// photo and caption are shown, plus **every sighting the thumbnail it came from
+/// actually stands for**.
+///
+/// The second half is the whole reason this type exists. A map thumbnail is one
+/// image per *species* (`BirdCluster.uniqueByEarliest`), so repeat visits to one
+/// spot collapse into a single pin whose `MapPoint` is only the earliest of them.
+/// The pin's own haptic-touch menu has always known that and asks "which
+/// observation?" over `BirdCluster.sightings(of:)` — but a *tap* on the same
+/// thumbnail opened the viewer over the bare `MapPoint`, and the viewer's menu
+/// then edited or deleted that earliest sighting outright, with no chooser and no
+/// mention that three records were pinned there. The thumbnail sat looking
+/// untouched afterwards, which is exactly the failure `MapPointMenu` documents
+/// itself as avoiding.
+///
+/// Carrying the sightings alongside the point lets the viewer ask the same
+/// question from the same list. `sightings` always contains `point.observation`.
+/// `nonisolated` for the reason `MapPoint` is.
+nonisolated struct PinnedBird: Identifiable, Hashable {
+    let point: MapPoint
+    /// Every sighting of `point.scientificName` in the stack this was opened
+    /// from. One element for an ordinary lone pin.
+    ///
+    /// In no particular order, deliberately: `ObservationChoice` re-reads the
+    /// species' sightings off the store and narrows *them* by these identities,
+    /// so what the user sees is ordered by `LifeListStore.observations(for:)`
+    /// like every other list of sightings in the app. This is a set of keys.
+    let sightings: [LifeListEntry.Observation]
+
+    /// The point's own id: a viewer is opened over at most one entry per
+    /// species, so the point identifies the bird uniquely within a card.
+    var id: String { point.id }
+
+    /// The bird as it is pinned in `cluster` — the earliest sighting for its
+    /// photo and caption, and every sighting that thumbnail covers for its menu.
+    init(_ point: MapPoint, in cluster: BirdCluster) {
+        self.point = point
+        self.sightings = cluster.sightings(of: point.scientificName)
+    }
+}
+
 /// Whether two coordinates are the same place, exactly.
 ///
 /// `CLLocationCoordinate2D` is not `Equatable`, which is the *only* reason
@@ -384,7 +425,7 @@ struct MapView: View {
     /// A lone (non-clustered) pin tapped on the map *while no card is open*.
     /// Presented full-screen from the root without a map button — there's nowhere
     /// new to take the user.
-    @State private var presentedSinglePoint: MapPoint?
+    @State private var presentedSinglePoint: PinnedBird?
     /// A full-screen photo presented from *inside* the open card's sheet (so it
     /// appears instantly, with no wait for the sheet to dismiss): either a bird
     /// tapped in a cluster grid (`.pinpoint`, keeps the card) or a lone pin
@@ -866,16 +907,19 @@ struct MapView: View {
                 }
             )
         }
-        .fullScreenCover(item: $presentedSinglePoint) { point in
+        .fullScreenCover(item: $presentedSinglePoint) { bird in
             // A lone pin — nothing to swipe to, no map button.
             SpeciesPhotoFullScreen(
                 items: [SpeciesPhotoItem(
-                    scientificName: point.scientificName,
-                    placeName: point.location,
-                    dateFound: point.date,
-                    // A pin *is* one sighting, so the viewer's menu can edit or
-                    // delete it without asking which.
-                    observation: point.observation
+                    scientificName: bird.point.scientificName,
+                    placeName: bird.point.location,
+                    dateFound: bird.point.date,
+                    // The earliest sighting is what the caption describes; the
+                    // whole stack is what the menu acts on. A pin usually *is*
+                    // one sighting, in which case they say the same thing and
+                    // nothing is asked — see `PinnedBird`.
+                    observation: bird.point.observation,
+                    pinnedSightings: bird.sightings
                 )]
             )
             // Re-inject the store so the viewer's star toggle resolves it — see the
@@ -961,20 +1005,27 @@ struct MapView: View {
             // species and opens straight to its photo. It still holds every
             // repeat, so pick the earliest sighting the same way the card grid
             // does — the representative is the *newest* point of the stack.
-            let point = BirdCluster(
+            let cluster = BirdCluster(
                 representative: tappedInfo.representative,
                 coordinate: tappedInfo.coordinate,
                 others: tappedInfo.others
-            ).uniqueByEarliest.first ?? tappedInfo.representative
+            )
+            // Carries the whole stack, not just the earliest sighting, so the
+            // viewer's Edit and Delete ask the same "which observation?" the
+            // pin's own menu does — see `PinnedBird`.
+            let bird = PinnedBird(
+                cluster.uniqueByEarliest.first ?? tappedInfo.representative,
+                in: cluster
+            )
             if mapCard != nil {
                 // A card is already open. Present the photo from the *sheet's own*
                 // context so it appears instantly — a root cover would have to wait for
                 // the sheet to finish dismissing first. The card is closed when this
                 // photo is dismissed (see MapCardSheet).
-                sheetPhoto = .lone(point)
+                sheetPhoto = .lone(bird)
             } else {
                 // No card open: present full-screen from the root (nothing to wait on).
-                presentedSinglePoint = point
+                presentedSinglePoint = bird
             }
         }
     }
@@ -992,17 +1043,17 @@ struct MapView: View {
             coordinate: info.coordinate,
             others: info.others
         )
-        let point = cluster.uniqueByEarliest.first ?? info.representative
+        let bird = PinnedBird(cluster.uniqueByEarliest.first ?? info.representative, in: cluster)
         MapPointMenu(
-            point: point,
+            point: bird.point,
             store: store,
-            sightings: cluster.sightings(of: point.scientificName),
+            sightings: bird.sightings,
             actions: actions,
             onViewImage: {
                 if mapCard != nil {
-                    sheetPhoto = .lone(point)
+                    sheetPhoto = .lone(bird)
                 } else {
-                    presentedSinglePoint = point
+                    presentedSinglePoint = bird
                 }
             }
         )
@@ -2076,25 +2127,29 @@ private struct MapCardSheet: View {
             }
         ) { photo in
             switch photo {
-            case .pinpoint(let points, let startIndex):
+            case .pinpoint(let birds, let startIndex):
                 // Swipe between the birds in this card; the place-name tap
                 // pinpoints whichever bird is showing.
                 SpeciesPhotoFullScreen(
-                    items: points.map {
+                    items: birds.map {
                         SpeciesPhotoItem(
-                            scientificName: $0.scientificName,
-                            placeName: $0.location,
-                            dateFound: $0.date,
-                            observation: $0.observation
+                            scientificName: $0.point.scientificName,
+                            placeName: $0.point.location,
+                            dateFound: $0.point.date,
+                            observation: $0.point.observation,
+                            // One grid cell can stand for several visits to this
+                            // spot; the menu asks which rather than silently
+                            // taking the earliest. See `PinnedBird`.
+                            pinnedSightings: $0.sightings
                         )
                     },
                     initialIndex: startIndex,
                     mapButtonTitle: "Pinpoint on Map",
                     onShowOnMap: { item in
-                        if let point = points.first(where: {
-                            $0.scientificName == item.scientificName
+                        if let bird = birds.first(where: {
+                            $0.point.scientificName == item.scientificName
                         }) {
-                            onPinpoint(point.coordinate)
+                            onPinpoint(bird.point.coordinate)
                         }
                     },
                     // Preferred by the viewer over `onShowOnMap` — it carries the
@@ -2111,14 +2166,15 @@ private struct MapCardSheet: View {
                 )
                 // Re-inject the store so the viewer's star toggle resolves it.
                 .environment(store)
-            case .lone(let point):
+            case .lone(let bird):
                 // A lone pin tapped while a card was open — nothing to swipe to.
                 SpeciesPhotoFullScreen(
                     items: [SpeciesPhotoItem(
-                        scientificName: point.scientificName,
-                        placeName: point.location,
-                        dateFound: point.date,
-                        observation: point.observation
+                        scientificName: bird.point.scientificName,
+                        placeName: bird.point.location,
+                        dateFound: bird.point.date,
+                        observation: bird.point.observation,
+                        pinnedSightings: bird.sightings
                     )]
                 )
                 .environment(store)
@@ -2129,9 +2185,9 @@ private struct MapCardSheet: View {
     /// Opens the full-screen viewer over every bird in the card so the photo can
     /// be swiped between them, starting on `point`.
     private func openPhoto(for point: MapPoint, in cluster: BirdCluster) {
-        let points = cluster.uniqueByEarliest
-        let idx = points.firstIndex(of: point) ?? 0
-        photo = .pinpoint(points: points, index: idx)
+        let birds = cluster.uniqueByEarliest.map { PinnedBird($0, in: cluster) }
+        let idx = birds.firstIndex { $0.point == point } ?? 0
+        photo = .pinpoint(birds: birds, index: idx)
     }
 
     private func clusterGrid(_ cluster: BirdCluster) -> some View {
@@ -2230,24 +2286,28 @@ private struct SheetTopCornerRadiusReader: UIViewRepresentable {
 }
 
 /// A full-screen photo presented from within an open map card's sheet.
+///
+/// Both cases carry `PinnedBird`s rather than bare `MapPoint`s, so the viewer's
+/// Edit and Delete know how many sightings the thumbnail they were opened from
+/// stands for — see `PinnedBird`.
 private enum MapSheetPhoto: Identifiable, Equatable {
     /// Birds in a cluster grid — opens the viewer over all of them (swipeable),
     /// starting on `index`. Shows "Pinpoint on Map"; keeps the card.
-    case pinpoint(points: [MapPoint], index: Int)
+    case pinpoint(birds: [PinnedBird], index: Int)
     /// A lone pin tapped on the map while a card was open — no button; closes
     /// the card when dismissed.
-    case lone(MapPoint)
+    case lone(PinnedBird)
 
     /// Distinct per *bird*, not just per cluster: the index is part of the
-    /// identity because two cells of one card produce the same points array and
+    /// identity because two cells of one card produce the same birds array and
     /// would otherwise share an id, leaving `fullScreenCover(item:)` no way to
     /// tell "open the third bird" from "open the first".
     var id: String {
         switch self {
-        case .pinpoint(let points, let index):
-            return "pinpoint-\(points.first?.id ?? "")-\(points.count)-\(index)"
-        case .lone(let p):
-            return "lone-" + p.id
+        case .pinpoint(let birds, let index):
+            return "pinpoint-\(birds.first?.id ?? "")-\(birds.count)-\(index)"
+        case .lone(let bird):
+            return "lone-" + bird.id
         }
     }
 }

@@ -1334,7 +1334,8 @@ final class LifeListStore {
             let decoded = try decoder.decode([LifeListEntry].self, from: data)
             let normalized = needsDateMigration ? Self.normalizeDates(decoded) : decoded
             let collapsed = Self.canonicalize(normalized)
-            entries = collapsed.entries.sorted(by: Self.ordersBefore)
+            let ordered = collapsed.entries.sorted(by: Self.ordersBefore)
+            entries = ordered
             refreshSpeciesNames()
             // Follow the user's stars onto whatever names this pass moved, before
             // `init`'s `applyStarsToEntries` re-stamps from the set — see
@@ -1342,17 +1343,27 @@ final class LifeListStore {
             migrateStars(renames: collapsed.renames)
             // Persist if anything actually changed — dates were migrated, rows
             // merged, a scientific name was rewritten to its catalog-canonical
-            // form, or a merge picked a different common name.
+            // form, a merge picked a different common name, or the file simply
+            // wasn't in sort order.
             //
-            // Straight value equality against what was decoded, because every
-            // stage above preserves input order when it changes nothing:
+            // Straight value equality, and against `ordered` — *what is about to
+            // be held in memory* — rather than against the unsorted
+            // `collapsed.entries`. The two differ only for a file that isn't in
+            // `ordersBefore` order, which every `save()` writes but a
+            // hand-edited or much older one need not be; comparing the unsorted
+            // form left that file re-sorted in memory on every launch and never
+            // written back, while the comment here claimed the check was exactly
+            // "this launch found nothing to fix".
+            //
+            // Every stage above preserves input order when it changes nothing —
             // `normalizeDates` and `applyAliases` map, and each collapse pass
-            // rebuilds from a first-seen `order` array. So `collapsed == decoded`
-            // is exactly "this launch found nothing to fix". The old test
-            // compared only entry *counts* and scientific names, which missed a
-            // changed common name or a re-sorted observation set and redid that
-            // work, unpersisted, on every launch.
-            if collapsed.entries != decoded {
+            // rebuilds from a first-seen `order` array — so an already-sorted
+            // file with nothing to fix still compares equal and still doesn't
+            // write. (The original test compared only entry *counts* and
+            // scientific names, which missed a changed common name or a
+            // re-sorted observation set and redid that work, unpersisted, on
+            // every launch.)
+            if ordered != decoded {
                 save()
             }
             // Purely so the next launch can skip the pass; `normalizeDates` is
@@ -1757,11 +1768,33 @@ final class LifeListStore {
     /// post-split Northern Yellow Warbler) → "Setophaga petechia" (BirdNET's
     /// Yellow Warbler) where neither the sci nor common name matches the
     /// catalog directly.
+    ///
+    /// **The alias is looked up on the *binomial*, not on the stored name**, which
+    /// is what lets a stored trinomial reach the table at all. Every alias key is
+    /// a binomial (see `TaxonomyAliases.ebirdToBirdNET`), so a subspecies row like
+    /// "Picoides villosus harrisi" matched nothing here, and by the time
+    /// `collapseToSpecies` had reduced it to "Picoides villosus" this pass was
+    /// already over — the entry kept a genus BirdNET has never emitted, which is
+    /// its photo slug and what a detection is matched against.
+    /// `EBirdCSVParser.parse` has always collapsed before aliasing, so an *import*
+    /// of that same row landed on "Dryobates villosus" while the stored copy
+    /// didn't; the two agree now. (The common-name relabel in
+    /// `collapseByCommonName` rescued most of these, but only for an entry whose
+    /// common name matches the catalog's English one — which an eBird export in
+    /// another display language does not.)
+    ///
+    /// A name the table has nothing to say about is passed through **untouched**,
+    /// trinomial and all. Collapsing that is `collapseToSpecies`' job, and doing it
+    /// here would round every subspecies entry through `make` a pass early for no
+    /// gain.
     private nonisolated static func applyAliases(_ entries: [LifeListEntry]) -> Canonicalization {
         var renames: [String: String] = [:]
         let mapped = entries.map { entry -> LifeListEntry in
-            let canonical = TaxonomyAliases.canonical(entry.scientificName)
-            guard canonical != entry.scientificName else { return entry }
+            let binomial = TaxonomyAliases.speciesBinomial(entry.scientificName)
+            let canonical = TaxonomyAliases.canonical(binomial)
+            // Compared against the *binomial*: equal means the table had no entry
+            // for this species, whatever the stored name looks like.
+            guard canonical != binomial else { return entry }
             Self.recordRename(entry.scientificName, to: canonical, in: &renames)
             return LifeListEntry.make(
                 scientificName: canonical,

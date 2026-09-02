@@ -41,8 +41,6 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
     private var converter: AVAudioConverter?
 
     private let bufferLock = OSAllocatedUnfairLock(initialState: [Float]())
-    private var onWindow: (@Sendable ([Float]) -> Void)?
-    private var onChunk: (@Sendable ([Float]) -> Void)?
 
     private let prewarmLock = NSLock()
     private var prewarmTask: Task<Void, Never>?
@@ -88,13 +86,18 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
         }
     }
 
+    /// Both callbacks are **captured by the tap block** rather than stored on
+    /// `self`, which is what keeps them off the race the sample buffer needs
+    /// `bufferLock` for. A tap block can still be running when `removeTap`
+    /// returns, so callbacks reassigned here would be written from this thread
+    /// while the audio render thread reads them. Each installed tap carrying its
+    /// own is also the right answer rather than merely a safe one: a straggler
+    /// tap belongs to the session that installed it, and its audio is that
+    /// session's to deliver.
     func start(
         onWindow: @escaping @Sendable ([Float]) -> Void,
         onChunk: (@Sendable ([Float]) -> Void)? = nil
     ) throws {
-        self.onWindow = onWindow
-        self.onChunk = onChunk
-
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .measurement, options: [.allowBluetoothHFP, .defaultToSpeaker])
         // A `.playAndRecord` session silences the Taptic Engine by default, so
@@ -116,7 +119,7 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
         // The system may still coalesce; this is advisory.
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 256, format: hwFormat) { [weak self] buffer, _ in
-            self?.handleTap(buffer: buffer)
+            self?.handleTap(buffer: buffer, onWindow: onWindow, onChunk: onChunk)
         }
 
         engine.prepare()
@@ -147,17 +150,20 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
             engine.stop()
         }
         engine.inputNode.removeTap(onBus: 0)
-        // `onWindow`/`onChunk` are deliberately NOT cleared here. Niling them from
-        // this thread while the audio render thread could still be inside
-        // `handleTap` (a tap block can be in flight when `removeTap` returns) is a
-        // data race on the closure references. They're always reassigned at the top
-        // of `start()` before the engine is restarted, so leaving the stale closures
-        // in place until then is harmless — the engine is stopped above, so no
-        // further taps fire, and `onWindow` captures `self` weakly so nothing leaks.
+        // There is no callback state to clear: the tap owns its own (see
+        // `start`), so a tap block still in flight when `removeTap` returns
+        // delivers its last window to the session that installed it, and nothing
+        // here can race a later `start()`. The sample buffer is likewise left
+        // alone and cleared by `start()`, under `bufferLock` either way.
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
     }
 
-    private func handleTap(buffer: AVAudioPCMBuffer) {
+    /// The callbacks arrive as parameters rather than off `self` — see `start`.
+    private func handleTap(
+        buffer: AVAudioPCMBuffer,
+        onWindow: @Sendable ([Float]) -> Void,
+        onChunk: (@Sendable ([Float]) -> Void)?
+    ) {
         guard let converter else { return }
 
         // Estimate output capacity: ratio of sample rates × input frames + slack.
@@ -203,8 +209,6 @@ nonisolated final class AudioPipeline: @unchecked Sendable {
             return windows
         }
 
-        if let onWindow {
-            for window in completed { onWindow(window) }
-        }
+        for window in completed { onWindow(window) }
     }
 }

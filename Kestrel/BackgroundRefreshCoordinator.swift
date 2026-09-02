@@ -167,13 +167,18 @@ final class BackgroundRefreshCoordinator: @unchecked Sendable {
             // Handed the manifest the pass above already fetched: the two passes
             // want the same file, and downloading it twice in one background
             // window was pure waste.
+            // Plugged in on Wi-Fi (both checked above), so this is the one pass
+            // that may re-pull a photo whose hash has moved — the foreground one
+            // defers exactly those to here.
             let revalidated = await RemoteSpeciesImageStore.shared.revalidateStaleImages(
+                includeChanged: true,
                 using: result.manifest
             )
             if !revalidated.isEmpty {
                 Log.info(
                     "Revalidation: \(revalidated.confirmed) confirmed, "
-                    + "\(revalidated.refreshed) refreshed, \(revalidated.failed) deferred, "
+                    + "\(revalidated.refreshed) refreshed, \(revalidated.failed) failed, "
+                    + "\(revalidated.deferred) deferred, "
                     + "\(revalidated.withdrawn) withdrawn, "
                     + "\(revalidated.discoveredSlugs.count) newly published"
                 )

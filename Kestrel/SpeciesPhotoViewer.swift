@@ -16,9 +16,23 @@ struct SpeciesPhotoItem: Identifiable, Equatable {
     /// the ones to show.
     var showsAllObservations: Bool = false
     /// The one recorded sighting this item stands for, when it was opened from a
-    /// map pin. `nil` on a species-scoped item, whose Edit and Delete ask which
-    /// sighting they mean.
+    /// map pin — the *earliest* of them when the pin covers several. `nil` on a
+    /// species-scoped item, whose Edit and Delete ask which sighting they mean.
+    ///
+    /// Drives the caption and the "was this sighting deleted?" check, both of
+    /// which are about the one record on screen. What Edit and Delete act on is
+    /// `pinnedSightings`.
     var observation: LifeListEntry.Observation? = nil
+    /// Every sighting the pin this was opened from stands for, `observation`
+    /// included. Empty on a species-scoped item.
+    ///
+    /// A map thumbnail is one image per *species* (`BirdCluster.uniqueByEarliest`),
+    /// so repeat visits to one spot collapse into a single pin. Acting on
+    /// `observation` alone would then quietly touch only the earliest of them and
+    /// leave the thumbnail sitting there looking untouched — which is precisely
+    /// what `MapPointMenu` (the same thumbnail's *long press*) asks a question to
+    /// avoid. The viewer asks the same question, over the same list.
+    var pinnedSightings: [LifeListEntry.Observation] = []
     var id: String { scientificName }
 }
 
@@ -464,6 +478,18 @@ struct SpeciesPhotoFullScreen: View {
         item.observation.map { actions.current($0) }
     }
 
+    /// Every sighting the pin this page was opened from stands for, each carried
+    /// forward through any edit made on this screen — the list Edit and Delete
+    /// ask over. Empty for a species-scoped item, which has no pin.
+    ///
+    /// Followed through `ObservationActions.current` for the same reason
+    /// `liveObservation` is, and it matters more here: `ObservationChoice`
+    /// narrows the store's live list by `Identity`, so a pre-edit copy would
+    /// filter the edited sighting straight out of the chooser it belongs in.
+    private func livePinnedSightings(for item: SpeciesPhotoItem) -> [LifeListEntry.Observation] {
+        item.pinnedSightings.map { actions.current($0) }
+    }
+
     /// Whether the one sighting the current page stands for has been removed
     /// from the store. Only ever true for a pin-scoped item — a species-scoped
     /// one has the rest of its history to fall back on, and `sightingSection`
@@ -717,11 +743,24 @@ struct SpeciesPhotoFullScreen: View {
         .accessibilityLabel("More actions")
     }
 
-    /// Edit from the menu. A map pin knows exactly which sighting it stands for;
-    /// a species-scoped item asks, unless there is only one to mean.
+    /// Edit from the menu.
+    ///
+    /// Three shapes, and the first is the one that used to be missing. A pin that
+    /// covers several visits to one spot asks which of *those* is meant —
+    /// `among:` acts outright when there is only one, so an ordinary lone pin is
+    /// unchanged. A pin with no sightings recorded against it falls back to the
+    /// single sighting it was opened with, and a species-scoped item asks over the
+    /// bird's whole history.
     private func editSighting(of item: SpeciesPhotoItem) {
         guard let store = lifeListStore else { return }
-        if let observation = liveObservation(for: item) {
+        let pinned = livePinnedSightings(for: item)
+        if !pinned.isEmpty {
+            actions.edit(
+                scientificName: item.scientificName,
+                commonName: commonName(for: item),
+                among: pinned
+            )
+        } else if let observation = liveObservation(for: item) {
             actions.edit(
                 scientificName: item.scientificName,
                 commonName: commonName(for: item),
@@ -740,7 +779,14 @@ struct SpeciesPhotoFullScreen: View {
     /// sighting, after a confirmation.
     private func deleteSighting(of item: SpeciesPhotoItem) {
         guard let store = lifeListStore else { return }
-        if let observation = liveObservation(for: item) {
+        let pinned = livePinnedSightings(for: item)
+        if !pinned.isEmpty {
+            actions.delete(
+                scientificName: item.scientificName,
+                commonName: commonName(for: item),
+                among: pinned
+            )
+        } else if let observation = liveObservation(for: item) {
             actions.delete(
                 scientificName: item.scientificName,
                 commonName: commonName(for: item),

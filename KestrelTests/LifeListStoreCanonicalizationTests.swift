@@ -169,6 +169,76 @@ struct LifeListStoreCanonicalizationTests {
         #expect(loaded[0].scientificName == canonical)
     }
 
+    /// The alias table is written in binomials, so a *stored trinomial* used to
+    /// miss it entirely: `applyAliases` compared the whole stored name, and by the
+    /// time `collapseToSpecies` had reduced it to a binomial that pass was over.
+    /// The entry kept a genus BirdNET has never emitted — which is its photo slug
+    /// and what a detection is matched against.
+    ///
+    /// `EBirdCSVParser.parse` has always collapsed *before* aliasing, so importing
+    /// the very same eBird row produced the canonical name while the stored copy
+    /// kept the stale one. The two agree now; `aliasedTrinomialMatchesImport`
+    /// below holds them to it.
+    @Test("a stored trinomial reaches the alias table through its binomial")
+    func aliasAppliesToTrinomials() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        guard let (stale, canonical) = TaxonomyAliases.ebirdToBirdNET.first else {
+            Issue.record("the alias table is empty — the migration it exists for is unreachable")
+            return
+        }
+        let loaded = try roundTrip([
+            // A subspecies row under the stale genus, its common name deliberately
+            // one the catalog can't rescue it by.
+            .make("\(stale) subspecies", "Localizado Nombre", [.at(may4, "P", lat: 1, lon: 1)]),
+        ], scratch, defaults)
+
+        #expect(loaded.count == 1)
+        #expect(
+            loaded[0].scientificName == canonical,
+            "the trinomial's binomial is what the alias table is keyed on"
+        )
+        #expect(loaded[0].allObservations.count == 1, "a relabel keeps every record")
+    }
+
+    /// The two canonicalization paths — a launch over stored entries and an import
+    /// of a CSV row — have to land on the same name, or the merge that is supposed
+    /// to fold them together simply doesn't fire and the bird gets two rows.
+    @Test("a stored trinomial and the imported row for it canonicalize alike")
+    func aliasedTrinomialMatchesImport() throws {
+        guard let (stale, canonical) = TaxonomyAliases.ebirdToBirdNET.first else { return }
+        let trinomial = "\(stale) subspecies"
+
+        // What an import makes of the row.
+        let csv = """
+        Scientific Name,Common Name,Date
+        \(trinomial),Localizado Nombre,2026-05-04
+        """
+        let parsed = try EBirdCSVParser.parse(Data(csv.utf8))
+        #expect(parsed.count == 1)
+        #expect(parsed.first?.scientificName == canonical)
+
+        // What a launch makes of the same name already on the list.
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let loaded = try roundTrip([
+            .make(trinomial, "Localizado Nombre", [.at(may4, "P", lat: 1, lon: 1)]),
+        ], scratch, defaults)
+        #expect(loaded.first?.scientificName == parsed.first?.scientificName)
+    }
+
+    /// The other half of the rule: a name the alias table has nothing to say about
+    /// is passed through untouched here, trinomial and all. Collapsing it is
+    /// `collapseToSpecies`' job — which `loneTrinomialRenamed` above shows still
+    /// happens, one pass later.
+    @Test("a trinomial the alias table doesn't list is left to the species collapse")
+    func unlistedTrinomialUntouchedByAliases() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        let loaded = try roundTrip([
+            .make("Dryobates villosus harrisi", "Hairy Woodpecker", [.at(may4, "P", lat: 1, lon: 1)]),
+        ], scratch, defaults)
+        #expect(loaded.count == 1)
+        #expect(loaded[0].scientificName == "Dryobates villosus")
+    }
+
     @Test("an alias rewrite merges onto an entry already under the canonical name")
     func aliasMergesOntoCanonical() throws {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()
@@ -285,6 +355,59 @@ struct LifeListStoreCanonicalizationTests {
             .make("B b", "B", [.at(may5, "P", lat: 1, lon: 1)]),
         ], scratch, defaults)
         #expect(loaded.map(\.scientificName) == ["C c", "B b", "A a"])
+    }
+
+    /// `load()` sorts what it decoded, and the check that decides whether to write
+    /// the result back has to be made against *that* — not against the unsorted
+    /// intermediate.
+    ///
+    /// It was made against the intermediate, and the comment there claimed the
+    /// comparison was exactly "this launch found nothing to fix". For a file whose
+    /// rows aren't in `ordersBefore` order it wasn't: nothing had changed by that
+    /// measure, so nothing was saved, and the list was re-sorted in memory again on
+    /// the next launch and the one after. Names chosen so no other stage touches
+    /// them — this is about ordering and nothing else.
+    @Test("a file stored out of order is written back sorted")
+    func outOfOrderFileIsPersistedSorted() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        // Oldest first: the exact reverse of what `ordersBefore` produces.
+        try scratch.writeLifeList([
+            .make("Madeupus aaa", "Invented Bird A", [.at(may4, "P", lat: 1, lon: 1)]),
+            .make("Madeupus bbb", "Invented Bird B", [.at(may5, "P", lat: 1, lon: 1)]),
+            .make("Madeupus ccc", "Invented Bird C", [.at(may6, "P", lat: 1, lon: 1)]),
+        ])
+
+        let store = makeStore(scratch, defaults)
+        #expect(
+            store.entries.map(\.scientificName)
+                == ["Madeupus ccc", "Madeupus bbb", "Madeupus aaa"],
+            "in memory, newest first"
+        )
+
+        store.flushPendingWrites()
+        #expect(
+            try scratch.readLifeList().map(\.scientificName)
+                == ["Madeupus ccc", "Madeupus bbb", "Madeupus aaa"],
+            "and on disk, so the next launch has nothing left to re-sort"
+        )
+    }
+
+    /// The other direction, and the one that must not regress: a file that is
+    /// already in order with nothing to canonicalize is not rewritten at all.
+    /// Saving on every launch would churn the whole life list to disk for nothing.
+    @Test("a file already in order and already canonical is left untouched")
+    func settledFileIsNotRewritten() throws {
+        let scratch = ScratchDirectory(), defaults = ScratchDefaults()
+        try scratch.writeLifeList([
+            .make("Madeupus ccc", "Invented Bird C", [.at(may6, "P", lat: 1, lon: 1)]),
+            .make("Madeupus bbb", "Invented Bird B", [.at(may5, "P", lat: 1, lon: 1)]),
+            .make("Madeupus aaa", "Invented Bird A", [.at(may4, "P", lat: 1, lon: 1)]),
+        ])
+        let before = try #require(scratch.data("life_list.json"))
+
+        _ = makeStore(scratch, defaults)
+        LifeListStore.drainPendingWrites()
+        #expect(scratch.data("life_list.json") == before, "nothing to fix, nothing written")
     }
 
     /// `Array.sort` isn't guaranteed stable on equal keys, so without the

@@ -637,6 +637,11 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         /// Left stale: the manifest or an image download failed. Their cached
         /// bytes are untouched and retried later.
         var failed = 0
+        /// Changed upstream but left alone because this pass wasn't allowed to
+        /// spend the bytes — see `revalidateStaleImages(includeChanged:using:)`.
+        /// Not a failure and not a confirmation: they stay stale on purpose, so
+        /// the next Wi-Fi-and-power pass picks them up.
+        var deferred = 0
         /// Dropped because the published set no longer carries them. Not a
         /// failure — nothing will ever confirm them, so they stop being counted
         /// against the cache.
@@ -655,8 +660,46 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         /// depend on (see `KestrelApp.refreshPhotosOnForeground`).
         var isEmpty: Bool {
             confirmed == 0 && refreshed == 0 && failed == 0 && withdrawn == 0
-                && discoveredSlugs.isEmpty
+                && deferred == 0 && discoveredSlugs.isEmpty
         }
+    }
+
+    /// What a revalidation pass should do with one stale cached slug.
+    nonisolated enum StaleOutcome: Hashable {
+        /// The published manifest no longer lists it — `apply` has already
+        /// dropped its record and `discardWithdrawn` its bytes.
+        case withdrawn
+        /// Byte-identical to what's published; stamp it fresh, download nothing.
+        case confirmed
+        /// Changed upstream and this pass may spend the bytes: re-pull it.
+        case refresh
+        /// Changed upstream, but this pass is metered. Left stale on purpose.
+        case deferred
+    }
+
+    /// The rule behind `revalidateStaleImages`' loop, as a pure function of the
+    /// three facts it turns on.
+    ///
+    /// Extracted so the rule is pinned by a test rather than by a comment — the
+    /// same shape `uncachedChangeAdvances` and `LifeListStore.recordsHandover`
+    /// take, and for the same reason: the store is a singleton over the app's real
+    /// container and the real CDN, so this is the only part of the decision a test
+    /// can reach.
+    ///
+    /// `.deferred` is the case that was missing. Without it every foreground pass
+    /// re-pulled both persisted sizes of every changed slug on whatever connection
+    /// the phone happened to be on, which is exactly the work
+    /// `checkForPhotoUpdates(includeChanged: false)` exists to keep off cellular.
+    /// A deferred slug is deliberately *not* confirmed, so it stays stale and the
+    /// Wi-Fi-and-power pass still finds it.
+    nonisolated static func staleOutcome(
+        publishedHash: String?,
+        recordedHash: String?,
+        includeChanged: Bool
+    ) -> StaleOutcome {
+        guard let publishedHash else { return .withdrawn }
+        guard recordedHash != publishedHash else { return .confirmed }
+        return includeChanged ? .refresh : .deferred
     }
 
     /// Re-checks every cached image whose freshness window has lapsed.
@@ -677,8 +720,22 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// over rather than making this download the identical file a second time —
     /// which the high-power background pass did on every run, once through
     /// `checkForPhotoUpdates` and once here.
+    ///
+    /// **`includeChanged` is the same gate `checkForPhotoUpdates` carries, and it
+    /// has to be.** The hash comparison is free, but a slug whose hash *moved*
+    /// costs a re-download of both its persisted sizes — and this runs on every
+    /// foreground, on whatever connection the phone happens to be on.
+    /// `checkForPhotoUpdates(includeChanged: false)` exists precisely to keep
+    /// that off cellular and hand it to the Wi-Fi-and-power `BGProcessingTask`;
+    /// this pass fetched the same manifest, found the same changed slugs, and
+    /// re-pulled them anyway, which quietly undid the deferral for every one of
+    /// them that happened to be cached. Deferred slugs are left stale (they are
+    /// not stamped `confirmed`), so the high-power pass still sees them.
     @discardableResult
-    func revalidateStaleImages(using prefetched: PhotoManifest? = nil) async -> RevalidationResult {
+    func revalidateStaleImages(
+        includeChanged: Bool,
+        using prefetched: PhotoManifest? = nil
+    ) async -> RevalidationResult {
         let cached = cachedSlugs()
         guard !cached.isEmpty else { return RevalidationResult() }
         let stale = PhotoManifestStore.shared.staleSlugs(cached, maxAge: Self.cacheFreshness)
@@ -727,22 +784,29 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         var confirmed: [String] = []
         var advanced: [String: String] = [:]
         for slug in stale {
-            guard let published = remote.files[slug]?.hash else {
-                // Withdrawn from the published set: `apply` has already dropped
-                // its hash, metadata and stamp, and `discardWithdrawn` its bytes.
-                // Nothing left to revalidate, and it isn't a failure — the photo
-                // is simply gone.
+            let published = remote.files[slug]?.hash
+            switch Self.staleOutcome(
+                publishedHash: published,
+                recordedHash: PhotoManifestStore.shared.recordedHash(forSlug: slug),
+                includeChanged: includeChanged
+            ) {
+            case .withdrawn:
+                // `apply` has already dropped its hash, metadata and stamp, and
+                // `discardWithdrawn` its bytes. Nothing left to revalidate, and
+                // it isn't a failure — the photo is simply gone.
                 result.withdrawn += 1
-                continue
-            }
-            if PhotoManifestStore.shared.recordedHash(forSlug: slug) == published {
+            case .confirmed:
                 confirmed.append(slug)
                 result.confirmed += 1
-            } else if await refreshCachedSizes(slug: slug) {
-                advanced[slug] = published
-                result.refreshed += 1
-            } else {
-                result.failed += 1
+            case .deferred:
+                result.deferred += 1
+            case .refresh:
+                if let published, await refreshCachedSizes(slug: slug) {
+                    advanced[slug] = published
+                    result.refreshed += 1
+                } else {
+                    result.failed += 1
+                }
             }
         }
         PhotoManifestStore.shared.markValidated(confirmed, advancedHashes: advanced)

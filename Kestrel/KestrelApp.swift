@@ -372,10 +372,15 @@ struct KestrelApp: App {
                 if result.newCount > 0 { prefetchPhotos(lifeList: lifeNames) }
             }
             // Expire and re-check cached images a day after they were last
-            // confirmed. Unchanged photos cost a hash comparison, not a download,
-            // and a failed check leaves the cache exactly as it was — so this is
-            // safe to run on any connection. See `revalidateStaleImages`.
+            // confirmed. `includeChanged: false` for the same reason the
+            // discovery check above passes it: a hash comparison is free, but
+            // re-pulling a photo that *did* change is metered data, and this runs
+            // on every foreground on whatever connection is to hand. Confirming
+            // costs nothing and a failed check leaves the cache exactly as it
+            // was, so what's left is safe on any connection; the changed ones go
+            // to the Wi-Fi-and-power background pass. See `revalidateStaleImages`.
             let revalidated = await RemoteSpeciesImageStore.shared.revalidateStaleImages(
+                includeChanged: false,
                 using: manifest
             )
             // Revalidation fetches the same manifest discovery does, so it can be

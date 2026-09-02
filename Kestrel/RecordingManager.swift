@@ -1277,9 +1277,9 @@ final class RecordingManager {
     /// `session` names the watch session the stop is about, so a queued copy
     /// flushed after a *newer* watch session has begun can be recognized and
     /// dropped — see `watchStopApplies`. The phone's own teardown paths
-    /// (`stopWatchSession`, the liveness watchdog, `stopFromWatchUnexpectedly`)
-    /// pass none, which applies unconditionally: they are ending the session
-    /// they can see, not relaying a message about one.
+    /// (`stopWatchSession` and the liveness watchdog) pass none, which applies
+    /// unconditionally: they are ending the session they can see, not relaying a
+    /// message about one.
     func stopFromWatch(session token: Int? = nil) {
         guard watchRecording else { return }
         guard Self.watchStopApplies(
@@ -1321,24 +1321,6 @@ final class RecordingManager {
         // The wrist is no longer showing this session's bird, and the phone
         // must not re-push it onto a watch that has since relaunched.
         clearWatchBirdDisplay()
-    }
-
-    /// Called when the watch reports that the *system* killed its recording
-    /// session (e.g. the wrist dropped without the background-audio
-    /// entitlement, or the runtime budget expired). Unlike a user-initiated
-    /// stop, the user didn't ask for this, so we surface a notification before
-    /// tearing down. Guarded by `stopFromWatch`'s own `watchRecording` check so
-    /// it's a no-op (and fires no duplicate alert) if the heartbeat watchdog
-    /// already tore the session down.
-    func stopFromWatchUnexpectedly() {
-        guard watchRecording else { return }
-        Task {
-            await SpeciesNotifications.shared.notifySessionLifecycle(
-                title: "Kestrel",
-                body: "Watch recording stopped. Re-tap the watch button to keep listening."
-            )
-        }
-        stopFromWatch()
     }
 
     // MARK: - Idle auto-termination

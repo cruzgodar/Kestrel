@@ -31,10 +31,16 @@ enum RecordingIntentRequest {
     }
 }
 
-/// App intent vended as a lock-screen widget (iOS) and a complication
-/// (watchOS): start a new recording if one isn't already in progress. The
+/// App intent that starts a new recording if one isn't already in progress. The
 /// actual start is performed by the app when it consumes the request — the
 /// app checks its own recording state, so a tap while recording is a no-op.
+///
+/// Vended as a lock-screen widget and a Control Center control on iOS
+/// (`KestrelWidget`). On watchOS it is reachable from **Shortcuts only** — the
+/// complication deliberately just opens the app rather than starting a walk on a
+/// stray tap (see `StartRecordingComplicationView`), so nothing on the wrist
+/// runs this by itself. Both apps drain it the same way, through
+/// `RecordingIntentRequest.consume()` on becoming active.
 struct StartRecordingIntent: AppIntent {
     // "Start Birding", matching the app's own record button — every user-facing
     // string for this action says the same thing, in Shortcuts, in the widget

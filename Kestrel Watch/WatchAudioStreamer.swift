@@ -15,7 +15,10 @@ import os
 /// fully started before it can be stopped). This lets the manager dispatch the
 /// blocking `start()` off the main actor so the UI can animate while audio
 /// spins up. The sample buffer they share with the audio render thread is
-/// guarded by `bufferLock` — see `handleTap` and `stop`.
+/// guarded by `bufferLock` — see `handleTap` and `start`. The chunk callback,
+/// the other thing the render thread reads, is not shared at all: the tap block
+/// captures it, so there is nothing for a `start()` landing on a straggler tap
+/// to overwrite.
 final class WatchAudioStreamer: @unchecked Sendable {
     // `nonisolated`, exactly as `AudioPipeline`'s equivalents are and for the same
     // reason: the project defaults to MainActor isolation, and these compile-time
@@ -52,7 +55,6 @@ final class WatchAudioStreamer: @unchecked Sendable {
     }()
 
     private var converter: AVAudioConverter?
-    private var onChunk: ((Data) -> Void)?
     /// Accumulated 16 kHz samples awaiting a full chunk.
     ///
     /// Locked, because the audio render thread appends to it from `handleTap`
@@ -67,8 +69,16 @@ final class WatchAudioStreamer: @unchecked Sendable {
     /// `WatchSessionManager` runs for the duration of a recording (see
     /// `WatchWorkoutManager`); without an active workout the watch only captures
     /// while its app is frontmost.
-    func start(onChunk: @escaping (Data) -> Void) throws {
-        self.onChunk = onChunk
+    ///
+    /// `onChunk` is **captured by the tap block**, not stored on `self`, which is
+    /// what keeps it off the race the sample buffer needs its lock for. A tap
+    /// block can still be running when `removeTap` returns, so a stored callback
+    /// reassigned here would be written from this queue while the audio render
+    /// thread reads it. Each installed tap carrying its own is also the right
+    /// answer rather than merely a safe one: a straggler tap belongs to the
+    /// session that installed it, and delivering its audio to that session's
+    /// callback is what the phone's session tokens expect.
+    func start(onChunk: @escaping @Sendable (Data) -> Void) throws {
         bufferLock.withLock { $0.removeAll(keepingCapacity: true) }
 
         let session = AVAudioSession.sharedInstance()
@@ -81,7 +91,7 @@ final class WatchAudioStreamer: @unchecked Sendable {
 
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: Self.tapBufferSize, format: hwFormat) { [weak self] buf, _ in
-            self?.handleTap(buf)
+            self?.handleTap(buf, onChunk: onChunk)
         }
 
         engine.prepare()
@@ -92,16 +102,16 @@ final class WatchAudioStreamer: @unchecked Sendable {
         if engine.isRunning { engine.stop() }
         engine.inputNode.removeTap(onBus: 0)
         try? AVAudioSession.sharedInstance().setActive(false, options: [.notifyOthersOnDeactivation])
-        // `onChunk` and the sample buffer are deliberately NOT cleared here, for
-        // the reason `AudioPipeline.stop()` spells out: a tap block can still be
-        // in flight when `removeTap` returns, so writing either from this thread
-        // races the audio render thread. Both are reset at the top of `start()`
-        // before the engine comes back up, which is the only moment at which
-        // nothing can be inside `handleTap`. The engine is stopped above, so no
-        // further taps fire, and the closure captures `self` weakly.
+        // The sample buffer is deliberately NOT cleared here: a tap block can
+        // still be in flight when `removeTap` returns, so it is `start()` that
+        // clears it — under `bufferLock` either way. There is no callback left to
+        // clear, because the tap owns its own (see `start`); a straggler tap
+        // therefore delivers its last chunk to the session that captured it,
+        // which is the session that recorded the audio.
     }
 
-    private func handleTap(_ inBuf: AVAudioPCMBuffer) {
+    /// `onChunk` arrives as a parameter rather than off `self` — see `start`.
+    private func handleTap(_ inBuf: AVAudioPCMBuffer, onChunk: @Sendable (Data) -> Void) {
         guard let converter else { return }
         let ratio = targetFormat.sampleRate / inBuf.format.sampleRate
         let capacity = AVAudioFrameCount(Double(inBuf.frameLength) * ratio + 1024)
@@ -132,7 +142,6 @@ final class WatchAudioStreamer: @unchecked Sendable {
             storage.append(contentsOf: UnsafeBufferPointer(start: ptr, count: frames))
             return Self.drainChunks(from: &storage, chunkSamples: Self.chunkSamples)
         }
-        guard let onChunk else { return }
         for chunk in chunks {
             onChunk(chunk.withUnsafeBufferPointer { Data(buffer: $0) })
         }

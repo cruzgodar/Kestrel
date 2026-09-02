@@ -383,6 +383,111 @@ struct MapClusteringTests {
         #expect(cluster.sightings(of: "Not here").isEmpty)
     }
 
+    // MARK: PinnedBird
+
+    /// What the map hands the full-screen viewer when a thumbnail is *tapped*.
+    ///
+    /// The pin's long press has always asked "which observation?" over
+    /// `sightings(of:)`; the tap used to open the viewer over the bare `MapPoint`,
+    /// whose Edit and Delete then acted on the earliest of the stack outright. A
+    /// user with three visits to one patch deleted the oldest without being asked,
+    /// and the thumbnail stayed put — the pin still had two sightings under it —
+    /// so nothing on screen said what had happened. `PinnedBird` is what carries
+    /// the rest of the stack across that gap.
+
+    @Test("a lone pin stands for exactly its own sighting")
+    func pinnedBirdLonePin() {
+        let only = point("x", "X y", may4, lat: 42, lon: -76, place: "A")
+        let cluster = BirdCluster(
+            representative: only,
+            coordinate: CLLocationCoordinate2D(latitude: 42, longitude: -76),
+            others: []
+        )
+        let bird = PinnedBird(only, in: cluster)
+        #expect(bird.point == only)
+        #expect(bird.sightings == [only.observation], "nothing to ask about")
+    }
+
+    /// The case the viewer was getting wrong. One thumbnail, three records.
+    @Test("a pin covering repeat visits carries every one of them")
+    func pinnedBirdRepeatStack() throws {
+        let cluster = BirdCluster(
+            representative: point("x#2", "X y", may6, lat: 42, lon: -76, place: "Third"),
+            coordinate: CLLocationCoordinate2D(latitude: 42, longitude: -76),
+            others: [
+                point("x", "X y", may4, lat: 42, lon: -76, place: "First"),
+                point("x#1", "X y", may5, lat: 42, lon: -76, place: "Second"),
+            ]
+        )
+        // Exactly the point the tap opens the viewer on.
+        let earliest = try #require(cluster.uniqueByEarliest.first)
+        let bird = PinnedBird(earliest, in: cluster)
+
+        #expect(bird.point.date == may4, "the caption still describes the earliest")
+        #expect(bird.sightings.count == 3, "but the menu knows about all three")
+        #expect(
+            bird.sightings.contains(bird.point.observation),
+            "the sighting on screen is one of the ones offered"
+        )
+        #expect(Set(bird.sightings.compactMap(\.location)) == ["First", "Second", "Third"])
+    }
+
+    /// A stack usually holds several *species*. A bird's menu must offer its own
+    /// records and no one else's.
+    @Test("a pin carries only its own species' sightings")
+    func pinnedBirdIgnoresOtherSpecies() {
+        let cluster = BirdCluster(
+            representative: point("a#1", "A a", may6, lat: 42, lon: -76, place: "Late"),
+            coordinate: CLLocationCoordinate2D(latitude: 42, longitude: -76),
+            others: [
+                point("a", "A a", may4, lat: 42, lon: -76, place: "Early"),
+                point("b", "B b", may5, lat: 42, lon: -76, place: "Elsewhere"),
+            ]
+        )
+        let a = PinnedBird(point("a", "A a", may4, lat: 42, lon: -76, place: "Early"), in: cluster)
+        #expect(a.sightings.count == 2)
+        #expect(a.sightings.allSatisfy { $0.location != "Elsewhere" })
+    }
+
+    /// The composition the viewer's menu now performs: hand the pin's sightings
+    /// to `ObservationActions`, which asks when there is more than one to mean and
+    /// acts outright when there isn't. Pinned here because the two halves live in
+    /// different files and the seam between them is where the bug was.
+    @MainActor
+    @Test("a stacked pin asks which sighting; a lone pin acts outright")
+    func pinnedBirdDrivesTheChooser() throws {
+        let stack = BirdCluster(
+            representative: point("x#1", "X y", may5, lat: 42, lon: -76, place: "Second"),
+            coordinate: CLLocationCoordinate2D(latitude: 42, longitude: -76),
+            others: [point("x", "X y", may4, lat: 42, lon: -76, place: "First")]
+        )
+        let stacked = PinnedBird(try #require(stack.uniqueByEarliest.first), in: stack)
+
+        let asks = ObservationActions()
+        asks.delete(scientificName: "X y", commonName: "X", among: stacked.sightings)
+        let choice = try #require(
+            asks.choice,
+            "two records under one thumbnail is a question, not an assumption"
+        )
+        #expect(choice.isDeleting)
+        #expect(choice.limitedTo == Set(stacked.sightings.map(\.identity)))
+        #expect(asks.pendingDelete == nil, "nothing is confirmed until the user picks")
+
+        let only = point("y", "Y z", may4, lat: 42, lon: -76, place: "A")
+        let lone = PinnedBird(
+            only,
+            in: BirdCluster(
+                representative: only,
+                coordinate: CLLocationCoordinate2D(latitude: 42, longitude: -76),
+                others: []
+            )
+        )
+        let acts = ObservationActions()
+        acts.delete(scientificName: "Y z", commonName: "Y", among: lone.sightings)
+        #expect(acts.choice == nil, "one record is not a question")
+        #expect(acts.pendingDelete?.observation == only.observation)
+    }
+
     /// The point's observation must round-trip to an identity the store can match,
     /// or Edit and Delete from a pin would silently do nothing.
     @Test("a map point's observation carries the fields identity needs")

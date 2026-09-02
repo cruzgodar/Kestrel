@@ -948,3 +948,134 @@ struct UncachedChangeSettlingTests {
                 "so the slug stays changed and a later refresh still has work to do")
     }
 }
+
+/// What a revalidation pass does with one stale cached slug.
+///
+/// The pass runs on every app foreground, on whatever connection the phone is on,
+/// and it fetches the same manifest the discovery check does. A hash comparison
+/// is free — that is the whole design, and why expiring the cache daily costs
+/// nothing. Re-pulling a slug whose hash actually *moved* is not free: it is both
+/// persisted sizes, off the CDN, over cellular.
+///
+/// `checkForPhotoUpdates(includeChanged:)` exists precisely to keep that work off
+/// a metered connection and hand it to the Wi-Fi-and-power `BGProcessingTask`.
+/// This pass had no such gate, so it found the same changed slugs a moment later
+/// and re-downloaded every one that happened to be cached — quietly undoing the
+/// deferral for exactly the species the user already had.
+///
+/// The rule lives in `RemoteSpeciesImageStore.staleOutcome` for the reason
+/// `uncachedChangeAdvances` does: the store is a singleton over the app's real
+/// container and the real CDN, so the pure function is the only part a test can
+/// reach.
+@Suite("Stale image revalidation")
+struct StaleRevalidationTests {
+
+    private func outcome(
+        published: String?,
+        recorded: String?,
+        includeChanged: Bool
+    ) -> RemoteSpeciesImageStore.StaleOutcome {
+        RemoteSpeciesImageStore.staleOutcome(
+            publishedHash: published,
+            recordedHash: recorded,
+            includeChanged: includeChanged
+        )
+    }
+
+    /// The overwhelmingly common case, and the one that makes the daily expiry
+    /// cheap: the bytes on disk are the published ones, so the stamp moves
+    /// forward and nothing is downloaded. Free on either connection.
+    @Test("unchanged bytes are confirmed on any connection", arguments: [true, false])
+    func unchangedIsConfirmed(includeChanged: Bool) {
+        #expect(
+            outcome(published: "h1", recorded: "h1", includeChanged: includeChanged)
+                == .confirmed
+        )
+    }
+
+    /// The bug. A metered pass may notice the change but must not spend the bytes.
+    @Test("a changed slug is deferred when the pass is metered")
+    func changedIsDeferredWhenMetered() {
+        #expect(outcome(published: "h2", recorded: "h1", includeChanged: false) == .deferred)
+    }
+
+    /// And the high-power pass is what actually pulls it.
+    @Test("a changed slug is refreshed when the pass may spend the bytes")
+    func changedIsRefreshedWhenAllowed() {
+        #expect(outcome(published: "h2", recorded: "h1", includeChanged: true) == .refresh)
+    }
+
+    /// Deferring is *not* confirming, and the difference is the whole point: a
+    /// confirmed slug has its freshness window restarted and drops out of the next
+    /// pass's `staleSlugs`, so a deferral dressed up as a confirmation would hide
+    /// the changed photo from the Wi-Fi pass for a further day — and then from the
+    /// one after that, forever.
+    @Test("a deferred slug is left stale for the high-power pass to find")
+    func deferralLeavesTheSlugStale() {
+        let scratch = ScratchDirectory()
+        let subject = PhotoManifestStore(directory: scratch.url)
+
+        // Cached and confirmed a week ago, then republished upstream.
+        let old = Date(timeIntervalSince1970: 1_700_000_000)
+        subject.markDownloaded("a", now: old)
+        subject.markValidated([], advancedHashes: ["a": "h1"], now: old)
+
+        let now = old.addingTimeInterval(RemoteSpeciesImageStore.cacheFreshness * 2)
+        #expect(
+            subject.staleSlugs(["a"], maxAge: RemoteSpeciesImageStore.cacheFreshness, now: now)
+                == ["a"],
+            "a day past its window, so this pass looks at it"
+        )
+
+        // A metered pass defers it: nothing is stamped, nothing is advanced.
+        #expect(outcome(published: "h2", recorded: subject.recordedHash(forSlug: "a"),
+                        includeChanged: false) == .deferred)
+        subject.markValidated([], advancedHashes: [:], now: now)
+
+        #expect(
+            subject.staleSlugs(["a"], maxAge: RemoteSpeciesImageStore.cacheFreshness, now: now)
+                == ["a"],
+            "still stale, so the Wi-Fi-and-power pass still finds it"
+        )
+        #expect(subject.recordedHash(forSlug: "a") == "h1",
+                "and still recorded as the photo actually on disk")
+    }
+
+    /// A confirmation, by contrast, does restart the window — the property the
+    /// deferral must not borrow.
+    @Test("a confirmation restarts the freshness window")
+    func confirmationRestartsTheWindow() {
+        let scratch = ScratchDirectory()
+        let subject = PhotoManifestStore(directory: scratch.url)
+        let old = Date(timeIntervalSince1970: 1_700_000_000)
+        subject.markDownloaded("a", now: old)
+        subject.markValidated([], advancedHashes: ["a": "h1"], now: old)
+
+        let now = old.addingTimeInterval(RemoteSpeciesImageStore.cacheFreshness * 2)
+        subject.markValidated(["a"], now: now)
+        #expect(
+            subject.staleSlugs(["a"], maxAge: RemoteSpeciesImageStore.cacheFreshness, now: now)
+                .isEmpty
+        )
+    }
+
+    /// A slug the manifest no longer lists is withdrawn whatever the connection —
+    /// `apply` has already dropped its record and `discardWithdrawn` its bytes, so
+    /// there is nothing to download and nothing to defer.
+    @Test("a withdrawn slug is neither refreshed nor deferred", arguments: [true, false])
+    func withdrawnIsWithdrawn(includeChanged: Bool) {
+        #expect(
+            outcome(published: nil, recorded: "h1", includeChanged: includeChanged)
+                == .withdrawn
+        )
+    }
+
+    /// A slug with bytes on disk but no recorded hash — an install upgrading from
+    /// a build that didn't keep them — is a change like any other, and is deferred
+    /// or refreshed on the same rule rather than being silently confirmed.
+    @Test("an unrecorded hash counts as changed, not as confirmed")
+    func missingRecordedHashIsChanged() {
+        #expect(outcome(published: "h1", recorded: nil, includeChanged: false) == .deferred)
+        #expect(outcome(published: "h1", recorded: nil, includeChanged: true) == .refresh)
+    }
+}

@@ -137,8 +137,12 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
             // session down. Answer immediately rather than waiting for the next
             // scheduled beat.
             Task { @MainActor in manager.answerWatchPing() }
-        case "stopUnexpected":
-            Task { @MainActor in manager.stopFromWatchUnexpectedly() }
+        // Deliberately no `stopUnexpected`. The watch used to send one when the
+        // system ended its workout out from under it; it now runs
+        // `WatchSessionManager.handleWorkoutEndedBySystem`, which posts its own
+        // notification *on the wrist* and tears the capture down through the
+        // ordinary `stop` above. A phone-side arm for it would be a second
+        // notification for one event, and was dead code for as long as it stood.
         default:
             break
         }
