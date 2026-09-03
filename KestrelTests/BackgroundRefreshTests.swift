@@ -33,3 +33,50 @@ struct BackgroundRefreshTests {
         }
     }
 }
+
+/// The hourly floor on how often the cache-revalidation pass reaches the network.
+///
+/// There are two passes and they are not interchangeable. The metered foreground
+/// pass can only ever *defer* a changed slug; the Wi-Fi-and-power background pass
+/// is the one that re-pulls it. Sharing one floor let the pass that can't fix
+/// anything spend the budget of the pass that can — a user who opens the app
+/// often would find their background sweep returning at the first guard most
+/// times it ran.
+///
+/// The floor is about not hammering the network from one repeated context, so it
+/// is scoped to the context. This is thin on purpose: the whole content of the
+/// fix is that these are two strings and not one, and that is exactly what a
+/// future edit could undo without noticing.
+@Suite("Photo revalidation retry floor")
+struct RevalidationRetryFloorTests {
+
+    @Test("the metered and high-power passes keep separate budgets")
+    func passesDoNotShareABudget() {
+        #expect(
+            RemoteSpeciesImageStore.lastRevalidationKey(includeChanged: false)
+            != RemoteSpeciesImageStore.lastRevalidationKey(includeChanged: true)
+        )
+    }
+
+    /// The foreground pass keeps the key it has always used, so an install
+    /// upgrading into this change doesn't forget when it last checked and
+    /// immediately hit the network again.
+    @Test("the foreground pass keeps its existing key")
+    func foregroundKeyIsUnchanged() {
+        #expect(
+            RemoteSpeciesImageStore.lastRevalidationKey(includeChanged: false)
+            == "photoCacheLastRevalidation"
+        )
+    }
+
+    /// Neither may collide with the discovery check's own throttle, which is a
+    /// separate question ("is a manifest fetch due?") on a separate schedule.
+    @Test("neither key collides with the manifest-check throttle")
+    func keysAreDistinctFromTheManifestThrottle() {
+        let keys = [
+            RemoteSpeciesImageStore.lastRevalidationKey(includeChanged: false),
+            RemoteSpeciesImageStore.lastRevalidationKey(includeChanged: true),
+        ]
+        #expect(!keys.contains("photoManifestLastCheck"))
+    }
+}

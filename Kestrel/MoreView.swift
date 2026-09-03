@@ -226,6 +226,25 @@ struct MoreView: View {
                 updateCheckStatus = nil
                 Task {
                     let result = await RemoteSpeciesImageStore.shared.checkForPhotoUpdates(includeChanged: true)
+                    // Warm whatever it turned up, exactly as the two real callers
+                    // do (`KestrelApp.refreshPhotosOnForeground` and
+                    // `BackgroundRefreshCoordinator.handleImageUpdate`). Recording
+                    // a slug's hash is what makes it downloadable *and* what stops
+                    // any later pass reporting it as new, so a check that
+                    // discovers without prefetching permanently consumes the
+                    // discovery — leaving those photos to trickle in one lazy load
+                    // at a time. A debug control that quietly changes what the app
+                    // will do afterwards is worse than no debug control.
+                    if result.newCount > 0 || result.changedCount > 0 {
+                        let names = lifeListStore.entries.map(\.scientificName)
+                        RemoteSpeciesImageStore.shared.setProtectedSpecies(
+                            RemoteSpeciesImageStore.launchTargets(lifeList: names)
+                        )
+                        RemoteSpeciesImageStore.shared.prefetchWake(
+                            lifeList: names,
+                            nearby: RemoteSpeciesImageStore.nearbyNames()
+                        )
+                    }
                     updateCheckStatus = result.newCount == 0 && result.changedCount == 0
                         ? "No photo updates"
                         : "\(result.newCount) new, \(result.changedCount) changed "

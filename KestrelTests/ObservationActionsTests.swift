@@ -186,6 +186,68 @@ struct ObservationActionsTests {
         #expect(onRecord.contains { $0.identity == actions.current(held).identity })
     }
 
+    // MARK: two trails, one answer
+
+    /// The full-screen viewer runs *two* `ObservationActions`: its own, and one
+    /// inside the observation-list sheet so the flow that sheet raises layers
+    /// over the list rather than under it. Only the second is told about an edit
+    /// made from the list — and the first is what the viewer's own chrome
+    /// (`liveObservation`, `currentSightingWasDeleted`) resolves a held sighting
+    /// through, so the two must not be allowed to disagree about where a record
+    /// went.
+    ///
+    /// `observationActions(_:store:onEdited:)` relays for exactly this. These
+    /// pin the property the relay has to produce; the modifier's wiring is a
+    /// SwiftUI presentation and can't be driven from here.
+    @Test("an edit relayed to a second trail resolves the same on both")
+    func relayedEditResolvesOnBothTrails() {
+        let viewer = ObservationActions(), list = ObservationActions()
+        let held = sighting(may4, "Sapsucker Woods")
+        let corrected = sighting(may5, "Sapsucker Woods")
+
+        // What the modifier does: record here, then hand it on.
+        list.recordEdit(original: held, replacement: corrected)
+        viewer.recordEdit(original: held, replacement: corrected)
+
+        #expect(list.current(held) == corrected)
+        #expect(viewer.current(held) == corrected, "the screen behind the sheet agrees")
+    }
+
+    /// The trail is kept flat by `recordEdit`, and relaying preserves that: two
+    /// corrections in a row leave both objects one hop from the original.
+    @Test("a relayed chain stays flat on both trails")
+    func relayedChainStaysFlat() {
+        let viewer = ObservationActions(), list = ObservationActions()
+        let held = sighting(may4, "A")
+        let once = sighting(may5, "A")
+        let twice = sighting(may6, "A")
+
+        for target in [list, viewer] {
+            target.recordEdit(original: held, replacement: once)
+            target.recordEdit(original: once, replacement: twice)
+        }
+
+        #expect(list.current(held) == twice)
+        #expect(viewer.current(held) == twice)
+    }
+
+    /// And an undone edit, which is the case a chain can't answer at all: A → B
+    /// then B → A has to resolve back to A on both.
+    @Test("a relayed undo resolves back to the original on both trails")
+    func relayedUndoResolvesOnBothTrails() {
+        let viewer = ObservationActions(), list = ObservationActions()
+        let original = sighting(may4, "A")
+        let edited = sighting(may5, "A")
+
+        for target in [list, viewer] {
+            target.recordEdit(original: original, replacement: edited)
+            target.recordEdit(original: edited, replacement: original)
+        }
+
+        #expect(list.current(original) == original)
+        #expect(viewer.current(original) == original)
+    }
+
     // MARK: which sighting did you mean?
 
     /// Whether an Edit or a Delete acts outright or raises the chooser.

@@ -20,12 +20,18 @@ struct SpeciesPhoto<Placeholder: View>: View {
     var tappable: Bool = true
     /// Load the small cached thumbnail rather than the full-resolution image. Set
     /// by the small contexts that show many photos at once (life-list rows, map
-    /// pins, cluster grids) so scrolling them doesn't decode full ~900px images.
+    /// pins, cluster grids) so scrolling them doesn't decode the `hero` tier.
     var usesThumbnail: Bool = false
-    /// Paint the 320px thumbnail first, then upgrade to the 900px medium image.
+    /// Paint the `thumb` tier first, then upgrade to the `hero` (medium) one.
     /// Set by the Identify hero so a freshly-heard bird's large photo appears
     /// instantly (from the thumbnail already headed to the watch) instead of
     /// waiting on the medium download. Ignored when `usesThumbnail` is set.
+    ///
+    /// Tiers are named by their CDN folder rather than by a pixel height, for
+    /// the reason `MoreView.countGroup` gives: the rendered sizes are the photo
+    /// build script's to choose, so a number restated here is a copy that goes
+    /// stale silently. `RemoteSpeciesImageStore` documents the current heights
+    /// once, where the CDN contract lives.
     var progressive: Bool = false
     /// Overrides the default tap action (which opens a singleton viewer). The
     /// Life List passes one that opens the viewer over the whole ordered list so
@@ -63,7 +69,7 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
     var showsCredit: Bool
     /// Use the small thumbnail tier instead of the full image (see `SpeciesPhoto`).
     var usesThumbnail: Bool = false
-    /// Thumbnail-first, then upgrade to medium (see `SpeciesPhoto`).
+    /// Thumbnail-first, then upgrade to the medium tier (see `SpeciesPhoto`).
     var progressive: Bool = false
     @ViewBuilder var placeholder: () -> Placeholder
 
@@ -111,8 +117,8 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
                     loaded = true
                     return
                 }
-                // Paint the 320px thumbnail first (instant if it's the one just
-                // sent to the watch), then upgrade to the 900px medium.
+                // Paint the thumbnail first (instant if it's the one just sent
+                // to the watch), then upgrade to the medium image.
                 var thumb = store.memoryThumbnail(for: scientificName)
                 if thumb == nil {
                     thumb = await store.thumbnailImage(for: scientificName)

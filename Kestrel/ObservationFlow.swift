@@ -775,14 +775,37 @@ extension View {
     /// environment, where it can be absent (previews); with no store there is
     /// nothing any of these presentations could act on, so they simply aren't
     /// installed.
-    func observationActions(_ actions: ObservationActions, store: LifeListStore?) -> some View {
-        modifier(ObservationActionsModifier(actions: actions, store: store))
+    ///
+    /// `onEdited` relays an edit made through `actions` on to *another*
+    /// `ObservationActions` — for a host that runs two, one per presentation
+    /// layer. The full-screen viewer is the only one: its observation-list sheet
+    /// needs its own actions so the flow it raises layers over the list rather
+    /// than under it, and edits made there would otherwise never reach the trail
+    /// the viewer's own chrome resolves through. Everything the modifier does for
+    /// its own object it still does; this is strictly additional.
+    func observationActions(
+        _ actions: ObservationActions,
+        store: LifeListStore?,
+        onEdited: ((LifeListEntry.Observation, LifeListEntry.Observation) -> Void)? = nil
+    ) -> some View {
+        modifier(ObservationActionsModifier(actions: actions, store: store, onEdited: onEdited))
     }
 }
 
 private struct ObservationActionsModifier: ViewModifier {
     @Bindable var actions: ObservationActions
     let store: LifeListStore?
+    /// Relayed on to a second `ObservationActions` — see
+    /// `observationActions(_:store:onEdited:)`.
+    let onEdited: ((LifeListEntry.Observation, LifeListEntry.Observation) -> Void)?
+
+    /// Records an edit on `actions` and passes it on to whoever else is holding
+    /// that sighting. One funnel, so neither of the two `recordEdit` call sites
+    /// below can be taught to relay while the other isn't.
+    private func record(_ original: LifeListEntry.Observation, _ replacement: LifeListEntry.Observation) {
+        actions.recordEdit(original: original, replacement: replacement)
+        onEdited?(original, replacement)
+    }
 
     @ViewBuilder
     func body(content: Content) -> some View {
@@ -793,9 +816,7 @@ private struct ObservationActionsModifier: ViewModifier {
                     store: store,
                     // Every host of an `ObservationActions` gets edit-following
                     // for free — see `ObservationActions.edits`.
-                    onEdited: { original, replacement in
-                        actions.recordEdit(original: original, replacement: replacement)
-                    }
+                    onEdited: record
                 )
                 .sheet(item: $actions.choice) { choice in
                     ObservationChoiceSheet(
@@ -809,9 +830,7 @@ private struct ObservationActionsModifier: ViewModifier {
                         // to an edit that left the host's trail unwritten, and a
                         // host holding that sighting by value would go on asking
                         // the store about a record the edit had moved.
-                        onEdited: { original, replacement in
-                            actions.recordEdit(original: original, replacement: replacement)
-                        },
+                        onEdited: record,
                         onFinished: { actions.choice = nil }
                     )
                 }

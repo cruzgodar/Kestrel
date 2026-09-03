@@ -182,10 +182,26 @@ final class LocationCache {
     /// Resolves a fresh fix. Injected so a test can drive the freshness policy
     /// without CoreLocation — `shared` wires it to a real `LocationProvider`.
     private let fetch: @MainActor () async -> (latitude: Double, longitude: Double)?
+    /// Reads the current instant, for stamping a fix at the moment it *arrives*.
+    ///
+    /// Separate from `current(now:)`'s parameter, which is the instant the
+    /// question was asked. The two are the same for a cache hit and can be
+    /// seconds apart for a miss: `LocationProvider.currentLocation` waits up to
+    /// five seconds for a fix, and stamping the answer with the moment the
+    /// question was asked backdates it by however long the wait took — quietly
+    /// shortening the window this class exists to enforce. Injected for the same
+    /// reason `fetch` is: a test can then hold the clock still, or move it across
+    /// a fetch, rather than racing the wall.
+    private let clock: @MainActor () -> Date
     private var inflight: Task<(Double, Double)?, Never>?
 
-    /// - Parameter fetch: `nil` (the default) means a real `LocationProvider`.
-    init(fetch: (@MainActor () async -> (latitude: Double, longitude: Double)?)? = nil) {
+    /// - Parameters:
+    ///   - fetch: `nil` (the default) means a real `LocationProvider`.
+    ///   - clock: `nil` (the default) means the wall clock.
+    init(
+        fetch: (@MainActor () async -> (latitude: Double, longitude: Double)?)? = nil,
+        clock: (@MainActor () -> Date)? = nil
+    ) {
         if let fetch {
             self.fetch = fetch
         } else {
@@ -195,6 +211,7 @@ final class LocationCache {
                 return (loc.coordinate.latitude, loc.coordinate.longitude)
             }
         }
+        self.clock = clock ?? { Date() }
     }
 
     func update(latitude: Double, longitude: Double, at now: Date = Date()) {
@@ -237,7 +254,9 @@ final class LocationCache {
         let result = await task.value
         inflight = nil
         guard let result else { return cachedCoordinate }
-        update(latitude: result.0, longitude: result.1, at: now)
+        // `clock()`, not `now`: the fix is only current as of when it *arrived*,
+        // and `now` is from before the wait. See `clock`.
+        update(latitude: result.0, longitude: result.1, at: clock())
         return (result.0, result.1)
     }
 

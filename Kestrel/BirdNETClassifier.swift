@@ -20,15 +20,30 @@ actor BirdNETClassifier {
     /// out-of-range false positives (they no longer clear the higher bar). Set
     /// equal to `detectionThreshold` to disable the soft filter; raise toward 1.0
     /// to make the range filter stricter.
+    ///
+    /// At 1.0 it is *nearly* a hard exclude, not an absolute one, and the
+    /// difference matters to anything reasoning about it: the bar is compared with
+    /// `>=`, and `1/(1+expf(-logit))` saturates to exactly `1.0` in `Float` once
+    /// the logit passes ~17. So an out-of-range species the model is completely
+    /// certain about still gets through, which is the soft filter behaving as
+    /// described rather than a hole in it. What must *never* rely on this bar is
+    /// the non-species classes below — see `nonBirdLabels`.
     static let outOfRangeThreshold: Float = 1.0
 
     /// Non-species classes in the BirdNET 6K v2.4 label set (noise/anthropogenic
     /// sounds). These must *never* be reported as detections — they aren't birds.
-    /// They're normally suppressed because they sit outside every range filter and
-    /// `outOfRangeThreshold` is 1.0 (unreachable), but that's a coincidental
-    /// safeguard: lowering the threshold, or a future filter that happens to allow
-    /// one of these indices, would let them through. The `nonBirdIndices` guard in
-    /// `classify` excludes them unconditionally, independent of any threshold.
+    ///
+    /// The `nonBirdIndices` guard in `classify` is what excludes them, and it is
+    /// the *only* thing that does: it runs before any threshold is consulted, so
+    /// it holds whatever `outOfRangeThreshold` is set to and whatever a range
+    /// filter happens to allow.
+    ///
+    /// It used to be argued that they were suppressed anyway, sitting outside
+    /// every range filter with `outOfRangeThreshold` at an unreachable 1.0. That
+    /// bar is not unreachable — the sigmoid saturates to exactly 1.0 in `Float`
+    /// (see `outOfRangeThreshold`) — so a loud enough engine or human voice would
+    /// have cleared it. A guard that doesn't depend on a threshold at all is the
+    /// only version of this that can be reasoned about.
     static let nonBirdLabels: Set<String> = [
         "Dog", "Engine", "Environmental", "Fireworks", "Gun",
         "Human non-vocal", "Human vocal", "Human whistle",
@@ -138,31 +153,71 @@ actor BirdNETClassifier {
         var results: [Detection] = []
         results.reserveCapacity(32)
         for (index, logit) in logits.enumerated() {
-            // Hard guard: never report non-species classes (human voice, dog,
-            // noise, etc.), regardless of confidence or any threshold setting.
-            if nonBirdIndices.contains(index) { continue }
-            // Soft range filter: out-of-range species aren't dropped, they just
-            // have to clear a higher confidence bar than in-range ones. With no
-            // filter (`allowedIndices == nil`) everything uses the normal bar.
+            let isNonBird = nonBirdIndices.contains(index)
+            // With no filter (`allowedIndices == nil`) everything counts as in
+            // range and uses the normal bar.
             let inRange = allowedIndices?.contains(index) ?? true
-            let threshold = inRange ? Self.detectionThreshold : outOfRangeThreshold
-            // Model emits raw logits; apply sigmoid for [0,1] confidences.
-            let confidence = 1.0 / (1.0 + expf(-logit))
-            if confidence >= threshold {
-                let (sci, common) = labels[index]
-                #if DEBUG
-                if !inRange {
-                    print("BirdNET: out-of-range accept \(sci) conf=\(String(format: "%.2f", confidence)) (bar \(outOfRangeThreshold))")
-                }
-                #endif
-                results.append(Detection(
-                    scientificName: sci,
-                    commonName: common,
-                    confidence: confidence,
-                    lastSeen: now
-                ))
+            let confidence = Self.confidence(logit: logit)
+            guard Self.accepts(
+                confidence: confidence,
+                isNonBird: isNonBird,
+                inRange: inRange,
+                outOfRangeThreshold: outOfRangeThreshold
+            ) else { continue }
+            let (sci, common) = labels[index]
+            #if DEBUG
+            if !inRange {
+                print("BirdNET: out-of-range accept \(sci) conf=\(String(format: "%.2f", confidence)) (bar \(outOfRangeThreshold))")
             }
+            #endif
+            results.append(Detection(
+                scientificName: sci,
+                commonName: common,
+                confidence: confidence,
+                lastSeen: now
+            ))
         }
         return results
+    }
+
+    /// The model emits raw logits; this is the sigmoid that turns one into a
+    /// `[0, 1]` confidence.
+    ///
+    /// **It saturates.** Past a logit of about 17, `expf(-logit)` underflows far
+    /// enough that the quotient rounds to exactly `1.0` in `Float` — which is why
+    /// `outOfRangeThreshold`'s 1.0 is a very high bar rather than an unreachable
+    /// one, and why `accepts` refuses non-species classes structurally instead of
+    /// leaning on that bar. Named and `nonisolated` so a test can pin the
+    /// saturation rather than a comment asserting it.
+    nonisolated static func confidence(logit: Float) -> Float {
+        1.0 / (1.0 + expf(-logit))
+    }
+
+    /// Whether one label's score is reported as a detection.
+    ///
+    /// Two independent rules, and the order between them is the point:
+    ///
+    ///   • **Non-species classes are excluded outright**, before any threshold is
+    ///     consulted. Human voice, a dog, an engine and the rest are not birds at
+    ///     any confidence, under any range filter, at any setting of the bar
+    ///     below. This used to be argued as a consequence of those labels sitting
+    ///     outside every range filter with the bar at an unreachable 1.0 — but the
+    ///     bar is reachable (see `confidence`), so that argument never held.
+    ///   • **The soft range filter** then asks an out-of-range species for more
+    ///     acoustic evidence than an in-range one, rather than dropping it. See
+    ///     `outOfRangeThreshold`.
+    ///
+    /// Extracted as a pure function, in the shape `LifeListStore.recordsHandover`
+    /// and `RemoteSpeciesImageStore.staleOutcome` take, because the alternative is
+    /// a rule that can only be exercised by running a 6,522-class model over three
+    /// seconds of audio and hoping it produces the case under test.
+    nonisolated static func accepts(
+        confidence: Float,
+        isNonBird: Bool,
+        inRange: Bool,
+        outOfRangeThreshold: Float = BirdNETClassifier.outOfRangeThreshold
+    ) -> Bool {
+        guard !isNonBird else { return false }
+        return confidence >= (inRange ? detectionThreshold : outOfRangeThreshold)
     }
 }

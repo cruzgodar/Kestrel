@@ -187,7 +187,10 @@ struct SpeciesPhotoFullScreen: View {
     /// observation list's own (`listActions`), which lives inside that sheet so
     /// its presentations layer over it rather than under it.
     @State private var actions = ObservationActions()
-    /// The same, for the observation list's swipe actions.
+    /// The same, for the observation list's swipe actions. Its edits are relayed
+    /// on to `actions` (see where it's attached), because that is the trail this
+    /// screen's own chrome resolves a held sighting through — two objects, one
+    /// answer to "where is that record now".
     @State private var listActions = ObservationActions()
 
     /// Blank gutter (in points) shown between birds while paging horizontally,
@@ -545,7 +548,15 @@ struct SpeciesPhotoFullScreen: View {
                     )
                 }
             )
-            .observationActions(listActions, store: store)
+            // Relayed onto the viewer's own `actions`, which is what
+            // `liveObservation` / `livePinnedSightings` /
+            // `currentSightingWasDeleted` resolve through. An edit made from this
+            // list is an edit to a sighting the screen behind it may be holding
+            // by value, and a trail written into the sheet's own object is a
+            // trail nothing outside the sheet can read.
+            .observationActions(listActions, store: store, onEdited: { original, replacement in
+                actions.recordEdit(original: original, replacement: replacement)
+            })
         }
     }
 

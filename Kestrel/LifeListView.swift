@@ -97,6 +97,36 @@ struct LifeListView: View {
         return store.entries.filter { starredSnapshot.contains($0.scientificName) }
     }
 
+    /// `displayedEntries` narrowed by the search query — i.e. exactly the
+    /// life-list rows on screen right now.
+    ///
+    /// Split out of `visibleRows` so the subtitle can count the same thing the
+    /// list renders. It used to count `displayedEntries`, which ignores the query,
+    /// under a comment claiming it matched the rows on screen — true with the
+    /// filter alone, and wrong the moment anything was typed, which is the one
+    /// case where the two differ.
+    private var matchingEntries: [LifeListEntry] {
+        Self.matchingEntries(displayedEntries, query: trimmedSearch)
+    }
+
+    /// The entries of `entries` that `query` matches, in their original order —
+    /// an empty query matching everything.
+    ///
+    /// `nonisolated static`, like `partitionByRange` and `computeSuggestions`
+    /// beside it, so the row set and the count that describes it can be checked
+    /// against each other without a view.
+    nonisolated static func matchingEntries(
+        _ entries: [LifeListEntry],
+        query: String
+    ) -> [LifeListEntry] {
+        guard !query.isEmpty else { return entries }
+        let needle = query.lowercased()
+        return entries.filter { entry in
+            let hay = "\(entry.commonName) \(entry.scientificName)".lowercased()
+            return scoreMatch(hay, needle: needle, allowFuzzy: needle.count >= 3) != nil
+        }
+    }
+
     /// The rows on screen: life-list entries (narrowed by the starred filter and
     /// the query) followed by catalog suggestions for the query.
     ///
@@ -115,15 +145,9 @@ struct LifeListView: View {
     /// before you could add anything. Worth knowing about before reading the
     /// subtitle as a description of everything below it.
     private var visibleRows: [SearchRow] {
-        let base = displayedEntries
+        let lifeMatches = matchingEntries
         let q = trimmedSearch
-        guard !q.isEmpty else { return base.map { .existing($0) } }
-        let needle = q.lowercased()
-
-        let lifeMatches = base.filter { entry in
-            let hay = "\(entry.commonName) \(entry.scientificName)".lowercased()
-            return Self.scoreMatch(hay, needle: needle, allowFuzzy: needle.count >= 3) != nil
-        }
+        guard !q.isEmpty else { return lifeMatches.map { .existing($0) } }
 
         // Drop any suggestion the life list has since caught up with. The
         // background scan already excludes life-list species, but it runs behind
@@ -872,9 +896,13 @@ struct LifeListView: View {
 
     private var speciesCountText: String {
         if showStarredOnly {
-            // Count from the frozen snapshot so the subtitle matches the rows
-            // on screen (unstarred-but-still-showing birds included).
-            let n = displayedEntries.count
+            // `matchingEntries`, so the subtitle counts the life-list rows
+            // actually on screen: the frozen snapshot (unstarred-but-still-showing
+            // birds included) *and* the search query, which the filter composes
+            // with even though the suggestions below don't. Counting
+            // `displayedEntries` named a number nothing on screen added up to as
+            // soon as anything was typed.
+            let n = matchingEntries.count
             return "Filtered to \(n) starred species"
         }
         let n = store.entries.count

@@ -808,6 +808,22 @@ final class RecordingManager {
             // had gone dark. Deliberately *not* the rest of a fresh start: the
             // detections, cooldowns and spectrogram are this same session's and
             // are meant to carry over.
+            //
+            // **The name is fresh even though the session isn't.** `stop()` has
+            // already sent a `phoneStop` carrying the *current* token, and
+            // `sendToWatch` picks whichever channel fits at that moment — so with
+            // the watch unreachable that stop is sitting on the background queue
+            // while this resume's `phoneStart` goes out live. Re-announcing under
+            // the same name left the queued stop matching
+            // `WatchSessionManager.phoneStopApplies`, which then dropped the
+            // mirror for a recording that was still running, with nothing to
+            // bring it back — exactly the race the token exists to close, reached
+            // by the one path that opted out of it. A new name makes the stale
+            // stop refusable; the cost is that the watch re-targets its mirror
+            // (`.retargetMirror`) and clears the now-hearing bird, which is a
+            // frame of "Listening…" against a mirror that otherwise goes dark for
+            // the rest of the walk.
+            localSessionToken &+= 1
             announceLocalSessionStart()
             return
         }
@@ -845,9 +861,9 @@ final class RecordingManager {
         refreshLifeListFromStore()
         isRecording = true
         localSessionStart = Date()
-        // A *fresh* session, so it gets a fresh name. The resume path above
-        // deliberately doesn't bump this: it is the same session carrying on, and
-        // the watch is still holding the token it was given.
+        // A fresh session, so it gets a fresh name. The resume path above bumps
+        // this too: what the token names is not a *session* but an announcement
+        // the watch can be asked to disregard, and a resume is an announcement.
         localSessionToken &+= 1
 
         announceLocalSessionStart()
@@ -902,6 +918,12 @@ final class RecordingManager {
     /// `localStopApplies` closes the half of this where the later session is
     /// watch-sourced; the token closes the half where it is another phone-mic one,
     /// which that guard cannot see.
+    ///
+    /// **Bumped on every `phoneStart` that goes out, resumes included.** It names
+    /// the announcement rather than the session: a resume out of `stop()`'s
+    /// 280 ms teardown window is one recording carrying on, but it follows a
+    /// `phoneStop` that may still be queued, and only a new name can make that
+    /// stop refusable. See `startLocally`.
     ///
     /// Seeded from the wall clock rather than zero, for the reason
     /// `watchDisplaySeq` is: the watch keeps the token for as long as *its*

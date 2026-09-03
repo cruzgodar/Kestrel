@@ -117,7 +117,41 @@ nonisolated enum EBirdCSVExporter {
             place,
             coordinate(observation.latitude),
             coordinate(observation.longitude)
-        ].joined(separator: "|")
+        ].joined(separator: String(keySeparator))
+    }
+
+    /// What separates a key's fields.
+    ///
+    /// Named rather than written inline because `rekeyed(_:from:to:)` has to
+    /// take a key apart again, and a reader that disagreed with the writer about
+    /// the separator would silently fail to recognize any key at all.
+    private static let keySeparator: Character = "|"
+
+    /// The same key with its species component rewritten, or `nil` when the key
+    /// isn't filed under `from` in the first place.
+    ///
+    /// Exists for `LifeListStore.migrateExportedKeys`. The ledger is keyed by
+    /// scientific name, and canonicalization *moves* scientific names — an alias
+    /// rewrite, a trinomial collapsing to its binomial, two spellings of one bird
+    /// merging. A key left behind under a name no entry holds describes a record
+    /// eBird has that Kestrel can no longer recognize as sent, so the next
+    /// "Export New Observations" hands it over a second time. eBird does no
+    /// deduplication, so that second copy is permanent.
+    ///
+    /// **Split once, from the front.** The species name is the only field that
+    /// cannot contain the separator: a place name can (`sanitize` strips quotes
+    /// and commas, not pipes), and the two coordinate fields sit at the far end
+    /// where a greedy split would find them. `maxSplits: 1` takes exactly the
+    /// species and leaves the rest of the key byte-identical, which is what makes
+    /// this safe on the legacy format too — the two differ only in the place
+    /// component, which this never looks at.
+    static func rekeyed(_ key: String, from: String, to: String) -> String? {
+        guard from != to else { return nil }
+        let parts = key.split(
+            separator: keySeparator, maxSplits: 1, omittingEmptySubsequences: false
+        )
+        guard parts.count == 2, parts[0] == from else { return nil }
+        return to + String(keySeparator) + parts[1]
     }
 
     /// How many rows are rendered between `onProgress` callbacks. Sized so a

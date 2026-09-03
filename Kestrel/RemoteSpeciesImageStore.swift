@@ -48,7 +48,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// background when a card opens and swaps it in for the medium-res image so a
     /// pinch-zoom is crisp. Bounded by total decoded byte cost (see
     /// `fullResImageMemory.totalCostLimit`) rather than count, and never persisted —
-    /// the medium 900px disk copy stays the protected/offline source of truth.
+    /// the medium disk copy stays the protected/offline source of truth.
     private let fullResImageMemory = NSCache<NSString, UIImage>()
     private let dir: URL
     private let session: URLSession
@@ -626,8 +626,26 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     /// foreground.
     private static let revalidationRetryInterval: TimeInterval = 60 * 60
 
-    /// UserDefaults key for the last revalidation attempt that reached the network.
-    private static let lastRevalidationKey = "photoCacheLastRevalidation"
+    /// UserDefaults key for the last revalidation attempt that reached the
+    /// network, **per pass**.
+    ///
+    /// Two keys, not one, because the two passes are not interchangeable. The
+    /// metered foreground pass can only ever *defer* a changed slug; the
+    /// Wi-Fi-and-power pass is the one that re-pulls it. Sharing a floor let the
+    /// pass that can't fix anything spend the budget of the pass that can — a
+    /// user who opens the app often would have their background sweep return at
+    /// the first guard most times it ran, leaving deferred slugs to be picked up
+    /// by `checkForPhotoUpdates`' own changed-list rather than by the sweep meant
+    /// to catch what that list misses.
+    ///
+    /// The floor is about not hammering the network from one repeated context, so
+    /// scoping it to the context is what it meant all along.
+    ///
+    /// Not private, so a test can state that the two passes don't share a budget
+    /// — the whole content of this fix is that these are two strings and not one.
+    nonisolated static func lastRevalidationKey(includeChanged: Bool) -> String {
+        includeChanged ? "photoCacheLastRevalidationFull" : "photoCacheLastRevalidation"
+    }
 
     struct RevalidationResult: Sendable {
         /// Confirmed current by hash comparison — nothing was downloaded.
@@ -742,7 +760,8 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         guard !stale.isEmpty else { return RevalidationResult() }
 
         let now = Date().timeIntervalSince1970
-        let lastAttempt = UserDefaults.standard.double(forKey: Self.lastRevalidationKey)
+        let retryKey = Self.lastRevalidationKey(includeChanged: includeChanged)
+        let lastAttempt = UserDefaults.standard.double(forKey: retryKey)
         guard now - lastAttempt >= Self.revalidationRetryInterval else {
             return RevalidationResult()
         }
@@ -762,10 +781,10 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         guard let remote = fetched else {
             // Offline, or the CDN is unreachable. Everything stays cached and
             // stale; the retry floor keeps this from hammering the network.
-            UserDefaults.standard.set(now, forKey: Self.lastRevalidationKey)
+            UserDefaults.standard.set(now, forKey: retryKey)
             return RevalidationResult(failed: stale.count)
         }
-        UserDefaults.standard.set(now, forKey: Self.lastRevalidationKey)
+        UserDefaults.standard.set(now, forKey: retryKey)
         UserDefaults.standard.set(now, forKey: Self.lastManifestCheckKey)
         // Same bookkeeping the discovery check does — newly published species get
         // their hash + attribution recorded, and credit fixes propagate.
@@ -842,6 +861,15 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         memory.removeObject(forKey: key)
         thumbnailMemory.removeObject(forKey: key)
         fullResImageMemory.removeObject(forKey: key)
+        // A replacement photo is new bytes on disk, so the cap has to be
+        // re-checked exactly as it is after a first download (see
+        // `downloadAndStore`). The old file counted toward the bucket, but the new
+        // one can be larger — and a refresh sweep replaces many slugs in a row, so
+        // the drift compounds until some unrelated download happens to trigger a
+        // prune. `didCacheImage` is a no-op for a protected slug either way.
+        if fetched.contains(where: { $0.size == .medium }) {
+            didCacheImage(slug: slug)
+        }
         return true
     }
 

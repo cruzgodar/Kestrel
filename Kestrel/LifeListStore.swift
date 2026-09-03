@@ -89,15 +89,17 @@ final class LifeListStore {
     /// Remembering what has been handed over is the only way to let someone
     /// export repeatedly without duplicating their history.
     ///
-    /// Keys are only ever added, never pruned — not when the sighting they
-    /// describe is edited into a different key, deleted, or wiped by "Delete All
-    /// Entries". This is intended. The key describes a *record eBird now holds*,
-    /// not a row Kestrel still stores, and that stays true however the local copy
-    /// changes; a sighting that reproduces a retired key is, by the key's own
-    /// definition, an exact copy of something already uploaded, and sending it
-    /// again would duplicate it on eBird's side. Anyone who does want the whole
-    /// list written out regardless has "Export All Observations", which ignores
-    /// this ledger entirely.
+    /// Keys are only ever added — never pruned, and never rewritten in place.
+    /// Not when the sighting they describe is edited into a different key,
+    /// deleted, or wiped by "Delete All Entries"; and when canonicalization moves
+    /// a species' scientific name, `migrateExportedKeys` *adds* the key under the
+    /// new name rather than replacing the old one. This is intended. The key
+    /// describes a *record eBird now holds*, not a row Kestrel still stores, and
+    /// that stays true however the local copy changes; a sighting that reproduces
+    /// a retired key is, by the key's own definition, an exact copy of something
+    /// already uploaded, and sending it again would duplicate it on eBird's side.
+    /// Anyone who does want the whole list written out regardless has "Export All
+    /// Observations", which ignores this ledger entirely.
     private(set) var exportedObservationKeys: Set<String> = []
 
     /// Which observations an export should cover.
@@ -141,6 +143,17 @@ final class LifeListStore {
                 at: directory, withIntermediateDirectories: true
             )
         }
+        // **Before `load()`, not after.** `load()` canonicalizes, and
+        // canonicalization can rename a species — at which point
+        // `migrateRenamedState` has to move that species' ledger keys onto the new
+        // name. Loaded afterwards, the ledger was still empty while that ran, so
+        // the migration found nothing to move and every key for a renamed bird
+        // stayed orphaned: the sighting read as never sent, and the next "Export
+        // New Observations" handed eBird a second copy. (The import path was
+        // unaffected, which is exactly what made this the kind of thing only a
+        // test notices.) The stars are read before `load()` for the same reason
+        // and always were.
+        exportedObservationKeys = loadExportedKeys()
         if let saved = loadStars() {
             starredNames = saved
             load()
@@ -155,7 +168,6 @@ final class LifeListStore {
             starredNames = Set(entries.lazy.filter(\.isStarred).map(\.scientificName))
             saveStars()
         }
-        exportedObservationKeys = loadExportedKeys()
     }
 
     /// How many times an import will re-merge around a concurrent write before
@@ -214,9 +226,10 @@ final class LifeListStore {
         refreshSpeciesNames()
         // An import can fold an eBird spelling onto a name already on the list —
         // that is what the canonicalization above is for — so follow the user's
-        // stars onto whatever it moved, *before* the re-stamp below overwrites
-        // them from a set still keyed to the old name. See `migrateStars`.
-        migrateStars(renames: result.renames)
+        // stars and the export ledger onto whatever it moved, *before* the
+        // re-stamp below overwrites the stars from a set still keyed to the old
+        // name. See `migrateRenamedState`.
+        migrateRenamedState(renames: result.renames)
         // Re-stamp stars from the persistent set so a wipe-and-reimport (or any
         // import) restores the user's "alert me" choices even though the cleared
         // entries no longer carried them.
@@ -671,8 +684,78 @@ final class LifeListStore {
         }
     }
 
+    /// Carries **everything keyed by scientific name** across the names
+    /// canonicalization moved: the user's stars, and the eBird export ledger.
+    ///
+    /// One call rather than two, for the reason `DetectionCooldowns` is one value
+    /// rather than three dictionaries. Both of these sets are persisted separately
+    /// from the life list precisely so they can outlive an entry, and both are
+    /// therefore keyed to a name the entry may no longer hold. They were two
+    /// parallel concerns with one of them wired up — the ledger's half simply
+    /// wasn't there — and nothing failed loudly: the star's absence at least shows
+    /// as an empty star, while an orphaned ledger key shows as nothing at all
+    /// until eBird ends up holding two copies of one sighting. A migration that
+    /// can't be half-done is what stops that happening again.
+    ///
+    /// Returns whether anything moved, so a caller can tell a launch that
+    /// migrated something from one that had nothing to do.
+    @discardableResult
+    private func migrateRenamedState(renames: [String: String]) -> Bool {
+        guard !renames.isEmpty else { return false }
+        let starsMoved = migrateStars(renames: renames)
+        let keysMoved = migrateExportedKeys(renames: renames)
+        return starsMoved || keysMoved
+    }
+
+    /// Carries the export ledger across the scientific names canonicalization
+    /// moved, so a sighting eBird already holds doesn't look new again.
+    ///
+    /// The ledger is keyed on `EBirdCSVExporter.key`, which leads with the
+    /// scientific name — and canonicalization rewrites scientific names. A key
+    /// left under the old spelling matches nothing the exporter builds, so the
+    /// sighting reads as never sent, and the next "Export New Observations" hands
+    /// eBird a second copy. eBird does no deduplication whatsoever, so that copy
+    /// is permanent and the user has no way to undo it.
+    ///
+    /// Only *Kestrel-native* sightings can be affected — an imported one is
+    /// skipped by `isNewToEBird` before the ledger is ever consulted — which is
+    /// what kept this from being a routine failure. It is not what made it safe.
+    ///
+    /// **Additive, and both key formats move**, for the same reasons
+    /// `migrateStars` is additive and `hasBeenExported` reads both formats: a
+    /// superseded key describes a record eBird still holds, so dropping it could
+    /// only lose the one piece of state whose loss can't be undone, and a ledger
+    /// written by an earlier build is full of the legacy form. `rekeyed` rewrites
+    /// the species and leaves the rest of the key untouched, so it doesn't need to
+    /// know which format it is looking at.
+    @discardableResult
+    private func migrateExportedKeys(renames: [String: String]) -> Bool {
+        guard !renames.isEmpty, !exportedObservationKeys.isEmpty else { return false }
+        var moved: Set<String> = []
+        for key in exportedObservationKeys {
+            for (old, new) in renames {
+                guard let rekeyed = EBirdCSVExporter.rekeyed(key, from: old, to: new) else {
+                    continue
+                }
+                moved.insert(rekeyed)
+                // A key names exactly one species, and `renames` is kept flat
+                // (see `recordRename`), so the first hit is the only one.
+                break
+            }
+        }
+        guard !moved.isEmpty else { return false }
+        let before = exportedObservationKeys.count
+        // Through `markExported`, so the ledger has one write path and a
+        // migration that adds nothing doesn't touch the disk.
+        markExported(moved)
+        return exportedObservationKeys.count != before
+    }
+
     /// Carries the user's stars across the scientific names canonicalization
     /// moved, so a star survives its species being re-filed.
+    ///
+    /// Reached through `migrateRenamedState`, never directly — the export ledger
+    /// needs the identical treatment and the two must not drift apart again.
     ///
     /// **Runs before `applyStarsToEntries`, always.** Canonicalization OR-merges
     /// `isStarred` onto the surviving entry, and that re-stamp then overwrites
@@ -707,8 +790,8 @@ final class LifeListStore {
     /// Re-stamps every entry's `isStarred` flag from the authoritative
     /// `starredNames` set, persisting the life list only if anything changed.
     ///
-    /// Every caller runs `migrateStars` first — see that method for what happens
-    /// when they don't.
+    /// Every caller runs `migrateRenamedState` first — see `migrateStars` for
+    /// what happens when they don't.
     private func applyStarsToEntries() {
         var changed = false
         for i in entries.indices {
@@ -1337,10 +1420,10 @@ final class LifeListStore {
             let ordered = collapsed.entries.sorted(by: Self.ordersBefore)
             entries = ordered
             refreshSpeciesNames()
-            // Follow the user's stars onto whatever names this pass moved, before
-            // `init`'s `applyStarsToEntries` re-stamps from the set — see
-            // `migrateStars`.
-            migrateStars(renames: collapsed.renames)
+            // Follow the user's stars and the export ledger onto whatever names
+            // this pass moved, before `init`'s `applyStarsToEntries` re-stamps
+            // from the set — see `migrateRenamedState`.
+            migrateRenamedState(renames: collapsed.renames)
             // Persist if anything actually changed — dates were migrated, rows
             // merged, a scientific name was rewritten to its catalog-canonical
             // form, a merge picked a different common name, or the file simply
@@ -1547,7 +1630,12 @@ final class LifeListStore {
         in map: inout [String: String]
     ) {
         guard old != new else { return }
-        for (key, value) in map where value == old {
+        // Snapshotted before the loop, for the reason `PhotoManifestStore.apply`
+        // and `ObservationActions.recordEdit` spell out at their own equivalents:
+        // writing to `map` while iterating it works only by accident of
+        // copy-on-write.
+        let pointingAtOld = map.compactMap { $0.value == old ? $0.key : nil }
+        for key in pointingAtOld {
             // A name that would now point at itself is dropped rather than
             // recorded as an identity rename, matching `composeRenames`.
             if key == new {

@@ -60,6 +60,60 @@ struct SearchTests {
         ).isEmpty)
     }
 
+    // MARK: which life-list rows a query leaves on screen
+
+    /// The rows the list renders and the subtitle that counts them come from one
+    /// function, which is the whole content of this.
+    ///
+    /// The subtitle used to count the starred-filter's entries, ignoring the
+    /// query, under a comment claiming it matched the rows on screen. True with
+    /// the filter alone; wrong the moment anything was typed — "Filtered to 40
+    /// starred species" over three visible rows.
+    @Test("matching entries narrows to the query")
+    func matchingEntriesNarrows() {
+        let entries: [LifeListEntry] = [
+            .make("Cardinalis cardinalis", "Northern Cardinal", [.at(utcDay(2026, 5, 4))]),
+            .make("Turdus migratorius", "American Robin", [.at(utcDay(2026, 5, 4))]),
+        ]
+        let matched = LifeListView.matchingEntries(entries, query: "cardinal")
+        #expect(matched.map(\.scientificName) == ["Cardinalis cardinalis"])
+    }
+
+    /// An empty query is "show me everything", not "show me nothing" — the guard
+    /// that keeps the unfiltered list from emptying itself. (`scoreMatch` answers
+    /// nil for an empty needle, so this can't be left to the filter.)
+    @Test("an empty query matches every entry, in order")
+    func matchingEntriesEmptyQuery() {
+        let entries: [LifeListEntry] = [
+            .make("Cardinalis cardinalis", "Northern Cardinal", [.at(utcDay(2026, 5, 4))]),
+            .make("Turdus migratorius", "American Robin", [.at(utcDay(2026, 5, 4))]),
+        ]
+        #expect(LifeListView.matchingEntries(entries, query: "").count == 2)
+    }
+
+    /// The scientific name is searchable too — an entry imported under a name the
+    /// user knows it by should be findable by it.
+    @Test("a query matches the scientific name as well as the common one")
+    func matchingEntriesSearchesBothNames() {
+        let entries: [LifeListEntry] = [
+            .make("Cardinalis cardinalis", "Northern Cardinal", [.at(utcDay(2026, 5, 4))]),
+        ]
+        #expect(LifeListView.matchingEntries(entries, query: "cardinalis").count == 1)
+    }
+
+    /// Order is the caller's, preserved: the store hands entries over already
+    /// sorted by `ordersBefore`, and a filter that reshuffled them would reorder
+    /// the list under the user as they typed.
+    @Test("matching preserves the order it was given")
+    func matchingEntriesPreservesOrder() {
+        let entries: [LifeListEntry] = [
+            .make("Bbb bbb", "Cardinal Two", [.at(utcDay(2026, 5, 5))]),
+            .make("Aaa aaa", "Cardinal One", [.at(utcDay(2026, 5, 4))]),
+        ]
+        let matched = LifeListView.matchingEntries(entries, query: "cardinal")
+        #expect(matched.map(\.scientificName) == ["Bbb bbb", "Aaa aaa"])
+    }
+
     // MARK: levenshtein
 
     @Test(

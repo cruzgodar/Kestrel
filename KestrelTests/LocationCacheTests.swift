@@ -31,8 +31,18 @@ struct LocationCacheTests {
         }
     }
 
+    /// A cache whose clock is held at `t0` unless a test moves it.
+    ///
+    /// Pinned rather than left on the wall clock so the tests below keep saying
+    /// what they always said: a resolved fix is stamped at `t0`, which is the
+    /// instant they pass as `now`. `resolvingFixIsStampedWhenItArrives` is the one
+    /// that moves it, and it is the one about the difference.
+    private func cache(_ fixes: Fixes, clock: @escaping @MainActor () -> Date) -> LocationCache {
+        LocationCache(fetch: { await fixes.fetch() }, clock: clock)
+    }
+
     private func cache(_ fixes: Fixes) -> LocationCache {
-        LocationCache(fetch: { await fixes.fetch() })
+        cache(fixes, clock: { [t0] in t0 })
     }
 
     @Test("with nothing cached it resolves a fix")
@@ -121,6 +131,50 @@ struct LocationCacheTests {
         #expect(subject.lastLongitude == -76)
     }
 
+    // MARK: when a resolved fix is stamped
+
+    /// A fix is only current as of when it *arrived*.
+    ///
+    /// `LocationProvider.currentLocation` waits up to five seconds, and the
+    /// stamp used to be the `now` the question was asked with — from before that
+    /// wait. So a slow fix went on file backdated by however long it took,
+    /// shortening the very window this class exists to enforce: ask at T, get an
+    /// answer at T+5, and it expires at T+60 rather than T+65. Small, and exactly
+    /// the kind of small that makes "current" mean something slightly different
+    /// from what it says.
+    @Test("a fix resolved slowly is stamped when it arrived, not when it was asked for")
+    func resolvingFixIsStampedWhenItArrives() async {
+        let fixes = Fixes((latitude: 42, longitude: -76))
+        // The clock advances five seconds across the fetch, standing in for a
+        // provider that took its time.
+        var reading = t0
+        let subject = cache(fixes, clock: { reading })
+        reading = later(5)
+
+        _ = await subject.current(now: t0)
+
+        #expect(subject.lastFixAt == later(5), "stamped on arrival")
+        #expect(
+            subject.isFresh(at: later(5 + LocationCache.freshness - 1)),
+            "so it stays current for a full window from there"
+        )
+        #expect(!subject.isFresh(at: later(5 + LocationCache.freshness)))
+    }
+
+    /// The read side is unchanged: `now` still decides whether the *cached*
+    /// coordinate is fresh enough to serve, which is a question about when it was
+    /// asked, not about any fetch.
+    @Test("a cache hit is judged against the instant the question was asked")
+    func cacheHitStillUsesTheQuestionsInstant() async {
+        let fixes = Fixes((latitude: 42, longitude: -76))
+        let subject = cache(fixes, clock: { .distantFuture })
+        subject.update(latitude: 1, longitude: 2, at: t0)
+
+        let served = await subject.current(now: later(LocationCache.freshness - 1))
+        #expect(served?.latitude == 1, "served from the cache")
+        #expect(fixes.calls == 0, "the clock plays no part in the freshness read")
+    }
+
     @Test("an explicit update restarts the freshness window")
     func updateStampsTheClock() {
         let subject = cache(Fixes(nil))
@@ -159,7 +213,7 @@ struct LocationCacheTests {
     }
 
     private func gatedCache(_ fixes: GatedFixes) -> LocationCache {
-        LocationCache(fetch: { await fixes.fetch() })
+        LocationCache(fetch: { await fixes.fetch() }, clock: { [t0] in t0 })
     }
 
     /// **The fallback belongs to every caller.** A second ask that lands while a

@@ -148,9 +148,9 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
         }
     }
 
-    /// Ships the species' 320px thumbnail (already a JPEG on the CDN/disk) to the
-    /// watch. Payloads are only a few KB, and the watch caches what it receives,
-    /// so each species is normally sent only once.
+    /// Ships the species' `thumb`-tier photo (already a JPEG on the CDN/disk) to
+    /// the watch. Payloads are only a few KB, and the watch caches what it
+    /// receives, so each species is normally sent only once.
     ///
     /// Prefers a live `sendMessage` when the watch is reachable, falling back to
     /// the background-tolerant `transferUserInfo` otherwise (or if the live send
@@ -162,9 +162,9 @@ final class WatchAudioBridge: NSObject, WCSessionDelegate {
     /// channel (see `WatchSessionManager.route`).
     private func sendWatchImage(for scientificName: String) {
         Task.detached(priority: .utility) {
-            // The 320px thumbnail bytes, straight from the store (disk, else
-            // fetched jumping the prefetch queue) — no downscaling or re-encoding
-            // on the phone. The watch caches and decodes them itself.
+            // The thumbnail bytes, straight from the store (disk, else fetched
+            // jumping the prefetch queue) — no downscaling or re-encoding on the
+            // phone. The watch caches and decodes them itself.
             guard let data = await RemoteSpeciesImageStore.shared.thumbnailData(for: scientificName) else {
                 return
             }

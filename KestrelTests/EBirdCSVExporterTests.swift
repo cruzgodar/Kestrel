@@ -515,6 +515,90 @@ struct EBirdCSVExporterTests {
         )
     }
 
+    // MARK: re-keying a ledger entry onto a renamed species
+
+    /// The ledger leads with the scientific name, and canonicalization *moves*
+    /// scientific names. A key left under the old spelling matches nothing the
+    /// exporter builds, so the sighting reads as never sent and the next "Export
+    /// New Observations" hands eBird a second copy — which eBird keeps.
+    @Test("re-keying rewrites the species and nothing else")
+    func rekeyedRewritesTheSpecies() {
+        let observation = LifeListEntry.Observation.at(may4, "Ithaca NY", lat: 42.45342, lon: -76.47352)
+        let key = EBirdCSVExporter.key(scientificName: "Astur cooperii", observation: observation)
+
+        let moved = EBirdCSVExporter.rekeyed(key, from: "Astur cooperii", to: "Accipiter cooperii")
+        #expect(moved == EBirdCSVExporter.key(
+            scientificName: "Accipiter cooperii", observation: observation
+        ), "the migrated key is exactly the one the exporter would build now")
+    }
+
+    /// The legacy format differs only in its place component, which re-keying
+    /// never looks at — so one function moves both formats and the ledger's
+    /// compatibility read keeps working after a rename.
+    @Test("re-keying moves a legacy key too, leaving its raw place intact")
+    func rekeyedMovesLegacyKeys() {
+        let observation = LifeListEntry.Observation.at(may4, "Ithaca, NY", lat: 1, lon: 2)
+        let legacy = EBirdCSVExporter.legacyKey(scientificName: "Old name", observation: observation)
+
+        let moved = EBirdCSVExporter.rekeyed(legacy, from: "Old name", to: "New name")
+        #expect(moved == EBirdCSVExporter.legacyKey(
+            scientificName: "New name", observation: observation
+        ))
+        #expect(moved?.contains("Ithaca, NY") == true, "the unfolded place survives")
+    }
+
+    /// A key for some other bird is not this rename's business. Returning nil
+    /// rather than a rewritten string is what lets the caller walk the whole
+    /// ledger against a whole rename map without filtering first.
+    @Test("re-keying declines a key filed under a different species")
+    func rekeyedDeclinesOtherSpecies() {
+        let key = EBirdCSVExporter.key(
+            scientificName: "Cardinalis cardinalis",
+            observation: .at(may4, "P", lat: 1, lon: 2)
+        )
+        #expect(EBirdCSVExporter.rekeyed(key, from: "Astur cooperii", to: "Accipiter cooperii") == nil)
+    }
+
+    /// An identity rename has nothing to move, and saying so keeps a caller from
+    /// re-inserting a key that is already there.
+    @Test("re-keying declines a rename that goes nowhere")
+    func rekeyedDeclinesIdentityRename() {
+        let key = EBirdCSVExporter.key(scientificName: "X y", observation: .at(may4, "P"))
+        #expect(EBirdCSVExporter.rekeyed(key, from: "X y", to: "X y") == nil)
+    }
+
+    /// **The species is the only field that can't contain the separator.** A
+    /// place name can — `sanitize` strips quotes and commas, not pipes — so
+    /// re-keying has to split once from the front rather than take the key apart
+    /// into fields. A greedy split would reassemble this key wrong and silently
+    /// retire a ledger entry.
+    @Test("a place name containing the key separator survives re-keying")
+    func rekeyedSurvivesAPipeInThePlaceName() {
+        let observation = LifeListEntry.Observation.at(may4, "Ithaca | Sapsucker", lat: 1, lon: 2)
+        let key = EBirdCSVExporter.key(scientificName: "Old name", observation: observation)
+        #expect(key.contains("|Ithaca | Sapsucker|"), "the pipe really is in the place field")
+
+        let moved = EBirdCSVExporter.rekeyed(key, from: "Old name", to: "New name")
+        #expect(moved == EBirdCSVExporter.key(
+            scientificName: "New name", observation: observation
+        ))
+    }
+
+    /// A rename whose *target* is a name already in the ledger produces the key
+    /// that species already has, which is what makes the migration idempotent:
+    /// running it twice inserts nothing the second time.
+    @Test("re-keying is idempotent under a repeated migration")
+    func rekeyedIsIdempotent() {
+        let observation = LifeListEntry.Observation.at(may4, "P", lat: 1, lon: 2)
+        let key = EBirdCSVExporter.key(scientificName: "Old name", observation: observation)
+        let once = EBirdCSVExporter.rekeyed(key, from: "Old name", to: "New name")
+        #expect(once != nil)
+        #expect(
+            EBirdCSVExporter.rekeyed(once!, from: "Old name", to: "New name") == nil,
+            "the moved key is no longer filed under the old name"
+        )
+    }
+
     // MARK: exportedPlaceName
 
     /// The single definition of "what place is this sighting filed under", shared

@@ -299,6 +299,33 @@ struct LifeListStoreStarMigrationTests {
         #expect(map == ["A": "D", "B": "D", "C": "D"])
     }
 
+    /// Several names can already point at the one being moved — three entries
+    /// sharing a common name merge pairwise, so the second collision re-points
+    /// everything the first sent to that target. The re-point walks a snapshot
+    /// rather than the live map, which is only visible with more than one to walk.
+    @Test("every name pointing at the moved one is re-pointed, not just the first")
+    func recordRenameRepointsEveryPredecessor() {
+        var map: [String: String] = [:]
+        LifeListStore.recordRename("A", to: "X", in: &map)
+        LifeListStore.recordRename("B", to: "X", in: &map)
+        LifeListStore.recordRename("C", to: "X", in: &map)
+        LifeListStore.recordRename("X", to: "Y", in: &map)
+        #expect(map == ["A": "Y", "B": "Y", "C": "Y", "X": "Y"])
+    }
+
+    /// The same sweep, with one of the predecessors being the rename's own
+    /// target: that one would now point at itself, so it drops out while its
+    /// siblings are re-pointed. Both branches of the loop, in one pass.
+    @Test("a predecessor that becomes the target drops out while the rest move")
+    func recordRenameDropsASelfPointingPredecessor() {
+        var map: [String: String] = [:]
+        LifeListStore.recordRename("A", to: "X", in: &map)
+        LifeListStore.recordRename("Y", to: "X", in: &map)
+        LifeListStore.recordRename("X", to: "Y", in: &map)
+        #expect(map["Y"] == nil, "Y → Y isn't a rename")
+        #expect(map == ["A": "Y", "X": "Y"])
+    }
+
     @Test("a name that didn't move isn't recorded")
     func recordRenameIgnoresIdentity() {
         var map: [String: String] = [:]
