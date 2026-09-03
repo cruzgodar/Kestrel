@@ -296,6 +296,23 @@ struct ContentView: View {
         .buttonStyle(RecordButtonStyle(tint: recordButtonTint))
         .animation(.easeOut(duration: 0.16), value: manager.isRecording)
         .animation(.easeInOut(duration: 0.2), value: manager.recordingBlocked)
+        // Spelled out rather than left to the label's own contents, which
+        // describe all three states badly and the locked one wrongly. Recording,
+        // the label is a bare `stop.fill` and VoiceOver reads the glyph; locked,
+        // the text still says "Start Birding" while a tap only opens the Settings
+        // alert. The watch's matching control has always named its state (see
+        // `recordButtonLabel` there); this is the phone catching up.
+        .accessibilityLabel(recordButtonLabel)
+    }
+
+    /// What VoiceOver calls the record button, which is one control with three
+    /// jobs — see the `.accessibilityLabel` above. Mirrors the watch's
+    /// `recordButtonLabel`, minus the Resume state, which is the watch's alone
+    /// (the phone answers its birding-walk prompt in an alert).
+    private var recordButtonLabel: String {
+        if manager.isRecording { return "Stop birding" }
+        if manager.recordingBlocked { return "Recording unavailable — permissions needed" }
+        return "Start birding"
     }
 
     /// Fill color for the record button: red while recording, gray when mic or

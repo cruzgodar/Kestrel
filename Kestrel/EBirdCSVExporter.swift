@@ -95,6 +95,17 @@ nonisolated enum EBirdCSVExporter {
     /// Recognizing both formats costs one extra set lookup and needs no
     /// migration, which is the only way to change the format without ever
     /// risking that.
+    ///
+    /// **The place component is the only difference, and the coordinate
+    /// component's rounding change is genuinely not one.** `coordinate` was
+    /// tightened in the same period — from `%.5f` on the raw value to
+    /// `canonicalCoordinate` and then `%.5f` — and both key formats share the new
+    /// version, so a key whose coordinates rendered differently under the old one
+    /// would match neither. Checked rather than assumed: the two agree on every
+    /// value that is not exactly a half at the fifth decimal (0 disagreements in
+    /// 3M random coordinates), and a `Double` from a GPS fix or a parsed CSV
+    /// column is never exactly that. There is nothing here to recognize a second
+    /// format of, so this stays a place-only fallback.
     static func legacyKey(
         scientificName: String,
         observation: LifeListEntry.Observation

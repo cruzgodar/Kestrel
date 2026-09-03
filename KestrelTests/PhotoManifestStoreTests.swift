@@ -801,6 +801,54 @@ struct PhotoAttributionTests {
     func paddedCreditIsTrimmed() {
         #expect(info(credit: "  A. Birder  ", license: nil).attribution == "A. Birder")
     }
+
+    // MARK: Boilerplate stripping
+
+    /// The syndicated form iNaturalist and Wikimedia hand over. The license is
+    /// carried by the separate `license` field, so repeating it inside the name
+    /// only crowds the caption.
+    @Test(
+        "syndicated boilerplate is stripped down to the photographer",
+        arguments: [
+            ("(c) Miguel A Mejias, PhD., some rights reserved (CC BY-NC)", "Miguel A Mejias, PhD."),
+            ("© Jane Doe (CC BY-SA 4.0)", "Jane Doe"),
+            ("Jane Doe (CC BY-NC-SA 4.0)", "Jane Doe"),
+            ("Jane Doe (CC BY 2.0)", "Jane Doe"),
+            ("Jane Doe (CC0 1.0)", "Jane Doe"),
+            ("Jane Doe (CC0)", "Jane Doe"),
+            ("Jane Doe (GFDL)", "Jane Doe"),
+            ("Jane Doe (Creative Commons Attribution 4.0)", "Jane Doe"),
+            ("Jane Doe (public domain)", "Jane Doe"),
+            ("Jane Doe (Public Domain Mark 1.0)", "Jane Doe"),
+            ("Jane Doe, all rights reserved (CC BY-ND)", "Jane Doe"),
+        ]
+    )
+    func boilerplateIsStripped(_ raw: String, _ expected: String) {
+        #expect(SpeciesPhotoInfo.displayCredit(raw) == expected)
+    }
+
+    /// The regression, and the reason every token in that pattern is
+    /// word-bounded: `CC`, `SA` and `BY-` were matched as plain substrings, so a
+    /// trailing parenthetical holding a place name — which is what these are —
+    /// looked like a license and was deleted along with it. Each of these ate
+    /// half of a real photographer's attribution.
+    @Test(
+        "a trailing parenthetical that only looks license-ish survives",
+        arguments: [
+            "Alvaro Rivera Rojas (brújula de aves)",
+            "Rosa Sanchez (Casa de Campo)",     // "sa" inside "Casa"
+            "Jim Smith (photo by Rebecca)",     // "cc" inside "Rebecca"
+            "Ana Lopez (Isla Isabela)",         // "sa" inside "Isabela"
+            "Nick Varvel (Kansas)",             // "sa" inside "Kansas"
+            "Marie Curie (Saskatchewan)",       // "sa" at the front of a word
+            "Bob Ross (a by-product study)",    // "by-" as ordinary English
+            "Ivy Chen (Accra)",                 // "cc" inside "Accra"
+            "Tom Benson (Riverside CA)",
+        ]
+    )
+    func placeNameParentheticalSurvives(_ raw: String) {
+        #expect(SpeciesPhotoInfo.displayCredit(raw) == raw)
+    }
 }
 
 /// Settling a republished photo the app holds **no bytes** for.

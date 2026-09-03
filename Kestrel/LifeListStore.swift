@@ -1105,6 +1105,24 @@ final class LifeListStore {
                 // hand — two deliberate sightings of one bird at one spot became
                 // one, because an import that never mentioned that bird happened
                 // to run. Nothing warned them, and nothing could bring it back.
+                //
+                // **A touched species' own pre-existing duplicate pair collapses
+                // too, and that is accepted.** `collapseByIdentity` keys on
+                // identity across the whole union; it cannot tell a stored record
+                // from an incoming one, so a pair the user deliberately recorded
+                // twice at one spot on one day folds into one the first time a CSV
+                // mentions that bird. Reviewed and kept, for two reasons. Telling
+                // the halves apart would mean deduping *between* the sets and not
+                // within them, and that is exactly what breaks the property this
+                // exists for: a re-import of an export the user already sent
+                // carries their own Kestrel-native sightings back as eBird rows,
+                // and those have to fold against the stored originals — which is
+                // the same shape as a stored pair folding against itself. And the
+                // outcome is invisible either way: the pair was two records of one
+                // bird at one place on one day, so nothing on the life list, the
+                // map, or an export reads differently afterwards. `ImportSummary`
+                // reports the net (see `summaryReportsRevisedOnlyImport`, which
+                // pins this case), so the tally stays honest about it.
                 dedupe: touchedKeys.contains(sci)
             )
         }

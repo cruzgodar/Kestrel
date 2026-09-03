@@ -894,19 +894,29 @@ struct LifeListView: View {
             + "you re-add the species later."
     }
 
+    /// The subtitle under the Life List title: how many life-list rows are on
+    /// screen right now.
+    ///
+    /// **`matchingEntries` on both branches**, so the two say the same *kind* of
+    /// thing. It counts the starred filter's frozen snapshot
+    /// (unstarred-but-still-showing birds included) *and* the search query — the
+    /// two narrowings the life-list rows actually compose. The unfiltered branch
+    /// used to count `store.entries`, which ignores the query, so typing anything
+    /// left the subtitle naming a number nothing below it added up to: "412
+    /// species" over three rows. That was the same defect the filtered branch had
+    /// already been fixed for, left standing on the branch nobody had looked at.
+    ///
+    /// With no query and no filter the two are identical — `matchingEntries`
+    /// returns `entries` unchanged for an empty query — so the ordinary case
+    /// still reads "412 species" and means the whole list.
+    ///
+    /// It deliberately does *not* count the catalog suggestions below it. Those
+    /// are birds you could add, not species on your life list, and a suggestion's
+    /// row is plainly a different thing from a lifer's — see `visibleRows`, where
+    /// the filter and the suggestions are likewise kept apart.
     private var speciesCountText: String {
-        if showStarredOnly {
-            // `matchingEntries`, so the subtitle counts the life-list rows
-            // actually on screen: the frozen snapshot (unstarred-but-still-showing
-            // birds included) *and* the search query, which the filter composes
-            // with even though the suggestions below don't. Counting
-            // `displayedEntries` named a number nothing on screen added up to as
-            // soon as anything was typed.
-            let n = matchingEntries.count
-            return "Filtered to \(n) starred species"
-        }
-        let n = store.entries.count
-        return "\(n) species"
+        let n = matchingEntries.count
+        return showStarredOnly ? "Filtered to \(n) starred species" : "\(n) species"
     }
 
     /// Builds the CSV for `scope` and raises the system save panel over the

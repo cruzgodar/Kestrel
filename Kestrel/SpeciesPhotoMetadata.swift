@@ -80,6 +80,16 @@ nonisolated struct SpeciesPhotoInfo: Decodable {
     /// The trailing-parenthetical rule requires a license-ish token inside the
     /// parentheses, so a name that legitimately ends in one — "Alvaro Rivera
     /// Rojas (brújula de aves)" — survives intact.
+    ///
+    /// **Every token is word-bounded, and that is the whole of the rule.** The
+    /// alternation used to include bare `CC`, `SA` and `BY-` as plain substrings,
+    /// which are far too common inside ordinary words to be evidence of anything:
+    /// "(Kansas)", "(Casa de Campo)", "(Isla Isabela)", "(Saskatchewan)" and
+    /// "(photo by Rebecca)" all matched, and each one silently ate half of a
+    /// photographer's attribution. That is the same licensing failure
+    /// `isAttributed` exists to prevent, wearing a plausible-looking name — the
+    /// credit still rendered, just not the one the license requires. `\b` around
+    /// each token is what tells a license apart from a place name.
     /// `nonisolated` because `attribution` is read off the main actor (see
     /// `SpeciesPhotoMetadata`, itself nonisolated), and this module defaults to
     /// MainActor isolation.
@@ -98,8 +108,10 @@ nonisolated struct SpeciesPhotoInfo: Decodable {
             options: [.regularExpression, .caseInsensitive]
         )
         // Trailing license parenthetical: "(CC BY-NC)", "(CC0 1.0)", "(GFDL)".
+        // `\b` around every token, so only a license matches and not a place
+        // name that happens to contain "cc" or "sa" — see the note above.
         text = text.replacingOccurrences(
-            of: #"\s*\([^)]*(?:CC|Creative Commons|public domain|GFDL|BY-|SA)[^)]*\)\s*$"#,
+            of: #"\s*\([^)]*(?:\bCC0?\b|\bcreative\s+commons\b|\bpublic\s+domain\b|\bGFDL\b|\bPDM\b|\bBY(?:-(?:NC|SA|ND))+\b|\bSA\b)[^)]*\)\s*$"#,
             with: "",
             options: [.regularExpression, .caseInsensitive]
         )
