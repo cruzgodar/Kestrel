@@ -615,8 +615,7 @@ struct LifeListStoreCanonicalizationTests {
     @Test("an unreadable life list is never written over")
     func unreadableFileIsNotOverwritten() throws {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()
-        let path = scratch.url.appendingPathComponent("life_list.json")
-        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        try scratch.obstruct("life_list.json")
 
         let store = makeStore(scratch, defaults)
         #expect(store.entries.isEmpty)
@@ -630,7 +629,7 @@ struct LifeListStoreCanonicalizationTests {
         // attempted. Without this the assertion below would pass for the wrong
         // reason — writing over a directory fails on its own, which proves
         // nothing about whether the store tried.
-        try FileManager.default.removeItem(at: path)
+        try scratch.clearObstruction("life_list.json")
 
         store.recordObservation(
             scientificName: "X y", commonName: "Ex Why",
@@ -660,10 +659,7 @@ struct LifeListStoreCanonicalizationTests {
     @Test("an unreadable life list doesn't block the stars file")
     func unreadableFileStillLetsStarsSave() throws {
         let scratch = ScratchDirectory(), defaults = ScratchDefaults()
-        try FileManager.default.createDirectory(
-            at: scratch.url.appendingPathComponent("life_list.json"),
-            withIntermediateDirectories: true
-        )
+        try scratch.obstruct("life_list.json")
         let store = makeStore(scratch, defaults)
         store.setStarred(scientificName: "X y", isStarred: true)
         store.flushPendingWrites()

@@ -679,6 +679,74 @@ struct LocalStopTests {
     }
 }
 
+/// Who owns the audio engine once it has finished coming up.
+///
+/// `startLocally` defers the engine bring-up by 280 ms so the record button can
+/// morph, and `stop()` decides whether there is anything to tear down by asking
+/// `pipeline.isRunning`. That is false for the *whole* of the bring-up — not just
+/// during the sleep, but through `setActive(true)`, the tap install and
+/// `engine.start()` — so a stop landing in there cancelled the task after its
+/// cancellation check, found no running engine, and returned. Nothing re-asked.
+///
+/// The engine then came up unowned: the microphone stayed live and the recording
+/// indicator stayed on under a UI saying the session had ended, windows kept
+/// reaching `process(window:)` so detections and notifications kept firing, and
+/// the `.playAndRecord` session went on keeping the app alive in the background.
+/// The only way out was to start and stop again, which nobody would think to do.
+///
+/// `stopEngineIfUnowned` asks this question from the other end — after the engine
+/// exists — and tears it down when the answer is no. It cannot be exercised
+/// without a microphone, so what is pinned here is the rule it turns on.
+@Suite("Audio engine ownership")
+struct EngineOwnershipTests {
+
+    @Test("a live phone-mic session owns its engine")
+    func phoneSessionOwnsIt() {
+        #expect(RecordingManager.engineIsOwned(isRecording: true, watchRecording: false))
+    }
+
+    /// The regression: the session ended while the engine was still coming up.
+    @Test("an engine that came up after the stop is owned by nothing")
+    func stoppedSessionOwnsNothing() {
+        #expect(
+            !RecordingManager.engineIsOwned(isRecording: false, watchRecording: false),
+            "nobody is going to stop this engine unless the bring-up does it itself"
+        )
+    }
+
+    /// The other end of the same window, and the reason there is one check rather
+    /// than two. `startFromWatch` tears a phone engine down with the same
+    /// `pipeline.isRunning` test against the same invisible bring-up, and its own
+    /// comment names the consequence: the phone's microphone left running
+    /// underneath a watch session, feeding a second stream of windows into the
+    /// same classifier. `watchRecording` is true by then, so this catches it too.
+    @Test("a watch session that took over owns no phone engine")
+    func watchTakeoverOwnsNothing() {
+        #expect(!RecordingManager.engineIsOwned(isRecording: true, watchRecording: true))
+        #expect(!RecordingManager.engineIsOwned(isRecording: false, watchRecording: true))
+    }
+
+    /// Ownership and "a phone-side stop applies here" are one fact, so they are
+    /// one function — `stop()` is what tears the engine down, and it only runs
+    /// when that fact holds. Stated as a test because the thing being defended is
+    /// that nobody writes a second copy of the rule that drifts from this one; the
+    /// state they would disagree about is a live microphone.
+    @Test("ownership is the local-stop rule, not a second copy of it")
+    func ownershipMatchesLocalStopApplies() {
+        for isRecording in [true, false] {
+            for watchRecording in [true, false] {
+                #expect(
+                    RecordingManager.engineIsOwned(
+                        isRecording: isRecording, watchRecording: watchRecording
+                    ) == RecordingManager.localStopApplies(
+                        isRecording: isRecording, watchRecording: watchRecording
+                    )
+                )
+            }
+        }
+    }
+}
+
 /// Whether the phone owes the watch a heartbeat.
 ///
 /// The watch shows a recording screen for two different things — its own

@@ -54,7 +54,41 @@ final class ScratchDirectory {
     /// Writes raw JSON as the life list — for decoding tests that need to omit
     /// fields a `LifeListEntry` would always encode.
     func writeRawLifeList(_ json: String) throws {
-        try Data(json.utf8).write(to: url.appendingPathComponent("life_list.json"))
+        try writeRaw("life_list.json", json)
+    }
+
+    /// Writes arbitrary bytes as one of the store's files.
+    ///
+    /// The decode-failure path, which a well-formed value can't reach — and one
+    /// of the two shapes a *read* of a sidecar file can fail in (the other is
+    /// `obstruct`). What matters about both is that the file is there: an absent
+    /// file means "nothing has ever been written", and a present unreadable one
+    /// means "there is something here that must not be written over".
+    func writeRaw(_ name: String, _ contents: String) throws {
+        try Data(contents.utf8).write(to: url.appendingPathComponent(name))
+    }
+
+    /// Puts a *directory* where one of the store's files belongs.
+    ///
+    /// The cheapest thing `Data(contentsOf:)` reliably fails on while
+    /// `FileManager.fileExists(atPath:)` still says yes — i.e. the shape of a
+    /// transient read failure (a file-protection window before first unlock, a
+    /// disk error) rather than of a file that was never written. Telling those
+    /// two apart is the whole subject of the tests that use this.
+    func obstruct(_ name: String) throws {
+        try FileManager.default.createDirectory(
+            at: url.appendingPathComponent(name), withIntermediateDirectories: true
+        )
+    }
+
+    /// Clears an `obstruct`ion, so a write to that path would now *succeed*.
+    ///
+    /// Every test asserting "the store declined to write" has to do this before
+    /// it looks, or the assertion passes for the wrong reason: writing over a
+    /// directory fails on its own, which proves nothing about whether the store
+    /// tried.
+    func clearObstruction(_ name: String) throws {
+        try FileManager.default.removeItem(at: url.appendingPathComponent(name))
     }
 
     func writeStars(_ names: [String]) throws {

@@ -153,21 +153,65 @@ final class LifeListStore {
         // unaffected, which is exactly what made this the kind of thing only a
         // test notices.) The stars are read before `load()` for the same reason
         // and always were.
-        exportedObservationKeys = loadExportedKeys()
-        if let saved = loadStars() {
+        switch loadExportedKeys() {
+        case .loaded(let keys):
+            exportedObservationKeys = keys
+        case .absent:
+            // Nothing has ever been exported, which an empty ledger says exactly.
+            break
+        case .failed:
+            // Empty *and wrong*, so nothing may be written over it — see
+            // `exportedKeysLoadFailed`.
+            exportedKeysLoadFailed = true
+        }
+        switch loadStars() {
+        case .loaded(let saved):
             starredNames = saved
             load()
             // Re-stamp entries from the authoritative set (their decoded flags
             // may be stale relative to it).
             applyStarsToEntries()
-        } else {
+        case .absent:
             // First run after this feature shipped: no separate stars file yet.
             // Seed it from whatever stars the entries already carry, then it
             // becomes the source of truth going forward.
             load()
             starredNames = Set(entries.lazy.filter(\.isStarred).map(\.scientificName))
             saveStars()
+        case .failed:
+            // The file is there and unread, so the entries' own flags are the
+            // best copy of the user's stars this launch has — seed from them so
+            // starred birds still alert, exactly as the `absent` branch does.
+            //
+            // What must *not* happen is either write that branch performs.
+            // `saveStars` would replace an unread file with a guess (see
+            // `starsLoadFailed`), and `applyStarsToEntries` would stamp that
+            // guess onto the entries and persist *them*, so a stars file that
+            // failed to load would take the flags in `life_list.json` with it.
+            // Seeding from the entries makes both no-ops in any case.
+            starsLoadFailed = true
+            load()
+            starredNames = Set(entries.lazy.filter(\.isStarred).map(\.scientificName))
         }
+    }
+
+    /// What reading one of the two sidecar files came back with.
+    ///
+    /// Three answers rather than two, and the third is the whole point of the
+    /// type: `absent` and `failed` both leave nothing in hand, and telling them
+    /// apart is the difference between "there is nothing to have" and "there is
+    /// something here that must not be written over". Both readers used to
+    /// collapse the two — `loadStars` onto `nil` and `loadExportedKeys` onto the
+    /// empty set — so an unreadable file was indistinguishable from a first run,
+    /// and the next write replaced it with what the first run would have held.
+    /// See `starsLoadFailed` and `exportedKeysLoadFailed`.
+    private enum SidecarLoad {
+        /// No file has ever been written.
+        case absent
+        /// Read and decoded.
+        case loaded(Set<String>)
+        /// A file is there and could not be read or decoded.
+        case failed
     }
 
     /// How many times an import will re-merge around a concurrent write before
@@ -346,7 +390,8 @@ final class LifeListStore {
         scientificName: String,
         observation: LifeListEntry.Observation
     ) -> Bool {
-        Self.hasBeenExported(
+        reloadExportedKeysIfFailed()
+        return Self.hasBeenExported(
             scientificName: scientificName,
             observation: observation,
             in: exportedObservationKeys
@@ -370,7 +415,8 @@ final class LifeListStore {
     /// read off the payload it produced (see `LifeListView.beginExport`), so this
     /// is left as the plain question it reads as, for tests and diagnostics.
     func observationCount(for scope: ExportScope) -> Int {
-        Self.exportRows(
+        reloadExportedKeysIfFailed()
+        return Self.exportRows(
             from: entries, scope: scope, exportedKeys: exportedObservationKeys
         ).count
     }
@@ -390,6 +436,11 @@ final class LifeListStore {
         scope: ExportScope,
         progress: ExportProgress? = nil
     ) async -> EBirdCSVExporter.Payload {
+        // Before the snapshot below: a `.newOnly` export asks the ledger what
+        // eBird already holds, and a ledger that failed to load answers "nothing"
+        // — which writes the user's whole history into a file marked as new. See
+        // `reloadExportedKeysIfFailed`.
+        reloadExportedKeysIfFailed()
         let entries = self.entries
         let exportedKeys = exportedObservationKeys
         return await Task.detached(priority: .userInitiated) {
@@ -433,6 +484,12 @@ final class LifeListStore {
     /// `.newOnly` export skips them. Call only on a successful save, and only
     /// when `recordsHandover` says so.
     func markExported(_ keys: Set<String>) {
+        // The ledger may have failed to load at launch, in which case what is in
+        // memory is empty and wrong. Retry before adding to it, so these keys join
+        // the real ledger rather than standing in for it — see
+        // `reloadExportedKeysIfFailed`, and `saveExportedKeys`, which still
+        // refuses to write if the retry didn't take.
+        reloadExportedKeysIfFailed()
         let before = exportedObservationKeys.count
         exportedObservationKeys.formUnion(keys)
         guard exportedObservationKeys.count != before else { return }
@@ -669,6 +726,13 @@ final class LifeListStore {
     /// `starredNames` set (so it survives a wipe-and-reimport) and mirrors the
     /// flag onto the entry, if present, for the UI.
     func setStarred(scientificName: String, isStarred: Bool) {
+        // A launch that couldn't read the stars file is holding a set seeded from
+        // the entries rather than the user's own, and `saveStars` refuses to write
+        // over what it couldn't read. Retry here — this is the moment the answer
+        // has to be right — so a transient failure costs one launch's alerting
+        // rather than the ability to change a star at all. The toggle below is
+        // applied on top of whatever the retry found, so the tap still wins.
+        reloadStarsIfFailed()
         let setChanged: Bool
         if isStarred {
             setChanged = starredNames.insert(scientificName).inserted
@@ -676,6 +740,9 @@ final class LifeListStore {
             setChanged = starredNames.remove(scientificName) != nil
         }
         if setChanged { saveStars() }
+        // The write above was refused, so remember what it was for — see
+        // `deferredStarToggles`.
+        if starsLoadFailed { deferredStarToggles[scientificName] = isStarred }
 
         if let idx = entries.firstIndex(where: { $0.scientificName == scientificName }),
            entries[idx].isStarred != isStarred {
@@ -702,10 +769,26 @@ final class LifeListStore {
     @discardableResult
     private func migrateRenamedState(renames: [String: String]) -> Bool {
         guard !renames.isEmpty else { return false }
+        // A launch whose ledger failed to load has nothing to migrate *yet* —
+        // `migrateExportedKeys` finds an empty set and does nothing — but the
+        // rename is still owed to whatever the retry eventually reads off disk.
+        // Dropping it here is how the retry would hand back a ledger keyed to a
+        // name no entry holds any more, which is the orphaned-key duplicate this
+        // whole migration exists to prevent, reached one step later. Chained
+        // rather than merged so a name moved twice across two launches ends up
+        // pointing at where it actually landed.
+        if exportedKeysLoadFailed {
+            deferredKeyRenames = Self.composeRenames(deferredKeyRenames, renames)
+        }
         let starsMoved = migrateStars(renames: renames)
         let keysMoved = migrateExportedKeys(renames: renames)
         return starsMoved || keysMoved
     }
+
+    /// Scientific-name moves that happened while the export ledger was unreadable,
+    /// held so `reloadExportedKeysIfFailed` can apply them to the ledger it
+    /// finally manages to read. Empty on every ordinary launch.
+    @ObservationIgnored private var deferredKeyRenames: [String: String] = [:]
 
     /// Carries the export ledger across the scientific names canonicalization
     /// moved, so a sighting eBird already holds doesn't look new again.
@@ -1261,32 +1344,151 @@ final class LifeListStore {
     private var exportedKeysURL: URL? { directory?.appendingPathComponent("exported_observations.json") }
 
     /// Loads the export ledger. An absent file simply means nothing has been
-    /// exported yet, so an empty set is the right answer.
-    private func loadExportedKeys() -> Set<String> {
+    /// exported yet, so an empty set is the right answer; a file that is there
+    /// and unreadable is not that, and says so — see `SidecarLoad`.
+    private func loadExportedKeys() -> SidecarLoad {
+        loadSidecar(exportedKeysURL, describedAs: "export ledger")
+    }
+
+    /// Loads the persisted star set. `absent` (not an empty set) when the file
+    /// has never been written, so `init` can tell "no stars" apart from
+    /// "pre-feature install, migrate from the entries."
+    private func loadStars() -> SidecarLoad {
+        loadSidecar(starsURL, describedAs: "stars")
+    }
+
+    /// The body of both sidecar reads, so neither can be given a two-way answer
+    /// by an edit meant for the other.
+    ///
+    /// A missing *directory* — which is what a `nil` URL means here — is read as
+    /// `absent` rather than `failed`: there is nothing on disk to protect, and
+    /// treating it as a failure would leave a store with no Application Support
+    /// at all (the one case `applicationSupport()` returns nil for) permanently
+    /// unable to write either file.
+    private func loadSidecar(_ url: URL?, describedAs name: String) -> SidecarLoad {
+        guard let url, FileManager.default.fileExists(atPath: url.path) else { return .absent }
         do {
-            guard let url = exportedKeysURL,
-                  FileManager.default.fileExists(atPath: url.path) else { return [] }
-            let data = try Data(contentsOf: url)
-            return try JSONDecoder().decode(Set<String>.self, from: data)
+            return .loaded(try JSONDecoder().decode(Set<String>.self, from: Data(contentsOf: url)))
         } catch {
-            Log.error("LifeListStore: export ledger load failed — \(error)")
-            return []
+            Log.error("LifeListStore: \(name) load failed — \(error)")
+            return .failed
         }
     }
 
-    /// Loads the persisted star set. Returns `nil` (not empty) when the file
-    /// has never been written, so `init` can tell "no stars" apart from
-    /// "pre-feature install, migrate from the entries."
-    private func loadStars() -> Set<String>? {
-        do {
-            guard let url = starsURL,
-                  FileManager.default.fileExists(atPath: url.path) else { return nil }
-            let data = try Data(contentsOf: url)
-            return try JSONDecoder().decode(Set<String>.self, from: data)
-        } catch {
-            Log.error("LifeListStore: stars load failed — \(error)")
-            return nil
+    /// Whether the stars file was there at launch and couldn't be read.
+    ///
+    /// The sidecar counterpart of `loadFailed`, and it exists for the same
+    /// reason. `starredNames` is then seeded from the entries rather than from
+    /// the file, which is a decent guess and not the user's actual answer — so
+    /// `saveStars` refuses to write while this is set, and the next launch
+    /// retries the read. Without the refusal, the first star toggle (or the
+    /// seeding write in `init` itself) replaced a file that had merely failed to
+    /// open with a set reconstructed from whatever happened to be in
+    /// `life_list.json`.
+    ///
+    /// Cleared by `reloadStarsIfFailed`, which retries at the one moment the
+    /// answer has to be right: just before a write.
+    @ObservationIgnored private var starsLoadFailed = false
+
+    /// Whether the export ledger was there at launch and couldn't be read.
+    ///
+    /// The same guard as `starsLoadFailed`, over the state this file calls the
+    /// one whose loss can't be undone. `exportedObservationKeys` is empty in this
+    /// state and does **not** mean "nothing has been exported" — so `markExported`
+    /// would union onto an empty set and `saveExportedKeys` would write that over
+    /// the real ledger, at which point every sighting already handed to eBird
+    /// looks new again and the next "Export New Observations" duplicates the
+    /// user's whole history on a service that does no deduplication.
+    ///
+    /// Cleared by `reloadExportedKeysIfFailed`.
+    @ObservationIgnored private var exportedKeysLoadFailed = false
+
+    /// Re-reads the stars file after a launch that couldn't, and re-stamps the
+    /// entries from what it finds.
+    ///
+    /// A no-op on every ordinary launch. The failures this covers — a
+    /// file-protection window before first unlock, a transient disk error — are
+    /// gone by the time the user is tapping a star, so retrying at the write is
+    /// what turns "this launch can't persist stars" back into a working store.
+    /// Caller applies its own change *after* this, so the user's tap wins over
+    /// the set that just came off disk.
+    private func reloadStarsIfFailed() {
+        guard starsLoadFailed else { return }
+        switch loadStars() {
+        case .loaded(let saved):
+            starsLoadFailed = false
+            // The file is authoritative again — but the toggles made while it
+            // wasn't are the user's answer and this one isn't, so they go back on
+            // top. Replayed rather than unioned, because a star can be turned
+            // *off*, which a union would quietly undo. See `deferredStarToggles`.
+            starredNames = saved
+            for (name, on) in deferredStarToggles {
+                if on { starredNames.insert(name) } else { starredNames.remove(name) }
+            }
+        case .absent:
+            // The file went away rather than coming back. There is nothing left
+            // to write over, so the refusal has nothing to protect, and the
+            // toggles already sit in `starredNames`.
+            starsLoadFailed = false
+        case .failed:
+            return
         }
+        let hadDeferred = !deferredStarToggles.isEmpty
+        deferredStarToggles = [:]
+        applyStarsToEntries()
+        // Written here rather than left to the caller's own toggle, which saves
+        // only when *it* changed something — a replayed toggle that the recovered
+        // file already agreed with wouldn't, and the earlier ones would stay
+        // unpersisted.
+        if hadDeferred { saveStars() }
+    }
+
+    /// Star toggles made while the stars file was unreadable.
+    ///
+    /// `saveStars` refused each of them, so they live only in `starredNames` — and
+    /// `reloadStarsIfFailed` replaces that wholesale with what it finally manages
+    /// to read. Without this they'd be silently reverted: the user turns a star
+    /// off, the file becomes readable, and the star comes back with nothing to
+    /// explain it. The ledger's counterpart is the `markedMeanwhile` count in
+    /// `reloadExportedKeysIfFailed`; it can get away with a count because a ledger
+    /// is only ever added to.
+    ///
+    /// Empty on every ordinary launch.
+    @ObservationIgnored private var deferredStarToggles: [String: Bool] = [:]
+
+    /// `reloadStarsIfFailed` for the export ledger.
+    ///
+    /// **Unioned, not replaced.** The ledger is append-only by design (see
+    /// `exportedObservationKeys`), and a `markExported` that ran while the read
+    /// was failing left keys in memory that never reached disk — describing
+    /// records eBird now holds. Replacing would drop exactly those.
+    private func reloadExportedKeysIfFailed() {
+        guard exportedKeysLoadFailed else { return }
+        // How many keys were marked while the read was failing. `saveExportedKeys`
+        // refused every one of them, so they exist only in memory — and they
+        // describe records eBird now holds, which is the state this whole guard is
+        // about not losing. A retry that merely merges them leaves them one kill
+        // away from being gone.
+        let markedMeanwhile = exportedObservationKeys.count
+        switch loadExportedKeys() {
+        case .loaded(let keys):
+            exportedKeysLoadFailed = false
+            exportedObservationKeys.formUnion(keys)
+        case .absent:
+            exportedKeysLoadFailed = false
+        case .failed:
+            return
+        }
+        // Written here rather than left to `markExported`, which only writes when
+        // *it* grew the set — and it didn't; the recovery did.
+        if markedMeanwhile > 0 { saveExportedKeys() }
+        // Canonicalization may have renamed a species while this file was
+        // unreadable, in which case the keys just read are filed under a name no
+        // entry holds. See `deferredKeyRenames`. Runs with the flag already
+        // cleared, so the `markExported` underneath writes rather than refusing.
+        let owed = deferredKeyRenames
+        deferredKeyRenames = [:]
+        migrateExportedKeys(renames: owed)
     }
 
     /// Serial queue for persistence. Encoding the pretty-printed JSON and writing
@@ -1334,6 +1536,12 @@ final class LifeListStore {
     /// Mirrors `saveStars`: snapshot on the main actor, encode + write on the
     /// serial IO queue so a large ledger never hitches the UI.
     private func saveExportedKeys() {
+        // See `exportedKeysLoadFailed`: the in-memory ledger is empty-and-wrong
+        // in that state, and writing it out is the one loss nothing can undo.
+        guard !exportedKeysLoadFailed else {
+            Log.error("LifeListStore: refusing to save over an export ledger that failed to load")
+            return
+        }
         let snapshot = exportedObservationKeys.sorted()
         guard let url = exportedKeysURL else { return }
         Self.ioQueue.async {
@@ -1349,6 +1557,13 @@ final class LifeListStore {
     }
 
     private func saveStars() {
+        // See `starsLoadFailed`: `starredNames` is a guess reconstructed from the
+        // entries in that state, and writing it out would replace the user's own
+        // answer with it.
+        guard !starsLoadFailed else {
+            Log.error("LifeListStore: refusing to save over a stars file that failed to load")
+            return
+        }
         // Snapshot on the main actor (cheap value copy), then encode + write off it.
         let snapshot = starredNames.sorted()
         guard let url = starsURL else { return }

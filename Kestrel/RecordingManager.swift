@@ -98,8 +98,13 @@ final class RecordingManager {
     /// Scientific names already in the life list when this recording session
     /// began. Used both by the UI (to decide which rows get the purple tint)
     /// and by `process(window:)` (to color the spectrogram detection band
-    /// purple instead of goldenrod). Captured by the view via
-    /// `snapshotLifeList(_:)` on the false → true transition of `isRecording`.
+    /// purple instead of goldenrod).
+    ///
+    /// Written by `refreshLifeListFromStore` at the top of each start path, and
+    /// **only** there. `ContentView` used to push it in as well, on the
+    /// `false → true` edge of `isRecording` — which was redundant for a fresh
+    /// start and actively wrong for a resume, whose whole point is that this
+    /// snapshot carries over. See the note where that push used to be.
     private(set) var lifeListSnapshot: Set<String> = []
     /// Live set of scientific names the user has starred — read straight off the
     /// store, never frozen, so notifications, alert haptics and the spectrogram's
@@ -896,6 +901,12 @@ final class RecordingManager {
                         spectrogram.ingest(chunk)
                     }
                 )
+                // The engine is up *now*, and the session it belongs to may
+                // already be over — see `stopEngineIfUnowned`, which is the whole
+                // reason this line exists. Deliberately not behind a
+                // `Task.isCancelled` check: a cancelled bring-up is exactly the
+                // case that has an engine nobody owns.
+                await self.stopEngineIfUnowned()
             } catch {
                 let message = "Failed to start audio: \(error.localizedDescription)"
                 await MainActor.run { [weak self] in
@@ -1033,6 +1044,58 @@ final class RecordingManager {
         isRecording && !watchRecording
     }
 
+    /// Whether a phone-mic session owns the audio engine right now.
+    ///
+    /// The same question `localStopApplies` answers, asked from the other end,
+    /// and therefore the same function rather than a second copy of the rule —
+    /// the way `Observation.Identity.canonicalCoordinate` forwards to the
+    /// exporter's. "A phone-side stop applies here" and "the phone's own session
+    /// owns the engine" are one fact: `stop()` is what tears the engine down, and
+    /// it only runs when that fact holds. Two independently-written versions
+    /// could disagree, and the state they'd disagree about is a live microphone.
+    nonisolated static func engineIsOwned(isRecording: Bool, watchRecording: Bool) -> Bool {
+        localStopApplies(isRecording: isRecording, watchRecording: watchRecording)
+    }
+
+    /// Tears the audio engine back down when it finished coming up into a session
+    /// that had already ended. Called by the deferred bring-up in `startLocally`,
+    /// the moment `pipeline.start()` returns.
+    ///
+    /// **The window this closes.** `startLocally` defers the engine bring-up by
+    /// 280 ms so the record button can morph, and `stop()` decides whether there
+    /// is anything to tear down by asking `pipeline.isRunning`. That is false for
+    /// the whole of the bring-up — not just during the sleep, which is what the
+    /// comment at that guard used to assume, but through `setCategory`,
+    /// `setActive(true)`, the tap install and `engine.start()`, which together are
+    /// hundreds of milliseconds and more on a cold path. A stop landing in there
+    /// cancelled this task *after* its cancellation check, found no running
+    /// engine, and returned. Nothing re-asked, so the engine came up unowned: the
+    /// microphone stayed live and the recording indicator stayed on under a UI
+    /// saying the session had ended, windows kept reaching `process(window:)` —
+    /// so detections, watch pushes, haptics and notifications kept firing — and
+    /// the `.playAndRecord` session went on keeping the app alive in the
+    /// background. The only way out was to start and stop again.
+    ///
+    /// **It covers the watch takeover too.** `startFromWatch` tears down a phone
+    /// engine with the same `if pipeline.isRunning` test, against the same
+    /// invisible bring-up, and its own comment names the consequence: the phone's
+    /// microphone left running underneath a watch session, feeding a second
+    /// stream of windows into the same classifier. `watchRecording` is true by
+    /// then, so the check below catches that case as well — one place to ask
+    /// rather than a second copy of the question at the other call site.
+    ///
+    /// Off the main actor, because `engine.stop()` + `setActive(false)` block
+    /// their caller — the reason the bring-up was deferred in the first place.
+    private func stopEngineIfUnowned() {
+        guard pipeline.isRunning else { return }
+        guard !Self.engineIsOwned(
+            isRecording: isRecording, watchRecording: watchRecording
+        ) else { return }
+        Log.warning("Audio engine came up into a session that had ended — stopping it")
+        let pipeline = self.pipeline
+        Task.detached(priority: .userInitiated) { pipeline.stop() }
+    }
+
     func stop() {
         // Before anything is torn down: a watch-sourced session's engine, idle
         // watchdog and pending transition are not this method's to cancel.
@@ -1069,8 +1132,16 @@ final class RecordingManager {
         sendToWatch(["cmd": "phoneStop", "session": localSessionToken])
         clearWatchBirdDisplay()
 
-        // If the engine never actually started (we cancelled a pending start
-        // task before its 280ms sleep elapsed), there's nothing to tear down.
+        // No running engine, so there is nothing for *this* method to tear down.
+        //
+        // Which is not the same as "no engine is coming". A pending start whose
+        // 280 ms sleep hasn't elapsed is cancelled above and never starts one —
+        // but one already past that check and inside `pipeline.start()` reads as
+        // not-running here and comes up moments later, into a session this call
+        // has just ended. That engine is torn down by `stopEngineIfUnowned`, on
+        // the bring-up's own side, where it can be asked *after* the engine
+        // exists. Assuming it away here is what left the microphone live under a
+        // stopped UI.
         guard pipeline.isRunning else { return }
 
         // engine.stop() + setActive(false) tax main internally during teardown.
@@ -1231,6 +1302,13 @@ final class RecordingManager {
         // the same classifier. Do the teardown the cancelled task was going to
         // do. Off the main actor, because `engine.stop()` + `setActive(false)`
         // block their caller for a moment (the reason it was deferred at all).
+        //
+        // A pending *start* already inside `pipeline.start()` reads as
+        // not-running here and would slip past this exactly as it slips past
+        // `stop()`'s matching guard — same window, same live microphone under a
+        // watch session. `stopEngineIfUnowned` catches that one on the bring-up's
+        // own side once `watchRecording` is true, which is why there is no second
+        // check for it here.
         if pipeline.isRunning {
             let pipeline = self.pipeline
             Task.detached(priority: .userInitiated) { pipeline.stop() }
@@ -1611,13 +1689,6 @@ final class RecordingManager {
         } catch {
             Log.error("Inference error — \(error)")
         }
-    }
-
-    /// Captures the set of life-list scientific names at the moment a new
-    /// recording session starts. The UI calls this on the false → true
-    /// transition of `isRecording`.
-    func snapshotLifeList(_ scientificNames: Set<String>) {
-        lifeListSnapshot = scientificNames
     }
 
     /// Freezes `lifeListSnapshot` from the store. Called at the top of every

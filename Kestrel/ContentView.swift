@@ -172,17 +172,24 @@ struct ContentView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
         }
-        .onChange(of: manager.isRecording) { wasRecording, isNowRecording in
-            if !wasRecording && isNowRecording {
-                // New session — push the current life-list IDs into the
-                // manager so both the rows and the spectrogram know which
-                // detections still need to be added.
-                manager.snapshotLifeList(
-                    Set(lifeListStore.entries.map(\.scientificName))
-                )
-            }
-        }
-        // No star mirroring here any more: `RecordingManager.starredNames` reads
+        // No life-list snapshot pushed from here any more, either. Both start
+        // paths already call `RecordingManager.refreshLifeListFromStore`, which
+        // reads the store directly and so is correct even when no view is mounted
+        // — a watch-started background session, which is exactly the case a push
+        // from this tab couldn't cover.
+        //
+        // What the push *could* do was break the one case it wasn't needed for.
+        // `startLocally`'s resume branch — a stop and restart inside the 280 ms
+        // teardown window — deliberately does not re-snapshot, because that is one
+        // recording carrying on and its detections, cooldowns and spectrogram are
+        // meant to carry over. The `false → true` edge of `isRecording` fires
+        // anyway (the user's two taps are frames apart, so SwiftUI renders in
+        // between), so the snapshot was overwritten with the life list *as it now
+        // stands* — and every bird filed earlier in that same walk lost its purple
+        // row and its spectrogram band, and stopped counting as new to
+        // `alertReason`.
+        //
+        // No star mirroring here either: `RecordingManager.starredNames` reads
         // the store itself. This tab pushing it in only worked while starring was
         // something you did on this tab, and it hasn't been for a while — the map
         // pin menu, the full-screen viewer and the life-list row menu all toggle
