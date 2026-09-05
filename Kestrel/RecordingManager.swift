@@ -2047,18 +2047,60 @@ final class RecordingManager {
         // Offline fallback: the precomputed grid (birds by location + week),
         // bundled from `build_offline_species_filter.py` (outside this repo —
         // see `OfflineSpeciesFilter`). Inert unless that data file ships in the
-        // bundle. Needs only a coordinate — the live
-        // model couldn't run, but we can still snap to the nearest grid sample —
-        // so use a fresh fix if we just got one, else the last-known location.
-        let lat = location?.coordinate.latitude ?? LocationCache.shared.lastLatitude
-        let lon = location?.coordinate.longitude ?? LocationCache.shared.lastLongitude
-        if let lat, let lon,
-           let offline = OfflineSpeciesFilter.shared.allowedIndices(lat: lat, lon: lon, week: week) {
+        // bundle. Needs only a coordinate — the live model couldn't run, but we
+        // can still snap to the nearest grid sample, for *this* week — so it is
+        // asked wherever a coordinate can be found. See `offlineFilterCoordinate`.
+        let coordinate = Self.offlineFilterCoordinate(
+            freshFix: location.map {
+                (latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
+            },
+            lastKnown: LocationCache.shared.lastCoordinate,
+            persisted: SpeciesRangeFilter.cachedCoordinate()
+        )
+        if let coordinate,
+           let offline = OfflineSpeciesFilter.shared.allowedIndices(
+               lat: coordinate.latitude, lon: coordinate.longitude, week: week
+           ) {
             allowedIndices = offline
             prefetchRegionImages(offline)
         } else {
             allowedIndices = nil
         }
+    }
+
+    /// Where the offline grid should snap to when the live geo model couldn't
+    /// run: this run's own fix, else the last one this process resolved, else the
+    /// one the geo cache recorded on disk.
+    ///
+    /// **Three sources, and the third is the whole point.** The first two are
+    /// both empty on precisely the launch that reaches this line — a cold start
+    /// whose location fix hasn't landed, where `LocationCache` is still the empty
+    /// thing a fresh process begins with. Stopping at two, the chain fell through
+    /// to `allowedIndices = nil`, and a nil filter is not "no filter" in any
+    /// harmless sense: `BirdNETClassifier.accepts` reads it as *everything in
+    /// range*, so all 6,522 labels are judged at `detectionThreshold` (0.3)
+    /// rather than at the far higher `outOfRangeThreshold`. Every wrong-continent
+    /// species the model half-hears is then reported, added to the life list,
+    /// notified about and alerted on — the misidentification the range filter
+    /// exists to prevent.
+    ///
+    /// Reachable, not theoretical: `loadCached` above refuses a filter from
+    /// another BirdNET week (~7.6 days), so anyone who hadn't opened the app in a
+    /// week and started a session before their fix arrived landed here with
+    /// nothing left to ask. `SpeciesRangeFilter.cachedCoordinate` is the source
+    /// that answers, and answers with a place rather than a stale species list —
+    /// the grid re-derives the current week's birds from it.
+    ///
+    /// Extracted as a pure function, in the shape `sessionCoordinate` and
+    /// `LifeListStore.recordsHandover` take, because what was wrong here was not
+    /// the arithmetic but the *number of places asked* — which a chain of `??`
+    /// states in a way nothing can object to when it is shortened again.
+    nonisolated static func offlineFilterCoordinate(
+        freshFix: (latitude: Double, longitude: Double)?,
+        lastKnown: (latitude: Double, longitude: Double)?,
+        persisted: (latitude: Double, longitude: Double)?
+    ) -> (latitude: Double, longitude: Double)? {
+        freshFix ?? lastKnown ?? persisted
     }
 
     /// Kicks off a background download of the embed photos for the just-computed

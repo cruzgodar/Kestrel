@@ -93,7 +93,7 @@ struct MoreView: View {
 
                 Text(Self.intro)
                 Text(Self.watch)
-                Text(Self.images)
+                Text(images)
                 Text(Self.importing)
 
                 Divider()
@@ -330,9 +330,25 @@ struct MoreView: View {
         "On Apple Watch, Kestrel can log your birding walk as a workout. That uses the watch\u{2019}s microphone, and so your phone can stay in your pocket. Since audio is processed on your phone, you must keep it with you to use Kestrel."
     )
     
-    private static let images = markdown(
-        "Kestrel uses freely-available (creative commons) images. Currently, over 1000 species have images, and more are coming soon!"
-    )
+    /// The photo-set blurb, with the species count read from the fetched
+    /// manifest rather than baked into the copy — the photo set grows without an
+    /// app update, so a hardcoded number goes stale on its own.
+    ///
+    /// Floored to the nearest hundred so the sentence reads as a round "over N"
+    /// claim that stays true as the set grows between renders. A fresh install
+    /// has no manifest yet (count 0), and so drops the number entirely rather
+    /// than advertising "over 0 species".
+    private var images: AttributedString {
+        let floored = (PhotoManifestStore.shared.photographedSpeciesCount / 100) * 100
+        guard floored > 0 else {
+            return Self.markdown(
+                "Kestrel uses freely-available (creative commons) images, and more species are getting them all the time!"
+            )
+        }
+        return Self.markdown(
+            "Kestrel uses freely-available (creative commons) images. Currently, over \(floored.formatted()) species have images, and more are coming soon!"
+        )
+    }
 
     private static let importing = markdown(
         "If you use eBird or Merlin to track your observations, it\u{2019}s a good idea to periodically import your eBird life list into Kestrel to keep its life list and map up-to-date. You can also export your observations back into eBird."

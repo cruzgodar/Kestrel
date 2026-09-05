@@ -170,9 +170,15 @@ final class LocationCache {
     static let freshness: TimeInterval = 60
 
     /// The last coordinate resolved, *however old*. Deliberately not bounded by
-    /// `freshness`: its one reader is `RecordingManager`'s offline
-    /// species-filter fallback, which wants "the last place we know of" — a
-    /// coarse regional list from an hour ago beats no list at all.
+    /// `freshness`: it is read through `lastCoordinate` by `current()`'s fallback
+    /// and by `RecordingManager`'s offline species-filter chain, both of which
+    /// want "the last place we know of" — a coarse regional list from an hour ago
+    /// beats no list at all.
+    ///
+    /// **Process-local, and never persisted.** A fresh launch starts with nothing
+    /// here, which is why the offline chain has a third source behind this one:
+    /// see `SpeciesRangeFilter.cachedCoordinate` and
+    /// `RecordingManager.offlineFilterCoordinate`.
     private(set) var lastLatitude: Double?
     private(set) var lastLongitude: Double?
     /// When `lastLatitude` / `lastLongitude` were written, so `current()` can
@@ -244,8 +250,8 @@ final class LocationCache {
     /// timed out left the button doing nothing at all while a perfectly usable
     /// coordinate sat in the cache. Both paths coalesce to the same answer here.
     func current(now: Date = Date()) async -> (latitude: Double, longitude: Double)? {
-        if let cached = cachedCoordinate, isFresh(at: now) { return cached }
-        if let inflight { return await inflight.value ?? cachedCoordinate }
+        if let cached = lastCoordinate, isFresh(at: now) { return cached }
+        if let inflight { return await inflight.value ?? lastCoordinate }
         let task = Task<(Double, Double)?, Never> { [fetch] in
             guard let fix = await fetch() else { return nil }
             return (fix.latitude, fix.longitude)
@@ -253,14 +259,21 @@ final class LocationCache {
         inflight = task
         let result = await task.value
         inflight = nil
-        guard let result else { return cachedCoordinate }
+        guard let result else { return lastCoordinate }
         // `clock()`, not `now`: the fix is only current as of when it *arrived*,
         // and `now` is from before the wait. See `clock`.
         update(latitude: result.0, longitude: result.1, at: clock())
         return (result.0, result.1)
     }
 
-    private var cachedCoordinate: (latitude: Double, longitude: Double)? {
+    /// `lastLatitude` / `lastLongitude` as a pair, or nil until this process has
+    /// resolved a fix at all. **However old** — the same rule those two carry,
+    /// for the same readers: `current()`'s fallback, and the offline
+    /// species-filter chain in `RecordingManager.performSpeciesFilterRefresh`,
+    /// which wants the last place we know of rather than a place we can vouch
+    /// for. Freshness is `isFresh(at:)`'s question, asked separately by the one
+    /// caller that needs it.
+    var lastCoordinate: (latitude: Double, longitude: Double)? {
         guard let lastLatitude, let lastLongitude else { return nil }
         return (lastLatitude, lastLongitude)
     }

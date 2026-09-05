@@ -639,6 +639,100 @@ struct SessionCoordinateTests {
     }
 }
 
+/// Where the *offline* species grid snaps to when the live geo model can't run.
+///
+/// The chain had two links — this run's fix, then `LocationCache` — and both are
+/// empty on exactly the launch that reaches it: a cold start whose location fix
+/// hasn't landed, where `LocationCache` is still the empty thing a fresh process
+/// begins with. So the chain fell through to `allowedIndices = nil`, and a nil
+/// filter is not "no filter" in any harmless sense — `BirdNETClassifier.accepts`
+/// reads it as *everything in range*, so all 6,522 labels are judged at
+/// `detectionThreshold` rather than at the far higher `outOfRangeThreshold`.
+/// Wrong-continent species the model half-hears are then reported, added to the
+/// life list, notified about and alerted on.
+///
+/// It was reachable by ordinary use, not by an exotic one: `loadCached` refuses a
+/// filter from another BirdNET week (~7.6 days), so anyone who hadn't opened the
+/// app in a week and tapped record before their fix arrived landed here with
+/// nothing left to ask. The third link — the coordinate the geo cache wrote to
+/// disk — is what answers, and it answers with a *place*, so the grid re-derives
+/// this week's birds rather than replaying last season's list.
+@Suite("Offline filter coordinate")
+struct OfflineFilterCoordinateTests {
+
+    private let ithaca = (latitude: 42.4534, longitude: -76.4735)
+    private let sanFrancisco = (latitude: 37.7749, longitude: -122.4194)
+    private let london = (latitude: 51.5072, longitude: -0.1276)
+
+    @Test("a fix resolved this run wins over everything remembered")
+    func freshFixWins() {
+        let picked = RecordingManager.offlineFilterCoordinate(
+            freshFix: ithaca, lastKnown: sanFrancisco, persisted: london
+        )
+        #expect(picked?.latitude == ithaca.latitude)
+        #expect(picked?.longitude == ithaca.longitude)
+    }
+
+    @Test("with no fix, this process's last known location is used")
+    func lastKnownBeatsPersisted() {
+        let picked = RecordingManager.offlineFilterCoordinate(
+            freshFix: nil, lastKnown: sanFrancisco, persisted: london
+        )
+        #expect(picked?.latitude == sanFrancisco.latitude)
+        #expect(picked?.longitude == sanFrancisco.longitude)
+    }
+
+    /// The regression. Both in-process sources are empty on a cold launch whose
+    /// fix hasn't landed, which is the only launch that gets this far.
+    @Test("a cold launch with no fix still reaches the coordinate on disk")
+    func persistedIsReached() {
+        let picked = RecordingManager.offlineFilterCoordinate(
+            freshFix: nil, lastKnown: nil, persisted: london
+        )
+        #expect(
+            picked?.latitude == london.latitude && picked?.longitude == london.longitude,
+            "without this the whole chain answers nil, and a nil filter admits all 6,522 labels at the in-range threshold"
+        )
+    }
+
+    /// An install that has never resolved a location has nothing to snap to, and
+    /// says so. This is the one case `allowedIndices = nil` is the honest answer
+    /// — and it is also the case where nothing was ever filtered, so there is no
+    /// good filter being thrown away.
+    @Test("nothing anywhere is the only way to come back empty")
+    func allEmpty() {
+        #expect(RecordingManager.offlineFilterCoordinate(
+            freshFix: nil, lastKnown: nil, persisted: nil
+        ) == nil)
+    }
+
+    /// Every combination, stated once: the answer is non-nil whenever *any*
+    /// source has one. Written as an exhaustive sweep rather than as three more
+    /// examples because the thing that broke was the number of sources consulted,
+    /// which a sweep objects to and an example does not.
+    @Test("any source at all is enough")
+    func anySourceSuffices() {
+        for fresh in [ithaca, nil] {
+            for last in [sanFrancisco, nil] {
+                for persisted in [london, nil] {
+                    let picked = RecordingManager.offlineFilterCoordinate(
+                        freshFix: fresh, lastKnown: last, persisted: persisted
+                    )
+                    let hasAny = fresh != nil || last != nil || persisted != nil
+                    #expect(
+                        (picked != nil) == hasAny,
+                        "fresh: \(fresh != nil), last: \(last != nil), persisted: \(persisted != nil)"
+                    )
+                    // And it is always the first one that had an answer.
+                    let expected = fresh ?? last ?? persisted
+                    #expect(picked?.latitude == expected?.latitude)
+                    #expect(picked?.longitude == expected?.longitude)
+                }
+            }
+        }
+    }
+}
+
 /// Which sessions a *phone-side* `stop()` is allowed to end.
 ///
 /// `RecordingManager.stop()` only knows how to tear down the phone's own half of

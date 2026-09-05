@@ -3,10 +3,16 @@ import onnxruntime_objc
 
 private nonisolated struct CachedFilter: Codable {
     /// Where and when the geo model was run to produce `allowedIndices`.
-    /// `latitude` / `longitude` / `speciesCount` are written for diagnostics
-    /// only — nothing reads them back, and they are kept because a cache file
-    /// that can't say what it describes is no use when something looks wrong.
-    /// `week` and `savedAt` are load-bearing: see `SpeciesRangeFilter.isCurrent`.
+    ///
+    /// `speciesCount` is written for diagnostics only — nothing reads it back,
+    /// and it is kept because a cache file that can't say what it describes is
+    /// no use when something looks wrong.
+    ///
+    /// The other four are load-bearing. `week` and `savedAt` decide whether the
+    /// list itself is still worth using (`SpeciesRangeFilter.isCurrent`), and
+    /// `latitude` / `longitude` are the app's only *persistent* record of where
+    /// the user has been — see `SpeciesRangeFilter.cachedCoordinate`, which is
+    /// what keeps a refused list from collapsing into no filter at all.
     let latitude: Double
     let longitude: Double
     let week: Int
@@ -128,28 +134,24 @@ actor SpeciesRangeFilter {
     /// This is the "Using last-known list" fallback a recording session falls
     /// back on when the live model can't run, so a cache from another season is
     /// refused outright: the caller then drops through to the offline grid
-    /// filter (which is week-aware) or to "showing all species", both of which
-    /// are honest, where a wrong-season list quietly is not.
+    /// filter, which is week-aware, and which `cachedCoordinate` guarantees has a
+    /// place to work from whenever this file exists at all. A wrong-season list
+    /// is wrong in both directions — it suppresses birds that are here now and
+    /// admits ones that aren't — and it says nothing about being wrong.
+    ///
+    /// Refusing is only the safer answer because something underneath it
+    /// answers. It briefly wasn't: with the grid's coordinate coming solely from
+    /// this process, a cold launch whose fix hadn't landed fell all the way
+    /// through to no filter at all. See `cachedCoordinate`.
     func loadCached(week: Int, now: Date = Date()) -> Set<Int>? {
-        guard let url = try? Self.cacheURL(), FileManager.default.fileExists(atPath: url.path) else {
+        guard let cached = Self.loadCacheFile() else { return nil }
+        guard Self.isCurrent(
+            cachedWeek: cached.week, savedAt: cached.savedAt, week: week, now: now
+        ) else {
+            Log.info("SpeciesRangeFilter: cached filter is from week \(cached.week), not \(week) — ignoring")
             return nil
         }
-        do {
-            let data = try Data(contentsOf: url)
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            let cached = try decoder.decode(CachedFilter.self, from: data)
-            guard Self.isCurrent(
-                cachedWeek: cached.week, savedAt: cached.savedAt, week: week, now: now
-            ) else {
-                Log.info("SpeciesRangeFilter: cached filter is from week \(cached.week), not \(week) — ignoring")
-                return nil
-            }
-            return Set(cached.allowedIndices)
-        } catch {
-            Log.error("SpeciesRangeFilter: failed to load cache — \(error)")
-            return nil
-        }
+        return Set(cached.allowedIndices)
     }
 
     /// Reads the cached allowed-index set straight off disk without
@@ -165,16 +167,64 @@ actor SpeciesRangeFilter {
     /// it on a week boundary would unprotect a whole region's cached photos and
     /// re-download them, possibly over cellular, to fix a grouping heading.
     nonisolated static func cachedAllowedIndices(now: Date = Date()) -> Set<Int>? {
-        guard let url = try? cacheURL(),
-              let data = try? Data(contentsOf: url) else { return nil }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let cached = try? decoder.decode(CachedFilter.self, from: data),
+        guard let cached = loadCacheFile(),
               isWithinMaxAge(savedAt: cached.savedAt, now: now) else { return nil }
         return Set(cached.allowedIndices)
     }
 
+    /// Where the last successful geo run was computed, read straight off the
+    /// cache file — the app's only record of the user's whereabouts that
+    /// survives a relaunch.
+    ///
+    /// **This is what makes `loadCached`'s week gate affordable.** Refusing a
+    /// wrong-season list is right, but it only helps if something underneath it
+    /// can still answer, and underneath it is `OfflineSpeciesFilter` — which is
+    /// week-aware, and needs nothing but a coordinate to produce a *current*
+    /// season's list for the same place. Its other two sources are this run's own
+    /// fix and `LocationCache`, and both are empty on exactly the launch that
+    /// reaches the fallback at all: a cold start whose fix hasn't landed
+    /// (`LocationCache` is process-local and starts out with nothing).
+    ///
+    /// With no third source the whole chain terminated at `allowedIndices = nil`,
+    /// which is not "no filter" in any harmless sense —
+    /// `BirdNETClassifier.accepts` reads a nil filter as *everything in range*,
+    /// so all 6,522 labels are judged at `detectionThreshold` rather than at the
+    /// far higher `outOfRangeThreshold`. That is the misidentification the range
+    /// filter exists to prevent, and it was reachable by a user who had simply
+    /// not opened the app for a week.
+    ///
+    /// Age-gated like `cachedAllowedIndices`, and pointedly **not** week-gated: a
+    /// place does not go out of season, and the week the grid is asked about is
+    /// today's either way. `maxCacheAge` still applies because a coordinate old
+    /// enough to be dropped is one the user may be a continent away from, and a
+    /// list built there would suppress every bird actually in front of them — the
+    /// opposite failure, and the quieter one.
+    nonisolated static func cachedCoordinate(
+        now: Date = Date()
+    ) -> (latitude: Double, longitude: Double)? {
+        guard let cached = loadCacheFile(),
+              isWithinMaxAge(savedAt: cached.savedAt, now: now) else { return nil }
+        return (cached.latitude, cached.longitude)
+    }
+
     // MARK: Persistence
+
+    /// The cache file, decoded, with no validity rule applied — each of the three
+    /// readers above adds its own. One decode rather than three, so a reader
+    /// can't be given a different answer by a change meant for another.
+    private nonisolated static func loadCacheFile() -> CachedFilter? {
+        guard let url = try? cacheURL(),
+              FileManager.default.fileExists(atPath: url.path) else { return nil }
+        do {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            return try decoder.decode(CachedFilter.self, from: data)
+        } catch {
+            Log.error("SpeciesRangeFilter: failed to load cache — \(error)")
+            return nil
+        }
+    }
 
     private static func cacheURL() throws -> URL {
         let dir = try FileManager.default.url(

@@ -169,6 +169,16 @@ nonisolated final class PhotoManifestStore: @unchecked Sendable {
         return hashes.keys.contains { metadata[$0] == nil }
     }
 
+    /// How many species the app currently knows a photo for — i.e. how many
+    /// slugs `info(forSlug:)` would answer for. Counts `metadata`, not `hashes`,
+    /// because a bare hash with no attribution is not a photo as far as any read
+    /// path is concerned. Zero on a fresh install until the first manifest fetch
+    /// lands, so anything user-facing has to cope with that (see `MoreView`).
+    var photographedSpeciesCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return metadata.count
+    }
+
     /// The hash of the photo the app believes it has cached for a slug. Compared
     /// against a freshly fetched manifest to decide whether a stale cached image
     /// actually needs re-downloading, or is byte-identical and just needs its

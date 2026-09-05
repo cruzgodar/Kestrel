@@ -97,6 +97,68 @@ struct SpeciesRangeFilterCacheTests {
         }
     }
 
+    // MARK: the window the week gate opens, and what fills it
+
+    /// The week gate refuses a list the age bound would still accept, and that
+    /// gap is a real span of days — most of a month — not a boundary case.
+    ///
+    /// Refusing there is right, but it is only *safe* because something
+    /// underneath answers: `RecordingManager`'s fallback hands the cache's
+    /// coordinate to the week-aware offline grid, which re-derives this week's
+    /// birds for the same place. It briefly didn't. The grid's coordinate came
+    /// solely from this process, so a cold launch whose fix hadn't landed fell
+    /// through to no filter at all — and a nil filter is read by
+    /// `BirdNETClassifier.accepts` as *everything in range*, putting all 6,522
+    /// labels on the 0.3 in-range bar instead of the far higher out-of-range one.
+    ///
+    /// So: for every age in the gap, the list is refused and the coordinate is
+    /// not. That pairing is the fix, stated as the invariant it is.
+    @Test("a coordinate outlives the list it was cached beside")
+    func coordinateOutlivesTheList() {
+        for age in [8 * day, 14 * day, 21 * day, SpeciesRangeFilter.maxCacheAge - 1] {
+            let savedAt = ago(age)
+            #expect(
+                !SpeciesRangeFilter.isCurrent(cachedWeek: 17, savedAt: savedAt, week: 18, now: t0),
+                "a list from another week is refused at \(Int(age / day)) days"
+            )
+            #expect(
+                SpeciesRangeFilter.isWithinMaxAge(savedAt: savedAt, now: t0),
+                "but the place it was computed at is still worth snapping the grid to"
+            )
+        }
+    }
+
+    /// Past the age bound both go, together. A coordinate old enough to be
+    /// dropped is one the user may be a continent away from, and a list built
+    /// there would suppress every bird actually in front of them — the opposite
+    /// failure to the one above, and the quieter one.
+    @Test("past the age bound the coordinate goes too")
+    func coordinateDoesNotOutliveTheAgeBound() {
+        let savedAt = ago(SpeciesRangeFilter.maxCacheAge)
+        #expect(!SpeciesRangeFilter.isWithinMaxAge(savedAt: savedAt, now: t0))
+        #expect(!SpeciesRangeFilter.isCurrent(
+            cachedWeek: 18, savedAt: savedAt, week: 18, now: t0
+        ))
+    }
+
+    /// The two age-gated readers of the cache file — the allowed-index set and
+    /// the coordinate — apply the same rule to the same file, so they can only
+    /// ever answer together.
+    ///
+    /// Run against whatever the host install actually has on disk, which is the
+    /// point: neither reader takes an injectable directory, so this is the one
+    /// way to exercise them without writing over the running app's real cache.
+    /// It holds with a file, without one, and with an unreadable one.
+    @Test("the coordinate and the index set are available together or not at all")
+    func bothAgeGatedReadersAgree() {
+        let indices = SpeciesRangeFilter.cachedAllowedIndices()
+        let coordinate = SpeciesRangeFilter.cachedCoordinate()
+        #expect(
+            (indices == nil) == (coordinate == nil),
+            "same file, same age bound — a reader that answered alone would be applying a rule of its own"
+        )
+    }
+
     // MARK: the week numbering the check turns on
 
     /// `isCurrent` is only as good as the week it compares against, and that
