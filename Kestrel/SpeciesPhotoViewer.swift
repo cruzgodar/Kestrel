@@ -137,6 +137,12 @@ struct SpeciesPhotoFullScreen: View {
     /// display, or one pane of a split — keeps the photo inside the horizontal
     /// safe area, so a vertical system bar never crosses it.
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Paired with the horizontal class to tell the big inner display of a
+    /// foldable from its outer one. The brief is explicit that the inner display
+    /// is regular in *both* axes; an outer display or a phone turned landscape
+    /// can report regular width but stays compact in height, and keying off
+    /// width alone let the outer display take layouts meant for the inner one.
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     /// Maps the photo's resting insets from leading/trailing onto physical
     /// left/right for the UIKit scroll view underneath.
     @Environment(\.layoutDirection) private var layoutDirection
@@ -197,6 +203,10 @@ struct SpeciesPhotoFullScreen: View {
     /// sliding up and the light app shows behind the bar (which read as the slow,
     /// mistimed black→white crossfade). Matches the stock Music app's now-playing.
     @State private var cardCoveredStatusBar = false
+    /// How the card's translation should reach `dragOffset` — see
+    /// `CardTranslation`. Zero while a finger is driving it.
+    @State private var cardSlideDuration: Double = 0
+    @State private var cardSlideSprings = false
     /// Drives the sheet listing every recorded sighting of the current bird,
     /// raised by the info panel's "N Observations" row.
     @State private var showObservationList = false
@@ -252,19 +262,29 @@ struct SpeciesPhotoFullScreen: View {
         items.indices.contains(index) ? items[index] : nil
     }
 
-    /// Whether the photo is grown to span the whole display rather than fitted
-    /// inside the horizontal safe area. See `horizontalSizeClass`.
-    private var photoSpansDisplay: Bool { horizontalSizeClass == .regular }
+    /// The corner radius of anything tucked into a display corner. Fixed, so the
+    /// info panel and the name capsule both stay pills; concentricity is got by
+    /// *placing* them rather than by bending their corners — see
+    /// `cornerInset(for:)`.
+    private static let cornerPillRadius: CGFloat = 24
 
-    /// The info panel's inset from the display's bottom and trailing edges when
-    /// it tucks into the corner. Equal on both edges by design — it is what makes
-    /// the panel's own corners concentric with the display's, since a concentric
-    /// corner is the display's radius less the distance in from it, and an
-    /// unequal inset would give the two edges different radii to agree with.
+    /// Fallback inset for a corner-tucked pill when the display's own corner
+    /// radius cannot be read.
+    private static let cornerPillFallbackInset: CGFloat = 20
+
+    /// How far in from a display corner a `cornerPillRadius` pill has to sit for
+    /// its curve to be concentric with the display's own.
     ///
-    /// Free to change: `ConcentricRectangle` derives the radius from whatever
-    /// this is, so nothing else needs touching.
-    private static let cornerPanelInset: CGFloat = 20
+    /// Concentric corners share a centre, so the gap between them is constant:
+    /// inset = display radius − pill radius. Read from the display at runtime
+    /// rather than from a table of device corner radii — those go stale, and the
+    /// last one in this project was deleted for that reason.
+    private static func cornerInset(for displayRadii: RectangleCornerRadii?) -> CGFloat {
+        guard let radius = displayRadii?.bottomTrailing, radius > cornerPillRadius else {
+            return cornerPillFallbackInset
+        }
+        return radius - cornerPillRadius
+    }
 
     /// Duration of the chrome show/hide fade. Short so tapping to reveal/hide the
     /// UI feels immediate (and so the auto-hide on zoom gets out of the way fast).
@@ -325,6 +345,27 @@ struct SpeciesPhotoFullScreen: View {
         // The *safe* width, which caps the info panel so its text can never run
         // under a side bar. Distinct from `fullWidth` above by design.
         let contentWidth = proxy.size.width
+        // Whether this is a foldable's *inner* display, unfolded — which is to
+        // say, whether a fold runs through what we are drawing on.
+        //
+        // Size classes alone could not answer this. They describe how much room
+        // there is, not which display it is, and an outer display wide enough to
+        // report regular took layouts meant for the inner one. A division region
+        // is the fold itself, so it exists on the inner display and nowhere else
+        // — not on the outer display, and not on a phone. `.includeInactive`
+        // because a fold only counts as *active* while the device is partway
+        // shut, and what is being asked here is whether it is there at all.
+        let isInnerDisplay: Bool = {
+            guard #available(iOS 27.1, *) else { return false }
+            return !proxy.reservedRegions(kind: .division, options: .includeInactive).isEmpty
+        }()
+        // The photo is grown to span the display only where there is a whole
+        // large display to span: the inner one, with the app to itself. Anywhere
+        // else — a phone, the outer display, one pane of a split — it rests
+        // inside the horizontal safe area instead.
+        let photoSpansDisplay = isInnerDisplay
+            && horizontalSizeClass == .regular
+            && verticalSizeClass == .regular
         // How far in from each side the photo sits *at rest*.
         //
         // With the display to ourselves the photo spans the whole of it, passing
@@ -353,18 +394,27 @@ struct SpeciesPhotoFullScreen: View {
         // large display the app has to itself, held landscape. Stated as size
         // class plus the shape of the geometry, never as a device or a pose, so
         // any display answering that description gets it.
+        // Corner-tucked chrome is for that display held landscape, and nothing else.
         let panelHugsCorner = photoSpansDisplay && fullWidth > fullHeight
+        // The display's own corner radii, asked for the full-bleed rect rather
+        // than the safe one: this proxy sits inside the safe area, so the
+        // full-screen rect is its own grown back by its insets.
+        let displayRadii: RectangleCornerRadii? = {
+            guard #available(iOS 27.0, *) else { return nil }
+            return proxy.concentricCornerRadii(
+                in: CGRect(
+                    x: -proxy.safeAreaInsets.leading,
+                    y: -proxy.safeAreaInsets.top,
+                    width: fullWidth,
+                    height: fullHeight
+                )
+            )
+        }()
+        let cornerInset = Self.cornerInset(for: displayRadii)
         // Half the top safe area: the card-top travel at which the white status
         // bar flips, so it switches when the card is *halfway* through the safe
         // area rather than only once it has fully cleared it.
         let statusBarFlipPoint = proxy.safeAreaInsets.top / 2
-        // The centre of the photo's resting box, as an offset from the card's
-        // own centre. The name capsule sits on this rather than on the middle of
-        // the screen, so it reads as belonging to the picture: where a side bar
-        // holds the photo off one edge, the capsule shifts with it. Taken from
-        // the resting box, not the live one, so a zoom never moves the capsule.
-        let photoCentreX = (restingInsets.left - restingInsets.right) / 2
-
         // Whether the card is still over the status bar, and so whether bar
         // contents should be light. Feeds the navigation bar's colour scheme,
         // which is what decides the status bar here — see the note there.
@@ -456,13 +506,12 @@ struct SpeciesPhotoFullScreen: View {
             // immersive-viewer chrome from the first frame. Back, More and the
             // species name are navigation-bar items now.
             chrome(
-                topInset: proxy.safeAreaInsets.top,
                 bottomInset: proxy.safeAreaInsets.bottom,
                 leadingInset: proxy.safeAreaInsets.leading,
                 trailingInset: proxy.safeAreaInsets.trailing,
                 contentWidth: contentWidth,
-                photoCentreX: photoCentreX,
-                hugsCorner: panelHugsCorner
+                hugsCorner: panelHugsCorner,
+                cornerInset: cornerInset
             )
                 .opacity(uiVisible ? 1 : 0)
                 .allowsHitTesting(uiVisible)
@@ -589,6 +638,18 @@ struct SpeciesPhotoFullScreen: View {
             ToolbarItem(placement: .cancellationAction) {
                 backButton
             }
+            // The species name, placed by the system in the middle of the bar —
+            // which is exactly between Back and More, on any display, with no
+            // measuring on our part. A principal item rather than
+            // `navigationTitle`, because a title is plain text: the system keeps
+            // text in a horizontal strip when it runs its bars vertically, and
+            // that strip draws a background nothing will take off. Dropped
+            // entirely where the capsule has moved into a corner of its own.
+            if !panelHugsCorner, let item = currentItem {
+                ToolbarItem(placement: .principal) {
+                    nameCapsule(for: item, contentWidth: contentWidth, hugsCorner: false)
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 if let item = currentItem {
                     menuButton(for: item)
@@ -608,7 +669,13 @@ struct SpeciesPhotoFullScreen: View {
         // same rock-steady geometry it did before and the photo does not churn as
         // the card slides. A plain `.offset` rather than `visualEffect`, which
         // leaves the hosted photo's `UIScrollView` behind.
-        .offset(dragOffset)
+        .background(
+            CardTranslation(
+                offset: dragOffset.height,
+                duration: cardSlideDuration,
+                springs: cardSlideSprings
+            )
+        )
     }
 
     /// How many sightings the bird on screen has on record. Drives the
@@ -736,21 +803,29 @@ struct SpeciesPhotoFullScreen: View {
 
     @ViewBuilder
     private func chrome(
-        topInset: CGFloat,
         bottomInset: CGFloat,
         leadingInset: CGFloat,
         trailingInset: CGFloat,
         contentWidth: CGFloat,
-        photoCentreX: CGFloat,
-        hugsCorner: Bool
+        hugsCorner: Bool,
+        cornerInset: CGFloat
     ) -> some View {
         Group {
             if let item = currentItem {
-                // The species name, top of the screen, centred over the picture.
-                nameCapsule(for: item, contentWidth: contentWidth)
-                    .padding(.top, topInset + 8)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .offset(x: photoCentreX)
+                // Tucked into the display's top-leading corner, mirroring the
+                // info panel in the opposite one. Everywhere else the name is a
+                // principal bar item instead, so the system centres it between
+                // Back and More — see the `.toolbar` on the body.
+                if hugsCorner {
+                    nameCapsule(for: item, contentWidth: contentWidth, hugsCorner: true)
+                        .padding(.leading, cornerInset)
+                        .padding(.top, cornerInset)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: .topLeading
+                        )
+                }
 
                 if hugsCorner {
                     // A wide display with the app to itself leaves a lot of empty
@@ -761,8 +836,8 @@ struct SpeciesPhotoFullScreen: View {
                     // to be the real distance from the corner for the panel's own
                     // corners to be concentric with it.
                     infoPanel(for: item, contentWidth: contentWidth, hugsCorner: true)
-                        .padding(.trailing, Self.cornerPanelInset)
-                        .padding(.bottom, Self.cornerPanelInset)
+                        .padding(.trailing, cornerInset)
+                        .padding(.bottom, cornerInset)
                         .frame(
                             maxWidth: .infinity,
                             maxHeight: .infinity,
@@ -1056,9 +1131,15 @@ struct SpeciesPhotoFullScreen: View {
     /// The species name in a glass capsule at the top of the card, dressed the
     /// same way the info panel is. Hugs the name; a name too wide for the cap
     /// (leaving room for the bar's buttons on either side) scales down to fit.
-    private func nameCapsule(for item: SpeciesPhotoItem, contentWidth: CGFloat) -> some View {
+    private func nameCapsule(
+        for item: SpeciesPhotoItem,
+        contentWidth: CGFloat,
+        hugsCorner: Bool
+    ) -> some View {
         let cap = max(contentWidth - 150, 80)
-        let shape: AnyShape = AnyShape(.rect(cornerRadius: Self.chromeHeight / 2))
+        let shape: AnyShape = AnyShape(
+            .rect(cornerRadius: hugsCorner ? Self.cornerPillRadius : Self.chromeHeight / 2)
+        )
         // `ViewThatFits` picks the natural-width label when it fits within `cap`
         // (so the capsule hugs the text) and only falls back to the scaled,
         // cap-width label when the name is genuinely too long. A plain
@@ -1070,7 +1151,13 @@ struct SpeciesPhotoFullScreen: View {
             nameLabel(for: item, shape: shape)
                 .minimumScaleFactor(0.5)
         }
-        .frame(maxWidth: cap)
+        // The fit budget is a transparent box wider than the capsule inside it,
+        // so where the capsule sits within that box is where it actually lands.
+        // Centred in the bar, but pinned leading in a corner — otherwise the
+        // capsule floats out towards the middle of the screen, and, because a
+        // concentric corner is measured from the display's, its radius collapses
+        // to nothing that far in.
+        .frame(maxWidth: cap, alignment: hugsCorner ? .leading : .center)
     }
 
     private func nameLabel(for item: SpeciesPhotoItem, shape: AnyShape) -> some View {
@@ -1101,14 +1188,10 @@ struct SpeciesPhotoFullScreen: View {
         // one, so its curve continues the screen's rather than cutting across it;
         // the familiar capsule ends everywhere else. `ConcentricRectangle` reads
         // the radius off the container it sits in, so it stays right whatever
-        // `cornerPanelInset` is set to.
-        // `isUniform` gives every corner the same radius. Left to itself each
-        // corner is resolved against whatever it is nearest, so only the two that
-        // sit by the display's own corners picked up its curve and the panel came
-        // out lopsided; uniform settles all four on one radius.
-        let panelShape: AnyShape = hugsCorner
-            ? AnyShape(ConcentricRectangle(corners: .concentric, isUniform: true))
-            : AnyShape(.rect(cornerRadius: Self.chromeHeight / 2))
+        // the display's corner radius is.
+        let panelShape: AnyShape = AnyShape(
+            .rect(cornerRadius: hugsCorner ? Self.cornerPillRadius : Self.chromeHeight / 2)
+        )
         return VStack(spacing: 12) {
             sightingSection(for: item, observations: observations(for: item))
 
@@ -1195,6 +1278,9 @@ struct SpeciesPhotoFullScreen: View {
                     guard value.translation.height > 0,
                           abs(value.translation.height) > abs(value.translation.width) else { return }
                     dismissEngaged = true
+                    // The finger is driving from here: the card lands where it is
+                    // this frame, with no animation of its own to lag behind.
+                    cardSlideDuration = 0
                     // Anchor the card's travel to where the dismiss took over, so it
                     // starts from zero rather than jumping by any pan already consumed.
                     dismissEngageBaseline = value.translation.height
@@ -1223,9 +1309,9 @@ struct SpeciesPhotoFullScreen: View {
                     // throw doesn't snap to a different speed at lift-off.
                     dismissViewer(velocity: value.velocity.height)
                 } else {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                        dragOffset = .zero
-                    }
+                    cardSlideSprings = true
+                    cardSlideDuration = 0.3
+                    dragOffset = .zero
                 }
             }
     }
@@ -1267,9 +1353,9 @@ struct SpeciesPhotoFullScreen: View {
             duration = dismissDuration
         }
 
-        withAnimation(.easeOut(duration: duration)) {
-            dragOffset = CGSize(width: 0, height: target)
-        }
+        cardSlideSprings = false
+        cardSlideDuration = duration
+        dragOffset = CGSize(width: 0, height: target)
         withAnimation(.easeIn(duration: 0.1).delay(max(duration - 0.1, 0))) {
             contentOpacity = 0
         }
@@ -1277,6 +1363,116 @@ struct SpeciesPhotoFullScreen: View {
             var transaction = Transaction()
             transaction.disablesAnimations = true
             withTransaction(transaction) { dismiss() }
+        }
+    }
+}
+
+/// Slides the whole presented cover — navigation bar, photo and all — by
+/// translating the cover's own view, rather than offsetting anything in SwiftUI.
+///
+/// A SwiftUI `.offset` on this screen cannot do it. The card is full-bleed by way
+/// of `.ignoresSafeArea()`, and the instant an ancestor of that is offset SwiftUI
+/// re-resolves the safe area underneath it: measured here, a **one point** drag
+/// dropped the card 62pt and the reported top inset flipped 116 → 64 while the
+/// content size churned 724 → 661 → 713. Offsetting only the inner card avoids
+/// that but leaves the navigation bar behind, because the bar belongs to a
+/// `UINavigationController` outside the offset. `.geometryGroup()` does not help.
+///
+/// A `CGAffineTransform` on the presented view controller's view moves every one
+/// of those layers together and runs no layout at all, so there is nothing for
+/// the safe area to be recomputed from and everything tracks the finger exactly.
+private struct CardTranslation: UIViewRepresentable {
+    /// How far down the card currently sits.
+    var offset: CGFloat
+    /// How it should get there: 0 while a finger is driving it (the card has to
+    /// land on the finger's position this frame), otherwise the length of the
+    /// animation that is carrying it. SwiftUI's own `withAnimation` cannot do
+    /// this for us — it writes the state to its final value straight away, and
+    /// the transform below would jump — so the motion is animated in UIKit.
+    var duration: Double
+    /// Whether that animation springs (the snap back from an abandoned drag) or
+    /// eases out (the slide off on dismissal).
+    var springs: Bool
+
+    func makeUIView(context: Context) -> ProbeView { ProbeView() }
+
+    func updateUIView(_ view: ProbeView, context: Context) {
+        let wanted = offset == 0
+            ? CGAffineTransform.identity
+            : CGAffineTransform(translationX: 0, y: offset)
+        // Straight through once the cover has been found, so a dragging finger is
+        // never a frame behind. Only the first resolution waits for the next turn
+        // of the runloop, because the probe is not in a window before then.
+        if let target = view.resolvedCover {
+            apply(wanted, to: target)
+        }
+
+        else {
+            DispatchQueue.main.async {
+                guard let target = view.coverView else { return }
+                view.resolvedCover = target
+                apply(wanted, to: target)
+            }
+        }
+    }
+
+    private func apply(_ transform: CGAffineTransform, to target: UIView) {
+        guard target.layer.affineTransform() != transform else { return }
+        guard duration > 0 else {
+            // Straight on the layer rather than through `UIView.transform`:
+            // setting the view's transform moves the view in the window, and
+            // UIKit recomputes the safe area of a view that has moved. That is
+            // what snapped the navigation bar down by the status bar's height on
+            // the first point of a drag, and then had it creep instead of
+            // travelling with the card. A layer transform changes only what is
+            // drawn, so no layout — and no safe area — is recomputed.
+            target.layer.setAffineTransform(transform)
+            return
+        }
+
+        if springs {
+            UIView.animate(
+                withDuration: duration,
+                delay: 0,
+                usingSpringWithDamping: 0.85,
+                initialSpringVelocity: 0,
+                options: [.beginFromCurrentState]
+            ) { target.layer.setAffineTransform(transform) }
+        }
+
+        else {
+            UIView.animate(
+                withDuration: duration,
+                delay: 0,
+                options: [.curveEaseOut, .beginFromCurrentState]
+            ) { target.layer.setAffineTransform(transform) }
+        }
+    }
+
+    /// An invisible view whose only job is to find the cover it is inside.
+    final class ProbeView: UIView {
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            backgroundColor = .clear
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+        /// Cached once found, so the common path costs no runloop hop.
+        var resolvedCover: UIView?
+
+        /// The presented cover's own view — the top of the chain of controllers
+        /// this probe sits in, which is the one the system slides on and off.
+        var coverView: UIView? {
+            var responder: UIResponder? = self
+            while let current = responder, !(current is UIViewController) {
+                responder = current.next
+            }
+            guard var controller = responder as? UIViewController else { return nil }
+            while let parent = controller.parent { controller = parent }
+            return controller.viewIfLoaded
         }
     }
 }
