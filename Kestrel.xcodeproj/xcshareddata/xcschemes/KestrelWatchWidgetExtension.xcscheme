@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <Scheme
-   LastUpgradeVersion = "2660"
+   LastUpgradeVersion = "2710"
    version = "2.0">
    <BuildAction
       parallelizeBuildables = "YES"
@@ -77,7 +77,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "FC5ECB752FC0B82F00667FD7"
             BuildableName = "Kestrel Watch.app"
-            BlueprintName = "Kestrel Watch"
             ReferencedContainer = "container:Kestrel.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
@@ -111,7 +110,6 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "FC5FFF702FE766B5003F0F43"
             BuildableName = "KestrelWatchWidgetExtension.appex"
-            BlueprintName = "KestrelWatchWidgetExtension"
             ReferencedContainer = "container:Kestrel.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

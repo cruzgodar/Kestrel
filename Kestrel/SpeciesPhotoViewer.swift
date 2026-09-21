@@ -99,6 +99,14 @@ final class ViewerTouchTracker {
 
 /// A request to programmatically turn the pager to `index`. Carries a fresh `id`
 /// per request so a repeated target still reads as a new command to act on.
+/// What a photo page is sized from, as one comparable value — see
+/// `PhotoPager.pageInputs`.
+private struct PagePlacement: Hashable {
+    let spansDisplay: Bool
+    let left: CGFloat
+    let right: CGFloat
+}
+
 private struct PageCommand: Equatable {
     let id = UUID()
     let index: Int
@@ -123,6 +131,15 @@ struct SpeciesPhotoFullScreen: View {
     var onShowObservationOnMap: ((LifeListEntry.Observation) -> Void)? = nil
 
     @Environment(\.dismiss) private var dismiss
+    /// Chooses how the photo is sized at rest. Regular width means the app has a
+    /// large display to itself (a foldable's inner display), where the photo is
+    /// grown to span it edge to edge. Compact — an ordinary phone, the outer
+    /// display, or one pane of a split — keeps the photo inside the horizontal
+    /// safe area, so a vertical system bar never crosses it.
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    /// Maps the photo's resting insets from leading/trailing onto physical
+    /// left/right for the UIKit scroll view underneath.
+    @Environment(\.layoutDirection) private var layoutDirection
     /// Drives the top-right star toggle. Optional so previews without a store
     /// injected still render (the button just reads as un-starred there).
     @Environment(LifeListStore.self) private var lifeListStore: LifeListStore?
@@ -158,8 +175,8 @@ struct SpeciesPhotoFullScreen: View {
     @State private var dismissEngageBaseline: CGFloat = 0
     /// Measured viewer size, used to slide the card fully off on dismiss.
     @State private var viewSize: CGSize = CGSize(width: 400, height: 800)
-    /// Whether the floating chrome (name capsule, close button, bottom details)
-    /// is shown. A single tap on the photo toggles it.
+    /// Whether the chrome — the navigation bar carrying Back and More, and the
+    /// bottom details panel — is shown. A single tap on the photo toggles it.
     @State private var uiVisible = true
     /// Shared paging state — false while a horizontal swipe is moving, true once
     /// it settles. Pages gate their full-resolution swap on this so the heavier
@@ -235,6 +252,20 @@ struct SpeciesPhotoFullScreen: View {
         items.indices.contains(index) ? items[index] : nil
     }
 
+    /// Whether the photo is grown to span the whole display rather than fitted
+    /// inside the horizontal safe area. See `horizontalSizeClass`.
+    private var photoSpansDisplay: Bool { horizontalSizeClass == .regular }
+
+    /// The info panel's inset from the display's bottom and trailing edges when
+    /// it tucks into the corner. Equal on both edges by design — it is what makes
+    /// the panel's own corners concentric with the display's, since a concentric
+    /// corner is the display's radius less the distance in from it, and an
+    /// unequal inset would give the two edges different radii to agree with.
+    ///
+    /// Free to change: `ConcentricRectangle` derives the radius from whatever
+    /// this is, so nothing else needs touching.
+    private static let cornerPanelInset: CGFloat = 20
+
     /// Duration of the chrome show/hide fade. Short so tapping to reveal/hide the
     /// UI feels immediate (and so the auto-hide on zoom gets out of the way fast).
     private static let uiToggleDuration: Double = 0.12
@@ -247,14 +278,14 @@ struct SpeciesPhotoFullScreen: View {
     }
 
     /// Hides the chrome if it's showing — used when a zoom begins, so a zoomed-in
-    /// photo is never cluttered by the name capsule / info panel.
+    /// photo is never cluttered by the bar or the info panel.
     private func hideUIForZoom() {
         guard uiVisible else { return }
         withAnimation(.easeInOut(duration: Self.uiToggleDuration)) { uiVisible = false }
     }
 
     /// Shows the chrome if it's hidden — used when the photo returns to minimum
-    /// zoom, so zooming back out reveals the name capsule / info panel again
+    /// zoom, so zooming back out reveals the bar and info panel again
     /// (mirroring `hideUIForZoom`).
     private func revealUIAfterZoom() {
         guard !uiVisible else { return }
@@ -277,17 +308,67 @@ struct SpeciesPhotoFullScreen: View {
         // constant frame derived from the stable outer proxy removes the only
         // value that was changing, so the photo holds dead still as the card
         // slides. (Measured and confirmed: outer proxy steady, inner geo ramped.)
+        NavigationStack {
         GeometryReader { proxy in
-        // Width is the real screen width (portrait has no side insets, so this is
-        // just `proxy.size.width`); height is the full screen, the safe-area rect
-        // grown back by the top+bottom insets. Both are CONSTANTS off the stable
-        // outer proxy.
-        let screenWidth = proxy.size.width
+        // The full-screen size: the safe-area rect grown back by the insets on
+        // every edge. Both are CONSTANTS off the stable outer proxy.
+        //
+        // The width grows by the leading and trailing insets *separately* rather
+        // than assuming both are zero. A display that runs a system bar down one
+        // side — a foldable's outer display, or its inner display in landscape —
+        // has a nonzero inset on that edge only, and `proxy.size.width` there is
+        // the narrower safe width; using it as the card width would leave this
+        // "full-bleed" photo short of one screen edge. On a phone in portrait
+        // both insets are 0 and this is exactly the old value.
+        let fullWidth = proxy.size.width + proxy.safeAreaInsets.leading + proxy.safeAreaInsets.trailing
         let fullHeight = proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+        // The *safe* width, which caps the info panel so its text can never run
+        // under a side bar. Distinct from `fullWidth` above by design.
+        let contentWidth = proxy.size.width
+        // How far in from each side the photo sits *at rest*.
+        //
+        // With the display to ourselves the photo spans the whole of it, passing
+        // under the system's bar so the bar's buttons sit over the image — no
+        // inset. Sharing the display — an ordinary phone, the outer display, one
+        // pane of a split — it rests inside the horizontal safe area instead, so
+        // nothing system-drawn crosses the picture.
+        //
+        // The inset is handed to the scroll view rather than applied as a frame
+        // here, so it governs only the *resting* size: zoom in and the photo is
+        // free to grow across the full width, under the bar. Given per edge and
+        // never halved and mirrored, since the two are equal only when there is
+        // no bar down either side. Mapped to physical left/right, because the
+        // scroll view below works in physical coordinates while `safeAreaInsets`
+        // is written leading/trailing and swaps under a right-to-left layout.
+        let restingInsets: (left: CGFloat, right: CGFloat) = {
+            guard !photoSpansDisplay else { return (0, 0) }
+            let leading = proxy.safeAreaInsets.leading
+            let trailing = proxy.safeAreaInsets.trailing
+            return layoutDirection == .rightToLeft
+                ? (left: trailing, right: leading)
+                : (left: leading, right: trailing)
+        }()
+        // The info panel tucks into the display's bottom-trailing corner only
+        // where there is width going spare *and* height is the scarcer axis: a
+        // large display the app has to itself, held landscape. Stated as size
+        // class plus the shape of the geometry, never as a device or a pose, so
+        // any display answering that description gets it.
+        let panelHugsCorner = photoSpansDisplay && fullWidth > fullHeight
         // Half the top safe area: the card-top travel at which the white status
         // bar flips, so it switches when the card is *halfway* through the safe
         // area rather than only once it has fully cleared it.
         let statusBarFlipPoint = proxy.safeAreaInsets.top / 2
+        // The centre of the photo's resting box, as an offset from the card's
+        // own centre. The name capsule sits on this rather than on the middle of
+        // the screen, so it reads as belonging to the picture: where a side bar
+        // holds the photo off one edge, the capsule shifts with it. Taken from
+        // the resting box, not the live one, so a zoom never moves the capsule.
+        let photoCentreX = (restingInsets.left - restingInsets.right) / 2
+
+        // Whether the card is still over the status bar, and so whether bar
+        // contents should be light. Feeds the navigation bar's colour scheme,
+        // which is what decides the status bar here — see the note there.
+        let statusBarLight = cardCoveredStatusBar && dragOffset.height < statusBarFlipPoint
         // Outer container: ignores the safe area but is NEVER offset. The inner
         // card is what the dismiss drag translates, so the whole card — its top
         // edge over the status bar included — moves in lockstep with the finger,
@@ -319,11 +400,24 @@ struct SpeciesPhotoFullScreen: View {
                 interPageSpacing: pageSpacing,
                 pageTo: pageCommand,
                 onIndexChange: { scrolledID = $0 },
-                onSettledChange: { paging.swipeSettled = $0 }
+                onSettledChange: { paging.swipeSettled = $0 },
+                // A page is sized from these, and they settle a beat after the
+                // viewer opens — the safe-area insets arrive with the second
+                // layout pass. Without this the first bird kept the insets it was
+                // built with (none), so it alone spanned the full width and ran
+                // under a side bar, while every bird swiped to afterwards rested
+                // inside the safe box correctly.
+                pageInputs: PagePlacement(
+                    spansDisplay: photoSpansDisplay,
+                    left: restingInsets.left,
+                    right: restingInsets.right
+                )
             ) { i in
                 ZoomablePhotoPage(
                     item: items[i],
                     paging: paging,
+                    spansDisplay: photoSpansDisplay,
+                    restingInsets: restingInsets,
                     onToggleUI: toggleUI,
                     onZoomChange: { zoomed in
                         // Only the current page's zoom gates paging.
@@ -354,13 +448,22 @@ struct SpeciesPhotoFullScreen: View {
                     }
                 )
             }
-            .frame(width: screenWidth, height: fullHeight)
+            .frame(width: fullWidth, height: fullHeight)
 
-            // Single chrome layer over the *current* bird — name top-center, back
-            // button top-left, info panel bottom. Lives in the offsetting inner
-            // card so it tracks the dismiss drag 1:1, and is forced dark so the
-            // glass + text read as immersive-viewer chrome from the first frame.
-            chrome(topInset: proxy.safeAreaInsets.top, bottomInset: proxy.safeAreaInsets.bottom, screenWidth: screenWidth)
+            // The bottom info panel — the one piece of chrome that is not a bar
+            // item. It stays inside the offsetting card so it tracks the dismiss
+            // drag 1:1, and is forced dark so its glass and text read as
+            // immersive-viewer chrome from the first frame. Back, More and the
+            // species name are navigation-bar items now.
+            chrome(
+                topInset: proxy.safeAreaInsets.top,
+                bottomInset: proxy.safeAreaInsets.bottom,
+                leadingInset: proxy.safeAreaInsets.leading,
+                trailingInset: proxy.safeAreaInsets.trailing,
+                contentWidth: contentWidth,
+                photoCentreX: photoCentreX,
+                hugsCorner: panelHugsCorner
+            )
                 .opacity(uiVisible ? 1 : 0)
                 .allowsHitTesting(uiVisible)
                 .colorScheme(.dark)
@@ -368,30 +471,21 @@ struct SpeciesPhotoFullScreen: View {
         // Pin the inner card to the constant full-screen size. Because the frame
         // is an explicit constant (not an ignoresSafeArea-expanded proposal), it
         // does NOT churn when the body re-evaluates during the drag.
-        .frame(width: screenWidth, height: fullHeight)
-        // Translate the inner card for the swipe-to-dismiss. The parent ZStack
-        // below already ignores the safe area and is itself never offset, so this
-        // moves the ENTIRE card — its top edge over the status bar included — in
-        // lockstep with the finger. (Offsetting the `.ignoresSafeArea()` view
-        // directly made SwiftUI drop the top extension the instant the offset went
-        // nonzero, pinning the top while the rest slid — the lag we're fixing.)
-        // A plain `.offset` (not `visualEffect`, which leaves the hosted photo
-        // UIScrollView behind) moves the photo with everything else.
-        .offset(dragOffset)
+        .frame(width: fullWidth, height: fullHeight)
         }
         // Pin the (un-offset) outer container to the same constant size and let it
         // ignore the safe area, so the inner card is always full-bleed.
-        .frame(width: screenWidth, height: fullHeight)
+        .frame(width: fullWidth, height: fullHeight)
         .ignoresSafeArea()
         // Keep the dismiss slide-off target in sync with the (stable) card size.
-        .onChange(of: fullHeight, initial: true) { _, h in viewSize = CGSize(width: screenWidth, height: h) }
+        .onChange(of: fullHeight, initial: true) { _, h in viewSize = CGSize(width: fullWidth, height: h) }
         // Swiping to a new bird starts it fresh: the incoming page is always built
         // at minimum zoom (the pager recreates pages, see `PhotoPager`), so clear
         // any lingering zoom state from the bird we left, and bring the chrome back
         // if a zoom on the previous bird had auto-hidden it (`hideUIForZoom`). Without
         // this the container's `isZoomed`/`uiVisible` stay stuck on the previous
-        // page's values — the new, un-zoomed bird would otherwise show with its name
-        // capsule and info panel still hidden.
+        // page's values — the new, un-zoomed bird would otherwise show with its bar
+        // and info panel still hidden.
         .onChange(of: index) { _, _ in
             if isZoomed { isZoomed = false }
             // A fresh page sits at its top content edge.
@@ -406,11 +500,6 @@ struct SpeciesPhotoFullScreen: View {
         // controller with `.none` update animation so the flip is INSTANT —
         // tracking the card's edge as it covers/uncovers the bar (like Music),
         // rather than `.preferredColorScheme`'s unavoidable ~0.25s crossfade.
-        .background(
-            StatusBarStyleController(
-                lightContent: cardCoveredStatusBar && dragOffset.height < statusBarFlipPoint
-            )
-        )
         // Flip the gate on once the present slide has brought the card up over the
         // bar, so opening doesn't whiten the status bar prematurely while the card
         // is still sliding up. Tuned to the default fullScreenCover slide.
@@ -457,7 +546,69 @@ struct SpeciesPhotoFullScreen: View {
         .onChange(of: currentSightingWasDeleted) { _, deleted in
             if deleted { dismissViewer() }
         }
+        // No navigation title: the name is a capsule of our own (`nameCapsule`).
+        // A title is text, and text does not go into a vertical bar — where the
+        // system runs its bars down one side it keeps the title in a horizontal
+        // strip across the top, and that strip draws a background this
+        // `toolbarBackgroundVisibility(.hidden)` does not take off, dimming the
+        // top of the photo. A capsule also rides the dismiss with the card, which
+        // a bar title cannot.
+        //
+        // Immersive everywhere the system honours it: no material behind the bar,
+        // so the photo runs under it.
+        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+        // Light bar contents while the dark card is behind them — without this
+        // the title takes the default label color, which a light appearance
+        // renders black on black.
+        //
+        // This is also what drives the status bar. Wrapping the viewer in a
+        // `NavigationStack` puts a `UINavigationController` between us and the
+        // presentation controller, and a navigation controller answers the
+        // status-bar question itself, off its bar's style — so a hard-coded
+        // `.dark` here pinned the status bar to white for as long as the cover
+        // was up. It stayed white over the app being revealed behind the card on
+        // the way out (white on white, so invisible) and only corrected once the
+        // cover was gone, which read as the bar snapping back a beat late.
+        // Driving it from the same gate as the card hands the status bar back the
+        // moment the card starts away.
+        .toolbarColorScheme(statusBarLight ? .dark : nil, for: .navigationBar)
+        // The same single tap that used to fade the floating chrome now takes the
+        // whole bar with it, and a zoom still auto-hides it.
+        .toolbar(uiVisible ? .visible : .hidden, for: .navigationBar)
+        // Back and More are real bar items rather than glass circles we place
+        // ourselves. Only system bar items take part when the system runs its
+        // bars vertically — a foldable's outer display, and its inner display in
+        // landscape — so this is what puts them on the same edge, at the same
+        // positions, as every other screen's bar items, the Life List's filter
+        // and import buttons included. It also hands the *choice* of edge to the
+        // system: trailing when the app has the display, leading when it is the
+        // left pane of a split.
+        .toolbar {
+            // Leading at the top of a vertical bar, per the platform's placement
+            // for a back/close control.
+            ToolbarItem(placement: .cancellationAction) {
+                backButton
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                if let item = currentItem {
+                    menuButton(for: item)
+                }
+            }
         }
+        }
+        }
+        // Translate the WHOLE viewer — navigation bar included — for the
+        // swipe-to-dismiss, so the bar's buttons travel with the black card
+        // rather than hanging at the top of the screen until the card is gone.
+        // The bar is drawn by a `UINavigationController` inside the stack and
+        // cannot be offset from within, so the offset goes outside the stack.
+        //
+        // `.offset` is a render-time translation: it moves what is drawn without
+        // re-proposing a size, so the `GeometryReader` inside still reports the
+        // same rock-steady geometry it did before and the photo does not churn as
+        // the card slides. A plain `.offset` rather than `visualEffect`, which
+        // leaves the hosted photo's `UIScrollView` behind.
+        .offset(dragOffset)
     }
 
     /// How many sightings the bird on screen has on record. Drives the
@@ -584,84 +735,72 @@ struct SpeciesPhotoFullScreen: View {
     }
 
     @ViewBuilder
-    private func chrome(topInset: CGFloat, bottomInset: CGFloat, screenWidth: CGFloat) -> some View {
-        if let item = currentItem {
-            VStack(spacing: 0) {
-                // Top row: back button pinned leading, star toggle pinned trailing,
-                // name capsule centered.
-                ZStack {
-                    nameCapsule(for: item, screenWidth: screenWidth)
-                    HStack {
-                        backButton
-                        Spacer()
-                        menuButton(for: item)
-                    }
+    private func chrome(
+        topInset: CGFloat,
+        bottomInset: CGFloat,
+        leadingInset: CGFloat,
+        trailingInset: CGFloat,
+        contentWidth: CGFloat,
+        photoCentreX: CGFloat,
+        hugsCorner: Bool
+    ) -> some View {
+        Group {
+            if let item = currentItem {
+                // The species name, top of the screen, centred over the picture.
+                nameCapsule(for: item, contentWidth: contentWidth)
+                    .padding(.top, topInset + 8)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .offset(x: photoCentreX)
+
+                if hugsCorner {
+                    // A wide display with the app to itself leaves a lot of empty
+                    // picture between a bottom-centred panel and the controls up
+                    // the side, so the panel tucks into the bottom-trailing
+                    // corner instead, a constant in from both display edges.
+                    // Measured from the display, not the safe area: the inset has
+                    // to be the real distance from the corner for the panel's own
+                    // corners to be concentric with it.
+                    infoPanel(for: item, contentWidth: contentWidth, hugsCorner: true)
+                        .padding(.trailing, Self.cornerPanelInset)
+                        .padding(.bottom, Self.cornerPanelInset)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: .bottomTrailing
+                        )
                 }
-                .padding(.top, topInset + 8)
-                .padding(.horizontal, 16)
 
-                Spacer(minLength: 0)
+                else {
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
 
-                // Always shown: it carries the sighting place/date and the photo
-                // attribution — or, for a species we don't have a photo for yet, a
-                // "coming soon" notice in the attribution's place.
-                infoPanel(for: item, screenWidth: screenWidth)
-                    .padding(.bottom, bottomInset + 8)
+                        // Always shown: it carries the sighting place/date and the
+                        // photo attribution — or, for a species we don't have a
+                        // photo for yet, a "coming soon" notice in its place.
+                        infoPanel(for: item, contentWidth: contentWidth, hugsCorner: false)
+                            .padding(.bottom, bottomInset + 8)
+                    }
+                    // The chrome is interactive foreground content sitting in a
+                    // full-bleed card, so it insets from each horizontal
+                    // safe-area edge on its own. A symmetric inset would be wrong
+                    // on any display whose leading and trailing insets differ (a
+                    // system bar down one side), pushing the panel under the bar
+                    // on that edge. Both are 0 on a phone in portrait, where this
+                    // is a no-op.
+                    .padding(.leading, leadingInset)
+                    .padding(.trailing, trailingInset)
+                }
             }
         }
     }
 
-    /// Species name in a liquid-glass capsule, top-center. The capsule hugs the
-    /// name; only a name too wide for the cap (`screenWidth - 150`, leaving room
-    /// for the back button + symmetric margin) shrinks to fit.
-    private func nameCapsule(for item: SpeciesPhotoItem, screenWidth: CGFloat) -> some View {
-        let cap = screenWidth - 150
-        // `.frame(maxWidth:)` is a *flexible* frame: inside the full-width top-row
-        // ZStack it fills to its max, so the old capsule was always `cap` wide.
-        // `ViewThatFits` instead picks the natural-width label when it fits within
-        // `cap` (capsule hugs the text) and only falls back to the scaled,
-        // cap-width label when the name is genuinely too long. The outer
-        // `.frame(maxWidth: cap)` exists solely to propose `cap` as the fit budget;
-        // its transparent expansion stays centered, so the hugging capsule does too.
-        return ViewThatFits(in: .horizontal) {
-            // `fixedSize` exposes the label's true ideal width so ViewThatFits can
-            // tell whether it actually fits `cap` (a plain line-limited Text would
-            // silently truncate to the budget and always "fit").
-            nameLabel(for: item)
-                .fixedSize(horizontal: true, vertical: false)
-            nameLabel(for: item)
-                .minimumScaleFactor(0.5)
-        }
-        .frame(maxWidth: cap)
-    }
-
-    private func nameLabel(for item: SpeciesPhotoItem) -> some View {
-        Text(commonName(for: item))
-            .font(.headline)
-            .foregroundStyle(.white)
-            .lineLimit(1)
-            .padding(.horizontal, 18)
-            .frame(height: Self.chromeHeight)
-            .glassEffect(.regular, in: .capsule)
-            // Swallow taps on the capsule so tapping the chrome doesn't also
-            // fire the photo's single-tap-to-hide. Only the hugging capsule
-            // absorbs; the transparent fit budget around it stays pass-through.
-            .contentShape(.capsule)
-            .onTapGesture { }
-    }
-
+    /// Carries a title as well as a symbol: a bar item with only an image stays
+    /// horizontal when the system lays its bars out vertically, and this one has
+    /// to go into the vertical bar with the rest.
     private var backButton: some View {
         Button { dismissViewer() } label: {
-            Image(systemName: "chevron.backward")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
-                .padding(13)
-                .glassEffect(.regular.interactive(), in: .circle)
-                .contentShape(Circle())
+            Label("Back", systemImage: "chevron.backward")
         }
-        .buttonStyle(NoDimButtonStyle())
-        .accessibilityLabel("Back")
     }
 
     /// Whether this screen has anywhere to send a "show me this on the map" tap.
@@ -738,20 +877,13 @@ struct SpeciesPhotoFullScreen: View {
                 onDelete: actionable ? { deleteSighting(of: item) } : nil
             )
         } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 20, weight: .semibold))
-                // Always white, never tinted for the star. This is a menu
-                // button, not a star toggle: coloring it blue made it read as a
-                // control whose state you could change by tapping it, when
-                // tapping only opens a menu. The star's own state is stated
-                // plainly inside that menu, which is where it belongs.
-                .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
-                .padding(13)
-                .glassEffect(.regular.interactive(), in: .circle)
-                .contentShape(Circle())
+            // Title as well as symbol, for the vertical bar — see `backButton`.
+            // Never tinted for the star: this is a menu button, not a star
+            // toggle, and coloring it made it read as a control whose state you
+            // could change by tapping it, when tapping only opens a menu. The
+            // star's own state is stated plainly inside that menu.
+            Label("More actions", systemImage: "ellipsis")
         }
-        .accessibilityLabel("More actions")
     }
 
     /// Edit from the menu.
@@ -921,12 +1053,63 @@ struct SpeciesPhotoFullScreen: View {
         }
     }
 
+    /// The species name in a glass capsule at the top of the card, dressed the
+    /// same way the info panel is. Hugs the name; a name too wide for the cap
+    /// (leaving room for the bar's buttons on either side) scales down to fit.
+    private func nameCapsule(for item: SpeciesPhotoItem, contentWidth: CGFloat) -> some View {
+        let cap = max(contentWidth - 150, 80)
+        let shape: AnyShape = AnyShape(.rect(cornerRadius: Self.chromeHeight / 2))
+        // `ViewThatFits` picks the natural-width label when it fits within `cap`
+        // (so the capsule hugs the text) and only falls back to the scaled,
+        // cap-width label when the name is genuinely too long. A plain
+        // line-limited `Text` would silently truncate to the budget and always
+        // "fit", so `fixedSize` is what exposes the label's true ideal width.
+        return ViewThatFits(in: .horizontal) {
+            nameLabel(for: item, shape: shape)
+                .fixedSize(horizontal: true, vertical: false)
+            nameLabel(for: item, shape: shape)
+                .minimumScaleFactor(0.5)
+        }
+        .frame(maxWidth: cap)
+    }
+
+    private func nameLabel(for item: SpeciesPhotoItem, shape: AnyShape) -> some View {
+        Text(commonName(for: item))
+            .font(.headline)
+            .foregroundStyle(.white)
+            .lineLimit(1)
+            .padding(.horizontal, 18)
+            .frame(height: Self.chromeHeight)
+            .glassEffect(.regular, in: shape)
+            // Swallow taps on the capsule so tapping the chrome doesn't also fire
+            // the photo's single-tap-to-hide. Only the hugging capsule absorbs;
+            // the transparent fit budget around it stays pass-through.
+            .contentShape(shape)
+            .onTapGesture { }
+    }
+
     /// Bottom details — the sighting (place and date, or a link to the full list
     /// when there are several) and the photo attribution — in a liquid-glass
     /// panel. Non-link text is white like the name; the panel's width is capped
     /// for a generous margin from the edges.
-    private func infoPanel(for item: SpeciesPhotoItem, screenWidth: CGFloat) -> some View {
-        VStack(spacing: 12) {
+    private func infoPanel(
+        for item: SpeciesPhotoItem,
+        contentWidth: CGFloat,
+        hugsCorner: Bool
+    ) -> some View {
+        // Concentric with the display's own corners when the panel is tucked into
+        // one, so its curve continues the screen's rather than cutting across it;
+        // the familiar capsule ends everywhere else. `ConcentricRectangle` reads
+        // the radius off the container it sits in, so it stays right whatever
+        // `cornerPanelInset` is set to.
+        // `isUniform` gives every corner the same radius. Left to itself each
+        // corner is resolved against whatever it is nearest, so only the two that
+        // sit by the display's own corners picked up its curve and the panel came
+        // out lopsided; uniform settles all four on one radius.
+        let panelShape: AnyShape = hugsCorner
+            ? AnyShape(ConcentricRectangle(corners: .concentric, isUniform: true))
+            : AnyShape(.rect(cornerRadius: Self.chromeHeight / 2))
+        return VStack(spacing: 12) {
             sightingSection(for: item, observations: observations(for: item))
 
             if let info = info(for: item) {
@@ -969,12 +1152,12 @@ struct SpeciesPhotoFullScreen: View {
         }
         .padding(.vertical, 14)
         .padding(.horizontal, 24)
-        .frame(maxWidth: min(screenWidth - 80, 360))
-        .glassEffect(.regular, in: .rect(cornerRadius: Self.chromeHeight / 2))
+        .frame(maxWidth: min(contentWidth - 80, 360))
+        .glassEffect(.regular, in: panelShape)
         // Swallow taps on blank areas of the panel so tapping the chrome doesn't
         // fire the photo's single-tap-to-hide. The inner map button / eBird link
         // keep working — their own gestures take precedence over this no-op.
-        .contentShape(.rect(cornerRadius: Self.chromeHeight / 2))
+        .contentShape(panelShape)
         .onTapGesture { }
     }
 
@@ -1057,6 +1240,21 @@ struct SpeciesPhotoFullScreen: View {
     /// velocity and gets a fixed, brisk slide tuned to match the cover's
     /// default open speed.
     private func dismissViewer(velocity: CGFloat? = nil) {
+        // Hand the status bar back to the app behind *now*, as the card starts
+        // away, rather than letting it stay white until the cover is torn down —
+        // which read as the bar snapping dark a beat after the card had gone.
+        //
+        // Dropping the gate here covers both ways out. A drag already darkened
+        // the bar on the way down, because `dragOffset` is written live on each
+        // frame and the flip point is only half the top inset in; but a drag
+        // released *below* that point, and the close button, never moved
+        // `dragOffset` through it by hand — and an animated `dragOffset` is set
+        // to its final value in the body immediately, so the condition alone
+        // could not time the flip to the slide either way. The card clears the
+        // status bar within the first few points of an ~800pt slide, so turning
+        // it over at the start of the slide is the moment that matches.
+        cardCoveredStatusBar = false
+
         let target = viewSize.height + 300
         let remaining = max(target - dragOffset.height, 1)
 
@@ -1083,67 +1281,6 @@ struct SpeciesPhotoFullScreen: View {
     }
 }
 
-/// Drives the presented cover's status bar style with a short (~0.1s) fade as
-/// the card covers/uncovers it — quicker than the system's ~0.25s crossfade that
-/// `.preferredColorScheme` forces, but no longer an instant flip. Lives as a
-/// hidden background inside the cover; SwiftUI forwards the cover hosting
-/// controller's status-bar query down to this child controller.
-///
-/// `lightContent == true` → `.lightContent` (white, for the dark card over the
-/// bar). Otherwise `.default`, which adapts to the interface style (dark content
-/// in light mode, light in dark) so the uncovered app behind reads correctly.
-private struct StatusBarStyleController: UIViewControllerRepresentable {
-    var lightContent: Bool
-
-    func makeUIViewController(context: Context) -> Host { Host() }
-
-    func updateUIViewController(_ host: Host, context: Context) {
-        host.lightContent = lightContent
-    }
-
-    final class Host: UIViewController {
-        var lightContent = false {
-            didSet {
-                guard lightContent != oldValue else { return }
-                applyStatusBarStyle()
-            }
-        }
-        override var preferredStatusBarStyle: UIStatusBarStyle {
-            lightContent ? .lightContent : .default
-        }
-        override var preferredStatusBarUpdateAnimation: UIStatusBarAnimation { .fade }
-        override func viewDidLoad() {
-            super.viewDidLoad()
-            view.backgroundColor = .clear
-            view.isUserInteractionEnabled = false
-        }
-        override func didMove(toParent parent: UIViewController?) {
-            super.didMove(toParent: parent)
-            // Re-assert once attached, in case `lightContent` was set before this
-            // controller had joined the cover's hierarchy.
-            applyStatusBarStyle()
-        }
-
-        /// Drives the status-bar appearance update with a short crossfade, then
-        /// re-asserts it a few times across the cover's present transition. A single
-        /// update issued *during* the present animation is sometimes swallowed by the
-        /// system's own status-bar handling, which left the bar stuck on its previous
-        /// (dark, invisible over the dark card) style — the intermittent "status bar
-        /// stays black" bug. The delayed re-asserts land after the transition settles
-        /// so the final resolved style is reliably ours.
-        private func applyStatusBarStyle() {
-            UIView.animate(withDuration: 0.15) {
-                self.setNeedsStatusBarAppearanceUpdate()
-            }
-            for delay in [0.1, 0.3, 0.5] {
-                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-                    self?.setNeedsStatusBarAppearanceUpdate()
-                }
-            }
-        }
-    }
-}
-
 /// Horizontal photo pager backed by `UIPageViewController` (scroll transition).
 /// Chosen over SwiftUI's ScrollView/TabView because it gives us two things they
 /// don't: the internal paging scroll view's `contentInsetAdjustmentBehavior` is
@@ -1164,6 +1301,12 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
     /// Reports whether the pager is settled (true) or mid-swipe (false). Used to
     /// hold each page's full-resolution swap until the motion stops.
     var onSettledChange: ((Bool) -> Void)? = nil
+    /// Everything a built page captured that can still change after it was built.
+    /// A page is a snapshot taken by `makeHost` when it scrolled in, and nothing
+    /// pushed a later value into one — so whichever page was on screen when such
+    /// a value settled went on showing the old one, while every page scrolled to
+    /// afterwards was built correctly. Changing this rebuilds the page on screen.
+    var pageInputs: AnyHashable = 0
     @ViewBuilder var page: (Int) -> Page
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -1200,6 +1343,16 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
 
     func updateUIViewController(_ pvc: UIPageViewController, context: Context) {
         context.coordinator.parent = self
+        // Re-render the page on screen when what it was built from has changed.
+        // Gated on a change rather than run every pass: this is re-entered on
+        // every frame of the dismiss drag, and rehosting each one would be a
+        // needless SwiftUI update per frame.
+        if context.coordinator.lastPageInputs != pageInputs {
+            context.coordinator.lastPageInputs = pageInputs
+            if let host = pvc.viewControllers?.first as? IndexedHost<Page> {
+                host.rootView = page(host.index)
+            }
+        }
         // Cancels an in-progress paging pan the instant a dismiss engages.
         context.coordinator.pagingScrollView(in: pvc)?.isScrollEnabled = !pagingDisabled
         // Carry-over page turn from a zoomed edge drag: act on each fresh command.
@@ -1225,7 +1378,13 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
         /// the page exactly once.
         var lastHandledCommandID: UUID?
 
-        init(_ parent: PhotoPager) { self.parent = parent }
+        init(_ parent: PhotoPager) {
+            self.parent = parent
+            self.lastPageInputs = parent.pageInputs
+        }
+
+        /// The `pageInputs` the page on screen was last built from.
+        var lastPageInputs: AnyHashable
 
         /// Programmatically turns the pager to `index` with the standard scroll
         /// animation. Used for the carry-over turn when a zoomed pan is dragged
@@ -1375,6 +1534,12 @@ private struct ZoomablePhotoPage: View {
     /// reports the swipe has settled, so the heavier image never swaps in while
     /// the user is still swiping between birds.
     let paging: ViewerPaging
+    /// Whether the photo starts grown to span the display's full width rather
+    /// than fitted whole inside the page. See `SpeciesPhotoFullScreen`.
+    let spansDisplay: Bool
+    /// How far in from the page's left and right the photo rests. Zoom is free
+    /// to carry it past these. See `CenteringScrollView.restingInsets`.
+    let restingInsets: (left: CGFloat, right: CGFloat)
     /// Toggles the chrome's visibility; fired by a single tap on the photo.
     var onToggleUI: () -> Void
     /// Reports this page's zoom state up to the container.
@@ -1465,6 +1630,8 @@ private struct ZoomablePhotoPage: View {
             ZoomableImageView(
                 image: image,
                 isZoomed: $pageZoomed,
+                spansDisplay: spansDisplay,
+                restingInsets: restingInsets,
                 resetToken: 0,
                 onSingleTap: onToggleUI,
                 onAtTopEdgeChange: onAtTopEdgeChange,
@@ -1545,6 +1712,11 @@ private struct ZoomablePhotoPage: View {
 private struct ZoomableImageView: UIViewRepresentable {
     let image: UIImage
     @Binding var isZoomed: Bool
+    /// Whether the resting size is "as wide as the page" rather than "wholly
+    /// inside the page". See `CenteringScrollView.spansWidth`.
+    var spansDisplay: Bool = false
+    /// Horizontal inset the photo rests inside; zoom carries it past these.
+    var restingInsets: (left: CGFloat, right: CGFloat) = (0, 0)
     /// Changing this asks the scroll view to ease back to fit (page scrolled off).
     var resetToken: Int
     /// Fired by a single tap on the photo (toggles the viewer's chrome). Requires
@@ -1564,6 +1736,8 @@ private struct ZoomableImageView: UIViewRepresentable {
 
     func makeUIView(context: Context) -> CenteringScrollView {
         let scroll = CenteringScrollView()
+        scroll.spansWidth = spansDisplay
+        scroll.restingInsets = restingInsets
         scroll.delegate = context.coordinator
         scroll.minimumZoomScale = 1
         scroll.maximumZoomScale = 4
@@ -1639,6 +1813,13 @@ private struct ZoomableImageView: UIViewRepresentable {
 
     func updateUIView(_ scroll: CenteringScrollView, context: Context) {
         context.coordinator.parent = self
+        // The resting insets move when the display does — a rotation, or a split
+        // being resized — so re-fit to the new box when they change.
+        if scroll.restingInsets != restingInsets || scroll.spansWidth != spansDisplay {
+            scroll.restingInsets = restingInsets
+            scroll.spansWidth = spansDisplay
+            scroll.refit()
+        }
         if scroll.imageView?.image !== image {
             let previous = scroll.imageView?.image
             scroll.imageView?.image = image
@@ -1870,6 +2051,24 @@ private struct ZoomableImageView: UIViewRepresentable {
 /// the swipe-to-dismiss; pinch (a separate recognizer) still works at any zoom.
 final class CenteringScrollView: UIScrollView {
     var imageView: UIImageView?
+    /// Whether the resting size is the width-filling one rather than the fitting
+    /// one — set when the app has a whole large display to itself, where the
+    /// photo is meant to reach both of its edges instead of being letterboxed
+    /// inside it.
+    ///
+    /// This changes what zoom 1 *means* rather than starting the view zoomed in.
+    /// Starting at a scale above `minimumZoomScale` would read all the way up the
+    /// view as "the user has zoomed": paging between birds would be locked out
+    /// and the chrome would auto-hide the instant the photo appeared. Making the
+    /// grown size the base leaves the photo at minimum zoom, where all of that
+    /// behaves exactly as it does on a phone, and a pinch still magnifies from
+    /// there up to `maximumZoomScale`.
+    var spansWidth = false
+    /// How far in from `bounds`' left and right edges the photo rests, so a side
+    /// bar never crosses the picture at rest. Only the *resting* size is held
+    /// inside them: once zoomed the photo is free to grow across the full width
+    /// and pass under the bar, which is what a zoom is for.
+    var restingInsets: (left: CGFloat, right: CGFloat) = (0, 0)
     private var fittedForBounds: CGSize = .zero
 
     override func layoutSubviews() {
@@ -1897,7 +2096,15 @@ final class CenteringScrollView: UIScrollView {
               bounds.width > 0, bounds.height > 0,
               image.size.width > 0, image.size.height > 0 else { return }
         fittedForBounds = bounds.size
-        let scale = min(bounds.width / image.size.width, bounds.height / image.size.height)
+        // Fit the whole photo inside the page, or — when the photo is meant to
+        // span the display — grow it until its width matches the page's, letting
+        // it run past the top and bottom edges if its shape is taller than the
+        // page's. A photo wider than the page still letterboxes vertically: the
+        // rule is that it touches the left and right edges, which for such a
+        // photo is already what fitting does.
+        let scale = spansWidth
+            ? bounds.width / image.size.width
+            : min(restingWidth / image.size.width, bounds.height / image.size.height)
         let fitted = CGSize(width: image.size.width * scale, height: image.size.height * scale)
         zoomScale = 1
         imageView.frame = CGRect(origin: .zero, size: fitted)
@@ -1917,9 +2124,43 @@ final class CenteringScrollView: UIScrollView {
     func centerContent() {
         let reference = fittedForBounds == .zero ? bounds.size : fittedForBounds
         let cs = contentSize
-        let x = max((reference.width - cs.width) / 2, 0)
         let y = max((reference.height - cs.height) / 2, 0)
-        contentInset = UIEdgeInsets(top: y, left: x, bottom: y, right: x)
+        let (left, right) = horizontalInsets(contentWidth: cs.width, reference: reference.width)
+        contentInset = UIEdgeInsets(top: y, left: left, bottom: y, right: right)
+    }
+
+    /// The photo's resting width — the part of `bounds` a side bar doesn't cross.
+    private var restingWidth: CGFloat {
+        max(bounds.width - restingInsets.left - restingInsets.right, 1)
+    }
+
+    /// Left and right `contentInset` for a content of `contentWidth`.
+    ///
+    /// Two regimes, joined so they meet without a step — a jump here would be a
+    /// visible lurch mid-pinch, since this is recomputed on every zoom frame.
+    /// While the photo still fits the resting box it is centred *in that box*,
+    /// held clear of the side bars. Once it outgrows the box the insets fall away
+    /// in step with how far past it the photo has grown, reaching zero exactly as
+    /// the photo reaches the full width of the view — from there on it spans the
+    /// display, bars included, and pans freely.
+    ///
+    /// With no side insets (an ordinary phone, or a photo spanning the display)
+    /// both regimes collapse to plain centring, which is what this always did.
+    private func horizontalInsets(
+        contentWidth: CGFloat,
+        reference: CGFloat
+    ) -> (left: CGFloat, right: CGFloat) {
+        let resting = max(reference - restingInsets.left - restingInsets.right, 1)
+        if contentWidth <= resting {
+            let slack = (resting - contentWidth) / 2
+            return (restingInsets.left + slack, restingInsets.right + slack)
+        }
+
+        let bars = restingInsets.left + restingInsets.right
+        guard bars > 0 else { return (0, 0) }
+        // 0 as the photo leaves the resting box, 1 once it fills the view.
+        let progress = min((contentWidth - resting) / bars, 1)
+        return (restingInsets.left * (1 - progress), restingInsets.right * (1 - progress))
     }
 
     override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {

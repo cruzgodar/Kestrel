@@ -64,6 +64,19 @@ private struct RootView<Content: View>: View {
     }
 }
 
+/// The key window of the *foreground-active* scene, rather than whichever scene
+/// `connectedScenes` happens to list first. With one scene these are the same
+/// window; they stop being the same as soon as the app has more than one (a
+/// second window on a foldable's inner display, or Split View), where the
+/// first-listed scene can be a backgrounded one — and anything hung on *that*
+/// window lands on a screen nobody is looking at.
+@MainActor
+private var activeKeyWindow: UIWindow? {
+    UIApplication.shared.connectedScenes
+        .first { $0.activationState == .foregroundActive }
+        .flatMap { ($0 as? UIWindowScene)?.keyWindow }
+}
+
 /// Covers the window with a snapshot of what's currently on screen and fades
 /// that snapshot out, so whatever replaces the screen underneath appears to
 /// crossfade in — no matter how abruptly it was swapped.
@@ -75,11 +88,7 @@ private struct RootView<Content: View>: View {
 private enum WindowCrossfade {
     @MainActor
     static func begin(duration: TimeInterval) {
-        guard let window = UIApplication.shared
-            .connectedScenes
-            .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
-            .first
-        else { return }
+        guard let window = activeKeyWindow else { return }
 
         // `afterScreenUpdates: false` — the point is to capture what's on
         // screen *now*, before the caller tears it down, and it's the cheap
@@ -206,10 +215,7 @@ struct KestrelApp: App {
     /// the visible slide-up flash that the previous async resign produced.
     private static func preheatKeyboard() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-            guard let window = UIApplication.shared
-                .connectedScenes
-                .compactMap({ ($0 as? UIWindowScene)?.keyWindow })
-                .first else { return }
+            guard let window = activeKeyWindow else { return }
             let tf = UITextField(frame: .zero)
             tf.isHidden = true
             window.addSubview(tf)
