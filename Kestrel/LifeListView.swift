@@ -1460,9 +1460,8 @@ private struct ImportInfoSheet: View {
 
     /// The height the copy and the button want, measured — see `CardSizing`.
     @State private var idealHeight: CGFloat?
-    /// The height the content actually got, so the chrome around it can be
-    /// worked out rather than guessed. See `CardSizing`.
-    @State private var laidOutHeight: CGFloat?
+    /// What the presentation spends on chrome, measured. See `CardSizing`.
+    @State private var chromeHeight: CGFloat?
     /// The display's height, so a card can be stopped short of filling it.
     @State private var displayHeight: CGFloat = 0
     /// The height asked for, and the detent that asks for it. `.medium` only
@@ -1481,8 +1480,7 @@ private struct ImportInfoSheet: View {
     private func resize() {
         guard let height = CardSizing.height(
             ideal: idealHeight,
-            laidOut: laidOutHeight,
-            asked: cardHeight,
+            chrome: chromeHeight,
             displayHeight: displayHeight
         ) else { return }
         guard abs(height - (cardHeight ?? 0)) > 0.5 else { return }
@@ -1509,22 +1507,29 @@ private struct ImportInfoSheet: View {
         .presentationDetents(detents, selection: $detent)
         // Hidden grab handle to match the map's settings card (MapCardSheet).
         .presentationDragIndicator(.hidden)
+        // The display's height, read off the bottom of the sheet: a bottom
+        // sheet ends where the screen does, so how far down its own last point
+        // sits in the window *is* the display. Its own height is no use here —
+        // that is the thing being decided.
         .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+            proxy.frame(in: .global).maxY + proxy.safeAreaInsets.bottom
         } action: { displayHeight = max(displayHeight, $0) }
         .onChange(of: idealHeight) { _, _ in resize() }
-        .onChange(of: laidOutHeight) { _, _ in resize() }
+        .onChange(of: chromeHeight) { _, _ in resize() }
         .onChange(of: displayHeight) { _, _ in resize() }
     }
 
     private var content: some View {
         card(measuring: false)
             .measuringIdealHeight($idealHeight) { card(measuring: true) }
-            // What the content was actually given, which is the other half of
-            // working out what the presentation spends on chrome.
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
-                laidOutHeight = $0
-            }
+            // What the presentation spends on chrome, asked of the content
+            // directly: inside the navigation stack, the bar above and the
+            // home indicator below are exactly the content's safe-area insets.
+            // Neither moves when the detent does, so this is an answer rather
+            // than a round of a feedback loop — see `CardSizing`.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+            } action: { chromeHeight = $0 }
     }
 
     /// The card's own content. `measuring` drops the spring that pushes the
@@ -1612,9 +1617,8 @@ private struct ExportInfoSheet: View {
     /// paragraph and a half and two full-width buttons, and the fraction it
     /// used to be pinned to was a number that happened to fit on one phone.
     @State private var idealHeight: CGFloat?
-    /// The height the content actually got, so the chrome around it can be
-    /// worked out rather than guessed. See `CardSizing`.
-    @State private var laidOutHeight: CGFloat?
+    /// What the presentation spends on chrome, measured. See `CardSizing`.
+    @State private var chromeHeight: CGFloat?
     /// The display's height, so a card can be stopped short of filling it.
     @State private var displayHeight: CGFloat = 0
     /// The height asked for, and the detent that asks for it. `.medium` only
@@ -1633,8 +1637,7 @@ private struct ExportInfoSheet: View {
     private func resize() {
         guard let height = CardSizing.height(
             ideal: idealHeight,
-            laidOut: laidOutHeight,
-            asked: cardHeight,
+            chrome: chromeHeight,
             displayHeight: displayHeight
         ) else { return }
         guard abs(height - (cardHeight ?? 0)) > 0.5 else { return }
@@ -1655,11 +1658,15 @@ private struct ExportInfoSheet: View {
         }
         .presentationDetents(detents, selection: $detent)
         .presentationDragIndicator(.hidden)
+        // The display's height, read off the bottom of the sheet: a bottom
+        // sheet ends where the screen does, so how far down its own last point
+        // sits in the window *is* the display. Its own height is no use here —
+        // that is the thing being decided.
         .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+            proxy.frame(in: .global).maxY + proxy.safeAreaInsets.bottom
         } action: { displayHeight = max(displayHeight, $0) }
         .onChange(of: idealHeight) { _, _ in resize() }
-        .onChange(of: laidOutHeight) { _, _ in resize() }
+        .onChange(of: chromeHeight) { _, _ in resize() }
         .onChange(of: displayHeight) { _, _ in resize() }
         .fileExporter(
             isPresented: $session.isSaving,
@@ -1699,11 +1706,14 @@ private struct ExportInfoSheet: View {
     private var content: some View {
         card(measuring: false)
             .measuringIdealHeight($idealHeight) { card(measuring: true) }
-            // What the content was actually given, which is the other half of
-            // working out what the presentation spends on chrome.
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
-                laidOutHeight = $0
-            }
+            // What the presentation spends on chrome, asked of the content
+            // directly: inside the navigation stack, the bar above and the
+            // home indicator below are exactly the content's safe-area insets.
+            // Neither moves when the detent does, so this is an answer rather
+            // than a round of a feedback loop — see `CardSizing`.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+            } action: { chromeHeight = $0 }
     }
 
     private func card(measuring: Bool) -> some View {
@@ -1992,14 +2002,21 @@ nonisolated struct EBirdCSVDocument: FileDocument {
 /// *wants* rather than the height it has been squeezed into. The copy is
 /// hidden, so it costs a layout pass and nothing else.
 ///
-/// **What the presentation takes.** A detent's height is the whole sheet —
-/// the navigation bar the close button sits in, the home indicator's
-/// clearance, and the 8pt iOS insets a sheet by, none of which the content
-/// ever sees. That was a constant at first and it was 25pt short, which is one
-/// line of body copy: the card came up looking right and quietly truncated its
-/// last sentence. It is measured now — what was asked for, less what the
-/// content actually got — so it is exact on whatever chrome the system decides
-/// to draw.
+/// **What the presentation takes.** A detent's height is the whole sheet — the
+/// navigation bar the close button sits in and the home indicator's clearance
+/// below, neither of which the content ever sees. That was a constant at first
+/// and it was 25pt short, which is one line of body copy: the card came up
+/// looking right and quietly truncated its last sentence.
+///
+/// It is measured now, and measured *directly*: inside the navigation stack
+/// those two are precisely the content's own safe-area insets. The first
+/// attempt worked it out by difference instead — what the sheet was asked for,
+/// less what the content came back as — and that was a feedback loop, with the
+/// answer on one side of it and the question on the other. It settled on
+/// whatever the first guess had been and stayed there, and a nudge of the
+/// sheet was enough to shake it loose and land it somewhere else. Neither
+/// inset moves when the detent does, so measuring them is an answer: one pass,
+/// no loop, same height whether the card has been touched or not.
 enum CardSizing {
     /// The chrome to assume for the first layout, before the real figure can
     /// be measured. Only ever wrong for a frame.
@@ -2013,32 +2030,24 @@ enum CardSizing {
     /// The height the card should be, or `nil` before its content has been
     /// measured.
     ///
-    /// Stable at a fixed point: asking for `ideal + chrome` leaves the content
-    /// exactly `ideal` tall, which re-measures the same `chrome`, which asks
-    /// for the same height.
-    ///
     /// - Parameters:
     ///   - ideal: The height the content wants.
-    ///   - laidOut: The height the content actually got, last time round.
-    ///   - asked: The height that was requested to produce `laidOut`.
+    ///   - chrome: What the presentation draws around it, measured.
     ///   - displayHeight: The whole display, so a card can be stopped short of
     ///     filling it.
     static func height(
         ideal: CGFloat?,
-        laidOut: CGFloat?,
-        asked: CGFloat?,
+        chrome: CGFloat?,
         displayHeight: CGFloat
     ) -> CGFloat? {
         guard let ideal, ideal > 0 else { return nil }
-        let chrome: CGFloat = {
-            guard let asked, let laidOut, laidOut > 0, asked > laidOut else {
-                return chromeAllowance
-            }
-            return asked - laidOut
-        }()
         let ceiling = displayHeight > 0
             ? displayHeight * maximumFraction
             : .greatestFiniteMagnitude
+        // A zero reading is a layout pass that has not drawn the bar yet, not a
+        // sheet with no chrome on it; the allowance covers it until the real
+        // figure arrives.
+        let chrome = (chrome ?? 0) > 0 ? (chrome ?? 0) : chromeAllowance
         return min(max(ideal + chrome, minimumHeight), ceiling)
     }
 }

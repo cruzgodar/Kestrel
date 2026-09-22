@@ -252,7 +252,7 @@ struct ContentView: View {
         // rather than a sibling in a stack: the tab keeps its own identity and
         // its own state whether or not the phone is open, which a conditional
         // branch in a layout container would not (see `duo.md`).
-        .background(alignment: pane?.placement == .topHalf ? .top : .leading) {
+        .background {
             if let pane {
                 HalfScreenSpeciesView(
                     names: viewerOrder,
@@ -263,13 +263,17 @@ struct ContentView: View {
                     // page the user actually landed on.
                     onPage: { paneSpecies = $0 },
                     placement: pane.placement,
+                    safeArea: pane.safeArea,
                     displayCornerRadius: pane.displayCornerRadius
                 )
-                // Sized in display coordinates and laid out full-bleed, so the
-                // pane is half the *glass* rather than half of what is left of
-                // it after the bars — which is what puts its card's corners
-                // where the display's are.
-                .frame(width: pane.size.width, height: pane.size.height)
+                // Full-bleed across the whole display, and the pane takes its
+                // own half of that. Handing it a half-sized frame to be
+                // aligned in was the obvious thing and it was wrong: a
+                // background is aligned inside what is left of the display
+                // after the bars, so the half landed a bar's width down in one
+                // placement and a bar's width *up* in the other, and the
+                // card's corners were then nowhere near the glass's for their
+                // radius to answer to.
                 .ignoresSafeArea()
             }
         }

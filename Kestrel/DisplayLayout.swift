@@ -96,7 +96,7 @@ nonisolated struct DisplayLayout: Equatable {
             return SpeciesPane(
                 placement: .leadingHalf,
                 contentInset: inset,
-                size: CGSize(width: size.width / 2, height: size.height),
+                safeArea: safeArea,
                 displayCornerRadius: cornerRadius
             )
         }
@@ -105,7 +105,7 @@ nonisolated struct DisplayLayout: Equatable {
         return SpeciesPane(
             placement: .topHalf,
             contentInset: inset,
-            size: CGSize(width: size.width, height: size.height / 2),
+            safeArea: safeArea,
             displayCornerRadius: cornerRadius
         )
     }
@@ -154,9 +154,11 @@ nonisolated struct SpeciesPane: Equatable {
     /// meant.
     let contentInset: CGFloat
 
-    /// The pane's own size, in display coordinates — it is laid out full-bleed,
-    /// so this is half the glass rather than half the safe area.
-    let size: CGSize
+    /// What the system's bars took out of the display, which the pane needs
+    /// because it is laid out full-bleed and so is told nothing about them by
+    /// its own proxy. Only the horizontal pair is used, by the placement that
+    /// keeps clear of them — see `HalfScreenSpeciesView`.
+    let safeArea: EdgeInsets
 
     /// The display's own corner radius, so the pane's card can be cut
     /// concentric with it. `nil` where it could not be read.

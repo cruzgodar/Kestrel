@@ -1542,15 +1542,13 @@ struct ZoomablePhotoPage: View {
     /// content edge (`-1` previous, `+1` next), so the same continuous swipe
     /// carries on to the neighboring bird instead of halting at the edge.
     var onPageBeyondEdge: (Int) -> Void
-    /// Whether the photo may grow into the safe area. True in the viewer, whose
-    /// card already covers the screen. False in a pane that occupies part of a
-    /// display: expanding there would size the photo to the whole scene and
-    /// centre it on that, leaving the pane showing an off-centre crop of it.
-    var expandsIntoSafeArea: Bool = true
     /// Whether a letterboxed photo sits in the top-leading corner of the page
     /// rather than in the middle of it. See
     /// `CenteringScrollView.anchorsTopLeading`.
     var anchorsTopLeading: Bool = false
+    /// Rounds the picture's own corners, rather than the page it sits in. See
+    /// `CenteringScrollView.photoCornerRadius`.
+    var photoCornerRadius: CGFloat = 0
 
     @State private var image: UIImage?
     @State private var loadFailed = false
@@ -1574,7 +1572,14 @@ struct ZoomablePhotoPage: View {
 
     var body: some View {
         imageLayer
-            .ignoresSafeArea(expandsIntoSafeArea ? .all : [])
+            // The page is the size its container gives it and nothing else.
+            // Left to respect the safe area it subtracts the bars from that
+            // box a second time — the container has already placed itself
+            // clear of them — and the picture is fitted into, and anchored to,
+            // a box that is a status bar short. The half-screen pane is where
+            // that showed: full-bleed against the glass, its photograph came to
+            // rest 74pt down from a corner it was meant to start in.
+            .ignoresSafeArea()
             .contentShape(Rectangle())
             .task(id: item.scientificName) { await load() }
             .onChange(of: pageZoomed) { _, zoomed in onZoomChange(zoomed) }
@@ -1632,6 +1637,7 @@ struct ZoomablePhotoPage: View {
                 spansDisplay: spansDisplay,
                 restingInsets: restingInsets,
                 anchorsTopLeading: anchorsTopLeading,
+                photoCornerRadius: photoCornerRadius,
                 resetToken: 0,
                 onSingleTap: onToggleUI,
                 onAtTopEdgeChange: onAtTopEdgeChange,
@@ -1720,6 +1726,8 @@ private struct ZoomableImageView: UIViewRepresentable {
     /// Whether a letterboxed photo sits in the top-leading corner rather than
     /// in the middle. See `CenteringScrollView.anchorsTopLeading`.
     var anchorsTopLeading: Bool = false
+    /// Rounds the picture itself. See `CenteringScrollView.photoCornerRadius`.
+    var photoCornerRadius: CGFloat = 0
     /// Changing this asks the scroll view to ease back to fit (page scrolled off).
     var resetToken: Int
     /// Fired by a single tap on the photo (toggles the viewer's chrome). Requires
@@ -1742,6 +1750,7 @@ private struct ZoomableImageView: UIViewRepresentable {
         scroll.spansWidth = spansDisplay
         scroll.restingInsets = restingInsets
         scroll.anchorsTopLeading = anchorsTopLeading
+        scroll.photoCornerRadius = photoCornerRadius
         scroll.delegate = context.coordinator
         scroll.minimumZoomScale = 1
         scroll.maximumZoomScale = 4
@@ -1759,6 +1768,9 @@ private struct ZoomableImageView: UIViewRepresentable {
         let imageView = UIImageView(image: image)
         imageView.contentMode = .scaleAspectFit
         imageView.isUserInteractionEnabled = true
+        imageView.layer.cornerCurve = .continuous
+        imageView.layer.cornerRadius = photoCornerRadius
+        imageView.clipsToBounds = photoCornerRadius > 0
         scroll.imageView = imageView
         scroll.addSubview(imageView)
         context.coordinator.scrollView = scroll
@@ -1817,6 +1829,9 @@ private struct ZoomableImageView: UIViewRepresentable {
 
     func updateUIView(_ scroll: CenteringScrollView, context: Context) {
         context.coordinator.parent = self
+        if scroll.photoCornerRadius != photoCornerRadius {
+            scroll.photoCornerRadius = photoCornerRadius
+        }
         // The resting insets move when the display does — a rotation, or a split
         // being resized — so re-fit to the new box when they change.
         if scroll.restingInsets != restingInsets || scroll.spansWidth != spansDisplay {
@@ -2086,6 +2101,33 @@ final class CenteringScrollView: UIScrollView {
     /// curve is cut to and all the slack collects at the far end, where the
     /// details panel is.
     var anchorsTopLeading = false
+
+    /// The radius the picture's own corners are cut to, or 0 to leave them
+    /// square.
+    ///
+    /// Rounding the *page* only rounds whichever of the picture's corners
+    /// happen to reach it, which for a photo letterboxed inside a pane is two
+    /// of them at best. The image view is exactly the fitted picture — see
+    /// `refit` — so a radius on its layer is a radius on the photograph,
+    /// wherever in the page it has come to rest.
+    ///
+    /// It rides the zoom, because a scroll view zooms by transforming its
+    /// content: magnify the picture and its corners round more. That only
+    /// shows at the edges of a zoomed-in photo, which are off-screen.
+    var photoCornerRadius: CGFloat = 0 {
+        didSet {
+            guard photoCornerRadius != oldValue else { return }
+            applyPhotoCornerRadius()
+        }
+    }
+
+    private func applyPhotoCornerRadius() {
+        guard let imageView else { return }
+        imageView.layer.cornerCurve = .continuous
+        imageView.layer.cornerRadius = photoCornerRadius
+        imageView.clipsToBounds = photoCornerRadius > 0
+    }
+
     private var fittedForBounds: CGSize = .zero
 
     override func layoutSubviews() {
@@ -2126,6 +2168,7 @@ final class CenteringScrollView: UIScrollView {
         zoomScale = 1
         imageView.frame = CGRect(origin: .zero, size: fitted)
         contentSize = fitted
+        applyPhotoCornerRadius()
         centerContent()
     }
 

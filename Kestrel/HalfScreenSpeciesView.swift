@@ -9,10 +9,17 @@ import SwiftUI
 /// nothing to go back to, and More, because the list beside it already carries
 /// every one of those actions per row.
 ///
-/// It also wears less chrome than the viewer does. The pane is a tall card in
-/// half a display, and a name capsule across the top plus a panel across the
-/// bottom pinched the photograph into a column between them; the panel tucks
-/// into one corner and carries the name as its first line instead.
+/// It also wears less chrome than the viewer does. The pane is a card in half a
+/// display, and a name capsule across the top plus a panel across the bottom
+/// pinched the photograph into a column between them; the panel carries the
+/// name as its first line instead, and in the half that has no room to spare it
+/// is not drawn at all.
+///
+/// The two halves are different shapes, so they are not the same card. Beside
+/// the list the pane is tall and a photograph is wide, so the picture fills a
+/// band across the top and a grey card under it makes the rest of the half
+/// deliberate; above the list the half is already about the shape of a
+/// photograph, and the picture is all there is. See `showsBackingCard`.
 ///
 /// Two differences from the viewer, both because the list next to it is still
 /// running. It is *live*: `names` is whatever has been heard, and the tab moves
@@ -41,9 +48,15 @@ struct HalfScreenSpeciesView: View {
     /// rather than yanking the pane back on the next render.
     var onPage: (String) -> Void = { _ in }
     /// Which half of the display the pane has — see `SpeciesPane.Placement`.
-    /// It decides which corner the details panel tucks into, and nothing else:
-    /// the card is the same card either way.
+    ///
+    /// It decides a good deal more than which corner the panel sits in. The
+    /// two halves are different shapes and the pane is drawn differently in
+    /// each; see `showsBackingCard`.
     var placement: SpeciesPane.Placement = .leadingHalf
+    /// What the system's bars took out of the display. The pane is laid out
+    /// full-bleed, so its own proxy reports none, and the placement that keeps
+    /// clear of them horizontally has to be told.
+    var safeArea = EdgeInsets()
     /// The display's own corner radius, so the card's corners can be cut
     /// concentric with it. `nil` where it could not be read, which falls back
     /// to a plain rounded rectangle.
@@ -89,7 +102,30 @@ struct HalfScreenSpeciesView: View {
     /// How far the card sits in from every edge of the pane. The pane's outer
     /// three edges are the display's, so this is also its distance from the
     /// glass; adjust to make the card float more or less.
+    ///
+    /// The same figure is spent twice where there is a backing card: once
+    /// between the glass and the card, and again between the card and the
+    /// photograph inside it.
     static let inset: CGFloat = 8
+
+    /// Whether the pane draws a grey card behind the photograph, with the
+    /// photograph inset inside it, rather than the bare photograph.
+    ///
+    /// Beside the list, yes. The pane there is a tall half of a display and a
+    /// photograph is wider than it is tall, so one fitted to that half fills a
+    /// band across the top and leaves the rest of the half empty; a card under
+    /// it makes that emptiness deliberate, and gives the details panel
+    /// something to sit on.
+    ///
+    /// Above the list, no. That half is already about the shape of a
+    /// photograph, so there is no spare room for a card to show through —
+    /// only a rim of grey around the picture, which is a frame nobody asked
+    /// for.
+    private var showsBackingCard: Bool { placement == .leadingHalf }
+
+    /// Whether the details panel is drawn. It needs room of its own, and the
+    /// half that has none would be covering the photograph with it.
+    private var showsPanel: Bool { placement == .leadingHalf }
 
     /// Blank gutter shown between birds while paging, matching the viewer.
     private static let pageSpacing: CGFloat = 24
@@ -103,36 +139,49 @@ struct HalfScreenSpeciesView: View {
     /// taken as "not the display's curve" rather than as a very square screen.
     private static let minimumDisplayRadius: CGFloat = 24
 
-    /// The card's corner radius: concentric with the display's own curve, which
-    /// is what a shared centre means — the gap between the two is `inset` the
-    /// whole way round, so the card's corner follows the glass's rather than
-    /// cutting across it.
+    /// The two curves the pane cuts: the backing card's, and the photograph's
+    /// inside it.
+    ///
+    /// Both concentric with the display's own, which is what a shared centre
+    /// means — the gap between the glass and the card is `inset` the whole way
+    /// round, and between the card and the photograph another `inset`, so each
+    /// corner follows the one outside it rather than cutting across it. With
+    /// no backing card there is one curve and the photograph takes it.
     ///
     /// Falls back to a constant where the display's curve cannot be read.
     /// `GeometryProxy.concentricCornerRadii(in:)` is the only way to ask, and
     /// it does not always answer: on a foldable's outer display it reports 8pt
     /// for the whole display rect, which is no display's corner and which the
     /// subtraction below would turn into a square card.
-    private static func cardRadius(display: CGFloat?) -> CGFloat {
-        guard let display, display >= minimumDisplayRadius + inset else {
-            return fallbackCornerRadius
-        }
-        return display - inset
+    private static func radii(
+        display: CGFloat?,
+        backed: Bool
+    ) -> (card: CGFloat, photo: CGFloat) {
+        let card: CGFloat = {
+            guard let display, display >= minimumDisplayRadius + inset else {
+                return fallbackCornerRadius
+            }
+            return display - inset
+        }()
+        return (card: card, photo: backed ? max(0, card - inset) : card)
     }
 
-    /// How far in from the card's bottom-leading corner the info panel sits.
+    /// How far in from the card's bottom edge the info panel sits.
     ///
     /// The same rule the full-screen viewer uses for its own corner-tucked
     /// panel, measured from the card rather than from the display because the
     /// card is what the panel is inside: concentric corners share a centre, so
-    /// the gap between them is the difference of their radii.
-    private static func cornerInset(cardRadius: CGFloat) -> CGFloat {
-        max(cornerInsetFloor, cardRadius - SpeciesChrome.cornerPillRadius)
+    /// the gap between them is the difference of their radii. The panel is
+    /// centred rather than tucked into a corner, so this only sets how far it
+    /// floats off the bottom — but keeping the two in step means it clears the
+    /// card's curve by the same margin whatever the display's is.
+    private static func panelInset(cardRadius: CGFloat) -> CGFloat {
+        max(panelInsetFloor, cardRadius - SpeciesChrome.cornerPillRadius)
     }
 
-    /// The least the panel may sit in from the corner, for a card whose own
+    /// The least the panel may sit in from the edge, for a card whose own
     /// curve is tighter than the pill's.
-    private static let cornerInsetFloor: CGFloat = 12
+    private static let panelInsetFloor: CGFloat = 12
 
     /// Duration of the chrome's show/hide fade, matching the viewer's.
     private static let chromeToggle: Double = 0.12
@@ -161,10 +210,22 @@ struct HalfScreenSpeciesView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let radius = Self.cardRadius(display: displayCornerRadius)
+            // The pane's own half of the display. The view is laid out
+            // full-bleed across the whole of it and takes its half here,
+            // rather than being handed a half-sized frame to be aligned in:
+            // a frame aligned inside the safe area lands wherever the bars
+            // leave it, which is what put the card 8pt below the status bar
+            // in one placement and a couple of points *above* the glass in
+            // the other. Measuring the half here makes both edges the
+            // display's own, which is what the corner radius answers to.
+            let half = CGSize(
+                width: placement == .leadingHalf ? proxy.size.width / 2 : proxy.size.width,
+                height: placement == .topHalf ? proxy.size.height / 2 : proxy.size.height
+            )
+            let radii = Self.radii(display: displayCornerRadius, backed: showsBackingCard)
             // The card's own interior, which is what the photo is fitted to and
             // so what the zoom floor is measured from.
-            let cardWidth = max(0, proxy.size.width - Self.inset * 2)
+            let cardWidth = max(0, half.width - edgeInsets.leading - edgeInsets.trailing)
 
             ZStack(alignment: .topLeading) {
                 // Nothing heard yet. A quiet grey rectangle with the bird
@@ -178,56 +239,54 @@ struct HalfScreenSpeciesView: View {
                 // The picture being left, held still while the new one comes
                 // up over it.
                 if let outgoing {
-                    pager(outgoing, isFront: false)
+                    pager(outgoing, isFront: false, cornerRadius: radii.photo)
                 }
                 if let current {
-                    pager(current, isFront: true)
+                    pager(current, isFront: true, cornerRadius: radii.photo)
                         .opacity(incomingOpacity)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            // Into the card's free bottom corner: the one furthest from the
-            // photograph, which is anchored to the opposite one. Beside a list
-            // that is the bottom-leading corner; above one, the trailing side
-            // is where a letterboxed picture leaves the most room.
-            .overlay(alignment: placement == .topHalf ? .bottomTrailing : .bottomLeading) {
-                Group {
-                    // One piece of chrome, in the one corner the card has to
-                    // spare. The pane is a tall card standing beside a list,
-                    // and a name capsule across its top and a panel across its
-                    // bottom left a column of photograph pinched between them;
-                    // the name is the panel's first line instead.
-                    //
-                    // No map link and no observation list: the pane has no
-                    // presentation of its own to put either on, and the list
-                    // beside it already carries both per row. The panel prints
-                    // the same facts plainly — see `SpeciesInfoPanel`.
-                    SpeciesInfoPanel(
-                        item: shown.map { item(for: $0) },
-                        observations: shown.map {
-                            lifeListStore?.observations(for: $0) ?? []
-                        } ?? [],
-                        contentWidth: cardWidth,
-                        // Tucked into a corner of the card, a constant in from
-                        // both of its edges so its curve is concentric with the
-                        // card's — which is in turn concentric with the
-                        // display's.
-                        hugsCorner: true,
-                        // Nothing heard yet: the panel says so rather than
-                        // leaving the card captionless.
-                        title: shown.map(commonName(for:)) ?? Self.idleTitle
-                    )
-                }
-                .padding(.horizontal, Self.cornerInset(cardRadius: radius))
-                .padding(.bottom, Self.cornerInset(cardRadius: radius))
-                .opacity(chromeVisible ? 1 : 0)
-                .allowsHitTesting(chromeVisible)
+            // A zoom can carry the photograph past the edges of its own box;
+            // this is what keeps it inside.
+            .clipShape(RoundedRectangle(cornerRadius: radii.photo, style: .continuous))
+            // Inside the backing card, where there is one. Nothing where there
+            // is not, which leaves the photograph the whole of the pane.
+            .padding(showsBackingCard ? Self.inset : 0)
+            .background {
+                RoundedRectangle(cornerRadius: radii.card, style: .continuous)
+                    .fill(showsBackingCard ? Self.backingFill : Color.clear)
+            }
+            // Across the bottom of the card, centred. One piece of chrome, on
+            // the part of the card the photograph does not reach: the pane is
+            // a tall card standing beside a list, and a name capsule across
+            // its top and a panel across its bottom left a column of
+            // photograph pinched between them; the name is the panel's first
+            // line instead.
+            //
+            // No map link and no observation list: the pane has no
+            // presentation of its own to put either on, and the list beside it
+            // already carries both per row. The panel prints the same facts
+            // plainly — see `SpeciesInfoPanel`.
+            .overlay(alignment: .bottom) {
+                SpeciesInfoPanel(
+                    item: shown.map { item(for: $0) },
+                    observations: shown.map {
+                        lifeListStore?.observations(for: $0) ?? []
+                    } ?? [],
+                    contentWidth: cardWidth,
+                    // Nothing heard yet: the panel says so rather than
+                    // leaving the card captionless.
+                    title: shown.map(commonName(for:)) ?? Self.idleTitle
+                )
+                .padding(.horizontal, Self.panelInset(cardRadius: radii.card))
+                .padding(.bottom, Self.panelInset(cardRadius: radii.card))
+                .opacity(showsPanel && chromeVisible ? 1 : 0)
+                .allowsHitTesting(showsPanel && chromeVisible)
                 .animation(.easeInOut(duration: Self.chromeToggle), value: chromeVisible)
             }
-            // The photo is fitted to the card, but a zoom can carry it past the
-            // edges; this is what keeps it inside its own half.
-            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-            .padding(Self.inset)
+            .padding(edgeInsets)
+            .frame(width: half.width, height: half.height, alignment: .topLeading)
         }
         // Top to bottom of the glass. The card's margin from the bezel is
         // `inset` and nothing else: a pane that stopped at the safe area left
@@ -239,6 +298,22 @@ struct HalfScreenSpeciesView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(shown.map { "Photo of \(commonName(for: $0))" } ?? "No bird heard yet")
+    }
+
+    /// How far the card sits in from each edge of the pane.
+    ///
+    /// `inset` on all four, with one exception: the placement that spans the
+    /// display's full width keeps clear of the bars horizontally, because
+    /// something of the system's is drawn there. Vertically it does not —
+    /// the pane runs to the glass, top and bottom, and the corner radius is
+    /// cut to suit.
+    private var edgeInsets: EdgeInsets {
+        EdgeInsets(
+            top: Self.inset,
+            leading: Self.inset + (placement == .topHalf ? safeArea.leading : 0),
+            bottom: Self.inset,
+            trailing: Self.inset + (placement == .topHalf ? safeArea.trailing : 0)
+        )
     }
 
     /// What the panel calls a pane with nothing on it yet.
@@ -253,7 +328,7 @@ struct HalfScreenSpeciesView: View {
     /// whatever the tab's background is, and white at half opacity all but
     /// disappeared on a light one.
     private var placeholder: some View {
-        Color.gray.opacity(Self.placeholderOpacity)
+        Self.backingFill
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .overlay {
                 Image(systemName: "bird.fill")
@@ -266,12 +341,17 @@ struct HalfScreenSpeciesView: View {
     private static let placeholderOpacity: Double = 0.25
     private static let placeholderGlyphOpacity: Double = 0.55
 
+    /// The backing card's fill — the placeholder's grey, so an empty pane and
+    /// a full one are the same card with and without a picture on it, rather
+    /// than two different surfaces.
+    private static let backingFill = Color.gray.opacity(placeholderOpacity)
+
     /// One slot's paged photographs.
     ///
     /// Only the front slot reports anything back: the one behind it is a
     /// picture on its way out, and a zoom or a page turn it announces would be
     /// describing a pane the user is no longer looking at.
-    private func pager(_ slot: PaneSlot, isFront: Bool) -> some View {
+    private func pager(_ slot: PaneSlot, isFront: Bool, cornerRadius: CGFloat) -> some View {
         PhotoPager(
             count: slot.names.count,
             initialIndex: slot.index,
@@ -315,14 +395,18 @@ struct HalfScreenSpeciesView: View {
                     guard target != pagedIndex else { return }
                     pageCommand = PageCommand(index: target)
                 },
-                expandsIntoSafeArea: false,
                 // The card is a fixed half of a display and the photograph is
                 // whatever shape it is, so one of the two always has slack.
                 // Spent below and to the right of the picture rather than split
                 // around it: the picture then starts in the card's own top
                 // leading corner, and the slack collects at the far end, where
                 // the details panel is.
-                anchorsTopLeading: true
+                anchorsTopLeading: true,
+                // The picture's own corners, not just the box's. Fitted into a
+                // half of a display it rarely fills one, so clipping the box
+                // rounds whichever corners the picture happens to reach and
+                // leaves the others square against the card.
+                photoCornerRadius: cornerRadius
             )
         }
         .id(slot.id)
