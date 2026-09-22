@@ -12,8 +12,8 @@ import Testing
 @Suite("Readable width")
 struct ReadableWidthTests {
 
-    /// Where the column's own edges land on the glass, given a display and the
-    /// safe area taken out of it.
+    /// Where a *stack's* column lands on the glass: its insets are measured
+    /// from the safe area's edges, so they come out uneven.
     private func column(
         display: CGFloat, leading: CGFloat, trailing: CGFloat
     ) -> (left: CGFloat, right: CGFloat) {
@@ -22,6 +22,17 @@ struct ReadableWidthTests {
             available: available, leading: leading, trailing: trailing
         )
         return (leading + insets.leading, display - trailing - insets.trailing)
+    }
+
+    /// Where a *scroll view's* column lands: its content margins are measured
+    /// from the frame, which spans the display, so one value does both sides.
+    private func scrollColumn(
+        display: CGFloat, leading: CGFloat, trailing: CGFloat
+    ) -> (left: CGFloat, right: CGFloat)? {
+        guard let margin = ReadableWidth.scrollMargin(
+            available: display - leading - trailing, leading: leading, trailing: trailing
+        ) else { return nil }
+        return (margin, display - margin)
     }
 
     /// The case the rule exists for: the inner display in landscape, where a
@@ -74,5 +85,38 @@ struct ReadableWidthTests {
         #expect(trailingBar.leading > trailingBar.trailing)
         #expect(leadingBar.trailing > leadingBar.leading)
         #expect(abs(trailingBar.leading - leadingBar.trailing) < 0.001)
+    }
+
+    // MARK: - Scroll content
+
+    /// The Settings list, on the inner display in landscape. The card inside it
+    /// has to come out centred on the glass, which is what this buys.
+    @Test("a scrolling column is centered on the display")
+    func scrollColumnCentersOnDisplay() throws {
+        let c = try #require(scrollColumn(display: 951, leading: 0, trailing: 84))
+        #expect(abs((c.left + c.right) / 2 - 951 / 2) < 0.001)
+        #expect(abs((c.right - c.left) - ReadableWidth.cap) < 0.001)
+    }
+
+    /// `nil`, not zero. Zero is a real content margin and replaces the scroll
+    /// view's own, which flattens an inset-grouped list's cards into full-bleed
+    /// strips; `nil` leaves them alone.
+    @Test("a scroll view that already fits is left entirely alone")
+    func narrowScrollViewIsUntouched() {
+        #expect(ReadableWidth.scrollMargin(available: 402, leading: 0, trailing: 0) == nil)
+        #expect(ReadableWidth.scrollMargin(available: 382, leading: 0, trailing: 84) == nil)
+    }
+
+    /// Centring never wins over a bar: where an even margin would put the
+    /// column under one, the margin grows to clear it and the column comes out
+    /// narrower than the cap instead.
+    @Test("a scrolling column clears the bar before it centers")
+    func scrollColumnClearsTheBar() throws {
+        let margin = try #require(
+            ReadableWidth.scrollMargin(available: 516, leading: 0, trailing: 84)
+        )
+        #expect(margin >= 84)
+        let c = try #require(scrollColumn(display: 600, leading: 0, trailing: 84))
+        #expect(c.right <= 600 - 84 + 0.001)
     }
 }

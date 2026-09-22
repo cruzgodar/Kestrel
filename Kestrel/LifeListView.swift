@@ -313,76 +313,30 @@ struct LifeListView: View {
     /// its right edge sits in from the edge like the heading buttons.
     private static let searchFieldHorizontalInset: CGFloat = 16 + headingButtonNudge
 
-    var body: some View {
-        // The List is always rendered (with the empty placeholder shown as an
-        // overlay) rather than swapped out via if/else. Swapping the subtree
-        // tears down and rebuilds the view tree the moment the first character
-        // is typed into an empty-list search, which dropped the bottom search
-        // field's focus as soon as results loaded. Keeping the List mounted
-        // keeps that focus stable.
-        List {
-            ForEach(visibleRows) { row in
-                switch row {
-                case .existing(let entry):
-                    existingRow(entry: entry)
-                case .suggestion(let sci, let com):
-                    suggestionRow(scientificName: sci, commonName: com)
-                case .header(let title):
-                    headerRow(title)
-                }
-            }
+    /// Whether the list is on a foldable's inner display, where it is laid out
+    /// as a grid of photos rather than a column of rows — see `speciesGrid`.
+    @State private var onInnerDisplay = false
 
-            // Sits at the very bottom of the list. Hidden while searching or
-            // filtering so it doesn't interrupt the rows; only shown when
-            // viewing the full, unfiltered list.
-            if trimmedSearch.isEmpty && !store.entries.isEmpty && !showStarredOnly {
-                HStack {
-                    Spacer()
-                    Button {
-                        showClearAllConfirmation = true
-                    } label: {
-                        // Styled to match the record button but without the
-                        // press scale/opacity feedback — this is a deliberate,
-                        // confirmed-destructive action, not a tactile control.
-                        Text("Delete All Entries")
-                            .font(.title3.weight(.semibold))
-                            .foregroundStyle(.white)
-                            .frame(height: 26)
-                            .padding(.horizontal, 28)
-                            .padding(.vertical, 16)
-                            .frame(minHeight: 50)
-                            .background { Capsule(style: .continuous).fill(Color.red) }
-                            .clipShape(Capsule(style: .continuous))
-                    }
-                    .buttonStyle(NoDimButtonStyle())
-                    Spacer()
-                }
-                // Top gap kept in line with the inter-row spacing (rows use 4pt
-                // vertical padding) so the button doesn't float; extra room is
-                // left below it above the search field.
-                .padding(.top, 4)
-                .padding(.bottom, 16)
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
+    /// Width of one grid tile. The photo inside it stays the size it is in a
+    /// row (`rowThumbnailHeight`, 4:3); the tile is wider than the photo so a
+    /// two-word name has somewhere to go.
+    private static let gridTileWidth: CGFloat = 132
+    /// Gap between tiles, and between a section's heading and its tiles.
+    private static let gridSpacing: CGFloat = 16
+
+    var body: some View {
+        // One or the other, and only ever swapped by a fold — which re-lays the
+        // whole screen anyway, so the scroll position it costs was going to move
+        // regardless. Everything else about the screen (the heading buttons, the
+        // search field, the flows and the confirmations) is shared below.
+        Group {
+            if onInnerDisplay {
+                speciesGrid
+            } else {
+                speciesList
             }
         }
-        .listStyle(.plain)
-        .scrollContentBackground(.hidden)
-        .scrollBounceBehavior(.basedOnSize)
-        .scrollPosition($scrollPosition)
-        // Editing the search field resets the scroll to the top of the list.
-        //
-        // Addressed as an *edge* rather than as a row id. Scrolling to
-        // `visibleRows.first?.id` used whichever id the list happened to hold at
-        // that moment — and while the catalog scan is still behind its debounce
-        // that is a stale suggestion, which the rescan then removes, leaving the
-        // id pointing at nothing and the scroll silently not happening. The top
-        // edge is always there, whatever the rows are doing.
-        .onChange(of: searchText) { _, _ in
-            withAnimation(.easeOut(duration: 0.2)) {
-                scrollPosition.scrollTo(edge: .top)
-            }
-        }
+        .onInnerDisplayChange { onInnerDisplay = $0 }
         .overlay {
             // Empty-state placeholder — only when there's nothing to search
             // through *and* no active query. With a query present the List
@@ -617,6 +571,83 @@ struct LifeListView: View {
         }
     }
 
+    /// The Life List as a column of rows — every display but a foldable's
+    /// inner one. Always rendered (with the empty placeholder shown as an
+    /// overlay) rather than swapped out via if/else on the search: swapping the
+    /// subtree tears down and rebuilds the view tree the moment the first
+    /// character is typed into an empty-list search, which dropped the bottom
+    /// search field's focus as soon as results loaded.
+    private var speciesList: some View {
+        List {
+            ForEach(visibleRows) { row in
+                switch row {
+                case .existing(let entry):
+                    existingRow(entry: entry)
+                case .suggestion(let sci, let com):
+                    suggestionRow(scientificName: sci, commonName: com)
+                case .header(let title):
+                    headerRow(title)
+                }
+            }
+
+            // Sits at the very bottom of the list. Hidden while searching or
+            // filtering so it doesn't interrupt the rows; only shown when
+            // viewing the full, unfiltered list.
+            if trimmedSearch.isEmpty && !store.entries.isEmpty && !showStarredOnly {
+                HStack {
+                    Spacer()
+                    deleteAllButton
+                    Spacer()
+                }
+                // Top gap kept in line with the inter-row spacing (rows use 4pt
+                // vertical padding) so the button doesn't float; extra room is
+                // left below it above the search field.
+                .padding(.top, 4)
+                .padding(.bottom, 16)
+                .listRowInsets(EdgeInsets())
+                .listRowSeparator(.hidden)
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .scrollBounceBehavior(.basedOnSize)
+        .scrollPosition($scrollPosition)
+        // Editing the search field resets the scroll to the top of the list.
+        //
+        // Addressed as an *edge* rather than as a row id. Scrolling to
+        // `visibleRows.first?.id` used whichever id the list happened to hold at
+        // that moment — and while the catalog scan is still behind its debounce
+        // that is a stale suggestion, which the rescan then removes, leaving the
+        // id pointing at nothing and the scroll silently not happening. The top
+        // edge is always there, whatever the rows are doing.
+        .onChange(of: searchText) { _, _ in
+            withAnimation(.easeOut(duration: 0.2)) {
+                scrollPosition.scrollTo(edge: .top)
+            }
+        }
+    }
+
+    /// Wipes the whole life list, behind a confirmation. Styled to match the
+    /// record button but without the press scale/opacity feedback — this is a
+    /// deliberate, confirmed-destructive action, not a tactile control.
+    private var deleteAllButton: some View {
+        Button {
+            showClearAllConfirmation = true
+        } label: {
+            Text("Delete All Entries")
+                .font(.title3.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(height: 26)
+                .padding(.horizontal, 28)
+                .padding(.vertical, 16)
+                .frame(minHeight: 50)
+                .background { Capsule(style: .continuous).fill(Color.red) }
+                .clipShape(Capsule(style: .continuous))
+        }
+        .buttonStyle(NoDimButtonStyle())
+    }
+
+
     // Blue used by the "alert me" star toggle when on, and by the filter button
     // that shows only starred species. Deliberately a stronger blue than the
     // Identify tab's starred-row wash and spectrogram band (hue 215, saturation
@@ -628,6 +659,182 @@ struct LifeListView: View {
     /// Height of the trailing thumbnail on life-list and catalog-suggestion
     /// rows. Width follows at 4:3.
     private static let rowThumbnailHeight: CGFloat = 72
+
+    // MARK: - Grid (inner display)
+
+    /// One section of the grid: a run of species under an optional heading.
+    /// Mirrors the headers `visibleRows` inserts between in-range and
+    /// out-of-range search results.
+    private struct GridSection: Identifiable {
+        let id: String
+        let title: String?
+        let rows: [SearchRow]
+    }
+
+    /// `visibleRows` regrouped for the grid, which needs its headings *outside*
+    /// the grid rather than as rows within it.
+    private var gridSections: [GridSection] {
+        var sections: [GridSection] = []
+        for row in visibleRows {
+            if case .header(let title) = row {
+                sections.append(GridSection(id: "h-" + title, title: title, rows: []))
+                continue
+            }
+            if sections.isEmpty {
+                sections.append(GridSection(id: "top", title: nil, rows: [row]))
+            } else {
+                let last = sections.removeLast()
+                sections.append(GridSection(id: last.id, title: last.title, rows: last.rows + [row]))
+            }
+        }
+        return sections
+    }
+
+    /// The Life List as a grid of photographs — the inner display's layout.
+    ///
+    /// A row is mostly empty space on a display this wide, and the thing worth
+    /// looking at is the bird. The photo keeps the size it has in a row; what
+    /// goes with it is trimmed to what reads at that size, which is the name and
+    /// the date. The place a bird was found is the first thing to go: it is the
+    /// longest text on the row and the least of it at a glance, and it is still
+    /// one haptic touch (or one tap into the viewer) away.
+    ///
+    /// No swipe actions here — a grid cell has no edges to swipe from — so every
+    /// tile carries the same haptic-touch menu the rows do, which is what keeps
+    /// Edit, Add, Star and Delete reachable with the phone open.
+    private var speciesGrid: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: Self.gridSpacing) {
+                ForEach(gridSections) { section in
+                    if let title = section.title {
+                        Text(title)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                            .padding(.top, 4)
+                    }
+                    LazyVGrid(
+                        columns: [GridItem(
+                            .adaptive(minimum: Self.gridTileWidth),
+                            spacing: Self.gridSpacing,
+                            alignment: .top
+                        )],
+                        alignment: .leading,
+                        spacing: Self.gridSpacing
+                    ) {
+                        ForEach(section.rows) { row in
+                            switch row {
+                            case .existing(let entry):
+                                existingTile(entry: entry)
+                            case .suggestion(let sci, let com):
+                                suggestionTile(scientificName: sci, commonName: com)
+                            case .header:
+                                EmptyView()
+                            }
+                        }
+                    }
+                }
+
+                if trimmedSearch.isEmpty && !store.entries.isEmpty && !showStarredOnly {
+                    deleteAllButton
+                        .frame(maxWidth: .infinity)
+                        .padding(.top, 8)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 16)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+    }
+
+    /// A life-list entry as a tile: its photograph, its name, the day it was
+    /// first seen.
+    private func existingTile(entry: LifeListEntry) -> some View {
+        tile(
+            scientificName: entry.scientificName,
+            name: entry.commonName,
+            isStarred: entry.isStarred
+        ) {
+            Text(entry.firstSeen, format: ObservationDate.dayStyle)
+                .monospacedDigit()
+        }
+        .contextMenu {
+            SpeciesRowMenu(
+                onEdit: { requestEdit(entry) },
+                onAddObservation: {
+                    beginAdd(
+                        scientificName: entry.scientificName,
+                        commonName: entry.commonName
+                    )
+                },
+                star: (entry.isStarred, {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    store.setStarred(
+                        scientificName: entry.scientificName,
+                        isStarred: !entry.isStarred
+                    )
+                }),
+                onViewImage: { presentPhoto(entry.scientificName) },
+                onDelete: { requestDelete(entry) }
+            )
+        }
+    }
+
+    /// A catalog suggestion as a tile. It has no sighting yet, so the date line
+    /// carries the scientific name instead — the same thing its row shows.
+    private func suggestionTile(scientificName: String, commonName: String) -> some View {
+        tile(scientificName: scientificName, name: commonName, isStarred: false) {
+            Text(scientificName).italic()
+        }
+        .contextMenu {
+            SpeciesRowMenu(
+                onAddObservation: {
+                    beginAdd(scientificName: scientificName, commonName: commonName)
+                },
+                onViewImage: { presentPhoto(scientificName) }
+            )
+        }
+    }
+
+    /// The shared tile: photo, name, and one line of detail under it.
+    private func tile(
+        scientificName: String,
+        name: String,
+        isStarred: Bool,
+        @ViewBuilder detail: () -> some View
+    ) -> some View {
+        VStack(spacing: 6) {
+            SpeciesThumbnail(
+                scientificName: scientificName,
+                height: Self.rowThumbnailHeight,
+                onTap: { presentPhoto(scientificName) }
+            )
+            // The star that a row carries as a button of its own, which a tile
+            // has no room for: shown beside the name, and toggled from the tile's
+            // menu like every other action here.
+            HStack(spacing: 3) {
+                if isStarred {
+                    Image(systemName: "star.fill")
+                        .font(.caption2)
+                        .foregroundStyle(Self.starButtonTint)
+                }
+                Text(name)
+                    .font(.subheadline)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
+            detail()
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(width: Self.gridTileWidth, alignment: .top)
+        .contentShape(Rectangle())
+        .onTapGesture { presentPhoto(scientificName) }
+    }
+
+    // MARK: - Rows (phone, and the outer display)
 
     @ViewBuilder
     private func existingRow(entry: LifeListEntry) -> some View {

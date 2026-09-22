@@ -27,6 +27,70 @@ struct ContentView: View {
     /// Identical wiring to the Life List tab's — see `observationFlow`.
     @State private var pendingObservation: ObservationDraft?
 
+    /// The birds the viewer can swipe between, in the order the list shows them
+    /// — most recently heard first.
+    ///
+    /// `manager.detections` is already sorted by `lastSeen` descending, and the
+    /// one-minute split in `resultsView` only cuts that order in two, so the
+    /// array *is* the reading order and no rebuilding is needed. Handed to the
+    /// presenter as a snapshot, which is what keeps a bird heard mid-swipe from
+    /// reordering the pages under the user's thumb.
+    private var viewerOrder: [String] {
+        manager.detections.map(\.scientificName)
+    }
+
+    /// Opens the full-screen viewer on `scientificName`, able to swipe through
+    /// everything else currently heard.
+    ///
+    /// Except where the species pane is up: there the bird is already on screen
+    /// beside the list, so a tap moves *that* rather than covering the list it
+    /// came from with a copy of itself.
+    private func presentViewer(for scientificName: String) {
+        guard paneWidth == nil else {
+            withAnimation(.easeInOut(duration: HalfScreenSpeciesView.crossfade)) {
+                paneSpecies = scientificName
+            }
+            return
+        }
+        let names = viewerOrder
+        photoPresenter?.present(
+            names: names,
+            index: names.firstIndex(of: scientificName) ?? 0
+        )
+    }
+
+    /// Moves the pane to the bird at the top of the list — the one just heard.
+    ///
+    /// Held back while the photo is zoomed in, which is the one case where the
+    /// pane is something the user is actively looking at rather than a running
+    /// commentary on the list. It catches up on the next bird after they zoom
+    /// back out.
+    private func showNewestOnPane(_ scientificName: String?) {
+        guard paneWidth != nil, let scientificName, !paneZoomed else { return }
+        guard scientificName != paneSpecies else { return }
+        withAnimation(.easeInOut(duration: HalfScreenSpeciesView.crossfade)) {
+            paneSpecies = scientificName
+        }
+    }
+
+    /// Width of the half-screen species pane, and so of the space the tab
+    /// itself gives up on the leading side. `nil` anywhere there is no fold —
+    /// every iPhone and the outer display — where there is no pane at all.
+    @State private var paneWidth: CGFloat?
+    /// The bird the pane is showing. Follows the top of the list on its own
+    /// (see `showNewestOnPane`) until the user taps a different one.
+    @State private var paneSpecies: String?
+    /// Whether the pane's photo is zoomed in, which stops the list from taking
+    /// the pane over when a new bird is heard.
+    @State private var paneZoomed = false
+
+    /// Width of the tab's own content, measured — which on a foldable's inner
+    /// display is half the glass, not all of it. The empty-state copy is sized
+    /// against this; `containerRelativeFrame` resolves against the *scene*, so
+    /// it sized the paragraph to the whole display and ran it out past both
+    /// sides of the half the tab actually occupies.
+    @State private var tabWidth: CGFloat = 0
+
     /// The results list's own safe-area insets, measured. A detection row's
     /// tint is drawn past its edges by exactly this much so the color reaches
     /// the glass while the row's text and thumbnail stay where the safe area
@@ -45,13 +109,13 @@ struct ContentView: View {
 
     /// Diameter of the circular stop button.
     private static let stopButtonDiameter: CGFloat = 56
-    /// How far the stop button is nudged right from the leading edge.
-    private static let stopButtonRightInset: CGFloat = 4
+    /// How far the stop button is held in from the edge it parks against.
+    private static let stopButtonEdgeInset: CGFloat = 4
 
-    /// Horizontal offset that carries the centered stop button to the leading
-    /// edge (plus `stopButtonRightInset`). Negative = leftward.
+    /// Horizontal offset that carries the centered stop button to the trailing
+    /// edge (less `stopButtonEdgeInset`). Positive = rightward.
     private var stopButtonOffsetX: CGFloat {
-        Self.stopButtonRightInset + Self.stopButtonDiameter / 2 - bottomBarWidth / 2
+        bottomBarWidth / 2 - Self.stopButtonDiameter / 2 - Self.stopButtonEdgeInset
     }
 
     /// Top inset for the results list.
@@ -105,6 +169,7 @@ struct ContentView: View {
                     .transition(.opacity.animation(.smooth(duration: 0.16)))
             }
         }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { tabWidth = $0 }
         .overlay {
             if manager.detections.isEmpty {
                 ContentUnavailableView {
@@ -144,8 +209,9 @@ struct ContentView: View {
                     .animation(.easeInOut(duration: 0.3), value: manager.isWatchAppInstalled)
                     // Widen the description out of ContentUnavailableView's
                     // narrower default reading column so its text sits at the
-                    // same 16pt screen margin as the life-list rows.
-                    .containerRelativeFrame(.horizontal) { width, _ in width - 32 }
+                    // same 16pt margin as the rows — against the tab's own
+                    // width, which is what keeps it inside the half.
+                    .frame(maxWidth: max(0, tabWidth - 32))
                 }
                 .opacity(manager.isRecording ? 0 : 1)
                 .animation(.easeInOut(duration: 0.25), value: manager.isRecording)
@@ -181,7 +247,35 @@ struct ContentView: View {
         // Everything above — list, spectrogram, placeholder and the floating
         // record button — is confined to the trailing half where there is a
         // display wide enough to be opened out.
-        .innerDisplayTrailingHalf()
+        .innerDisplayTrailingHalf(width: $paneWidth)
+
+        // ...and the half it gave up becomes the species pane. A background
+        // rather than a sibling in a stack: the tab keeps its own identity and
+        // its own state whether or not the phone is open, which a conditional
+        // branch in a layout container would not (see `duo.md`).
+        .background(alignment: .leading) {
+            if let paneWidth {
+                HalfScreenSpeciesView(
+                    scientificName: paneSpecies,
+                    onZoomChange: { paneZoomed = $0 }
+                )
+                .frame(width: paneWidth)
+                .ignoresSafeArea()
+            }
+        }
+        // Whatever was last heard, shown on the pane — but only while the photo
+        // is zoomed out. `initial` so opening the tab with a session already
+        // running fills the pane rather than leaving it black.
+        .onChange(of: manager.detections.first?.scientificName, initial: true) { _, newest in
+            showNewestOnPane(newest)
+        }
+        // A bird tapped on the list crossfades the pane; when it later drops
+        // back down the list, the pane keeps showing it.
+        .onChange(of: paneWidth) { _, width in
+            if width != nil, paneSpecies == nil {
+                showNewestOnPane(manager.detections.first?.scientificName)
+            }
+        }
 
         // No life-list snapshot pushed from here any more, either. Both start
         // paths already call `RecordingManager.refreshLifeListFromStore`, which
@@ -554,7 +648,9 @@ struct ContentView: View {
             // Full-width hero image for unseen species. Starred / already-in-
             // list rows skip this and keep the compact thumbnail above.
             if needsLifeListAdd {
-                SpeciesHeroImage(scientificName: detection.scientificName)
+                SpeciesHeroImage(scientificName: detection.scientificName) {
+                    presentViewer(for: detection.scientificName)
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -636,7 +732,7 @@ struct ContentView: View {
                         isStarred: !isStarred
                     )
                 }) : nil,
-                onViewImage: { photoPresenter?.present(detection.scientificName) }
+                onViewImage: { presentViewer(for: detection.scientificName) }
             )
         }
     }
@@ -669,25 +765,20 @@ struct ContentView: View {
 /// leaves the trailing edge exactly where the container's is and every inset
 /// meaning what it meant.
 ///
-/// The fold is what says which display this is. Size classes do not — they say
-/// how much room there is, and the outer display is wide enough to report
-/// regular — and `.includeInactive` matters because a fold only counts as
-/// *active* while the device is partway shut.
+/// Which display this is comes from the fold — see `InnerDisplay`.
 private struct InnerDisplayTrailingHalf: ViewModifier {
-    /// Zero anywhere there is no fold, where the whole modifier is inert.
-    @State private var inset: CGFloat = 0
+    /// The half given up, reported back so the caller can put something in it.
+    /// `nil` anywhere there is no fold, where the whole modifier is inert.
+    @Binding var width: CGFloat?
 
     func body(content: Content) -> some View {
         content
-            .padding(.leading, inset)
+            .padding(.leading, width ?? 0)
             // Outside the padding, so it measures the space the tab was given
             // rather than the space left after insetting it — otherwise each
             // pass would halve the last one.
-            .onGeometryChange(for: CGFloat.self) { proxy in
-                guard #available(iOS 27.1, *) else { return 0 }
-                guard !proxy.reservedRegions(
-                    kind: .division, options: .includeInactive
-                ).isEmpty else { return 0 }
+            .onGeometryChange(for: CGFloat?.self) { proxy in
+                guard InnerDisplay.contains(proxy) else { return nil }
                 // `proxy.size` is already net of the safe area; the display is
                 // that plus what the bars took. The inset is measured from the
                 // content's own leading edge, which the safe area may already
@@ -695,15 +786,16 @@ private struct InnerDisplayTrailingHalf: ViewModifier {
                 let display = proxy.size.width
                     + proxy.safeAreaInsets.leading
                     + proxy.safeAreaInsets.trailing
-                return max(0, display / 2 - proxy.safeAreaInsets.leading)
-            } action: { inset = $0 }
+                let inset = display / 2 - proxy.safeAreaInsets.leading
+                return inset > 0 ? inset : nil
+            } action: { width = $0 }
     }
 }
 
 extension View {
     /// See `InnerDisplayTrailingHalf`.
-    fileprivate func innerDisplayTrailingHalf() -> some View {
-        modifier(InnerDisplayTrailingHalf())
+    fileprivate func innerDisplayTrailingHalf(width: Binding<CGFloat?>) -> some View {
+        modifier(InnerDisplayTrailingHalf(width: width))
     }
 }
 
@@ -712,13 +804,21 @@ extension View {
 /// photos have varying aspect ratios.
 private struct SpeciesHeroImage: View {
     let scientificName: String
+    /// Replaces the default tap (which opens the viewer on this bird alone) so
+    /// the viewer can page through everything else heard this session.
+    let onTap: () -> Void
 
     var body: some View {
         // No attribution caption inline — it's shown in the full-screen viewer
         // instead (tap the image). Keeps the Identify rows uncluttered. Loads the
         // `thumb` tier first, then upgrades to `hero`, so the image for a
         // just-heard bird appears immediately.
-        SpeciesPhoto(scientificName: scientificName, showsCredit: false, progressive: true) {
+        SpeciesPhoto(
+            scientificName: scientificName,
+            showsCredit: false,
+            progressive: true,
+            onTap: onTap
+        ) {
             Image(systemName: "bird")
                 .font(.system(size: 36))
                 .foregroundStyle(.secondary)

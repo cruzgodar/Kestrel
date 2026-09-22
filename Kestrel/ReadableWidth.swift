@@ -18,19 +18,44 @@ enum ReadableWidth {
     /// Roughly the measure of a page of prose.
     static let cap: CGFloat = 450
 
-    /// Splits the width a capped column gives up into a leading and a trailing
-    /// inset, chosen so the column ends up centered **on the display** rather
-    /// than inside the safe area.
+    /// The **scroll-content margin** that puts a `cap`-wide column in the
+    /// middle of the display, or `nil` where the column already fits and the
+    /// scroll view should keep its own margins.
     ///
-    /// The two differ whenever the safe area is lopsided, which on a foldable
-    /// it always is: a vertical tab bar takes one side and nothing takes the
-    /// other, so a column centered in what is left sits visibly left of center
-    /// on the glass.
+    /// One value for both sides, because a scroll view's content margins are
+    /// measured from its *frame*, and the frame spans the whole display —
+    /// bars and all. Equal margins therefore centre the column on the glass,
+    /// which is the point: a foldable's safe area is lopsided, a vertical bar
+    /// takes one side and nothing takes the other, and a column centred in
+    /// what's left sits visibly off-centre.
     ///
-    /// The two insets always add up to the whole surplus, so the column comes
-    /// out exactly `cap` wide however the split lands, and neither is ever
-    /// negative: content stays out of the safe area even in the extreme case
-    /// where honoring it costs perfect centering.
+    /// Floored at the widest safe inset so the column never lands under a bar;
+    /// where that floor bites, the column comes out narrower than the cap
+    /// rather than moving.
+    ///
+    /// - Parameters:
+    ///   - available: The width the content has, net of the safe area.
+    ///   - leading: The leading safe-area inset that was already taken off it.
+    ///   - trailing: Likewise for the trailing side.
+    nonisolated static func scrollMargin(
+        available: CGFloat,
+        leading: CGFloat,
+        trailing: CGFloat
+    ) -> CGFloat? {
+        guard available > cap else { return nil }
+        let display = available + leading + trailing
+        return max((display - cap) / 2, max(leading, trailing))
+    }
+
+    /// The leading/trailing **padding** that centres a `cap`-wide column on the
+    /// display, for a view whose frame is the safe area rather than the whole
+    /// display — a plain stack, where padding is what narrows it.
+    ///
+    /// Asymmetric on purpose, and for the same reason the scroll version is
+    /// symmetric: these are measured from the safe area's edges, so hitting the
+    /// middle of the display means leaning away from whichever side the bar is
+    /// on. The two always add up to the same surplus, so the column comes out
+    /// exactly `cap` wide however the split lands, and neither is ever negative.
     ///
     /// - Parameters:
     ///   - available: The width the content has, net of the safe area.
@@ -44,8 +69,8 @@ enum ReadableWidth {
         let surplus = max(0, available - cap)
         // Half the difference between the two safe insets: how far the middle
         // of the usable width sits from the middle of the display.
-        let offCenter = (trailing - leading) / 2
-        let leading = min(max(surplus / 2 + offCenter, 0), surplus)
+        let offCentre = (trailing - leading) / 2
+        let leading = min(max(surplus / 2 + offCentre, 0), surplus)
         return (leading, surplus - leading)
     }
 }
@@ -65,9 +90,16 @@ extension View {
     /// A scroll view can't just be inset the way a stack can: its frame is what
     /// draws the background and what the scroll indicators ride, and squeezing
     /// that down to the column would leave a stripe of scrolling content in the
-    /// middle of a page of nothing. Its *safe area* is padded instead, which
-    /// leaves the frame alone and lets a list keep insetting its own rows from
-    /// the safe area exactly as it did.
+    /// middle of a page of nothing. Its content margins are set instead, which
+    /// leaves the frame — and so the background — spanning the display.
+    ///
+    /// Content margins rather than safe-area padding, which was the first try:
+    /// padding the safe area moves the content but leaves a grouped list still
+    /// accounting for the vertical bar, and it spends that inset *as* its
+    /// trailing gutter while adding its usual 20pt on the leading side only —
+    /// so the cards came out 10pt off-centre inside a column that was itself
+    /// centred. Content margins are measured from the frame and replace the
+    /// list's own, so both sides are finally the same number.
     ///
     /// - Parameter minimumTopInset: The least distance from the top of the
     ///   scroll view's own container that content may begin at. The safe area
@@ -131,27 +163,35 @@ private struct ReadableColumn: ViewModifier {
 private struct ReadableScrollContent: ViewModifier {
     let minimumTopInset: CGFloat
 
-    @State private var insets = EdgeInsets()
+    /// `nil` where the column fits as it is, which leaves the scroll view's own
+    /// margins alone — the whole reason this is optional. An earlier version
+    /// passed a plain `0` there and flattened every inset-grouped card on every
+    /// iPhone into a full-bleed strip with no gutter and no rounded corners:
+    /// content margins *replace* a scroll view's own rather than adding to them.
+    @State private var margin: CGFloat?
+    /// Extra safe area above the content, when the top edge has none of its own.
+    @State private var top: CGFloat = 0
 
     func body(content: Content) -> some View {
         content
-            // `safeAreaPadding`, not `contentMargins`: content margins *replace*
-            // a scroll view's own, so a zero one (every iPhone, where the column
-            // already fits) flattened the inset-grouped cards to full-bleed
-            // strips with no gutter and no rounded corners. Padding the safe
-            // area instead adds nothing at all when every value is zero.
-            .safeAreaPadding(insets)
+            .contentMargins(.horizontal, margin, for: .scrollContent)
+            // The top stays a safe-area pad rather than a content margin: the
+            // caller may have zeroed its top content margin deliberately (see
+            // `MoreView`), and this has to add to that rather than undo it.
+            .safeAreaPadding(.top, top)
+            // Outside both, so it measures the space the view was given rather
+            // than the space left after insetting it — otherwise each pass
+            // would feed the next.
             .onGeometryChange(for: ReadableMetrics.self) { ReadableMetrics($0) } action: { metrics in
-                let columns = metrics.columnInsets
-                insets = EdgeInsets(
-                    // An inset *on top of* the safe area, so this is the
-                    // shortfall rather than the target: where the safe area
-                    // already clears the minimum, it adds nothing.
-                    top: max(0, minimumTopInset - metrics.top),
-                    leading: columns.leading,
-                    bottom: 0,
-                    trailing: columns.trailing
+                margin = ReadableWidth.scrollMargin(
+                    available: metrics.available,
+                    leading: metrics.leading,
+                    trailing: metrics.trailing
                 )
+                // An inset *on top of* the safe area, so this is the shortfall
+                // rather than the target: where the safe area already clears
+                // the minimum, it adds nothing.
+                top = max(0, minimumTopInset - metrics.top)
             }
     }
 }

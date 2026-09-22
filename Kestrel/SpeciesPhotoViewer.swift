@@ -1724,7 +1724,10 @@ private final class IndexedHost<Content: View>: UIHostingController<Content> {
 /// its zoom state up via `onZoomChange` so the container can disable paging while
 /// zoomed. The pager creates a fresh page each time one scrolls into view, so a
 /// page is never left zoomed.
-private struct ZoomablePhotoPage: View {
+/// One bird's photo, zoomable, on the viewer's black card. Also the whole of
+/// the Identify tab's half-screen species view (`HalfScreenSpeciesView`), which
+/// is why this is not private.
+struct ZoomablePhotoPage: View {
     let item: SpeciesPhotoItem
     /// Shared paging state — the page holds its full-resolution swap until this
     /// reports the swipe has settled, so the heavier image never swaps in while
@@ -1748,6 +1751,11 @@ private struct ZoomablePhotoPage: View {
     /// content edge (`-1` previous, `+1` next), so the same continuous swipe
     /// carries on to the neighboring bird instead of halting at the edge.
     var onPageBeyondEdge: (Int) -> Void
+    /// Whether the photo may grow into the safe area. True in the viewer, whose
+    /// card already covers the screen. False in a pane that occupies part of a
+    /// display: expanding there would size the photo to the whole scene and
+    /// centre it on that, leaving the pane showing an off-centre crop of it.
+    var expandsIntoSafeArea: Bool = true
 
     @State private var image: UIImage?
     @State private var loadFailed = false
@@ -1771,7 +1779,7 @@ private struct ZoomablePhotoPage: View {
 
     var body: some View {
         imageLayer
-            .ignoresSafeArea()
+            .ignoresSafeArea(expandsIntoSafeArea ? .all : [])
             .contentShape(Rectangle())
             .task(id: item.scientificName) { await load() }
             .onChange(of: pageZoomed) { _, zoomed in onZoomChange(zoomed) }
