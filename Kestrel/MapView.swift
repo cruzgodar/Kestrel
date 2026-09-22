@@ -242,6 +242,11 @@ struct MapView: View {
     /// How long the pin takes to dissolve from its old spot to the new one.
     private static let pinCrossfade: Double = 0.22
 
+    /// Height of the picker's standing instruction capsule. Was borrowed from
+    /// the glass recenter button it used to share a row with; now that those
+    /// are system bar items, it is a control-sized capsule in its own right.
+    private static let instructionHeight: CGFloat = 44
+
     /// Drops the picker's default pin — the current location — so the flow
     /// always opens with a location already chosen and Save Observation always
     /// means something. Run once from the view's `.task`.
@@ -575,6 +580,19 @@ struct MapView: View {
 
 
     var body: some View {
+        // A navigation stack wrapped around the map for one reason: its
+        // controls are real bar items rather than glass circles placed by hand.
+        // Only system bar items take part when the system runs its bars
+        // vertically — a foldable's outer display, and its inner display in
+        // landscape — so this is what puts recenter (and the picker's back
+        // button) on the same edge, at the same positions, as every other
+        // screen's, and what makes them respect the safe area without being
+        // told to. The map itself keeps ignoring it and stays full-bleed.
+        //
+        // Its contents are left un-indented under it, as the `MapReader`
+        // below it is: the nesting is structural, and nothing reads better
+        // for another level of it.
+        NavigationStack {
         ZStack {
             GeometryReader { geo in
                 // `MapReader` is what turns the long press's touch point into a
@@ -727,8 +745,12 @@ struct MapView: View {
                 }
                 // Clusters before culling in every path (see handleCameraChange)
                 // so annotation hosts always mount with their content present.
-                .onChange(of: geo.size) { _, new in
+                .onChange(of: geo.size) { old, new in
                     viewSize = new
+                    // Before the rebuild, so the clusters are computed for
+                    // where the camera has been moved to rather than where it
+                    // was.
+                    holdTrailingEdge(from: old, to: new)
                     rebuildClusters(animated: false, rehydrate: false)
                     updateVisibleEntries(force: true)
                 }
@@ -740,34 +762,11 @@ struct MapView: View {
                 }
                 }
             }
-            .ignoresSafeArea(edges: .bottom)
-
-            // Liquid-glass recenter control pinned to the top-right, replacing
-            // the stock MapUserLocationButton.
-            GlassMapButton(
-                systemImage: centeredOnUser ? "location.fill" : "location",
-                accessibility: "Center on current location"
-            ) {
-                Task {
-                    guard let coord = await LocationCache.shared.current() else { return }
-                    // Fill the icon on recenter; skip clearing it for the
-                    // duration of the recenter animation (the grace window).
-                    withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = true }
-                    recenterGraceUntil = Date.now + 0.7
-                    withAnimation(.easeInOut(duration: 0.45)) {
-                        position = .region(MKCoordinateRegion(
-                            center: CLLocationCoordinate2D(
-                                latitude: coord.latitude,
-                                longitude: coord.longitude
-                            ),
-                            span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
-                        ))
-                    }
-                }
-            }
-            .padding(.top, 8)
-            .padding(.trailing, 12)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            // Every edge, navigation bar included: the map is the background of
+            // this screen and is meant to run under everything. `geo.size` is
+            // the drawn size because of this, which is also what the clustering
+            // math wants — it works in screen points.
+            .ignoresSafeArea()
 
             // Zero-size host for the presentations a thumbnail's menu raises.
             // They can't hang off the map itself, which already presents the
@@ -777,39 +776,30 @@ struct MapView: View {
                 .observationActions(actions, store: store)
 
             if let picker {
-                // Back to the date step.
-                GlassMapButton(
-                    systemImage: "chevron.left",
-                    accessibility: "Back to the observation date"
-                ) {
-                    picker.onBack()
-                }
-                .padding(.top, 8)
-                .padding(.leading, 12)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-
-                // Standing instruction across the top, in the row the back and
-                // recenter buttons occupy: same 8pt top inset and the same 44pt
-                // height as a `GlassMapButton`, so the three read as one row of
-                // controls. Inset past both buttons' widths (12pt margin + 44pt
-                // button) so a long line can never run under them.
+                // Standing instruction across the top, directly under the bar
+                // the back and recenter buttons now live in. It sat *between*
+                // those two while they were glass circles of our own, which is
+                // no longer a row we can place anything in — the bar owns it,
+                // and on a foldable the bar may not be along the top at all. A
+                // row of its own inside the safe area lands correctly either
+                // way, and needs no measuring against the buttons' widths.
                 Text(pickerInstruction)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     // Scales further than the one-line default would need,
-                    // because the "no location recorded" wording is half again as
-                    // long as the plain instruction and still has to fit between
-                    // the two corner buttons on the narrowest phone.
+                    // because the "no location recorded" wording is half again
+                    // as long as the plain instruction and still has to fit
+                    // across the narrowest phone in one line.
                     .minimumScaleFactor(0.65)
                     .contentTransition(.opacity)
                     .animation(.easeInOut(duration: 0.2), value: pickerInstruction)
                     .padding(.horizontal, 18)
-                    .frame(height: GlassMapButton.diameter)
+                    .frame(height: Self.instructionHeight)
                     .glassEffect(.regular, in: .capsule)
                     .allowsHitTesting(false)
                     .padding(.top, 8)
-                    .padding(.horizontal, 68)
+                    .padding(.horizontal, 12)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
 
                 // The commit button stands the whole time the picker is up —
@@ -843,6 +833,37 @@ struct MapView: View {
                 .padding(.bottom, 20)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             }
+        }
+        // Nothing but the map behind the bar. There is no title either: a title
+        // is text, and the system keeps text in a horizontal strip when it runs
+        // its bars vertically — a strip that draws a background this will not
+        // take off (see `SpeciesPhotoViewer`, which learned it the hard way).
+        .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+        .toolbar {
+            // Leading at the top of a vertical bar, per the platform's
+            // placement for a back/close control.
+            if let picker {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        picker.onBack()
+                    } label: {
+                        Label("Back", systemImage: "chevron.left")
+                    }
+                    .accessibilityLabel("Back to the observation date")
+                }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: recenterOnUser) {
+                    // A `Label`, not a bare `Image`: an item with no title of
+                    // its own is kept out of a vertical bar entirely.
+                    Label(
+                        "Center on Current Location",
+                        systemImage: centeredOnUser ? "location.fill" : "location"
+                    )
+                    .contentTransition(.symbolEffect(.replace))
+                }
+            }
+        }
         }
         .task {
             // An edit already knows where its pin goes, so it is dropped before
@@ -942,6 +963,98 @@ struct MapView: View {
         focusRequest = focus
         focusDeadline = Date.now + Self.focusReassertWindow
         moveCamera(to: focus, animated: animated)
+    }
+
+    /// Keeps the right-hand edge of the map on the same place when the view
+    /// changes size, instead of keeping the center.
+    ///
+    /// This is what continuity across a fold means for a map. MapKit's own
+    /// answer to a resize is to hold the center and let the new space open up
+    /// evenly on both sides, so unfolding slides the whole world sideways under
+    /// you and the thing you were looking at is no longer where you left it.
+    /// Pinning one edge instead means everything already on screen stays
+    /// exactly where it was and the display's new width is simply *more map*,
+    /// arriving on the far side.
+    ///
+    /// Scale is preserved, not the region: a wider display shows more ground at
+    /// the same zoom rather than the same ground drawn bigger. Both spans are
+    /// therefore rebuilt from degrees-per-point, which also keeps the camera's
+    /// aspect ratio matched to the view's so MapKit doesn't quietly adjust the
+    /// region it was handed.
+    ///
+    /// Not a fold-specific path, and nothing here asks about poses: any resize
+    /// gets the same treatment, which is the same promise on a rotation or a
+    /// Split View drag.
+    private func holdTrailingEdge(from old: CGSize, to new: CGSize) {
+        // `lastSpan` is the "camera has reported at least once" flag; without
+        // one there is no scale to carry over.
+        guard let span = camera.lastSpan else { return }
+        // Two cases where the camera is not ours to move: it is following the
+        // user (the map's own continuity, and better than ours), or a focus
+        // request is still being asserted at a coordinate of its own.
+        guard !position.followsUserLocation, focusRequest == nil else { return }
+        guard let region = Self.resizedRegion(
+            MKCoordinateRegion(center: camera.lastCenter, span: span),
+            from: old,
+            to: new
+        ) else { return }
+        camera.lastSpan = region.span
+        camera.lastCenter = region.center
+        position = .region(region)
+    }
+
+    /// The arithmetic behind `holdTrailingEdge`, kept `nonisolated` so a test
+    /// can drive it. `nil` when there is nothing to do — a degenerate size, or
+    /// a size that didn't actually change.
+    nonisolated static func resizedRegion(
+        _ region: MKCoordinateRegion,
+        from old: CGSize,
+        to new: CGSize
+    ) -> MKCoordinateRegion? {
+        guard old.width > 0, old.height > 0, new.width > 0, new.height > 0 else { return nil }
+        guard old != new else { return nil }
+
+        let span = MKCoordinateSpan(
+            latitudeDelta: region.span.latitudeDelta / Double(old.height) * Double(new.height),
+            longitudeDelta: region.span.longitudeDelta / Double(old.width) * Double(new.width)
+        )
+        // The center steps back by half the width the map gained, which is
+        // what leaves the right edge where it was and opens all the new ground
+        // on the left. Vertically the center holds: the fold's continuity is a
+        // horizontal one, and there is no reason to favor the top of the map
+        // over the bottom.
+        let center = CLLocationCoordinate2D(
+            latitude: region.center.latitude,
+            // Back into [-180, 180] if half a display's worth of new width has
+            // carried the center over the date line.
+            longitude: unwrappedLongitude(
+                region.center.longitude
+                    + (region.span.longitudeDelta - span.longitudeDelta) / 2,
+                near: 0
+            )
+        )
+        return MKCoordinateRegion(center: center, span: span)
+    }
+
+    /// Puts the camera back on the user, at a neighborhood-sized span. The
+    /// recenter bar button's action.
+    private func recenterOnUser() {
+        Task {
+            guard let coord = await LocationCache.shared.current() else { return }
+            // Fill the icon on recenter; skip clearing it for the duration of
+            // the recenter animation (the grace window).
+            withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = true }
+            recenterGraceUntil = Date.now + 0.7
+            withAnimation(.easeInOut(duration: 0.45)) {
+                position = .region(MKCoordinateRegion(
+                    center: CLLocationCoordinate2D(
+                        latitude: coord.latitude,
+                        longitude: coord.longitude
+                    ),
+                    span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+                ))
+            }
+        }
     }
 
     /// Points the camera at a focus request's coordinate.
@@ -2528,7 +2641,7 @@ private struct PickedLocationMarker: View {
     }
 }
 
-// MARK: - Top-right glass controls
+// MARK: - Camera bookkeeping
 
 /// Plain (non-`@Observable`) holder for the map's per-frame camera bookkeeping.
 /// Stored as a single `@State` reference on `MapView`; mutating its properties
@@ -2549,35 +2662,6 @@ private final class CameraTracker {
     /// `MapView.clustersNeedRecentering`), so this is what says whether a pan
     /// has invalidated it.
     var lastClusterCenter: CLLocationCoordinate2D?
-}
-
-/// A circular liquid-glass map control, matching the search field's glass
-/// buttons. Used for the recenter button and the picker's back button.
-private struct GlassMapButton: View {
-    let systemImage: String
-    let accessibility: String
-    let action: () -> Void
-
-    private static let glyphBox: CGFloat = 22
-    private static let glyphInset: CGFloat = 11
-    /// Outer size of the glass circle. Public to the file so the picker's
-    /// instruction capsule can match the buttons it shares the top row with.
-    static let diameter: CGFloat = glyphBox + glyphInset * 2
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 20, weight: .medium))
-                .foregroundStyle(.primary)
-                .contentTransition(.symbolEffect(.replace))
-                .frame(width: Self.glyphBox, height: Self.glyphBox)
-                .padding(Self.glyphInset)
-                .glassEffect(.regular.interactive(), in: .circle)
-                .contentShape(Circle())
-        }
-        .buttonStyle(NoDimButtonStyle())
-        .accessibilityLabel(accessibility)
-    }
 }
 
 #Preview {

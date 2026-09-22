@@ -1022,3 +1022,113 @@ private extension Double {
     }
 }
 
+
+/// Continuity across a resize — the map's answer to a foldable being opened or
+/// closed underneath it (see `MapView.holdTrailingEdge`).
+///
+/// MapKit's own behavior on a resize is to hold the center, which means the
+/// world slides sideways under the user and whatever they were looking at is
+/// somewhere else when the phone finishes unfolding. Holding the right edge
+/// instead means everything already on screen stays exactly where it is and the
+/// new width is simply more map, arriving on the far side.
+@Suite("Map resize continuity")
+struct MapResizeContinuityTests {
+
+    /// The two poses the foldable actually resizes between, in points.
+    private let closed = CGSize(width: 466, height: 678)
+    private let open = CGSize(width: 669, height: 951)
+
+    private func region(
+        lat: Double = 42.45, lon: Double = -76.47,
+        latDelta: Double = 0.02, lonDelta: Double = 0.02
+    ) -> MKCoordinateRegion {
+        MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: lat, longitude: lon),
+            span: MKCoordinateSpan(latitudeDelta: latDelta, longitudeDelta: lonDelta)
+        )
+    }
+
+    /// The longitude at the right-hand edge of a region — the quantity this
+    /// whole exercise exists to keep constant.
+    private func rightEdge(_ region: MKCoordinateRegion) -> Double {
+        region.center.longitude + region.span.longitudeDelta / 2
+    }
+
+    @Test("opening the phone leaves the right edge where it was")
+    func openingHoldsTheRightEdge() throws {
+        let before = region()
+        let after = try #require(MapView.resizedRegion(before, from: closed, to: open))
+        #expect(abs(rightEdge(after) - rightEdge(before)) < 1e-9)
+        // And the new ground is all on the left.
+        #expect(after.span.longitudeDelta > before.span.longitudeDelta)
+    }
+
+    @Test("closing the phone leaves the right edge where it was")
+    func closingHoldsTheRightEdge() throws {
+        let before = region()
+        let after = try #require(MapView.resizedRegion(before, from: open, to: closed))
+        #expect(abs(rightEdge(after) - rightEdge(before)) < 1e-9)
+        #expect(after.span.longitudeDelta < before.span.longitudeDelta)
+    }
+
+    /// A wider display must show *more ground*, not the same ground drawn
+    /// bigger: degrees per point is what has to survive the resize.
+    @Test("zoom level is preserved, not the region")
+    func scaleSurvivesTheResize() throws {
+        let before = region()
+        let after = try #require(MapView.resizedRegion(before, from: closed, to: open))
+        #expect(
+            abs(after.span.longitudeDelta / Double(open.width)
+                - before.span.longitudeDelta / Double(closed.width)) < 1e-12
+        )
+        #expect(
+            abs(after.span.latitudeDelta / Double(open.height)
+                - before.span.latitudeDelta / Double(closed.height)) < 1e-12
+        )
+    }
+
+    /// Vertically there is no edge to favor, so the center holds and the new
+    /// height opens evenly above and below.
+    @Test("the vertical center holds")
+    func verticalCenterHolds() throws {
+        let before = region()
+        let after = try #require(MapView.resizedRegion(before, from: closed, to: open))
+        #expect(after.center.latitude == before.center.latitude)
+    }
+
+    /// Opening and closing again has to land back where it started, or a
+    /// fidgeted hinge would walk the map off across the world.
+    @Test("a round trip is a no-op")
+    func roundTripIsInert() throws {
+        let before = region()
+        let opened = try #require(MapView.resizedRegion(before, from: closed, to: open))
+        let closedAgain = try #require(MapView.resizedRegion(opened, from: open, to: closed))
+        #expect(abs(closedAgain.center.longitude - before.center.longitude) < 1e-9)
+        #expect(abs(closedAgain.center.latitude - before.center.latitude) < 1e-9)
+        #expect(abs(closedAgain.span.longitudeDelta - before.span.longitudeDelta) < 1e-9)
+    }
+
+    /// The center steps west by half the gained width, so a map already looking
+    /// at the date line can be carried past it. Longitude is periodic; the
+    /// camera must not be handed -184.
+    @Test("a center carried past the date line wraps")
+    func crossingTheDateLineWraps() throws {
+        // Zoomed out far enough that half the gained width is degrees, not
+        // fractions of one.
+        let before = region(lon: -179.99, lonDelta: 20)
+        let after = try #require(MapView.resizedRegion(before, from: closed, to: open))
+        #expect(after.center.longitude <= 180)
+        #expect(after.center.longitude >= -180)
+        // It went west across the seam, so it comes out on the east side.
+        #expect(after.center.longitude > 0)
+        let gained = after.span.longitudeDelta - before.span.longitudeDelta
+        #expect(abs(MapView.longitudeDistance(after.center.longitude, -179.99) - gained / 2) < 1e-9)
+    }
+
+    @Test("nothing to do is nothing done")
+    func degenerateSizesAreInert() {
+        #expect(MapView.resizedRegion(region(), from: closed, to: closed) == nil)
+        #expect(MapView.resizedRegion(region(), from: .zero, to: open) == nil)
+        #expect(MapView.resizedRegion(region(), from: closed, to: .zero) == nil)
+    }
+}

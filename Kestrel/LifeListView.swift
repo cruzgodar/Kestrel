@@ -1183,7 +1183,6 @@ private struct ImportInfoSheet: View {
     /// Invoked when the user taps the bottom Import button. The caller dismisses
     /// the sheet and launches the file picker.
     let onImport: () -> Void
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 24) {
@@ -1229,39 +1228,9 @@ private struct ImportInfoSheet: View {
         // present, which is the horizontal "slide-in". Pinning it to full width
         // here (outside all padding) removes the alignment ambiguity.
         .frame(maxWidth: .infinity)
-        // The grab handle is hidden here as on every sheet in the app, so this
-        // is what keeps the only way out from being a swipe nobody is told
-        // about — the same rule `ObservationPickerSheet` states.
-        .overlay(alignment: .topLeading) { SheetCloseButton { dismiss() } }
         .presentationDetents([.medium])
         // Hidden grab handle to match the map's settings card (MapCardSheet).
         .presentationDragIndicator(.hidden)
-    }
-}
-
-/// The small close control both explanatory sheets carry.
-///
-/// Every other sheet in the app hides its grab handle and puts a cancel button
-/// in a `NavigationStack` toolbar instead. These two have no navigation bar —
-/// their layout is tuned around a fixed detent and a bottom action button — so
-/// the same affordance is drawn directly, in the same top-leading corner, as an
-/// overlay that takes no part in the layout it sits over.
-private struct SheetCloseButton: View {
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: "xmark")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 30, height: 30)
-                .background(Color.primary.opacity(0.08), in: Circle())
-                .contentShape(Circle())
-        }
-        .buttonStyle(NoDimButtonStyle())
-        .padding(.top, 12)
-        .padding(.leading, 16)
-        .accessibilityLabel("Close")
     }
 }
 
@@ -1285,7 +1254,6 @@ private struct ExportInfoSheet: View {
     /// Invoked with the scope of whichever button was tapped.
     let onExport: (LifeListStore.ExportScope) -> Void
     let onExported: (Result<URL, Error>) -> Void
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         VStack(spacing: 24) {
@@ -1350,8 +1318,6 @@ private struct ExportInfoSheet: View {
         // Full sheet width at the outermost level, for the same reason the
         // import sheet pins it — see the comment there.
         .frame(maxWidth: .infinity)
-        // A disclosed way out, for the reason the import sheet carries one.
-        .overlay(alignment: .topLeading) { SheetCloseButton { dismiss() } }
         // Taller than the import sheet's `.medium`: this one carries a second
         // button and a longer explanation, and at `.medium` the last line of
         // copy gets truncated rather than wrapped.

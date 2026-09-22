@@ -166,6 +166,10 @@ struct WelcomeView: View {
             .padding(.horizontal, 24)
             .padding(.bottom, 16)
         }
+        // One column, centered, on a display wide enough that the paragraph
+        // would otherwise run the whole way across. Outside the background
+        // below on purpose — the cover has to stay opaque edge to edge.
+        .readableWidth()
         // Opaque: this is drawn over the live app, which must not show through.
         .background(Color(.systemBackground))
     }

@@ -4,6 +4,11 @@ import SwiftUI
 /// explains what Kestrel does, introduces the developer, and credits the model,
 /// paper, and image sources it relies on.
 struct MoreView: View {
+    /// The least distance between the top of the screen and the "Settings"
+    /// heading. Only ever reached where nothing else occupies the top edge —
+    /// see the `readableWidth(minimumTopInset:)` call in `body`.
+    private static let minimumHeadingInset: CGFloat = 32
+
     @Bindable private var settings = AppSettings.shared
 
     #if DEBUG
@@ -73,6 +78,15 @@ struct MoreView: View {
         // Pull the whole list up so "Settings" sits flush under the (empty) nav
         // bar with no extra space above it.
         .contentMargins(.top, 0, for: .scrollContent)
+        // One readable column on a display wide enough to need one, and a floor
+        // on the gap above "Settings".
+        //
+        // Flush under the bar is right wherever there *is* a bar, and it is
+        // what the line above buys. Where the system runs its bars down one
+        // side instead there is nothing above the list at all, so flush means
+        // hard against the top of the glass; the floor is what catches that
+        // case, and it adds nothing in any other.
+        .readableWidth(minimumTopInset: Self.minimumHeadingInset)
         // Intentionally no title text — the header bar stays empty.
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
