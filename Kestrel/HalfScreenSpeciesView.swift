@@ -4,10 +4,15 @@ import SwiftUI
 /// full-screen bird viewer, in half a screen, standing open beside the list.
 ///
 /// The same parts the viewer is made of — `PhotoPager` over `ZoomablePhotoPage`
-/// for the photograph, `SpeciesNameCapsule` and `SpeciesInfoPanel` for the
-/// chrome — minus the two controls that only make sense over a presentation:
-/// Back, because there is nothing to go back to, and More, because the list
-/// beside it already carries every one of those actions per row.
+/// for the photograph, `SpeciesInfoPanel` for the chrome — minus the two
+/// controls that only make sense over a presentation: Back, because there is
+/// nothing to go back to, and More, because the list beside it already carries
+/// every one of those actions per row.
+///
+/// It also wears less chrome than the viewer does. The pane is a tall card in
+/// half a display, and a name capsule across the top plus a panel across the
+/// bottom pinched the photograph into a column between them; the panel tucks
+/// into one corner and carries the name as its first line instead.
 ///
 /// Two differences from the viewer, both because the list next to it is still
 /// running. It is *live*: `names` is whatever has been heard, and the tab moves
@@ -72,8 +77,10 @@ struct HalfScreenSpeciesView: View {
     /// Whether the chrome is shown. A zoom hides it, exactly as in the viewer.
     @State private var chromeVisible = true
 
-    /// How long one bird takes to dissolve into the next.
-    private static let crossfade: Double = 0.3
+    /// How long one bird takes to dissolve into the next. Short: the pane
+    /// changes birds on its own as they are heard, and a dissolve slow enough
+    /// to watch turns a list that is keeping up into one that is lagging.
+    static let crossfade: Double = 0.16
 
     /// How far the card sits in from every edge of the pane. The pane's outer
     /// three edges are the display's, so this is also its distance from the
@@ -108,6 +115,20 @@ struct HalfScreenSpeciesView: View {
         }
         return display - inset
     }
+
+    /// How far in from the card's bottom-leading corner the info panel sits.
+    ///
+    /// The same rule the full-screen viewer uses for its own corner-tucked
+    /// panel, measured from the card rather than from the display because the
+    /// card is what the panel is inside: concentric corners share a centre, so
+    /// the gap between them is the difference of their radii.
+    private static func cornerInset(cardRadius: CGFloat) -> CGFloat {
+        max(cornerInsetFloor, cardRadius - SpeciesChrome.cornerPillRadius)
+    }
+
+    /// The least the panel may sit in from the corner, for a card whose own
+    /// curve is tighter than the pill's.
+    private static let cornerInsetFloor: CGFloat = 12
 
     /// Duration of the chrome's show/hide fade, matching the viewer's.
     private static let chromeToggle: Double = 0.12
@@ -157,34 +178,31 @@ struct HalfScreenSpeciesView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .top) {
+            .overlay(alignment: .bottomLeading) {
                 if let shown {
-                    SpeciesNameCapsule(
-                        name: commonName(for: shown),
-                        contentWidth: cardWidth,
-                        // No bar, so nothing to leave room for but a margin.
-                        reserving: 24
-                    )
-                    .padding(.top, 12)
-                    // The name rides above the photo without taking its taps —
-                    // a tap anywhere in the pane belongs to the photo.
-                    .allowsHitTesting(false)
-                    .opacity(chromeVisible ? 1 : 0)
-                    .animation(.easeInOut(duration: Self.chromeToggle), value: chromeVisible)
-                }
-            }
-            .overlay(alignment: .bottom) {
-                if let shown {
+                    // One piece of chrome, in the one corner the card has to
+                    // spare. The pane is a tall card standing beside a list,
+                    // and a name capsule across its top and a panel across its
+                    // bottom left a column of photograph pinched between them;
+                    // the name is the panel's first line instead.
+                    //
                     // No map link and no observation list: the pane has no
                     // presentation of its own to put either on, and the list
                     // beside it already carries both per row. The panel prints
-                    // the same facts plainly instead — see `SpeciesInfoPanel`.
+                    // the same facts plainly — see `SpeciesInfoPanel`.
                     SpeciesInfoPanel(
                         item: item(for: shown),
                         observations: lifeListStore?.observations(for: shown) ?? [],
-                        contentWidth: cardWidth
+                        contentWidth: cardWidth,
+                        // Tucked into the card's own bottom-leading corner, a
+                        // constant in from both edges so its curve is
+                        // concentric with the card's — which is in turn
+                        // concentric with the display's.
+                        hugsCorner: true,
+                        title: commonName(for: shown)
                     )
-                    .padding(.bottom, 12)
+                    .padding(.leading, Self.cornerInset(cardRadius: radius))
+                    .padding(.bottom, Self.cornerInset(cardRadius: radius))
                     .opacity(chromeVisible ? 1 : 0)
                     .allowsHitTesting(chromeVisible)
                     .animation(.easeInOut(duration: Self.chromeToggle), value: chromeVisible)
@@ -195,6 +213,11 @@ struct HalfScreenSpeciesView: View {
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
             .padding(Self.inset)
         }
+        // Top to bottom of the glass. The card's margin from the bezel is
+        // `inset` and nothing else: a pane that stopped at the safe area left
+        // a band of empty tab above the picture, and the card's top corners
+        // were then nowhere near the display's for their radius to answer to.
+        .ignoresSafeArea()
         .onChange(of: selection, initial: true) { _, bird in
             crossfade(to: bird)
         }

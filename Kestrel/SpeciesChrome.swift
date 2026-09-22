@@ -109,6 +109,11 @@ struct SpeciesNameCapsule: View {
 /// panel renders the same facts as plain text.
 struct SpeciesInfoPanel: View {
     let item: SpeciesPhotoItem
+    /// A heading set above everything else in the panel — the bird's name,
+    /// where the host has nowhere else to put it. The full-screen viewer does
+    /// (its own capsule, or the navigation bar) and passes `nil`; the Identify
+    /// pane, which is one card with one corner free, folds the name into the
+    /// panel rather than spending a second piece of chrome on it.
     /// Every recorded sighting of this bird, newest first — empty for a
     /// pin-scoped item, which stands for the one sighting in `observation`.
     let observations: [LifeListEntry.Observation]
@@ -126,6 +131,9 @@ struct SpeciesInfoPanel: View {
     /// True where the panel is tucked into a display corner — see
     /// `SpeciesChrome.cornerPillRadius`.
     var hugsCorner: Bool = false
+    /// The heading, if the host wants one. Declared last so the existing
+    /// call sites are untouched.
+    var title: String?
 
     private var info: SpeciesPhotoInfo? {
         SpeciesPhotoMetadata.shared.info(for: item.scientificName)
@@ -139,6 +147,14 @@ struct SpeciesInfoPanel: View {
             cornerRadius: hugsCorner ? SpeciesChrome.cornerPillRadius : SpeciesChrome.height / 2
         ))
         return VStack(spacing: 12) {
+            if let title {
+                Text(title)
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             sightingSection
 
             if let info {

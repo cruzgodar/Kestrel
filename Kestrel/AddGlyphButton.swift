@@ -39,6 +39,10 @@ struct AddGlyphButton: View {
                 .contentShape(.circle)
         }
         .buttonStyle(NoDimButtonStyle())
+        // The button is its own target, not part of whatever it is sitting on:
+        // a row's haptic-touch menu should not open because a finger rested on
+        // the plus. See `swallowsLongPress`.
+        .swallowsLongPress()
         // Not `.disabled`, which would gray the glyph out — the checkmark should
         // read as an unambiguous "this one's filed", at full strength. This just
         // takes the touch away, which also stops the interactive glass lighting

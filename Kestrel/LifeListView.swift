@@ -342,6 +342,11 @@ struct LifeListView: View {
     /// made concentric with.
     private static let gridThumbnailCornerRadius: CGFloat = 18
 
+    /// Gap between a grid photograph and the caption under it.
+    private static let gridPhotoCaptionSpacing: CGFloat = 6
+    /// Gap between the two lines of that caption — the name and its date.
+    private static let gridCaptionLineSpacing: CGFloat = 1
+
     /// Corner radius of the star capsule that rides on a grid photograph. Its
     /// height follows — a capsule is twice its own radius tall.
     private static let gridOverlayRadius: CGFloat = 14
@@ -780,9 +785,10 @@ struct LifeListView: View {
                     .accessibilityLabel("Add \(commonName) to Life List")
                 }
             },
-            detail: {
-                Text(scientificName).italic()
-            }
+            // A suggestion has no sighting yet, so there is no date to print
+            // and nothing goes here. (The scientific name used to; the app no
+            // longer shows one anywhere.)
+            detail: { EmptyView() }
         )
         .contextMenu {
             SpeciesRowMenu(
@@ -842,7 +848,7 @@ struct LifeListView: View {
         // the column want a left edge to line up on; now that it rides on the
         // picture, what is left under the photograph is two lines of text about
         // it, and text about a picture belongs under the middle of it.
-        VStack(alignment: .center, spacing: 6) {
+        VStack(alignment: .center, spacing: Self.gridPhotoCaptionSpacing) {
             SpeciesThumbnail(
                 scientificName: scientificName,
                 height: Self.gridThumbnailHeight,
@@ -850,19 +856,24 @@ struct LifeListView: View {
                 onTap: { presentPhoto(scientificName) }
             )
             .overlay { overlay() }
-            Text(name)
-                .font(.subheadline)
-                .multilineTextAlignment(.center)
-                // No line limit and no scaling: a name gets as many lines as it
-                // needs. A grid tile is narrow enough that two words routinely
-                // run past it, and a list of birds whose names end in "…" is a
-                // list you have to open things to read.
-                .fixedSize(horizontal: false, vertical: true)
-            detail()
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .minimumScaleFactor(0.8)
+            // The name and its date are one caption, set tight together and
+            // held away from the picture — otherwise the date floats between
+            // the two and reads as if it belonged to neither.
+            VStack(spacing: Self.gridCaptionLineSpacing) {
+                Text(name)
+                    .font(.subheadline)
+                    .multilineTextAlignment(.center)
+                    // No line limit and no scaling: a name gets as many lines
+                    // as it needs. A grid tile is narrow enough that two words
+                    // routinely run past it, and a list of birds whose names
+                    // end in "…" is a list you have to open things to read.
+                    .fixedSize(horizontal: false, vertical: true)
+                detail()
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
         }
         .frame(width: Self.gridTileWidth, alignment: .top)
         .contentShape(Rectangle())
@@ -909,6 +920,9 @@ struct LifeListView: View {
             .frame(width: size, height: size)
         }
         .buttonStyle(NoDimButtonStyle())
+        // Same as the add button's: resting a finger on the star is not a
+        // request for the row's menu. See `swallowsLongPress`.
+        .swallowsLongPress()
         .accessibilityLabel(
             entry.isStarred
                 ? "Turn off alerts for \(entry.commonName)"
@@ -1038,14 +1052,8 @@ struct LifeListView: View {
     @ViewBuilder
     private func suggestionRow(scientificName: String, commonName: String) -> some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(commonName)
-                    .font(.headline)
-                Text(scientificName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .italic()
-            }
+            Text(commonName)
+                .font(.headline)
             Spacer()
             // Always a plus, never a checkmark: a suggestion row is by
             // definition a bird that isn't on the list yet, and confirming the
@@ -1435,6 +1443,11 @@ private struct ImportInfoSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    /// The height the copy and the button want, measured — see `CardSizing`.
+    @State private var idealHeight: CGFloat?
+    /// The display's height, so a card can be stopped short of filling it.
+    @State private var displayHeight: CGFloat = 0
+
     // A bare `NavigationStack` for one toolbar item: the close button. The date
     // card's is the system's cancel-role button in a top-leading toolbar item,
     // and the only way to get *that* button rather than a hand-drawn imitation
@@ -1450,12 +1463,26 @@ private struct ImportInfoSheet: View {
                     }
                 }
         }
-        .presentationDetents([.medium])
+        // Tall enough for the copy, whatever the copy turns out to be.
+        .presentationDetents(
+            CardSizing.detents(contentHeight: idealHeight, displayHeight: displayHeight)
+        )
         // Hidden grab handle to match the map's settings card (MapCardSheet).
         .presentationDragIndicator(.hidden)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+        } action: { displayHeight = max(displayHeight, $0) }
     }
 
     private var content: some View {
+        card(measuring: false)
+            .measuringIdealHeight($idealHeight) { card(measuring: true) }
+    }
+
+    /// The card's own content. `measuring` drops the spring that pushes the
+    /// button to the bottom, so the measuring copy reports the height the
+    /// pieces actually need instead of filling whatever it is handed.
+    private func card(measuring: Bool) -> some View {
         VStack(spacing: 24) {
             VStack(spacing: 16) {
                 Image(systemName: "square.and.arrow.down")
@@ -1475,7 +1502,7 @@ private struct ImportInfoSheet: View {
             }
             .padding(.horizontal, 28)
 
-            Spacer(minLength: 0)
+            if !measuring { Spacer(minLength: 0) }
 
             Button {
                 onImport()
@@ -1525,6 +1552,13 @@ private struct ExportInfoSheet: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    /// The height the copy and the two buttons want, measured — see
+    /// `CardSizing`. This card is why the measuring exists: it carries a
+    /// paragraph and a half and two full-width buttons, and the fraction it
+    /// used to be pinned to was a number that happened to fit on one phone.
+    @State private var idealHeight: CGFloat?
+    @State private var displayHeight: CGFloat = 0
+
     /// The same bare-toolbar close button the import card carries — see the
     /// comment there.
     var body: some View {
@@ -1536,11 +1570,13 @@ private struct ExportInfoSheet: View {
                     }
                 }
         }
-        // Taller than the import sheet's `.medium`: this one carries a second
-        // button and a longer explanation, and at `.medium` the last line of
-        // copy gets truncated rather than wrapped.
-        .presentationDetents([.fraction(0.62)])
+        .presentationDetents(
+            CardSizing.detents(contentHeight: idealHeight, displayHeight: displayHeight)
+        )
         .presentationDragIndicator(.hidden)
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
+        } action: { displayHeight = max(displayHeight, $0) }
         .fileExporter(
             isPresented: $session.isSaving,
             document: session.document,
@@ -1577,6 +1613,11 @@ private struct ExportInfoSheet: View {
     }
 
     private var content: some View {
+        card(measuring: false)
+            .measuringIdealHeight($idealHeight) { card(measuring: true) }
+    }
+
+    private func card(measuring: Bool) -> some View {
         VStack(spacing: 24) {
             VStack(spacing: 16) {
                 Image(systemName: "square.and.arrow.up")
@@ -1596,7 +1637,7 @@ private struct ExportInfoSheet: View {
             }
             .padding(.horizontal, 28)
 
-            Spacer(minLength: 0)
+            if !measuring { Spacer(minLength: 0) }
 
             // Two destinations rather than a picker plus one button, so each
             // tap is a single decision. The recommended option takes the
@@ -1837,6 +1878,67 @@ nonisolated struct EBirdCSVDocument: FileDocument {
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: data)
+    }
+}
+
+/// Sizes an explanatory card to the copy it carries.
+///
+/// A fixed detent — `.medium`, or a fraction of the display — is a guess about
+/// how much room a paragraph needs, and it is wrong the moment the paragraph
+/// changes, the type size does, or the display is narrower than the one it was
+/// tuned on. What it does then is clip, which for a card whose entire job is to
+/// explain something is the one failure it cannot afford.
+///
+/// So the card measures. A copy of its own content is laid out at the card's
+/// width with `fixedSize` vertically, which is what makes it report the height
+/// it *wants* rather than the height it has been squeezed into; that copy is
+/// hidden, so it costs a layout pass and nothing else. The measurement becomes
+/// a `.height` detent, floored so a very short card is not a sliver and capped
+/// at `maximumFraction` of the display so a very long one becomes scrollable
+/// rather than taller than the screen.
+enum CardSizing {
+    /// Chrome the content does not measure but the detent must pay for: the
+    /// navigation bar the close button lives in, and the home indicator's
+    /// clearance at the bottom.
+    static let chromeAllowance: CGFloat = 92
+    /// The least a card may be.
+    static let minimumHeight: CGFloat = 300
+    /// The most, as a share of the display. Past this the card would be a
+    /// full-screen sheet wearing a detent's clothes.
+    static let maximumFraction: CGFloat = 0.92
+
+    /// The detent for a measured content height, or `.medium` until the
+    /// measurement lands.
+    static func detents(contentHeight: CGFloat?, displayHeight: CGFloat) -> Set<PresentationDetent> {
+        guard let contentHeight, contentHeight > 0 else { return [.medium] }
+        let ceiling = displayHeight > 0
+            ? displayHeight * maximumFraction
+            : .greatestFiniteMagnitude
+        let wanted = contentHeight + chromeAllowance
+        return [.height(min(max(wanted, minimumHeight), ceiling))]
+    }
+}
+
+extension View {
+    /// Lays `content` out hidden behind this view, at the width this view is
+    /// given and at its own natural height, and reports that height. See
+    /// `CardSizing`.
+    func measuringIdealHeight(
+        _ height: Binding<CGFloat?>,
+        @ViewBuilder of content: () -> some View
+    ) -> some View {
+        let probe = content()
+        return background {
+            GeometryReader { proxy in
+                probe
+                    .frame(width: proxy.size.width)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .hidden()
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                        height.wrappedValue = $0
+                    }
+            }
+        }
     }
 }
 

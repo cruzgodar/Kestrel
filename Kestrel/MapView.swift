@@ -2319,6 +2319,13 @@ private struct MapCardSheet: View {
         max(0, sheetTopCornerRadius - Self.thumbInset + Self.thumbCornerRadiusAdjust)
     }
 
+    /// How long the content takes to narrow to the safe width as the card is
+    /// pulled up to full height, and to go full-bleed again on the way back
+    /// down. Shorter than the sheet's own travel on purpose: the insets are a
+    /// correction, and a correction that is still arriving after the card has
+    /// stopped moving reads as a second, separate animation.
+    private static let contentInsetDuration: Double = 0.1
+
     /// Whether the card has been pulled up to fill the display.
     private var isFullHeight: Bool { detent == .large }
 
@@ -2366,7 +2373,7 @@ private struct MapCardSheet: View {
         // safe width, animating as the card rises rather than snapping when it
         // arrives.
         .padding(contentInsets)
-        .animation(.easeInOut(duration: 0.3), value: isFullHeight)
+        .animation(.easeInOut(duration: Self.contentInsetDuration), value: isFullHeight)
         .ignoresSafeArea(.container, edges: .horizontal)
         // Measured here, outside the `ignoresSafeArea` above, which is what
         // makes the insets readable at all: inside it the card has already had
