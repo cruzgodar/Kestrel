@@ -548,8 +548,8 @@ struct ContentView: View {
     /// backgrounds those two kinds of detection get.
     private static func placeholderSegments(watchInstalled: Bool) -> [HighlightedText.Segment] {
         let lead = watchInstalled
-            ? "Start birding here or on Apple Watch to listen for birds in the background. You will be notified about "
-            : "Start birding to listen for birds in the background. You will be notified about "
+            ? "Tap Start Birding here or on Apple Watch to listen for birds in the background. You will be notified about "
+            : "Tap Start Birding to listen for birds in the background. You will be notified about "
         return [
             .init(lead),
             .init("starred birds", highlight: HighlightedText.starHighlight),

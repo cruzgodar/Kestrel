@@ -41,7 +41,7 @@ struct DeleteAllEntriesButton: View {
         Button {
             showConfirmation = true
         } label: {
-            Text("Delete All Entries")
+            Text("Delete All Life List Entries")
                 .font(.title3.weight(.semibold))
                 .foregroundStyle(.white)
                 .frame(height: 26)
