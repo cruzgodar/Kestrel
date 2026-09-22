@@ -33,8 +33,6 @@ struct LifeListView: View {
     /// Progress of an in-flight CSV render, shared with the export sheet so it
     /// can show a determinate bar over its own content.
     @State private var exportProgress = ExportProgress()
-    /// Drives the "clear all entries" confirmation dialog.
-    @State private var showClearAllConfirmation = false
     @State private var showStarredOnly = false
     /// Frozen set of scientific names captured when the starred-only filter
     /// is switched on. While filtering, membership is driven by this snapshot
@@ -317,12 +315,26 @@ struct LifeListView: View {
     /// as a grid of photos rather than a column of rows — see `speciesGrid`.
     @State private var onInnerDisplay = false
 
-    /// Width of one grid tile. The photo inside it stays the size it is in a
-    /// row (`rowThumbnailHeight`, 4:3); the tile is wider than the photo so a
-    /// two-word name has somewhere to go.
-    private static let gridTileWidth: CGFloat = 132
+    // The grid's three knobs. Between them they set how big the photographs
+    // are and how many fit across, which is the whole of the grid's layout —
+    // `LazyVGrid` fits as many `gridTileWidth` columns as the display has room
+    // for, so widening a tile means fewer per row and narrowing it means more.
+
+    /// Height of a grid tile's photograph. Its width follows at 4:3. Separate
+    /// from `rowThumbnailHeight` on purpose: the rows and the grid are two
+    /// layouts on two different displays, and sizing the grid's pictures should
+    /// not quietly resize every row on every phone.
+    private static let gridThumbnailHeight: CGFloat = 96
     /// Gap between tiles, and between a section's heading and its tiles.
-    private static let gridSpacing: CGFloat = 16
+    private static let gridSpacing: CGFloat = 12
+    /// How much wider a tile is than the photograph in it, so a two-word name
+    /// and a star have somewhere to go.
+    private static let gridTileExtraWidth: CGFloat = 20
+
+    /// Width of one grid tile: its photograph, plus the margin around the name.
+    private static var gridTileWidth: CGFloat {
+        (gridThumbnailHeight * 4 / 3).rounded() + gridTileExtraWidth
+    }
 
     var body: some View {
         // One or the other, and only ever swapped by a fold — which re-lays the
@@ -558,17 +570,6 @@ struct LifeListView: View {
             onExport: { scope in Task { await beginExport(scope: scope) } },
             onExported: handleExport(_:)
         ))
-        .alert(
-            "Delete your entire life list?",
-            isPresented: $showClearAllConfirmation
-        ) {
-            Button("Delete All", role: .destructive) {
-                store.removeAll()
-            }
-            Button("Cancel", role: .cancel) { }
-        } message: {
-            Text(clearAllMessage)
-        }
     }
 
     /// The Life List as a column of rows — every display but a foldable's
@@ -588,24 +589,6 @@ struct LifeListView: View {
                 case .header(let title):
                     headerRow(title)
                 }
-            }
-
-            // Sits at the very bottom of the list. Hidden while searching or
-            // filtering so it doesn't interrupt the rows; only shown when
-            // viewing the full, unfiltered list.
-            if trimmedSearch.isEmpty && !store.entries.isEmpty && !showStarredOnly {
-                HStack {
-                    Spacer()
-                    deleteAllButton
-                    Spacer()
-                }
-                // Top gap kept in line with the inter-row spacing (rows use 4pt
-                // vertical padding) so the button doesn't float; extra room is
-                // left below it above the search field.
-                .padding(.top, 4)
-                .padding(.bottom, 16)
-                .listRowInsets(EdgeInsets())
-                .listRowSeparator(.hidden)
             }
         }
         .listStyle(.plain)
@@ -627,27 +610,6 @@ struct LifeListView: View {
         }
     }
 
-    /// Wipes the whole life list, behind a confirmation. Styled to match the
-    /// record button but without the press scale/opacity feedback — this is a
-    /// deliberate, confirmed-destructive action, not a tactile control.
-    private var deleteAllButton: some View {
-        Button {
-            showClearAllConfirmation = true
-        } label: {
-            Text("Delete All Entries")
-                .font(.title3.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(height: 26)
-                .padding(.horizontal, 28)
-                .padding(.vertical, 16)
-                .frame(minHeight: 50)
-                .background { Capsule(style: .continuous).fill(Color.red) }
-                .clipShape(Capsule(style: .continuous))
-        }
-        .buttonStyle(NoDimButtonStyle())
-    }
-
-
     // Blue used by the "alert me" star toggle when on, and by the filter button
     // that shows only starred species. Deliberately a stronger blue than the
     // Identify tab's starred-row wash and spectrogram band (hue 215, saturation
@@ -659,6 +621,8 @@ struct LifeListView: View {
     /// Height of the trailing thumbnail on life-list and catalog-suggestion
     /// rows. Width follows at 4:3.
     private static let rowThumbnailHeight: CGFloat = 72
+    /// Diameter of a row's own star button.
+    private static let rowControlSize: CGFloat = 32
 
     // MARK: - Grid (inner display)
 
@@ -733,12 +697,6 @@ struct LifeListView: View {
                         }
                     }
                 }
-
-                if trimmedSearch.isEmpty && !store.entries.isEmpty && !showStarredOnly {
-                    deleteAllButton
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 8)
-                }
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -753,11 +711,14 @@ struct LifeListView: View {
         tile(
             scientificName: entry.scientificName,
             name: entry.commonName,
-            isStarred: entry.isStarred
-        ) {
-            Text(entry.firstSeen, format: ObservationDate.dayStyle)
-                .monospacedDigit()
-        }
+            leading: {
+                starButton(for: entry, size: Self.gridControlSize)
+            },
+            detail: {
+                Text(entry.firstSeen, format: ObservationDate.dayStyle)
+                    .monospacedDigit()
+            }
+        )
         .contextMenu {
             SpeciesRowMenu(
                 onEdit: { requestEdit(entry) },
@@ -783,9 +744,22 @@ struct LifeListView: View {
     /// A catalog suggestion as a tile. It has no sighting yet, so the date line
     /// carries the scientific name instead — the same thing its row shows.
     private func suggestionTile(scientificName: String, commonName: String) -> some View {
-        tile(scientificName: scientificName, name: commonName, isStarred: false) {
-            Text(scientificName).italic()
-        }
+        tile(
+            scientificName: scientificName,
+            name: commonName,
+            leading: {
+                // The same purple plus the suggestion *row* carries, and for
+                // the same reason: a bird not on the list yet is added, not
+                // starred.
+                AddGlyphButton(isAdded: false, size: Self.gridControlSize) {
+                    beginAdd(scientificName: scientificName, commonName: commonName)
+                }
+                .accessibilityLabel("Add \(commonName) to Life List")
+            },
+            detail: {
+                Text(scientificName).italic()
+            }
+        )
         .contextMenu {
             SpeciesRowMenu(
                 onAddObservation: {
@@ -796,32 +770,40 @@ struct LifeListView: View {
         }
     }
 
-    /// The shared tile: photo, name, and one line of detail under it.
+    /// Diameter of a tile's own control — the star, or the add button on a
+    /// suggestion. Smaller than the row's 32pt: it sits beside a name rather
+    /// than alone at the end of a row.
+    private static let gridControlSize: CGFloat = 26
+
+    /// The shared tile: photo, then the row's own control beside the name, then
+    /// one line of detail under it.
     private func tile(
         scientificName: String,
         name: String,
-        isStarred: Bool,
+        @ViewBuilder leading: () -> some View,
         @ViewBuilder detail: () -> some View
     ) -> some View {
-        VStack(spacing: 6) {
+        // Leading-aligned throughout: the photograph is narrower than the tile
+        // (the extra width is the name's), and a centred photograph over
+        // leading text leaves the star hanging out past the picture's edge.
+        // One left edge for all three lines reads as a tile rather than as
+        // three things that happen to be stacked.
+        VStack(alignment: .leading, spacing: 6) {
             SpeciesThumbnail(
                 scientificName: scientificName,
-                height: Self.rowThumbnailHeight,
+                height: Self.gridThumbnailHeight,
                 onTap: { presentPhoto(scientificName) }
             )
-            // The star that a row carries as a button of its own, which a tile
-            // has no room for: shown beside the name, and toggled from the tile's
-            // menu like every other action here.
-            HStack(spacing: 3) {
-                if isStarred {
-                    Image(systemName: "star.fill")
-                        .font(.caption2)
-                        .foregroundStyle(Self.starButtonTint)
-                }
+            // The control a row carries at its trailing edge, which a tile has
+            // no trailing edge for: it goes to the left of the name instead,
+            // under the photograph. Same control, same tap, same state — only
+            // the place it sits differs.
+            HStack(spacing: 4) {
+                leading()
                 Text(name)
                     .font(.subheadline)
                     .lineLimit(2)
-                    .multilineTextAlignment(.center)
+                    .multilineTextAlignment(.leading)
             }
             detail()
                 .font(.caption)
@@ -829,9 +811,49 @@ struct LifeListView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
-        .frame(width: Self.gridTileWidth, alignment: .top)
+        .frame(width: Self.gridTileWidth, alignment: .topLeading)
         .contentShape(Rectangle())
         .onTapGesture { presentPhoto(scientificName) }
+        // The lift a haptic touch gives the tile follows the tile's own
+        // rounded outline; without it the system takes the view's square
+        // bounds and draws a shadow around a shape that isn't there.
+        .contentShape(
+            .contextMenuPreview,
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+        )
+    }
+
+    /// The star toggle a life-list entry carries, at whatever size the layout
+    /// asking for it has room for. The rows use it at 32pt with a 24pt glyph;
+    /// the grid's tiles at `gridControlSize`.
+    private func starButton(for entry: LifeListEntry, size: CGFloat) -> some View {
+        Button {
+            // A single short tap to confirm the star toggled.
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            store.setStarred(
+                scientificName: entry.scientificName,
+                isStarred: !entry.isStarred
+            )
+        } label: {
+            Group {
+                if entry.isStarred {
+                    Image(systemName: "star.fill")
+                        .font(.system(size: size * 0.75, weight: .semibold))
+                        .foregroundStyle(Self.starButtonTint)
+                } else {
+                    Image(systemName: "star")
+                        .font(.system(size: size * 0.75, weight: .regular))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(width: size, height: size)
+        }
+        .buttonStyle(NoDimButtonStyle())
+        .accessibilityLabel(
+            entry.isStarred
+                ? "Turn off alerts for \(entry.commonName)"
+                : "Alert me when \(entry.commonName) is heard"
+        )
     }
 
     // MARK: - Rows (phone, and the outer display)
@@ -869,33 +891,7 @@ struct LifeListView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .foregroundStyle(.primary)
-            Button {
-                // A single short tap to confirm the star toggled.
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                store.setStarred(
-                    scientificName: entry.scientificName,
-                    isStarred: !entry.isStarred
-                )
-            } label: {
-                Group {
-                    if entry.isStarred {
-                        Image(systemName: "star.fill")
-                            .font(.system(size: 24, weight: .semibold))
-                            .foregroundStyle(Self.starButtonTint)
-                    } else {
-                        Image(systemName: "star")
-                            .font(.system(size: 24, weight: .regular))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .frame(width: 32, height: 32)
-            }
-            .buttonStyle(NoDimButtonStyle())
-            .accessibilityLabel(
-                entry.isStarred
-                    ? "Turn off alerts for \(entry.commonName)"
-                    : "Alert me when \(entry.commonName) is heard"
-            )
+            starButton(for: entry, size: Self.rowControlSize)
             SpeciesThumbnail(scientificName: entry.scientificName, height: Self.rowThumbnailHeight, onTap: {
                 // Open the viewer over the rows currently on screen, in screen
                 // order, so swipes stay inside the active search / filter.
@@ -1085,20 +1081,6 @@ struct LifeListView: View {
             .padding(.bottom, 4)
             .listRowInsets(EdgeInsets())
             .listRowSeparator(.hidden)
-    }
-
-    /// The wording behind "Delete All Entries". The observation count is
-    /// pluralized — the export result alert two modifiers up already does it, and
-    /// "all 1 observations" reads as a bug in the middle of a confirmation the
-    /// user is being asked to trust. ("Species" is its own plural, so the second
-    /// count needs nothing.)
-    private var clearAllMessage: String {
-        let observations = store.totalObservationCount
-        let noun = observations == 1 ? "observation" : "observations"
-        return "Are you sure you want to permanently remove all "
-            + "\(observations) \(noun) of \(store.entries.count) species from your "
-            + "life list? This cannot be undone. Your stars will be preserved if "
-            + "you re-add the species later."
     }
 
     /// The subtitle under the Life List title: how many life-list rows are on

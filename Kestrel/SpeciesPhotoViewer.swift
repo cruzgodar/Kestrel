@@ -101,13 +101,13 @@ final class ViewerTouchTracker {
 /// per request so a repeated target still reads as a new command to act on.
 /// What a photo page is sized from, as one comparable value — see
 /// `PhotoPager.pageInputs`.
-private struct PagePlacement: Hashable {
+struct PagePlacement: Hashable {
     let spansDisplay: Bool
     let left: CGFloat
     let right: CGFloat
 }
 
-private struct PageCommand: Equatable {
+struct PageCommand: Equatable {
     let id = UUID()
     let index: Int
 }
@@ -262,28 +262,23 @@ struct SpeciesPhotoFullScreen: View {
         items.indices.contains(index) ? items[index] : nil
     }
 
-    /// The corner radius of anything tucked into a display corner. Fixed, so the
-    /// info panel and the name capsule both stay pills; concentricity is got by
-    /// *placing* them rather than by bending their corners — see
-    /// `cornerInset(for:)`.
-    private static let cornerPillRadius: CGFloat = 24
-
     /// Fallback inset for a corner-tucked pill when the display's own corner
     /// radius cannot be read.
     private static let cornerPillFallbackInset: CGFloat = 20
 
-    /// How far in from a display corner a `cornerPillRadius` pill has to sit for
-    /// its curve to be concentric with the display's own.
+    /// How far in from a display corner a `SpeciesChrome.cornerPillRadius` pill
+    /// has to sit for its curve to be concentric with the display's own.
     ///
     /// Concentric corners share a centre, so the gap between them is constant:
     /// inset = display radius − pill radius. Read from the display at runtime
     /// rather than from a table of device corner radii — those go stale, and the
     /// last one in this project was deleted for that reason.
     private static func cornerInset(for displayRadii: RectangleCornerRadii?) -> CGFloat {
-        guard let radius = displayRadii?.bottomTrailing, radius > cornerPillRadius else {
+        guard let radius = displayRadii?.bottomTrailing,
+              radius > SpeciesChrome.cornerPillRadius else {
             return cornerPillFallbackInset
         }
-        return radius - cornerPillRadius
+        return radius - SpeciesChrome.cornerPillRadius
     }
 
     /// Duration of the chrome show/hide fade. Short so tapping to reveal/hide the
@@ -595,7 +590,7 @@ struct SpeciesPhotoFullScreen: View {
         .onChange(of: currentSightingWasDeleted) { _, deleted in
             if deleted { dismissViewer() }
         }
-        // No navigation title: the name is a capsule of our own (`nameCapsule`).
+        // No navigation title: the name is a capsule of our own (`SpeciesNameCapsule`).
         // A title is text, and text does not go into a vertical bar — where the
         // system runs its bars down one side it keeps the title in a horizontal
         // strip across the top, and that strip draws a background this
@@ -647,7 +642,10 @@ struct SpeciesPhotoFullScreen: View {
             // entirely where the capsule has moved into a corner of its own.
             if !panelHugsCorner, let item = currentItem {
                 ToolbarItem(placement: .principal) {
-                    nameCapsule(for: item, contentWidth: contentWidth, hugsCorner: false)
+                    SpeciesNameCapsule(
+                        name: commonName(for: item),
+                        contentWidth: contentWidth
+                    )
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
@@ -713,7 +711,7 @@ struct SpeciesPhotoFullScreen: View {
 
     /// Whether the one sighting the current page stands for has been removed
     /// from the store. Only ever true for a pin-scoped item — a species-scoped
-    /// one has the rest of its history to fall back on, and `sightingSection`
+    /// one has the rest of its history to fall back on, and `SpeciesInfoPanel`
     /// handles it going empty. Always false with no store (previews).
     ///
     /// Asked of the *live* sighting, not the one the viewer opened with. An edit
@@ -780,10 +778,6 @@ struct SpeciesPhotoFullScreen: View {
 
     // MARK: - Chrome
 
-    /// Height of the top controls (a 22pt glyph + 13pt padding = 48pt). The name
-    /// capsule matches it; the info panel's corner radius is half of it.
-    private static let chromeHeight: CGFloat = 48
-
     /// What to call this bird in the menus and confirmations this screen raises.
     ///
     /// The life list's own name wins over the catalog's: an imported entry keeps
@@ -817,7 +811,11 @@ struct SpeciesPhotoFullScreen: View {
                 // principal bar item instead, so the system centres it between
                 // Back and More — see the `.toolbar` on the body.
                 if hugsCorner {
-                    nameCapsule(for: item, contentWidth: contentWidth, hugsCorner: true)
+                    SpeciesNameCapsule(
+                        name: commonName(for: item),
+                        contentWidth: contentWidth,
+                        hugsCorner: true
+                    )
                         .padding(.leading, cornerInset)
                         .padding(.top, cornerInset)
                         .frame(
@@ -1028,220 +1026,32 @@ struct SpeciesPhotoFullScreen: View {
         return lifeListStore?.observations(for: item.scientificName) ?? []
     }
 
-    /// The sighting section of the info panel. A bird seen once shows where and
-    /// when, linked to the map; a bird seen several times shows the count
-    /// instead and hands the individual sightings to a sheet — there is no one
-    /// place and date to print, and listing them all would swamp the panel.
-    @ViewBuilder
-    private func sightingSection(
-        for item: SpeciesPhotoItem,
-        observations: [LifeListEntry.Observation]
-    ) -> some View {
-        if observations.count > 1 {
-            Button {
-                showObservationList = true
-            } label: {
-                HStack(spacing: 4) {
-                    Text("\(observations.count) Observations")
-                    Image(systemName: "chevron.forward")
-                        .font(.footnote.weight(.semibold))
-                }
-                .font(.subheadline)
-                .foregroundStyle(Color.accentColor)
-                // The same generous hit area the single place-and-date line gets.
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(NoDimButtonStyle())
-            .accessibilityLabel("\(observations.count) observations")
-        } else if item.showsAllObservations && observations.isEmpty {
-            // Species-scoped with nothing on record: either a bird that was
-            // never seen, or one whose last sighting was just deleted from the
-            // menu above. `singleSighting` would fall back to the item's own
-            // `placeName` / `dateFound`, which were captured when the viewer
-            // opened — for the delete case that's a place and date describing a
-            // record that no longer exists, printed as though it still did. A
-            // never-seen bird has both nil anyway, so this only ever removes
-            // something stale.
-            EmptyView()
-        } else {
-            // `observations` is empty for a pin-scoped item (see `observations(for:)`),
-            // so this is where its own sighting is printed — live, so an edit made
-            // from the menu above shows through instead of leaving the caption
-            // describing the record's previous date and place.
-            singleSighting(for: item, observation: observations.first ?? liveObservation(for: item))
-        }
-    }
-
-    /// Place + date for a bird with one sighting to its name. The values come
-    /// from the store when the item is species-scoped (so an edit or a delete
-    /// shows through immediately) and from the item itself otherwise.
-    @ViewBuilder
-    private func singleSighting(
-        for item: SpeciesPhotoItem,
-        observation: LifeListEntry.Observation?
-    ) -> some View {
-        let place = observation?.location ?? item.placeName
-        let date = observation?.date ?? item.dateFound
-        // Whether "Show on Map" has anywhere to go. The host's callback quietly
-        // does nothing for a sighting logged without coordinates (an eBird row
-        // with no lat/lon), so without this check the place name would render as
-        // an accent-colored link that swallows the tap.
-        let mappable = canShowOnMap && (observation ?? item.observation)?.hasCoordinate == true
-        if let date {
-            // Place (accent-colored, the map link) + date stacked together. When
-            // the map action is available the *whole block* — place, date, and a
-            // little padding around them — is one button, so the tap target is
-            // generous rather than just the place-name text.
-            let block = VStack(spacing: 3) {
-                if let place, !place.isEmpty {
-                    // Tight spacing keeps the pin close to the place name.
-                    HStack(spacing: 4) {
-                        Text(place)
-                        Image(systemName: "mappin.circle")
-                    }
-                    .font(.subheadline)
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(mappable ? Color.accentColor : Color.white)
-                }
-                Text(date, format: ObservationDate.dayStyle)
-                    .font(.subheadline)
-                    .monospacedDigit()
-                    .foregroundStyle(.white)
-            }
-
-            if mappable {
-                Button { showOnMap(item, observation: observation) } label: {
-                    block
-                        // Generous hit area: padding around the whole place+date
-                        // block (plus the date text itself) so taps near it land.
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(NoDimButtonStyle())
-                .accessibilityLabel(mapButtonTitle ?? "Show on Map")
-            } else {
-                block
-            }
-        }
-    }
-
-    /// The species name in a glass capsule at the top of the card, dressed the
-    /// same way the info panel is. Hugs the name; a name too wide for the cap
-    /// (leaving room for the bar's buttons on either side) scales down to fit.
-    private func nameCapsule(
-        for item: SpeciesPhotoItem,
-        contentWidth: CGFloat,
-        hugsCorner: Bool
-    ) -> some View {
-        let cap = max(contentWidth - 150, 80)
-        let shape: AnyShape = AnyShape(
-            .rect(cornerRadius: hugsCorner ? Self.cornerPillRadius : Self.chromeHeight / 2)
-        )
-        // `ViewThatFits` picks the natural-width label when it fits within `cap`
-        // (so the capsule hugs the text) and only falls back to the scaled,
-        // cap-width label when the name is genuinely too long. A plain
-        // line-limited `Text` would silently truncate to the budget and always
-        // "fit", so `fixedSize` is what exposes the label's true ideal width.
-        return ViewThatFits(in: .horizontal) {
-            nameLabel(for: item, shape: shape)
-                .fixedSize(horizontal: true, vertical: false)
-            nameLabel(for: item, shape: shape)
-                .minimumScaleFactor(0.5)
-        }
-        // The fit budget is a transparent box wider than the capsule inside it,
-        // so where the capsule sits within that box is where it actually lands.
-        // Centred in the bar, but pinned leading in a corner — otherwise the
-        // capsule floats out towards the middle of the screen, and, because a
-        // concentric corner is measured from the display's, its radius collapses
-        // to nothing that far in.
-        .frame(maxWidth: cap, alignment: hugsCorner ? .leading : .center)
-    }
-
-    private func nameLabel(for item: SpeciesPhotoItem, shape: AnyShape) -> some View {
-        Text(commonName(for: item))
-            .font(.headline)
-            .foregroundStyle(.white)
-            .lineLimit(1)
-            .padding(.horizontal, 18)
-            .frame(height: Self.chromeHeight)
-            .glassEffect(.regular, in: shape)
-            // Swallow taps on the capsule so tapping the chrome doesn't also fire
-            // the photo's single-tap-to-hide. Only the hugging capsule absorbs;
-            // the transparent fit budget around it stays pass-through.
-            .contentShape(shape)
-            .onTapGesture { }
-    }
-
-    /// Bottom details — the sighting (place and date, or a link to the full list
-    /// when there are several) and the photo attribution — in a liquid-glass
-    /// panel. Non-link text is white like the name; the panel's width is capped
-    /// for a generous margin from the edges.
+    /// Bottom details — the sighting and the photo attribution — in the shared
+    /// glass panel (see `SpeciesInfoPanel`). This screen hands it everything it
+    /// can act on: the sighting as it now stands after any edit made here, the
+    /// list of every sighting the bird has, and the two actions only a
+    /// presentation can offer — raising that list, and sending a sighting to
+    /// the map.
     private func infoPanel(
         for item: SpeciesPhotoItem,
         contentWidth: CGFloat,
         hugsCorner: Bool
     ) -> some View {
-        // Concentric with the display's own corners when the panel is tucked into
-        // one, so its curve continues the screen's rather than cutting across it;
-        // the familiar capsule ends everywhere else. `ConcentricRectangle` reads
-        // the radius off the container it sits in, so it stays right whatever
-        // the display's corner radius is.
-        let panelShape: AnyShape = AnyShape(
-            .rect(cornerRadius: hugsCorner ? Self.cornerPillRadius : Self.chromeHeight / 2)
+        let recorded = observations(for: item)
+        return SpeciesInfoPanel(
+            item: item,
+            observations: recorded,
+            observation: liveObservation(for: item),
+            // A bird with one sighting has nothing to list, and the panel
+            // prints its place and date instead.
+            onShowObservations: recorded.count > 1 ? { showObservationList = true } : nil,
+            onShowOnMap: canShowOnMap ? { sighting in
+                showOnMap(item, observation: sighting)
+            } : nil,
+            mapButtonTitle: mapButtonTitle,
+            contentWidth: contentWidth,
+            hugsCorner: hugsCorner
         )
-        return VStack(spacing: 12) {
-            sightingSection(for: item, observations: observations(for: item))
-
-            if let info = info(for: item) {
-                // The whole attribution block (credit text + the "View source"
-                // line) is the tap target, so taps anywhere on the credit open the
-                // photo's source page — but only the "View source" line takes the
-                // accent color; the attribution above it stays white.
-                let attributionBlock = VStack(spacing: 4) {
-                    Text(info.attributionWithLicense)
-                        .font(.caption2)
-                        .foregroundStyle(.white.opacity(0.85))
-                        .multilineTextAlignment(.center)
-                    if info.sourceURL != nil {
-                        Text("View source")
-                            .font(.caption2.weight(.semibold))
-                            .foregroundStyle(Color.accentColor)
-                    }
-                }
-                .padding(.horizontal, 4)
-                .padding(.vertical, 2)
-                .contentShape(Rectangle())
-
-                if let sourceURL = info.sourceURL {
-                    Link(destination: sourceURL) { attributionBlock }
-                        .buttonStyle(NoDimButtonStyle())
-                        .accessibilityLabel("View photo source")
-                } else {
-                    attributionBlock
-                }
-            } else {
-                // No photo for this species yet — reassure the user one is coming,
-                // in the same slot the attribution would occupy.
-                Text("Photo coming soon!")
-                    .font(.caption2)
-                    .foregroundStyle(.white.opacity(0.85))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 2)
-            }
-        }
-        .padding(.vertical, 14)
-        .padding(.horizontal, 24)
-        .frame(maxWidth: min(contentWidth - 80, 360))
-        .glassEffect(.regular, in: panelShape)
-        // Swallow taps on blank areas of the panel so tapping the chrome doesn't
-        // fire the photo's single-tap-to-hide. The inner map button / eBird link
-        // keep working — their own gestures take precedence over this no-op.
-        .contentShape(panelShape)
-        .onTapGesture { }
     }
 
     // MARK: - Dismiss
@@ -1485,7 +1295,7 @@ private struct CardTranslation: UIViewRepresentable {
 /// still accepting queued swipes mid-animation, like the Photos app. A fresh page
 /// view controller is built each time one scrolls in, so pages are never left
 /// zoomed and images come straight from the in-memory cache.
-private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
+struct PhotoPager<Page: View>: UIViewControllerRepresentable {
     let count: Int
     let initialIndex: Int
     let pagingDisabled: Bool
@@ -1714,7 +1524,7 @@ private struct PhotoPager<Page: View>: UIViewControllerRepresentable {
 
 /// `UIHostingController` that remembers which page index it hosts, so the pager's
 /// data source can walk to the neighboring index.
-private final class IndexedHost<Content: View>: UIHostingController<Content> {
+final class IndexedHost<Content: View>: UIHostingController<Content> {
     var index = 0
 }
 

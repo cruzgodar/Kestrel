@@ -46,10 +46,9 @@ struct ContentView: View {
     /// beside the list, so a tap moves *that* rather than covering the list it
     /// came from with a copy of itself.
     private func presentViewer(for scientificName: String) {
-        guard paneWidth == nil else {
-            withAnimation(.easeInOut(duration: HalfScreenSpeciesView.crossfade)) {
-                paneSpecies = scientificName
-            }
+        guard pane == nil else {
+            // Just say which bird; the pane dissolves to it on its own.
+            paneSpecies = scientificName
             return
         }
         let names = viewerOrder
@@ -66,17 +65,16 @@ struct ContentView: View {
     /// commentary on the list. It catches up on the next bird after they zoom
     /// back out.
     private func showNewestOnPane(_ scientificName: String?) {
-        guard paneWidth != nil, let scientificName, !paneZoomed else { return }
+        guard pane != nil, let scientificName, !paneZoomed else { return }
         guard scientificName != paneSpecies else { return }
-        withAnimation(.easeInOut(duration: HalfScreenSpeciesView.crossfade)) {
-            paneSpecies = scientificName
-        }
+        paneSpecies = scientificName
     }
 
-    /// Width of the half-screen species pane, and so of the space the tab
-    /// itself gives up on the leading side. `nil` anywhere there is no fold —
-    /// every iPhone and the outer display — where there is no pane at all.
-    @State private var paneWidth: CGFloat?
+    /// The half-screen species pane's geometry — the width the tab gives up on
+    /// the leading side, and the display's own corner radius so the pane's card
+    /// can be cut concentric with it. `nil` anywhere there is no fold — every
+    /// iPhone and the outer display — where there is no pane at all.
+    @State private var pane: InnerDisplayHalf?
     /// The bird the pane is showing. Follows the top of the list on its own
     /// (see `showNewestOnPane`) until the user taps a different one.
     @State private var paneSpecies: String?
@@ -247,19 +245,25 @@ struct ContentView: View {
         // Everything above — list, spectrogram, placeholder and the floating
         // record button — is confined to the trailing half where there is a
         // display wide enough to be opened out.
-        .innerDisplayTrailingHalf(width: $paneWidth)
+        .innerDisplayTrailingHalf(half: $pane)
 
         // ...and the half it gave up becomes the species pane. A background
         // rather than a sibling in a stack: the tab keeps its own identity and
         // its own state whether or not the phone is open, which a conditional
         // branch in a layout container would not (see `duo.md`).
         .background(alignment: .leading) {
-            if let paneWidth {
+            if let pane {
                 HalfScreenSpeciesView(
-                    scientificName: paneSpecies,
-                    onZoomChange: { paneZoomed = $0 }
+                    names: viewerOrder,
+                    selection: paneSpecies,
+                    onZoomChange: { paneZoomed = $0 },
+                    // A swipe inside the pane moves what the tab thinks is
+                    // showing, so the next bird heard is compared against the
+                    // page the user actually landed on.
+                    onPage: { paneSpecies = $0 },
+                    displayCornerRadius: pane.cornerRadius
                 )
-                .frame(width: paneWidth)
+                .frame(width: pane.width)
                 .ignoresSafeArea()
             }
         }
@@ -271,8 +275,8 @@ struct ContentView: View {
         }
         // A bird tapped on the list crossfades the pane; when it later drops
         // back down the list, the pane keeps showing it.
-        .onChange(of: paneWidth) { _, width in
-            if width != nil, paneSpecies == nil {
+        .onChange(of: pane) { _, pane in
+            if pane != nil, paneSpecies == nil {
                 showNewestOnPane(manager.detections.first?.scientificName)
             }
         }
@@ -601,6 +605,15 @@ struct ContentView: View {
             ? Self.recordHighlight
             : (isStarred ? Self.starredTint : Self.ordinaryFlash)
 
+        // The hero image is what makes a new lifer's row three times the height
+        // of every other one — worth it on a phone, where it is the only place
+        // that bird's photograph appears. With the species pane up it is the
+        // same photograph twice on one screen, so the row goes back to the
+        // shape the others have: name, the purple add button, thumbnail. That
+        // is exactly the Life List's own suggestion row, which is where the
+        // add button sits to the left of the image.
+        let showsHero = needsLifeListAdd && pane == nil
+
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
                 Text(detection.commonName)
@@ -635,19 +648,26 @@ struct ContentView: View {
                             ? "\(detection.commonName) is on your Life List"
                             : "Add \(detection.commonName) to Life List"
                     )
-                } else {
-                    // Already in life list — show the thumbnail at the row's
-                    // trailing edge, same place the add button would occupy.
+                }
+                // The thumbnail at the row's trailing edge — on every row but
+                // the one carrying a hero image below, where it would be the
+                // same picture twice.
+                if !showsHero {
                     SpeciesThumbnail(
                         scientificName: detection.scientificName,
-                        height: Self.rowThumbnailHeight
+                        height: Self.rowThumbnailHeight,
+                        // Routed through the tab rather than left to the
+                        // presenter's default, so a tap moves the species pane
+                        // where there is one instead of covering the list with
+                        // a copy of what is already beside it.
+                        onTap: { presentViewer(for: detection.scientificName) }
                     )
                 }
             }
 
             // Full-width hero image for unseen species. Starred / already-in-
             // list rows skip this and keep the compact thumbnail above.
-            if needsLifeListAdd {
+            if showsHero {
                 SpeciesHeroImage(scientificName: detection.scientificName) {
                     presentViewer(for: detection.scientificName)
                 }
@@ -769,15 +789,15 @@ struct ContentView: View {
 private struct InnerDisplayTrailingHalf: ViewModifier {
     /// The half given up, reported back so the caller can put something in it.
     /// `nil` anywhere there is no fold, where the whole modifier is inert.
-    @Binding var width: CGFloat?
+    @Binding var half: InnerDisplayHalf?
 
     func body(content: Content) -> some View {
         content
-            .padding(.leading, width ?? 0)
+            .padding(.leading, half?.width ?? 0)
             // Outside the padding, so it measures the space the tab was given
             // rather than the space left after insetting it — otherwise each
             // pass would halve the last one.
-            .onGeometryChange(for: CGFloat?.self) { proxy in
+            .onGeometryChange(for: InnerDisplayHalf?.self) { proxy in
                 guard InnerDisplay.contains(proxy) else { return nil }
                 // `proxy.size` is already net of the safe area; the display is
                 // that plus what the bars took. The inset is measured from the
@@ -787,15 +807,55 @@ private struct InnerDisplayTrailingHalf: ViewModifier {
                     + proxy.safeAreaInsets.leading
                     + proxy.safeAreaInsets.trailing
                 let inset = display / 2 - proxy.safeAreaInsets.leading
-                return inset > 0 ? inset : nil
-            } action: { width = $0 }
+                guard inset > 0 else { return nil }
+                return InnerDisplayHalf(
+                    width: inset,
+                    // Asked for the full-bleed rect rather than the safe one,
+                    // the way the full-screen viewer asks: this proxy sits
+                    // inside the safe area, so the display's rect is its own
+                    // grown back by its insets. What comes back is the glass's
+                    // own curve, which is what the pane's card is cut
+                    // concentric with.
+                    cornerRadius: Self.displayCornerRadius(proxy, displayWidth: display)
+                )
+            } action: { half = $0 }
     }
+
+    private static func displayCornerRadius(
+        _ proxy: GeometryProxy,
+        displayWidth: CGFloat
+    ) -> CGFloat? {
+        guard #available(iOS 27.0, *) else { return nil }
+        let rect = CGRect(
+            x: -proxy.safeAreaInsets.leading,
+            y: -proxy.safeAreaInsets.top,
+            width: displayWidth,
+            height: proxy.size.height
+                + proxy.safeAreaInsets.top
+                + proxy.safeAreaInsets.bottom
+        )
+        guard let radius = proxy.concentricCornerRadii(in: rect)?.topLeading,
+              radius > 0 else { return nil }
+        return radius
+    }
+}
+
+/// What `InnerDisplayTrailingHalf` reports back: the half of the display the
+/// tab stepped out of, and the curve of the glass it was measured against.
+///
+/// `nonisolated` because `onGeometryChange(for:)` evaluates its transform off
+/// the main actor, and this project is MainActor-by-default.
+nonisolated struct InnerDisplayHalf: Equatable {
+    /// Width of the half given up, on the leading side.
+    let width: CGFloat
+    /// The display's own corner radius, or `nil` where it could not be read.
+    let cornerRadius: CGFloat?
 }
 
 extension View {
     /// See `InnerDisplayTrailingHalf`.
-    fileprivate func innerDisplayTrailingHalf(width: Binding<CGFloat?>) -> some View {
-        modifier(InnerDisplayTrailingHalf(width: width))
+    fileprivate func innerDisplayTrailingHalf(half: Binding<InnerDisplayHalf?>) -> some View {
+        modifier(InnerDisplayTrailingHalf(half: half))
     }
 }
 

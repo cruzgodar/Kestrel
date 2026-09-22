@@ -193,10 +193,15 @@ struct MapView: View {
     /// Set when the picker's default pin could not be taken from a location
     /// fix, so the next camera settle supplies it instead — see `seedPickerPin`.
     @State private var pickerWantsCameraSeed = false
-    /// Live touch point, recorded by a zero-distance drag that runs alongside
-    /// the map's own gestures. `LongPressGesture` reports no location of its
-    /// own, so this is what the long press converts into a coordinate.
-    @State private var touchPoint: CGPoint = .zero
+    /// Live touch point in picker mode, recorded by a zero-distance drag that
+    /// runs alongside the map's own gestures. `LongPressGesture` reports no
+    /// location of its own, so this is what the long press converts into a
+    /// coordinate.
+    ///
+    /// Not `@State`: it is written on every frame of every drag, and a
+    /// published write there would re-render the whole map — the one thing
+    /// `CameraTracker` exists to avoid — for a value nothing draws from.
+    @State private var touch = TouchTracker()
 
     /// One dropped pin. Identity is per-drop rather than per-coordinate so a
     /// re-pick mounts a *new* annotation (which fades in) alongside the old one
@@ -669,14 +674,14 @@ struct MapView: View {
                 // dragging the map never drops a pin.
                 .simultaneousGesture(
                     DragGesture(minimumDistance: 0, coordinateSpace: .local)
-                        .onChanged { touchPoint = $0.location },
+                        .onChanged { touch.point = $0.location },
                     isEnabled: picker != nil
                 )
                 .simultaneousGesture(
                     LongPressGesture(minimumDuration: 0.4)
                         .onEnded { _ in
                             guard picker != nil,
-                                  let coord = mapProxy.convert(touchPoint, from: .local)
+                                  let coord = mapProxy.convert(touch.point, from: .local)
                             else { return }
                             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                             dropPin(at: coord)
@@ -702,27 +707,36 @@ struct MapView: View {
                 // recognizer to fail before it fires, which is the ~0.3 s delay
                 // before the card closes. Recognizing simultaneously drops that
                 // require-to-fail dependency, so the tap registers immediately.
+                // `SpatialTapGesture` rather than `TapGesture`, because the
+                // location is the whole point: it is what says whether the tap
+                // landed on a thumbnail. The zero-distance drag above cannot
+                // supply it — it never begins for a tap that involves no
+                // movement, so it reports the *previous* gesture's point, or
+                // the origin on the first tap of a session.
                 .simultaneousGesture(
-                    TapGesture().onEnded {
-                        // Defer one runloop so any annotation tap from the same
-                        // touch is processed first (it sets `annotationTapConsumed`
-                        // and opens/swaps a card); then dismiss only if this tap
-                        // landed on the empty map, not on an annotation.
-                        //
-                        // A boolean token, not a wall-clock comparison: the old
-                        // heuristic ("dismiss unless an annotation tap landed in the
-                        // last 0.1 s") misfired under main-thread load. Presenting a
-                        // fresh card and decoding its thumbnails can push this
-                        // deferred block well past 0.1 s after the annotation tap, so
-                        // a legitimate cluster tap dismissed its own just-opened card
-                        // — the "card appears then instantly disappears" bug, which
-                        // cleared up after zooming in (fewer/cheaper annotations =
-                        // less jank). Every map tap fires this gesture, so the flag an
-                        // annotation tap sets is always consumed by the paired run
-                        // here; an empty-map tap finds it clear and dismisses.
+                    SpatialTapGesture(coordinateSpace: .local).onEnded { tap in
+                        // Deferred one runloop so an annotation tap from the
+                        // same touch has run first, and this gesture knows
+                        // whether the card it might dismiss was just opened.
                         DispatchQueue.main.async {
-                            if annotationTapConsumed {
-                                annotationTapConsumed = false
+                            // Whether this tap landed on a thumbnail is
+                            // answered by where it landed, not by whether an
+                            // annotation happened to report one — see
+                            // `repHit(at:in:)`, and the annotation hit areas
+                            // MapKit measures once and never revisits.
+                            let rep = repHit(at: tap.location, in: mapProxy)
+                            // The annotation's own tap may have got there
+                            // first; it sets this flag when it does. Cleared
+                            // on every map tap, whatever the outcome, so one
+                            // set by a touch this gesture never saw cannot
+                            // sit there and swallow a later tap — which is
+                            // what used to make dismissing a card take two.
+                            let handled = annotationTapConsumed
+                            annotationTapConsumed = false
+                            if let rep {
+                                // Not `fromTap`: the flag is only read by this
+                                // gesture, and this is that gesture.
+                                if !handled { handleAnnotationTap(rep, fromTap: false) }
                                 return
                             }
                             guard mapCard != nil else { return }
@@ -928,6 +942,25 @@ struct MapView: View {
             guard !Task.isCancelled, focusRequest != nil else { return }
             reassertFocusIfNeeded(center: camera.lastCenter)
         }
+        // Nothing behind the card while the card is up.
+        //
+        // A sheet is laid out in the scene rather than in the safe area, so
+        // where the system runs its bars down one side — a foldable's outer
+        // display, and its inner display in landscape — the card slides under
+        // the tab bar and swallows it. The obvious fix, insetting the card's
+        // own surface, is not available: on iOS 27 the sheet's glass is drawn
+        // by the presentation itself, `presentationBackground` composites over
+        // it rather than replacing it (`.clear` leaves it standing), and the
+        // presentation controller rewrites the container's frame on every
+        // layout pass. Drawing an inset surface of our own therefore produced
+        // *two* cards, the system's showing past the edge of ours.
+        //
+        // So the bar steps aside instead, and the card is the system's own,
+        // unaltered. On a phone this is invisible — the bar sits along the
+        // bottom edge, which the card covers at every detent either way — and
+        // on a display with a side bar it is the difference between a card
+        // that has eaten the bar and a card that simply has the screen.
+        .toolbar(mapCard == nil ? .visible : .hidden, for: .tabBar)
         // One sheet for both cards. Bound to `isPresented` (not `item`) so
         // re-pointing `mapCard` swaps the content live; `MapCardSheet` crossfades
         // between cards, keeps the map interactive behind it, and never dims it.
@@ -1121,9 +1154,65 @@ struct MapView: View {
 
     // MARK: - Camera + clustering
 
-    /// Record the live camera every frame (continuous callback). Mutates only the
-    /// non-observable `CameraTracker`, so it never re-renders the map mid-gesture;
-    /// the actual cull/rebuild is deferred to `commitVisibleEntries` at touch-up.
+    /// The cluster a tap at `point` landed on, worked out from the reps' own
+    /// coordinates rather than from MapKit's hit testing.
+    ///
+    /// MapKit measures an annotation's touchable area once, when it hosts the
+    /// annotation's view, and does not re-measure it afterwards. A host that was
+    /// created before its SwiftUI content resolved — which happens on the first
+    /// load, and again whenever a pinch forms a stack where there wasn't one —
+    /// keeps the zero-size area it was measured at, so the thumbnail renders
+    /// and every tap on it falls straight through to the map. That is the
+    /// "tapping a cluster does nothing until I zoom a little" bug: the zoom is
+    /// what rebuilds the annotation and gets it re-measured.
+    ///
+    /// `warmUpAnnotations` and `scheduleHitTestRehydration` both exist to force
+    /// that re-measurement, and both are best-effort — they remount on a timer
+    /// and can miss. This does not depend on MapKit at all: the rep's
+    /// coordinate converts to a point on screen, the thumbnail's footprint is a
+    /// constant around it, and a tap inside that rectangle is a tap on that
+    /// thumbnail whatever MapKit believes. It only runs on the taps MapKit
+    /// already let through to the map, so a working annotation is unaffected.
+    ///
+    /// The nearest centre wins where two footprints overlap.
+    private func repHit(at point: CGPoint, in proxy: MapProxy) -> RepInfo? {
+        // The picker's thumbnails are display-only; `handleAnnotationTap`
+        // refuses them anyway, and finding one here would only suppress the
+        // dismiss.
+        guard picker == nil else { return nil }
+        var best: (rep: RepInfo, distance: CGFloat)?
+        for rep in visibleReps.values {
+            // The *representative's* coordinate, not the cluster's: that is
+            // where the `Annotation` is placed (see the map's `ForEach`, which
+            // walks `visiblePoints` and positions each one on its own point).
+            // `RepInfo.coordinate` is the stack's averaged centre, which is
+            // near it but not it, and near enough is what makes a hit test
+            // miss.
+            guard let center = proxy.convert(
+                rep.representative.coordinate, to: .local
+            ) else { continue }
+            // The annotation is a thumbnail with its label below it, centred as
+            // a whole on the coordinate — so the box around the two starts half
+            // the label's height above the thumbnail's own centre.
+            let size = CGSize(
+                width: Self.thumbSize.width,
+                height: Self.thumbSize.height + Self.labelHeight
+            )
+            let frame = CGRect(
+                x: center.x - size.width / 2,
+                y: center.y - size.height / 2,
+                width: size.width,
+                height: size.height
+            )
+            guard frame.contains(point) else { continue }
+            let distance = hypot(point.x - center.x, point.y - center.y)
+            if best == nil || distance < best!.distance {
+                best = (rep, distance)
+            }
+        }
+        return best?.rep
+    }
+
     /// Handles a tap on a map annotation: opens a multi-bird card, swaps the photo
     /// inside an already-open card, or presents a lone bird full-screen from the
     /// root. Shared by both the snapping and fading annotation content views.
@@ -1202,6 +1291,9 @@ struct MapView: View {
         )
     }
 
+    /// Record the live camera every frame (continuous callback). Mutates only the
+    /// non-observable `CameraTracker`, so it never re-renders the map mid-gesture;
+    /// the actual cull/rebuild is deferred to `commitVisibleEntries` at touch-up.
     private func cacheCamera(_ context: MapCameraUpdateContext) {
         camera.lastSpan = context.region.span
         camera.lastCenter = context.region.center
@@ -2161,9 +2253,6 @@ private struct MapCardSheet: View {
     /// Current detent. A multi-bird cluster can be pulled up to `.large` to see
     /// every bird.
     @State private var detent: PresentationDetent = .medium
-    /// The sheet's own safe-area insets, measured. Drives `cardSurface`, which
-    /// is drawn inside them.
-    @State private var sheetSafeArea = EdgeInsets()
 
     /// The detents allowed for the current card: clusters get medium + large;
     /// no card (nil) falls back to medium.
@@ -2227,50 +2316,6 @@ private struct MapCardSheet: View {
         max(0, sheetTopCornerRadius - Self.thumbInset + Self.thumbCornerRadiusAdjust)
     }
 
-    /// The card's surface, drawn here rather than left to the system.
-    ///
-    /// A sheet is laid out in the scene and not in the safe area, so where the
-    /// system runs its bars down one side the card slides underneath them: the
-    /// surface runs out past the tab bar and swallows it. The content inside
-    /// already stops where it should — the thumbnails are exactly right — so
-    /// it is only the surface that overruns, and `presentationBackground` is
-    /// the one part of a sheet that can be replaced without giving up the
-    /// detents, the drag, or the live map behind it.
-    ///
-    /// Inset by the measured safe area rather than a guess, and by nothing at
-    /// all where the safe area is empty — which is every iPhone, where this
-    /// draws exactly the full-width, square-bottomed surface the system did.
-    private var cardSurface: some View {
-        // Glass rather than a `Material`. The system's own sheet surface lifts
-        // this map by (+16, +15, +19) — a near-neutral brightening, which is
-        // what glass does; every material desaturates instead, shifting blue by
-        // +37 or more and washing the map under the card out. `.regular` glass
-        // comes out at (+25, +23, +26): a little stronger than the system's,
-        // and the same colour, which is the closest of anything public.
-        Color.clear
-            .glassEffect(.regular, in: cardShape)
-            .padding(.leading, sheetSafeArea.leading)
-            .padding(.trailing, sheetSafeArea.trailing)
-    }
-
-    /// The surface's outline. Horizontal insets only: a bottom sheet that stops
-    /// short of the bottom edge does not read as one, and the content already
-    /// keeps clear of the home indicator on its own.
-    private var cardShape: UnevenRoundedRectangle {
-        UnevenRoundedRectangle(
-            topLeadingRadius: sheetTopCornerRadius,
-            // Square where the card still reaches the edge of the glass, as
-            // the system leaves it: that corner sits *inside* the display's own
-            // rounded corner and rounding it again would show a notch of map
-            // between the two curves. A corner held off the edge has no display
-            // corner to sit in, so it takes the card's own radius.
-            bottomLeadingRadius: sheetSafeArea.leading > 0 ? sheetTopCornerRadius : 0,
-            bottomTrailingRadius: sheetSafeArea.trailing > 0 ? sheetTopCornerRadius : 0,
-            topTrailingRadius: sheetTopCornerRadius,
-            style: .continuous
-        )
-    }
-
     var body: some View {
         // A plain native sheet, matching the life-list import card: the system
         // draws the frosted surface and the corners (tight top, phone-concentric
@@ -2286,6 +2331,14 @@ private struct MapCardSheet: View {
                 Color.clear
             }
         }
+        // Edge to edge inside the card. A sheet is handed the scene's
+        // horizontal safe area, so where a bar runs down one side the grid
+        // stopped a bar's width short of the card's own edge — 12pt of margin
+        // on one side and 88 on the other. The bar is not there to be avoided:
+        // it steps aside for as long as the card is up (see the map's
+        // `.toolbar(for: .tabBar)`), so the card has the full width and the
+        // grid's own `thumbInset` is the only margin it should keep.
+        .ignoresSafeArea(.container, edges: .horizontal)
         // Read the real top corner radius off the live presentation so the
         // thumbnails can be made concentric with it on any device.
         .background(
@@ -2302,13 +2355,6 @@ private struct MapCardSheet: View {
         // Layered over the card rather than replacing it, the same way the
         // full-screen photo is.
         .observationActions(actions, store: store)
-        // Measured on the content, which is the part of the sheet the safe
-        // area actually reaches; `presentationBackground`'s own geometry is the
-        // sheet's full bounds and reports none of it.
-        .onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: {
-            sheetSafeArea = $0
-        }
-        .presentationBackground { cardSurface }
         .presentationDetents(detents, selection: $detent)
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card — this is what
@@ -2416,6 +2462,19 @@ private struct MapCardSheet: View {
                         .onTapGesture {
                             openPhoto(for: point, in: cluster)
                         }
+                        // The lift a haptic touch gives the cell follows the
+                        // thumbnail's own rounded outline. Left unsaid, the
+                        // system takes the cell's square bounds instead and
+                        // draws a shadow around a shape that isn't there —
+                        // which is the wrong shadow that flashes under a press
+                        // before the menu settles.
+                        .contentShape(
+                            .contextMenuPreview,
+                            RoundedRectangle(
+                                cornerRadius: thumbCornerRadius,
+                                style: .continuous
+                            )
+                        )
                         // The same actions a pinned thumbnail offers.
                         .contextMenu {
                             MapPointMenu(
@@ -2438,6 +2497,7 @@ private struct MapCardSheet: View {
         }
     }
 }
+
 
 /// Reports the presenting sheet's actual top corner radius back to SwiftUI.
 ///
@@ -2740,6 +2800,15 @@ private struct PickedLocationMarker: View {
 /// does not invalidate the view, so the `.continuous` camera callback can record
 /// the latest values every frame without re-rendering the map. See the field's
 /// doc comment on `MapView` for why this matters (pan-lag fix).
+/// The live touch point on the map, held outside SwiftUI's observation.
+///
+/// Written on every frame of a drag and read only when a press has passed its
+/// threshold, so nothing about it should provoke a render — see `MapView.touch`.
+@MainActor
+private final class TouchTracker {
+    var point: CGPoint = .zero
+}
+
 private final class CameraTracker {
     var lastSpan: MKCoordinateSpan?
     var lastCenter = CLLocationCoordinate2D(latitude: 0, longitude: 0)

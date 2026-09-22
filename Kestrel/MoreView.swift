@@ -11,10 +11,11 @@ struct MoreView: View {
 
     @Bindable private var settings = AppSettings.shared
 
-    #if DEBUG
-    // Backs the debug-only cached-image readout. The life list drives one column;
-    // the cached nearby-region set drives the other.
+    // Read here for the Delete All Entries button at the foot of the About
+    // section — and, in a debug build, for the cached-image readout below it.
     @Environment(LifeListStore.self) private var lifeListStore
+
+    #if DEBUG
     @State private var lifeCounts: RemoteSpeciesImageStore.ResolutionCounts?
     @State private var nearbyCounts: RemoteSpeciesImageStore.ResolutionCounts?
     @State private var updateCheckStatus: String?
@@ -119,6 +120,15 @@ struct MoreView: View {
                     .padding(.vertical, 4)
 
                 creditsSection
+
+                // The one control that wipes the life list, at the very bottom
+                // of the very last screen — as far from an accidental tap as
+                // the app can put it. It used to sit under the last row of the
+                // Life List itself, which is a list the user scrolls every
+                // day. Draws nothing when there is nothing to delete.
+                DeleteAllEntriesButton()
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.top, 8)
 
                 #if DEBUG
                 cacheCountsView
