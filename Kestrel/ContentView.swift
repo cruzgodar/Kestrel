@@ -27,6 +27,12 @@ struct ContentView: View {
     /// Identical wiring to the Life List tab's — see `observationFlow`.
     @State private var pendingObservation: ObservationDraft?
 
+    /// The results list's own safe-area insets, measured. A detection row's
+    /// tint is drawn past its edges by exactly this much so the color reaches
+    /// the glass while the row's text and thumbnail stay where the safe area
+    /// put them — see `detectionRow`.
+    @State private var listSafeArea = EdgeInsets()
+
     /// Height of the trailing thumbnail on detection rows. Width follows at 4:3.
     private static let rowThumbnailHeight: CGFloat = 72
 
@@ -172,6 +178,11 @@ struct ContentView: View {
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
         }
+        // Everything above — list, spectrogram, placeholder and the floating
+        // record button — is confined to the trailing half where there is a
+        // display wide enough to be opened out.
+        .innerDisplayTrailingHalf()
+
         // No life-list snapshot pushed from here any more, either. Both start
         // paths already call `RecordingManager.refreshLifeListFromStore`, which
         // reads the store directly and so is correct even when no view is mounted
@@ -392,6 +403,12 @@ struct ContentView: View {
                 }
             }
             .listStyle(.plain)
+            // Feeds the row tint's overhang. Read off the list rather than the
+            // tab, so it is already the right answer when the tab is confined
+            // to half the display (see `innerDisplayTrailingHalf`).
+            .onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: {
+                listSafeArea = $0
+            }
             // `topSpacerRow` is only as tall as `topSpacerRowHeight` says. Left
             // at SwiftUI's default minimum row height (44pt) it would hold a
             // wide blank band open even at height 0. Every detection row is far
@@ -564,6 +581,20 @@ struct ContentView: View {
                 flashing: flashing,
                 flashColor: flashColor
             )
+            // Out past the row on both sides by whatever the safe area took,
+            // so the color runs to the edge of the glass while the row's own
+            // content stays inside it. Negative padding, so the tint overflows
+            // its slot without the row's layout changing at all.
+            //
+            // It is the safe area and nothing more, deliberately: the tint used
+            // to overhang the leading edge by a flat 600pt to cover the strip a
+            // swipe opens up, and since the content view draws *over* the swipe
+            // buttons it washed Add Observation's purple out to a blend. Where
+            // the leading inset is zero — every iPhone, and the foldable's
+            // outer display — this adds nothing on that side and the button
+            // keeps its own color.
+            .padding(.leading, -listSafeArea.leading)
+            .padding(.trailing, -listSafeArea.trailing)
         )
         // Every row, not just the ones showing a plus: a bird already on the
         // life list still deserves today's sighting recorded. Matches the Life
@@ -616,6 +647,63 @@ struct ContentView: View {
     /// is written until the naming step is confirmed.
     private func beginAdd(scientificName: String, commonName: String) {
         pendingObservation = .adding(scientificName: scientificName, commonName: commonName)
+    }
+}
+
+/// Confines a view to the trailing half of the display, where the display is
+/// a foldable's inner one — the Identify tab's layout there (see
+/// `ContentView.body`). The other half is left empty.
+///
+/// Half of the *display*, not half of the safe area, so opened out in
+/// landscape the tab comes out the width of the closed phone, with the same
+/// vertical bar down its trailing edge and its content stopping the same
+/// distance short of the glass: the same screen, revealed rather than
+/// re-laid-out.
+///
+/// A leading inset rather than a narrowed frame, which is what makes that
+/// true. SwiftUI hands a child the container's safe-area insets whether or not
+/// the child reaches the unsafe edge, so a half-width frame aligned trailing is
+/// placed against the safe area's edge and still believes a vertical bar sits
+/// beyond it — the tab lands a bar's width left of where it belongs, and the
+/// blank side comes out narrower than half. Insetting the leading edge instead
+/// leaves the trailing edge exactly where the container's is and every inset
+/// meaning what it meant.
+///
+/// The fold is what says which display this is. Size classes do not — they say
+/// how much room there is, and the outer display is wide enough to report
+/// regular — and `.includeInactive` matters because a fold only counts as
+/// *active* while the device is partway shut.
+private struct InnerDisplayTrailingHalf: ViewModifier {
+    /// Zero anywhere there is no fold, where the whole modifier is inert.
+    @State private var inset: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        content
+            .padding(.leading, inset)
+            // Outside the padding, so it measures the space the tab was given
+            // rather than the space left after insetting it — otherwise each
+            // pass would halve the last one.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                guard #available(iOS 27.1, *) else { return 0 }
+                guard !proxy.reservedRegions(
+                    kind: .division, options: .includeInactive
+                ).isEmpty else { return 0 }
+                // `proxy.size` is already net of the safe area; the display is
+                // that plus what the bars took. The inset is measured from the
+                // content's own leading edge, which the safe area may already
+                // have moved in.
+                let display = proxy.size.width
+                    + proxy.safeAreaInsets.leading
+                    + proxy.safeAreaInsets.trailing
+                return max(0, display / 2 - proxy.safeAreaInsets.leading)
+            } action: { inset = $0 }
+    }
+}
+
+extension View {
+    /// See `InnerDisplayTrailingHalf`.
+    fileprivate func innerDisplayTrailingHalf() -> some View {
+        modifier(InnerDisplayTrailingHalf())
     }
 }
 

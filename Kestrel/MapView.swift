@@ -239,6 +239,20 @@ struct MapView: View {
         return "No location recorded — long press to add one"
     }
 
+    /// Birds per row in the cluster card when the phone is open and turned
+    /// landscape, where the card is wide enough that the row the card sizes for
+    /// itself is not the one that reads best. `nil` everywhere else, which
+    /// leaves the card to fit as many as the width takes (5 on the inner
+    /// display in portrait, 3 on the outer display).
+    ///
+    /// Geometry, not a pose: the fold says which display, and the display's own
+    /// proportions say which way up it is. `viewSize` is the full-bleed size,
+    /// because the map ignores the safe area.
+    private var cardColumnCount: Int? {
+        guard onInnerDisplay, viewSize.width > viewSize.height else { return nil }
+        return 4
+    }
+
     /// How long the pin takes to dissolve from its old spot to the new one.
     private static let pinCrossfade: Double = 0.22
 
@@ -377,6 +391,11 @@ struct MapView: View {
     /// camera ticks during a pinch (vs. recomputing on every frame and
     /// flickering at boundary cases). Lives on `camera` (see above).
     @State private var viewSize: CGSize = .zero
+    /// Whether the map is on a foldable's *inner* display. Read from the fold
+    /// itself rather than from size classes, which say how much room there is
+    /// and not which display it is — the outer display is wide enough to report
+    /// regular. See `SpeciesPhotoViewer`, which learned this the hard way.
+    @State private var onInnerDisplay = false
 
     /// Cached subset of `mapPoints` whose coords fall inside
     /// the current viewport plus a generous buffer. Drives ForEach so we
@@ -745,6 +764,16 @@ struct MapView: View {
                 }
                 // Clusters before culling in every path (see handleCameraChange)
                 // so annotation hosts always mount with their content present.
+                // The fold, which is what says this is the inner display:
+                // present there, absent on the outer display and on any phone.
+                // `.includeInactive` matters — a fold only counts as *active*
+                // while the device is partway shut.
+                .onGeometryChange(for: Bool.self) { proxy in
+                    guard #available(iOS 27.1, *) else { return false }
+                    return !proxy.reservedRegions(
+                        kind: .division, options: .includeInactive
+                    ).isEmpty
+                } action: { onInnerDisplay = $0 }
                 .onChange(of: geo.size) { old, new in
                     viewSize = new
                     // Before the rebuild, so the clusters are computed for
@@ -909,6 +938,7 @@ struct MapView: View {
             MapCardSheet(
                 card: mapCard,
                 store: store,
+                columnCount: cardColumnCount,
                 photo: $sheetPhoto,
                 onPinpoint: { coordinate in
                     // "Pinpoint on Map" from a bird inside a cluster card. Clear
@@ -2105,6 +2135,9 @@ private struct MapCardSheet: View {
     /// into the photo cover below — Observation `.environment` objects don't
     /// reliably cross a presentation boundary, and the viewer's star toggle needs it.
     let store: LifeListStore
+    /// Birds per row, when the caller wants a specific number rather than as
+    /// many as fit. See `MapView.cardColumnCount`.
+    let columnCount: Int?
     /// Full-screen photo presented from *this sheet's* context (not the root) so
     /// it doesn't collide with the sheet's own presentation — that's what makes
     /// it open instantly over the card. `.pinpoint` carries the map button and
@@ -2128,6 +2161,9 @@ private struct MapCardSheet: View {
     /// Current detent. A multi-bird cluster can be pulled up to `.large` to see
     /// every bird.
     @State private var detent: PresentationDetent = .medium
+    /// The sheet's own safe-area insets, measured. Drives `cardSurface`, which
+    /// is drawn inside them.
+    @State private var sheetSafeArea = EdgeInsets()
 
     /// The detents allowed for the current card: clusters get medium + large;
     /// no card (nil) falls back to medium.
@@ -2157,16 +2193,21 @@ private struct MapCardSheet: View {
     /// Max). Flexible columns instead divide the full width evenly, so the edge
     /// thumbnails always sit flush at `thumbInset` — equal to the top inset — and
     /// the corners stay concentric on every iOS 26 phone. The count is the most
-    /// columns that keep each thumbnail at least `minThumbWidth` wide.
-    private static func columns(forWidth width: CGFloat) -> [GridItem] {
-        guard width > 0 else {
-            return [GridItem(.flexible(), spacing: gridSpacing)]
-        }
-        let count = max(1, Int((width + gridSpacing) / (minThumbWidth + gridSpacing)))
-        return Array(
+    /// columns that keep each thumbnail at least `minThumbWidth` wide, unless
+    /// `count` names one — see `MapView.cardColumnCount`, which does for the
+    /// one pose where the fitted answer reads wrong.
+    private static func columns(forWidth width: CGFloat, count: Int?) -> [GridItem] {
+        Array(
             repeating: GridItem(.flexible(), spacing: gridSpacing),
-            count: count
+            count: columnCount(forWidth: width, count: count)
         )
+    }
+
+    /// `columns(forWidth:count:)`'s arithmetic, split out for readability.
+    private static func columnCount(forWidth width: CGFloat, count: Int?) -> Int {
+        if let count { return max(1, count) }
+        guard width > 0 else { return 1 }
+        return max(1, Int((width + gridSpacing) / (minThumbWidth + gridSpacing)))
     }
     /// The presenting sheet's actual top corner radius, measured at runtime (see
     /// `SheetTopCornerRadiusReader`). iOS rounds a non-full sheet's top corners to
@@ -2184,6 +2225,50 @@ private struct MapCardSheet: View {
     /// Tracks the measured top radius, so it holds on every device.
     private var thumbCornerRadius: CGFloat {
         max(0, sheetTopCornerRadius - Self.thumbInset + Self.thumbCornerRadiusAdjust)
+    }
+
+    /// The card's surface, drawn here rather than left to the system.
+    ///
+    /// A sheet is laid out in the scene and not in the safe area, so where the
+    /// system runs its bars down one side the card slides underneath them: the
+    /// surface runs out past the tab bar and swallows it. The content inside
+    /// already stops where it should — the thumbnails are exactly right — so
+    /// it is only the surface that overruns, and `presentationBackground` is
+    /// the one part of a sheet that can be replaced without giving up the
+    /// detents, the drag, or the live map behind it.
+    ///
+    /// Inset by the measured safe area rather than a guess, and by nothing at
+    /// all where the safe area is empty — which is every iPhone, where this
+    /// draws exactly the full-width, square-bottomed surface the system did.
+    private var cardSurface: some View {
+        // Glass rather than a `Material`. The system's own sheet surface lifts
+        // this map by (+16, +15, +19) — a near-neutral brightening, which is
+        // what glass does; every material desaturates instead, shifting blue by
+        // +37 or more and washing the map under the card out. `.regular` glass
+        // comes out at (+25, +23, +26): a little stronger than the system's,
+        // and the same colour, which is the closest of anything public.
+        Color.clear
+            .glassEffect(.regular, in: cardShape)
+            .padding(.leading, sheetSafeArea.leading)
+            .padding(.trailing, sheetSafeArea.trailing)
+    }
+
+    /// The surface's outline. Horizontal insets only: a bottom sheet that stops
+    /// short of the bottom edge does not read as one, and the content already
+    /// keeps clear of the home indicator on its own.
+    private var cardShape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(
+            topLeadingRadius: sheetTopCornerRadius,
+            // Square where the card still reaches the edge of the glass, as
+            // the system leaves it: that corner sits *inside* the display's own
+            // rounded corner and rounding it again would show a notch of map
+            // between the two curves. A corner held off the edge has no display
+            // corner to sit in, so it takes the card's own radius.
+            bottomLeadingRadius: sheetSafeArea.leading > 0 ? sheetTopCornerRadius : 0,
+            bottomTrailingRadius: sheetSafeArea.trailing > 0 ? sheetTopCornerRadius : 0,
+            topTrailingRadius: sheetTopCornerRadius,
+            style: .continuous
+        )
     }
 
     var body: some View {
@@ -2217,6 +2302,13 @@ private struct MapCardSheet: View {
         // Layered over the card rather than replacing it, the same way the
         // full-screen photo is.
         .observationActions(actions, store: store)
+        // Measured on the content, which is the part of the sheet the safe
+        // area actually reaches; `presentationBackground`'s own geometry is the
+        // sheet's full bounds and reports none of it.
+        .onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: {
+            sheetSafeArea = $0
+        }
+        .presentationBackground { cardSurface }
         .presentationDetents(detents, selection: $detent)
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card — this is what
@@ -2312,7 +2404,7 @@ private struct MapCardSheet: View {
             let available = geo.size.width - 2 * Self.thumbInset
             ScrollView {
                 LazyVGrid(
-                    columns: Self.columns(forWidth: available),
+                    columns: Self.columns(forWidth: available, count: columnCount),
                     alignment: .center,
                     spacing: Self.gridSpacing
                 ) {
