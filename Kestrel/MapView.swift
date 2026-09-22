@@ -244,17 +244,16 @@ struct MapView: View {
         return "No location recorded — long press to add one"
     }
 
-    /// Birds per row in the cluster card when the phone is open and turned
-    /// landscape, where the card is wide enough that the row the card sizes for
-    /// itself is not the one that reads best. `nil` everywhere else, which
-    /// leaves the card to fit as many as the width takes (5 on the inner
-    /// display in portrait, 3 on the outer display).
+    /// Birds per row in the cluster card when the phone is open, where the card
+    /// is wide enough that the row it sizes for itself is not the one that
+    /// reads best — five across in portrait leaves the pictures small enough
+    /// that the bird in them stops being the thing you notice. `nil` on the
+    /// outer display and on every phone, which leaves the card to fit as many
+    /// as the width takes (3 there).
     ///
-    /// Geometry, not a pose: the fold says which display, and the display's own
-    /// proportions say which way up it is. `viewSize` is the full-bleed size,
-    /// because the map ignores the safe area.
+    /// Geometry, not a pose: the fold is the only thing asked.
     private var cardColumnCount: Int? {
-        guard onInnerDisplay, viewSize.width > viewSize.height else { return nil }
+        guard onInnerDisplay else { return nil }
         return 4
     }
 
@@ -2253,6 +2252,10 @@ private struct MapCardSheet: View {
     /// Current detent. A multi-bird cluster can be pulled up to `.large` to see
     /// every bird.
     @State private var detent: PresentationDetent = .medium
+    /// The horizontal safe area the card is covering, measured off the card
+    /// itself *after* it has been told to ignore it — see the overlay in
+    /// `body`. Spent as padding only at the full detent (`contentInsets`).
+    @State private var coveredSafeArea = EdgeInsets()
 
     /// The detents allowed for the current card: clusters get medium + large;
     /// no card (nil) falls back to medium.
@@ -2316,6 +2319,21 @@ private struct MapCardSheet: View {
         max(0, sheetTopCornerRadius - Self.thumbInset + Self.thumbCornerRadiusAdjust)
     }
 
+    /// Whether the card has been pulled up to fill the display.
+    private var isFullHeight: Bool { detent == .large }
+
+    /// What the content is inset by — nothing while the card is a strip along
+    /// the bottom, the safe area it is covering once it fills the display.
+    private var contentInsets: EdgeInsets {
+        guard isFullHeight else { return EdgeInsets() }
+        return EdgeInsets(
+            top: coveredSafeArea.top,
+            leading: coveredSafeArea.leading,
+            bottom: 0,
+            trailing: coveredSafeArea.trailing
+        )
+    }
+
     var body: some View {
         // A plain native sheet, matching the life-list import card: the system
         // draws the frosted surface and the corners (tight top, phone-concentric
@@ -2331,14 +2349,39 @@ private struct MapCardSheet: View {
                 Color.clear
             }
         }
-        // Edge to edge inside the card. A sheet is handed the scene's
-        // horizontal safe area, so where a bar runs down one side the grid
-        // stopped a bar's width short of the card's own edge — 12pt of margin
-        // on one side and 88 on the other. The bar is not there to be avoided:
-        // it steps aside for as long as the card is up (see the map's
-        // `.toolbar(for: .tabBar)`), so the card has the full width and the
+        // Full-bleed at the medium detent, safe-area-wide at the full one.
+        //
+        // A sheet is handed the scene's horizontal safe area, and honouring it
+        // stopped the grid a bar's width short of the card's own edge — 12pt
+        // of margin on one side and 88 on the other — for a bar that is not
+        // there to be avoided: it steps aside for as long as the card is up
+        // (see the map's `.toolbar(for: .tabBar)`). At the medium detent the
+        // card is a strip along the bottom, well clear of anything, and the
         // grid's own `thumbInset` is the only margin it should keep.
+        //
+        // Pulled up to full height the card reaches the top of the display,
+        // where the status indicators and the camera cutout are, and there the
+        // safe area is describing something real. So the insets come back —
+        // the picture stops being edge to edge and the content narrows to the
+        // safe width, animating as the card rises rather than snapping when it
+        // arrives.
+        .padding(contentInsets)
+        .animation(.easeInOut(duration: 0.3), value: isFullHeight)
         .ignoresSafeArea(.container, edges: .horizontal)
+        // Measured here, outside the `ignoresSafeArea` above, which is what
+        // makes the insets readable at all: inside it the card has already had
+        // them applied and reports zero. The overlay is an empty probe over
+        // the card's full-bleed frame, and `padding` above shrinks the content
+        // without shrinking that frame, so this cannot chase its own tail.
+        .overlay {
+            GeometryReader { proxy in
+                Color.clear
+                    .onGeometryChange(for: EdgeInsets.self) { _ in
+                        proxy.safeAreaInsets
+                    } action: { coveredSafeArea = $0 }
+            }
+            .allowsHitTesting(false)
+        }
         // Read the real top corner radius off the live presentation so the
         // thumbnails can be made concentric with it on any device.
         .background(
@@ -2462,18 +2505,18 @@ private struct MapCardSheet: View {
                         .onTapGesture {
                             openPhoto(for: point, in: cluster)
                         }
-                        // The lift a haptic touch gives the cell follows the
-                        // thumbnail's own rounded outline. Left unsaid, the
-                        // system takes the cell's square bounds instead and
-                        // draws a shadow around a shape that isn't there —
-                        // which is the wrong shadow that flashes under a press
-                        // before the menu settles.
+                        // The lift a haptic touch gives the cell is drawn on
+                        // an opaque platter cut to the cell's *bounds* — the
+                        // picture, the name under it, and the slack below —
+                        // and that platter's edge is the hard outline that
+                        // flashes around a pressed thumbnail. Naming the
+                        // picture's own rounded rect cuts the platter to
+                        // exactly where the photograph already is, so its edge
+                        // and the photograph's are the same edge and there is
+                        // nothing left to see.
                         .contentShape(
                             .contextMenuPreview,
-                            RoundedRectangle(
-                                cornerRadius: thumbCornerRadius,
-                                style: .continuous
-                            )
+                            ClusterGridItem.photoShape(cornerRadius: thumbCornerRadius)
                         )
                         // The same actions a pinned thumbnail offers.
                         .contextMenu {
@@ -2591,6 +2634,14 @@ private struct ClusterGridItem: View {
     /// Filling the cell makes the edge thumbnails flush at the grid's inset.
     private static let aspectRatio: CGFloat = 116.0 / 87.0
 
+    /// The picture's own rounded rect within the cell's bounds — the cell is
+    /// laid out top-down, so the photograph is the full width and as tall as
+    /// `aspectRatio` makes it. Used to cut the haptic-touch preview's platter
+    /// to the photograph; see the call site in `MapCardSheet.clusterGrid`.
+    static func photoShape(cornerRadius: CGFloat) -> some Shape {
+        CellPhotoShape(aspectRatio: aspectRatio, cornerRadius: cornerRadius)
+    }
+
     var body: some View {
         VStack(alignment: .center, spacing: 6) {
             // Aspect-ratio box that fills the cell width; the photo scales to fill
@@ -2620,6 +2671,27 @@ private struct ClusterGridItem: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .contentShape(Rectangle())
+    }
+}
+
+/// The top-aligned, full-width picture inside a grid cell, as a shape.
+///
+/// A cell is a photograph with a caption under it, and a `Shape` is handed the
+/// whole cell; this trims that back to the photograph. Its one use is cutting
+/// a haptic touch's preview platter, which is otherwise the cell's square
+/// bounds and reads as a hard outline drawn around the picture and its name.
+private struct CellPhotoShape: Shape {
+    let aspectRatio: CGFloat
+    let cornerRadius: CGFloat
+
+    nonisolated func path(in rect: CGRect) -> Path {
+        let photo = CGRect(
+            x: rect.minX,
+            y: rect.minY,
+            width: rect.width,
+            height: min(rect.height, rect.width / aspectRatio)
+        )
+        return RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).path(in: photo)
     }
 }
 

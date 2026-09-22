@@ -9,6 +9,10 @@ import SwiftUI
 struct SpeciesThumbnail: View {
     let scientificName: String
     var height: CGFloat = 60
+    /// How round the photograph's corners are. The rows' own value by default,
+    /// so nothing that doesn't ask changes; the Life List's grid asks for a
+    /// rounder one, its pictures being both bigger and the whole of the tile.
+    var cornerRadius: CGFloat = 6
     /// Optional override for the photo tap (see `SpeciesPhoto.onTap`).
     var onTap: (() -> Void)? = nil
 
@@ -25,6 +29,6 @@ struct SpeciesThumbnail: View {
                 .background(.fill.tertiary)
         }
         .frame(width: width, height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }

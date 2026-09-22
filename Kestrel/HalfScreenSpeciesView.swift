@@ -142,11 +142,10 @@ struct HalfScreenSpeciesView: View {
             let cardWidth = max(0, proxy.size.width - Self.inset * 2)
 
             ZStack {
-                // Edge to edge inside the card, and under the photo rather than
-                // behind the whole pane, so the card still reads as black while
-                // a crossfade has two photos on top of it at partial opacity.
-                Color.black
-
+                // No backing fill: the pane sits over the Identify tab's own
+                // background and lets it show through around a photo that
+                // doesn't fill the card.
+                //
                 // The picture being left, held still while the new one comes
                 // up over it.
                 if let outgoing {

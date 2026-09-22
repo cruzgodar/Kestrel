@@ -326,14 +326,32 @@ struct LifeListView: View {
     /// not quietly resize every row on every phone.
     private static let gridThumbnailHeight: CGFloat = 96
     /// Gap between tiles, and between a section's heading and its tiles.
-    private static let gridSpacing: CGFloat = 12
+    private static let gridSpacing: CGFloat = 4
     /// How much wider a tile is than the photograph in it, so a two-word name
-    /// and a star have somewhere to go.
-    private static let gridTileExtraWidth: CGFloat = 20
+    /// has somewhere to go.
+    private static let gridTileExtraWidth: CGFloat = 4
 
     /// Width of one grid tile: its photograph, plus the margin around the name.
     private static var gridTileWidth: CGFloat {
         (gridThumbnailHeight * 4 / 3).rounded() + gridTileExtraWidth
+    }
+
+    /// How round a grid photograph's corners are. Its own constant rather than
+    /// the rows' 6pt: a grid picture is the whole of its tile and is shown
+    /// several times the size, and it is what the star button riding on it is
+    /// made concentric with.
+    private static let gridThumbnailCornerRadius: CGFloat = 18
+
+    /// Corner radius of the star capsule that rides on a grid photograph. Its
+    /// height follows — a capsule is twice its own radius tall.
+    private static let gridOverlayRadius: CGFloat = 14
+
+    /// Gap between that capsule and the two photo edges it sits in the corner
+    /// of. Not a taste value: it is exactly what makes the capsule's corner
+    /// concentric with the photograph's, an outer radius being an inner one
+    /// plus the distance between them.
+    private static var gridOverlayMargin: CGFloat {
+        max(0, gridThumbnailCornerRadius - gridOverlayRadius)
     }
 
     var body: some View {
@@ -711,8 +729,12 @@ struct LifeListView: View {
         tile(
             scientificName: entry.scientificName,
             name: entry.commonName,
-            leading: {
-                starButton(for: entry, size: Self.gridControlSize)
+            overlay: {
+                overlayControl {
+                    overlayCapsule {
+                        starButton(for: entry, size: Self.gridControlSize)
+                    }
+                }
             },
             detail: {
                 Text(entry.firstSeen, format: ObservationDate.dayStyle)
@@ -747,14 +769,16 @@ struct LifeListView: View {
         tile(
             scientificName: scientificName,
             name: commonName,
-            leading: {
+            overlay: {
                 // The same purple plus the suggestion *row* carries, and for
                 // the same reason: a bird not on the list yet is added, not
                 // starred.
-                AddGlyphButton(isAdded: false, size: Self.gridControlSize) {
-                    beginAdd(scientificName: scientificName, commonName: commonName)
+                overlayControl {
+                    AddGlyphButton(isAdded: false, size: Self.gridOverlayRadius * 2) {
+                        beginAdd(scientificName: scientificName, commonName: commonName)
+                    }
+                    .accessibilityLabel("Add \(commonName) to Life List")
                 }
-                .accessibilityLabel("Add \(commonName) to Life List")
             },
             detail: {
                 Text(scientificName).italic()
@@ -770,56 +794,92 @@ struct LifeListView: View {
         }
     }
 
-    /// Diameter of a tile's own control — the star, or the add button on a
-    /// suggestion. Smaller than the row's 32pt: it sits beside a name rather
-    /// than alone at the end of a row.
-    private static let gridControlSize: CGFloat = 26
+    /// Diameter of the glyph inside a tile's own control — the star, or the add
+    /// button on a suggestion. Smaller than the row's 32pt: it rides on the
+    /// photograph rather than standing alone at the end of a row.
+    private static let gridControlSize: CGFloat = 20
 
-    /// The shared tile: photo, then the row's own control beside the name, then
-    /// one line of detail under it.
+    /// Parks a tile's control in the bottom trailing corner of the photograph,
+    /// `gridOverlayMargin` in from both edges — the gap that makes its corner
+    /// concentric with the picture's.
+    private func overlayControl(@ViewBuilder content: () -> some View) -> some View {
+        content()
+            .padding(Self.gridOverlayMargin)
+            .frame(
+                maxWidth: .infinity,
+                maxHeight: .infinity,
+                alignment: .bottomTrailing
+            )
+    }
+
+    /// The glass capsule the star rides in.
+    ///
+    /// Glass rather than a bare glyph because what is behind it is a
+    /// photograph and nothing else: a star drawn straight onto a bird is
+    /// legible or not depending on the bird. (A suggestion's plus brings its
+    /// own — see `AddGlyphButton` — and is placed without this.)
+    private func overlayCapsule(@ViewBuilder content: () -> some View) -> some View {
+        content()
+            .frame(
+                width: Self.gridOverlayRadius * 2,
+                height: Self.gridOverlayRadius * 2
+            )
+            .glassEffect(
+                .regular.interactive(),
+                in: .rect(cornerRadius: Self.gridOverlayRadius, style: .continuous)
+            )
+    }
+
+    /// The shared tile: the photograph with its own control riding on it, the
+    /// name under that, and one line of detail under the name.
     private func tile(
         scientificName: String,
         name: String,
-        @ViewBuilder leading: () -> some View,
+        @ViewBuilder overlay: () -> some View,
         @ViewBuilder detail: () -> some View
     ) -> some View {
-        // Leading-aligned throughout: the photograph is narrower than the tile
-        // (the extra width is the name's), and a centred photograph over
-        // leading text leaves the star hanging out past the picture's edge.
-        // One left edge for all three lines reads as a tile rather than as
-        // three things that happen to be stacked.
-        VStack(alignment: .leading, spacing: 6) {
+        // Centred throughout. The control used to sit beside the name and made
+        // the column want a left edge to line up on; now that it rides on the
+        // picture, what is left under the photograph is two lines of text about
+        // it, and text about a picture belongs under the middle of it.
+        VStack(alignment: .center, spacing: 6) {
             SpeciesThumbnail(
                 scientificName: scientificName,
                 height: Self.gridThumbnailHeight,
+                cornerRadius: Self.gridThumbnailCornerRadius,
                 onTap: { presentPhoto(scientificName) }
             )
-            // The control a row carries at its trailing edge, which a tile has
-            // no trailing edge for: it goes to the left of the name instead,
-            // under the photograph. Same control, same tap, same state — only
-            // the place it sits differs.
-            HStack(spacing: 4) {
-                leading()
-                Text(name)
-                    .font(.subheadline)
-                    .lineLimit(2)
-                    .multilineTextAlignment(.leading)
-            }
+            .overlay { overlay() }
+            Text(name)
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+                // No line limit and no scaling: a name gets as many lines as it
+                // needs. A grid tile is narrow enough that two words routinely
+                // run past it, and a list of birds whose names end in "…" is a
+                // list you have to open things to read.
+                .fixedSize(horizontal: false, vertical: true)
             detail()
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
         }
-        .frame(width: Self.gridTileWidth, alignment: .topLeading)
+        .frame(width: Self.gridTileWidth, alignment: .top)
         .contentShape(Rectangle())
         .onTapGesture { presentPhoto(scientificName) }
-        // The lift a haptic touch gives the tile follows the tile's own
-        // rounded outline; without it the system takes the view's square
-        // bounds and draws a shadow around a shape that isn't there.
+        // The lift a haptic touch gives the tile is drawn on an opaque platter
+        // cut to the tile's *bounds* — picture, name and date together — and
+        // that platter's edge is the hard outline that flashes around a pressed
+        // thumbnail. Naming the picture's own rounded rect cuts the platter to
+        // where the photograph already is, so its edge and the photograph's are
+        // the same edge and there is nothing left to see.
         .contentShape(
             .contextMenuPreview,
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            TilePhotoShape(
+                height: Self.gridThumbnailHeight,
+                width: (Self.gridThumbnailHeight * 4 / 3).rounded(),
+                cornerRadius: Self.gridThumbnailCornerRadius
+            )
         )
     }
 
@@ -1373,7 +1433,29 @@ private struct ImportInfoSheet: View {
     /// the sheet and launches the file picker.
     let onImport: () -> Void
 
+    @Environment(\.dismiss) private var dismiss
+
+    // A bare `NavigationStack` for one toolbar item: the close button. The date
+    // card's is the system's cancel-role button in a top-leading toolbar item,
+    // and the only way to get *that* button rather than a hand-drawn imitation
+    // of it is to put it where it lives. The bar carries no title and draws
+    // nothing, so all it costs is the height the content's own top padding was
+    // spending anyway.
     var body: some View {
+        NavigationStack {
+            content
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(role: .cancel) { dismiss() }
+                    }
+                }
+        }
+        .presentationDetents([.medium])
+        // Hidden grab handle to match the map's settings card (MapCardSheet).
+        .presentationDragIndicator(.hidden)
+    }
+
+    private var content: some View {
         VStack(spacing: 24) {
             VStack(spacing: 16) {
                 Image(systemName: "square.and.arrow.down")
@@ -1410,16 +1492,13 @@ private struct ImportInfoSheet: View {
             .padding(.horizontal, 28)
             .padding(.bottom, 12)
         }
-        .padding(.top, 32)
+        .padding(.top, 8)
         // Fill the full sheet width at the outermost level. The content is
         // otherwise intrinsically narrower than the sheet, so the sheet centers
         // it — and that centering resolves from leading→center *during* the
         // present, which is the horizontal "slide-in". Pinning it to full width
         // here (outside all padding) removes the alignment ambiguity.
         .frame(maxWidth: .infinity)
-        .presentationDetents([.medium])
-        // Hidden grab handle to match the map's settings card (MapCardSheet).
-        .presentationDragIndicator(.hidden)
     }
 }
 
@@ -1444,7 +1523,60 @@ private struct ExportInfoSheet: View {
     let onExport: (LifeListStore.ExportScope) -> Void
     let onExported: (Result<URL, Error>) -> Void
 
+    @Environment(\.dismiss) private var dismiss
+
+    /// The same bare-toolbar close button the import card carries — see the
+    /// comment there.
     var body: some View {
+        NavigationStack {
+            content
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(role: .cancel) { dismiss() }
+                    }
+                }
+        }
+        // Taller than the import sheet's `.medium`: this one carries a second
+        // button and a longer explanation, and at `.medium` the last line of
+        // copy gets truncated rather than wrapped.
+        .presentationDetents([.fraction(0.62)])
+        .presentationDragIndicator(.hidden)
+        .fileExporter(
+            isPresented: $session.isSaving,
+            document: session.document,
+            contentType: .commaSeparatedText,
+            defaultFilename: EBirdCSVExporter.defaultFilename()
+        ) { result in
+            onExported(result)
+        }
+        // Dim + card over the sheet's own content while the CSV renders, rather
+        // than a second presentation on top of this one. Only ever on screen
+        // for a list big enough to take a moment (see `beginExport`).
+        .overlay {
+            if progress.isVisible {
+                ExportProgressCard(fraction: progress.fraction)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.2), value: progress.isVisible)
+        // Attached to the sheet, not the Life List behind it, so reporting an
+        // empty result leaves the sheet standing and the other button one tap
+        // away.
+        .alert(
+            "Nothing to Export",
+            isPresented: Binding(
+                get: { session.emptyScope != nil },
+                set: { if !$0 { session.emptyScope = nil } }
+            ),
+            presenting: session.emptyScope
+        ) { _ in
+            Button("OK", role: .cancel) { session.emptyScope = nil }
+        } message: { scope in
+            Text(emptyMessage(for: scope))
+        }
+    }
+
+    private var content: some View {
         VStack(spacing: 24) {
             VStack(spacing: 16) {
                 Image(systemName: "square.and.arrow.up")
@@ -1503,48 +1635,10 @@ private struct ExportInfoSheet: View {
             .padding(.horizontal, 28)
             .padding(.bottom, 12)
         }
-        .padding(.top, 32)
+        .padding(.top, 8)
         // Full sheet width at the outermost level, for the same reason the
         // import sheet pins it — see the comment there.
         .frame(maxWidth: .infinity)
-        // Taller than the import sheet's `.medium`: this one carries a second
-        // button and a longer explanation, and at `.medium` the last line of
-        // copy gets truncated rather than wrapped.
-        .presentationDetents([.fraction(0.62)])
-        .presentationDragIndicator(.hidden)
-        .fileExporter(
-            isPresented: $session.isSaving,
-            document: session.document,
-            contentType: .commaSeparatedText,
-            defaultFilename: EBirdCSVExporter.defaultFilename()
-        ) { result in
-            onExported(result)
-        }
-        // Dim + card over the sheet's own content while the CSV renders, rather
-        // than a second presentation on top of this one. Only ever on screen
-        // for a list big enough to take a moment (see `beginExport`).
-        .overlay {
-            if progress.isVisible {
-                ExportProgressCard(fraction: progress.fraction)
-                    .transition(.opacity)
-            }
-        }
-        .animation(.easeOut(duration: 0.2), value: progress.isVisible)
-        // Attached to the sheet, not the Life List behind it, so reporting an
-        // empty result leaves the sheet standing and the other button one tap
-        // away.
-        .alert(
-            "Nothing to Export",
-            isPresented: Binding(
-                get: { session.emptyScope != nil },
-                set: { if !$0 { session.emptyScope = nil } }
-            ),
-            presenting: session.emptyScope
-        ) { _ in
-            Button("OK", role: .cancel) { session.emptyScope = nil }
-        } message: { scope in
-            Text(emptyMessage(for: scope))
-        }
     }
 
     private func emptyMessage(for scope: LifeListStore.ExportScope) -> String {
@@ -1746,6 +1840,28 @@ nonisolated struct EBirdCSVDocument: FileDocument {
     }
 }
 
+/// The top-centred photograph inside a Life List grid tile, as a shape.
+///
+/// A tile is a picture with two lines of text under it, and a `Shape` is handed
+/// the whole tile; this trims that back to the picture. Its one use is cutting
+/// a haptic touch's preview platter, which is otherwise the tile's square
+/// bounds and reads as a hard outline drawn around the picture and its name.
+private struct TilePhotoShape: Shape {
+    let height: CGFloat
+    let width: CGFloat
+    let cornerRadius: CGFloat
+
+    nonisolated func path(in rect: CGRect) -> Path {
+        let photo = CGRect(
+            x: rect.midX - width / 2,
+            y: rect.minY,
+            width: width,
+            height: min(height, rect.height)
+        )
+        return RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).path(in: photo)
+    }
+}
+
 /// Liquid-glass search field that sits in the bottom safe-area inset, just
 /// above the tab bar. Always expanded; tapping anywhere on the capsule focuses
 /// the text field.
@@ -1877,6 +1993,15 @@ private struct BottomSearchField: View {
             }
         }
         .padding(.horizontal, horizontalInset)
+        // Capped at the same measure the Settings and welcome pages use, and
+        // centred on the glass rather than in what is left of it. A search
+        // capsule drawn the full width of an open foldable is a very long way
+        // to travel to reach a clear button, and the field looks like a
+        // stretched version of itself rather than the control it is on a
+        // phone. `readableWidth` is the one place the centring rule lives: it
+        // leans the column away from whichever side a bar has taken, and
+        // stops short rather than sliding under one.
+        .readableWidth()
         .padding(.bottom, 8)
         .animation(.spring(response: 0.28, dampingFraction: 0.85), value: showCancel)
         // Opening a species photo resigns focus permanently — without this the
