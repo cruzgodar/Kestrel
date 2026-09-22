@@ -70,11 +70,12 @@ struct ContentView: View {
         paneSpecies = scientificName
     }
 
-    /// The half-screen species pane's geometry — the width the tab gives up on
-    /// the leading side, and the display's own corner radius so the pane's card
+    /// The half-screen species pane's geometry — which half the tab gives up,
+    /// how much of it, and the display's own corner radius so the pane's card
     /// can be cut concentric with it. `nil` anywhere there is no fold — every
-    /// iPhone and the outer display — where there is no pane at all.
-    @State private var pane: InnerDisplayHalf?
+    /// iPhone, a foldable's outer display, and either side of a split — where
+    /// there is no pane at all.
+    @State private var pane: SpeciesPane?
     /// The bird the pane is showing. Follows the top of the list on its own
     /// (see `showNewestOnPane`) until the user taps a different one.
     @State private var paneSpecies: String?
@@ -245,13 +246,13 @@ struct ContentView: View {
         // Everything above — list, spectrogram, placeholder and the floating
         // record button — is confined to the trailing half where there is a
         // display wide enough to be opened out.
-        .innerDisplayTrailingHalf(half: $pane)
+        .speciesPaneInset($pane)
 
         // ...and the half it gave up becomes the species pane. A background
         // rather than a sibling in a stack: the tab keeps its own identity and
         // its own state whether or not the phone is open, which a conditional
         // branch in a layout container would not (see `duo.md`).
-        .background(alignment: .leading) {
+        .background(alignment: pane?.placement == .topHalf ? .top : .leading) {
             if let pane {
                 HalfScreenSpeciesView(
                     names: viewerOrder,
@@ -261,9 +262,14 @@ struct ContentView: View {
                     // showing, so the next bird heard is compared against the
                     // page the user actually landed on.
                     onPage: { paneSpecies = $0 },
-                    displayCornerRadius: pane.cornerRadius
+                    placement: pane.placement,
+                    displayCornerRadius: pane.displayCornerRadius
                 )
-                .frame(width: pane.width)
+                // Sized in display coordinates and laid out full-bleed, so the
+                // pane is half the *glass* rather than half of what is left of
+                // it after the bars — which is what puts its card's corners
+                // where the display's are.
+                .frame(width: pane.size.width, height: pane.size.height)
                 .ignoresSafeArea()
             }
         }
@@ -503,7 +509,7 @@ struct ContentView: View {
             .listStyle(.plain)
             // Feeds the row tint's overhang. Read off the list rather than the
             // tab, so it is already the right answer when the tab is confined
-            // to half the display (see `innerDisplayTrailingHalf`).
+            // to half the display (see `speciesPaneInset`).
             .onGeometryChange(for: EdgeInsets.self) { $0.safeAreaInsets } action: {
                 listSafeArea = $0
             }
@@ -785,77 +791,38 @@ struct ContentView: View {
 /// leaves the trailing edge exactly where the container's is and every inset
 /// meaning what it meant.
 ///
-/// Which display this is comes from the fold — see `InnerDisplay`.
-private struct InnerDisplayTrailingHalf: ViewModifier {
+/// Whether there is room at all, and which half is given up, comes from
+/// `DisplayLayout` — width and height, never a device or a pose.
+private struct SpeciesPaneInset: ViewModifier {
     /// The half given up, reported back so the caller can put something in it.
-    /// `nil` anywhere there is no fold, where the whole modifier is inert.
-    @Binding var half: InnerDisplayHalf?
+    /// `nil` wherever there isn't room for a pane, where the modifier is inert.
+    @Binding var pane: SpeciesPane?
+
+    private var leadingInset: CGFloat {
+        pane?.placement == .leadingHalf ? (pane?.contentInset ?? 0) : 0
+    }
+
+    private var topInset: CGFloat {
+        pane?.placement == .topHalf ? (pane?.contentInset ?? 0) : 0
+    }
 
     func body(content: Content) -> some View {
         content
-            .padding(.leading, half?.width ?? 0)
+            .padding(.leading, leadingInset)
+            .padding(.top, topInset)
             // Outside the padding, so it measures the space the tab was given
             // rather than the space left after insetting it — otherwise each
             // pass would halve the last one.
-            .onGeometryChange(for: InnerDisplayHalf?.self) { proxy in
-                guard InnerDisplay.contains(proxy) else { return nil }
-                // `proxy.size` is already net of the safe area; the display is
-                // that plus what the bars took. The inset is measured from the
-                // content's own leading edge, which the safe area may already
-                // have moved in.
-                let display = proxy.size.width
-                    + proxy.safeAreaInsets.leading
-                    + proxy.safeAreaInsets.trailing
-                let inset = display / 2 - proxy.safeAreaInsets.leading
-                guard inset > 0 else { return nil }
-                return InnerDisplayHalf(
-                    width: inset,
-                    // Asked for the full-bleed rect rather than the safe one,
-                    // the way the full-screen viewer asks: this proxy sits
-                    // inside the safe area, so the display's rect is its own
-                    // grown back by its insets. What comes back is the glass's
-                    // own curve, which is what the pane's card is cut
-                    // concentric with.
-                    cornerRadius: Self.displayCornerRadius(proxy, displayWidth: display)
-                )
-            } action: { half = $0 }
+            .onGeometryChange(for: SpeciesPane?.self) { proxy in
+                DisplayLayout(proxy).speciesPane
+            } action: { pane = $0 }
     }
-
-    private static func displayCornerRadius(
-        _ proxy: GeometryProxy,
-        displayWidth: CGFloat
-    ) -> CGFloat? {
-        guard #available(iOS 27.0, *) else { return nil }
-        let rect = CGRect(
-            x: -proxy.safeAreaInsets.leading,
-            y: -proxy.safeAreaInsets.top,
-            width: displayWidth,
-            height: proxy.size.height
-                + proxy.safeAreaInsets.top
-                + proxy.safeAreaInsets.bottom
-        )
-        guard let radius = proxy.concentricCornerRadii(in: rect)?.topLeading,
-              radius > 0 else { return nil }
-        return radius
-    }
-}
-
-/// What `InnerDisplayTrailingHalf` reports back: the half of the display the
-/// tab stepped out of, and the curve of the glass it was measured against.
-///
-/// `nonisolated` because `onGeometryChange(for:)` evaluates its transform off
-/// the main actor, and this project is MainActor-by-default.
-nonisolated struct InnerDisplayHalf: Equatable {
-    /// Width of the half given up, on the leading side.
-    let width: CGFloat
-    /// The display's own corner radius, or `nil` where it could not be read.
-    let cornerRadius: CGFloat?
 }
 
 extension View {
-    /// See `InnerDisplayTrailingHalf`.
-    fileprivate func innerDisplayTrailingHalf(half: Binding<InnerDisplayHalf?>) -> some View {
-        modifier(InnerDisplayTrailingHalf(half: half))
+    /// See `SpeciesPaneInset`.
+    fileprivate func speciesPaneInset(_ pane: Binding<SpeciesPane?>) -> some View {
+        modifier(SpeciesPaneInset(pane: pane))
     }
 }
 

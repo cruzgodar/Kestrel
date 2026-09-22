@@ -48,7 +48,7 @@ struct MoreView: View {
             // dropdown; the setting's name is the section's subheader, and the
             // picker's own label is hidden so it doesn't render as an option row.
             Section {
-                Picker("Timeout After No Detections", selection: $settings.noBirdTimeout) {
+                Picker("Alert After No Detections", selection: $settings.noBirdTimeout) {
                     ForEach(AppSettings.NoBirdTimeout.allCases) { option in
                         Text(option.label).tag(option)
                     }
@@ -56,7 +56,7 @@ struct MoreView: View {
                 .pickerStyle(.inline)
                 .labelsHidden()
             } header: {
-                Text("Timeout After No Detections")
+                Text("Alert After No Detections")
             } footer: {
                 Text("After Kestrel doesn\u{2019}t hear any birds for some time, it can send a notification asking whether to end the session to save battery life.")
             }

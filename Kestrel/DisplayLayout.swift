@@ -1,0 +1,171 @@
+import SwiftUI
+
+/// How much room the app has been given, what shape it is, and every layout
+/// decision that follows from those two facts.
+///
+/// **Why this exists.** The layouts here used to ask which *display* they were
+/// on — the fold is present on a foldable's inner display and nowhere else, so
+/// `reservedRegions(kind: .division)` answered it exactly. It answered the
+/// wrong question. A tab sharing the inner display with another app in a split
+/// is still "on the inner display" and has a phone's worth of room; it was
+/// being handed a two-up layout that did not fit. And the answer was
+/// unavailable to anything that wasn't a foldable, so every rule had to be
+/// written twice.
+///
+/// So nothing asks any more. What is left is the thing that was actually being
+/// approximated: how wide the app is, and whether it is wider than it is tall.
+/// A display answering that description gets the layout whether it is a fold,
+/// a split, a tablet, or something that doesn't exist yet — which is the rule
+/// `duo.md` asks for.
+nonisolated struct DisplayLayout: Equatable {
+    /// The whole of what the app has, safe area included.
+    let size: CGSize
+    /// What the system's bars took out of it.
+    let safeArea: EdgeInsets
+    /// The display's own corner radius, or `nil` where it could not be read.
+    let cornerRadius: CGFloat?
+
+    /// The width at which the app stops showing one thing at a time and starts
+    /// showing two.
+    ///
+    /// Above it there is room for a picture and a list side by side, a grid of
+    /// photographs instead of a column of rows, and four birds across a card
+    /// instead of three. Below it there is room for one of those things.
+    ///
+    /// Set between the widest thing that must stay single-column — a
+    /// foldable's outer display at 466pt, and either half of its inner display
+    /// in a split, the wider of which is around 475 — and the narrowest that
+    /// must go two-up, the inner display held portrait at 669.
+    static let expandedWidth: CGFloat = 600
+
+    /// The height it also takes, which is what keeps an ordinary phone turned
+    /// landscape out of it: an iPhone on its side is wider than the breakpoint
+    /// and about 400pt tall, and half of that is not a pane, it is a letterbox.
+    /// A foldable's inner display is 669pt on its short side.
+    static let expandedHeight: CGFloat = 500
+
+    /// Whether there is room to show two things side by side.
+    var isExpanded: Bool {
+        size.width >= Self.expandedWidth && size.height >= Self.expandedHeight
+    }
+
+    /// Whether width is the plentiful axis.
+    var isLandscape: Bool { size.width > size.height }
+
+    init(_ proxy: GeometryProxy) {
+        let insets = proxy.safeAreaInsets
+        // `proxy.size` is already net of the safe area; the display is that
+        // plus whatever the bars took.
+        size = CGSize(
+            width: proxy.size.width + insets.leading + insets.trailing,
+            height: proxy.size.height + insets.top + insets.bottom
+        )
+        safeArea = insets
+        cornerRadius = Self.readCornerRadius(proxy, size: size)
+    }
+
+    /// The glass's own curve, asked for the full-bleed rect rather than the
+    /// safe one: the proxy sits inside the safe area, so the display's rect is
+    /// its own grown back by its insets.
+    private static func readCornerRadius(_ proxy: GeometryProxy, size: CGSize) -> CGFloat? {
+        guard #available(iOS 27.0, *) else { return nil }
+        let rect = CGRect(
+            x: -proxy.safeAreaInsets.leading,
+            y: -proxy.safeAreaInsets.top,
+            width: size.width,
+            height: size.height
+        )
+        guard let radius = proxy.concentricCornerRadii(in: rect)?.topLeading,
+              radius > 0 else { return nil }
+        return radius
+    }
+
+    // MARK: - What each screen does with it
+
+    /// Where the Identify tab's species pane goes, and how big it is. `nil`
+    /// where there is no room for one, which is every phone, a foldable's
+    /// outer display, and either side of a split.
+    var speciesPane: SpeciesPane? {
+        guard isExpanded else { return nil }
+        // Split along the long axis, so the pane and the list each get a shape
+        // they can use: side by side across a wide display, stacked down a tall
+        // one.
+        if isLandscape {
+            let inset = size.width / 2 - safeArea.leading
+            guard inset > 0 else { return nil }
+            return SpeciesPane(
+                placement: .leadingHalf,
+                contentInset: inset,
+                size: CGSize(width: size.width / 2, height: size.height),
+                displayCornerRadius: cornerRadius
+            )
+        }
+        let inset = size.height / 2 - safeArea.top
+        guard inset > 0 else { return nil }
+        return SpeciesPane(
+            placement: .topHalf,
+            contentInset: inset,
+            size: CGSize(width: size.width, height: size.height / 2),
+            displayCornerRadius: cornerRadius
+        )
+    }
+
+    /// Whether the Life List draws itself as a grid of photographs rather than
+    /// a column of rows.
+    var lifeListIsGrid: Bool { isExpanded }
+
+    /// Birds per row in a map cluster card, or `nil` to fit as many as the
+    /// width takes — which comes out at three on a phone and on either half of
+    /// a split, where four would shrink them past reading.
+    var mapCardColumns: Int? { isExpanded ? 4 : nil }
+
+    /// Whether the full-screen viewer grows the photograph to span the display
+    /// rather than resting it inside the horizontal safe area.
+    var photoSpansDisplay: Bool { isExpanded }
+
+    /// Whether the viewer's name and details tuck into opposite display
+    /// corners. Only where width is going spare *and* height is the scarcer
+    /// axis: a bottom-centred panel on a wide display leaves a lot of empty
+    /// picture between it and the controls up the side.
+    var viewerChromeHugsCorners: Bool { isExpanded && isLandscape }
+}
+
+/// The half of the Identify tab the list steps out of, so the species pane can
+/// stand in it.
+nonisolated struct SpeciesPane: Equatable {
+    enum Placement {
+        /// Beside the list, on a display with width to spare.
+        case leadingHalf
+        /// Above the list, on a display with height to spare.
+        case topHalf
+    }
+
+    let placement: Placement
+
+    /// How far the tab's content is pushed in, measured **from the content's
+    /// own edge** — which the safe area may already have moved.
+    ///
+    /// Insetting the content is deliberate, rather than giving it a half-size
+    /// frame aligned the other way: SwiftUI hands a child the container's
+    /// safe-area insets whether or not the child reaches the unsafe edge, so a
+    /// half-size frame pushed to the far side still believes a bar sits beyond
+    /// it and lands a bar's width short. Insetting the near edge leaves the far
+    /// edge exactly where the container's is, and every inset meaning what it
+    /// meant.
+    let contentInset: CGFloat
+
+    /// The pane's own size, in display coordinates — it is laid out full-bleed,
+    /// so this is half the glass rather than half the safe area.
+    let size: CGSize
+
+    /// The display's own corner radius, so the pane's card can be cut
+    /// concentric with it. `nil` where it could not be read.
+    let displayCornerRadius: CGFloat?
+}
+
+extension View {
+    /// Reports how much room this view has, now and whenever that changes.
+    func onDisplayLayoutChange(_ action: @escaping (DisplayLayout) -> Void) -> some View {
+        onGeometryChange(for: DisplayLayout.self) { DisplayLayout($0) } action: { action($0) }
+    }
+}

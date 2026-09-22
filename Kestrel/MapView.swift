@@ -244,18 +244,8 @@ struct MapView: View {
         return "No location recorded — long press to add one"
     }
 
-    /// Birds per row in the cluster card when the phone is open, where the card
-    /// is wide enough that the row it sizes for itself is not the one that
-    /// reads best — five across in portrait leaves the pictures small enough
-    /// that the bird in them stops being the thing you notice. `nil` on the
-    /// outer display and on every phone, which leaves the card to fit as many
-    /// as the width takes (3 there).
-    ///
-    /// Geometry, not a pose: the fold is the only thing asked.
-    private var cardColumnCount: Int? {
-        guard onInnerDisplay else { return nil }
-        return 4
-    }
+    /// Birds per row in the cluster card — see `DisplayLayout.mapCardColumns`.
+    private var cardColumnCount: Int? { layout?.mapCardColumns }
 
     /// How long the pin takes to dissolve from its old spot to the new one.
     private static let pinCrossfade: Double = 0.22
@@ -399,7 +389,9 @@ struct MapView: View {
     /// itself rather than from size classes, which say how much room there is
     /// and not which display it is — the outer display is wide enough to report
     /// regular. See `SpeciesPhotoViewer`, which learned this the hard way.
-    @State private var onInnerDisplay = false
+    /// How much room the map has, which is all the card needs to know to
+    /// choose how many birds go across it.
+    @State private var layout: DisplayLayout?
 
     /// Cached subset of `mapPoints` whose coords fall inside
     /// the current viewport plus a generous buffer. Drives ForEach so we
@@ -777,16 +769,7 @@ struct MapView: View {
                 }
                 // Clusters before culling in every path (see handleCameraChange)
                 // so annotation hosts always mount with their content present.
-                // The fold, which is what says this is the inner display:
-                // present there, absent on the outer display and on any phone.
-                // `.includeInactive` matters — a fold only counts as *active*
-                // while the device is partway shut.
-                .onGeometryChange(for: Bool.self) { proxy in
-                    guard #available(iOS 27.1, *) else { return false }
-                    return !proxy.reservedRegions(
-                        kind: .division, options: .includeInactive
-                    ).isEmpty
-                } action: { onInnerDisplay = $0 }
+                .onDisplayLayoutChange { layout = $0 }
                 .onChange(of: geo.size) { old, new in
                     viewSize = new
                     // Before the rebuild, so the clusters are computed for

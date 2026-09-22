@@ -340,27 +340,14 @@ struct SpeciesPhotoFullScreen: View {
         // The *safe* width, which caps the info panel so its text can never run
         // under a side bar. Distinct from `fullWidth` above by design.
         let contentWidth = proxy.size.width
-        // Whether this is a foldable's *inner* display, unfolded — which is to
-        // say, whether a fold runs through what we are drawing on.
-        //
-        // Size classes alone could not answer this. They describe how much room
-        // there is, not which display it is, and an outer display wide enough to
-        // report regular took layouts meant for the inner one. A division region
-        // is the fold itself, so it exists on the inner display and nowhere else
-        // — not on the outer display, and not on a phone. `.includeInactive`
-        // because a fold only counts as *active* while the device is partway
-        // shut, and what is being asked here is whether it is there at all.
-        let isInnerDisplay: Bool = {
-            guard #available(iOS 27.1, *) else { return false }
-            return !proxy.reservedRegions(kind: .division, options: .includeInactive).isEmpty
-        }()
+        // How much room the viewer has. Not which display it is on and not
+        // what pose the phone is in — see `DisplayLayout`.
+        let layout = DisplayLayout(proxy)
         // The photo is grown to span the display only where there is a whole
-        // large display to span: the inner one, with the app to itself. Anywhere
-        // else — a phone, the outer display, one pane of a split — it rests
-        // inside the horizontal safe area instead.
-        let photoSpansDisplay = isInnerDisplay
-            && horizontalSizeClass == .regular
-            && verticalSizeClass == .regular
+        // large display to span. Anywhere else — a phone, a foldable's outer
+        // display, one pane of a split — it rests inside the horizontal safe
+        // area instead.
+        let photoSpansDisplay = layout.photoSpansDisplay
         // How far in from each side the photo sits *at rest*.
         //
         // With the display to ourselves the photo spans the whole of it, passing
@@ -384,13 +371,7 @@ struct SpeciesPhotoFullScreen: View {
                 ? (left: trailing, right: leading)
                 : (left: leading, right: trailing)
         }()
-        // The info panel tucks into the display's bottom-trailing corner only
-        // where there is width going spare *and* height is the scarcer axis: a
-        // large display the app has to itself, held landscape. Stated as size
-        // class plus the shape of the geometry, never as a device or a pose, so
-        // any display answering that description gets it.
-        // Corner-tucked chrome is for that display held landscape, and nothing else.
-        let panelHugsCorner = photoSpansDisplay && fullWidth > fullHeight
+        let panelHugsCorner = layout.viewerChromeHugsCorners
         // The display's own corner radii, asked for the full-bleed rect rather
         // than the safe one: this proxy sits inside the safe area, so the
         // full-screen rect is its own grown back by its insets.
@@ -1566,6 +1547,10 @@ struct ZoomablePhotoPage: View {
     /// display: expanding there would size the photo to the whole scene and
     /// centre it on that, leaving the pane showing an off-centre crop of it.
     var expandsIntoSafeArea: Bool = true
+    /// Whether a letterboxed photo sits in the top-leading corner of the page
+    /// rather than in the middle of it. See
+    /// `CenteringScrollView.anchorsTopLeading`.
+    var anchorsTopLeading: Bool = false
 
     @State private var image: UIImage?
     @State private var loadFailed = false
@@ -1646,6 +1631,7 @@ struct ZoomablePhotoPage: View {
                 isZoomed: $pageZoomed,
                 spansDisplay: spansDisplay,
                 restingInsets: restingInsets,
+                anchorsTopLeading: anchorsTopLeading,
                 resetToken: 0,
                 onSingleTap: onToggleUI,
                 onAtTopEdgeChange: onAtTopEdgeChange,
@@ -1731,6 +1717,9 @@ private struct ZoomableImageView: UIViewRepresentable {
     var spansDisplay: Bool = false
     /// Horizontal inset the photo rests inside; zoom carries it past these.
     var restingInsets: (left: CGFloat, right: CGFloat) = (0, 0)
+    /// Whether a letterboxed photo sits in the top-leading corner rather than
+    /// in the middle. See `CenteringScrollView.anchorsTopLeading`.
+    var anchorsTopLeading: Bool = false
     /// Changing this asks the scroll view to ease back to fit (page scrolled off).
     var resetToken: Int
     /// Fired by a single tap on the photo (toggles the viewer's chrome). Requires
@@ -1752,6 +1741,7 @@ private struct ZoomableImageView: UIViewRepresentable {
         let scroll = CenteringScrollView()
         scroll.spansWidth = spansDisplay
         scroll.restingInsets = restingInsets
+        scroll.anchorsTopLeading = anchorsTopLeading
         scroll.delegate = context.coordinator
         scroll.minimumZoomScale = 1
         scroll.maximumZoomScale = 4
@@ -1832,6 +1822,7 @@ private struct ZoomableImageView: UIViewRepresentable {
         if scroll.restingInsets != restingInsets || scroll.spansWidth != spansDisplay {
             scroll.restingInsets = restingInsets
             scroll.spansWidth = spansDisplay
+            scroll.anchorsTopLeading = anchorsTopLeading
             scroll.refit()
         }
         if scroll.imageView?.image !== image {
@@ -2083,6 +2074,18 @@ final class CenteringScrollView: UIScrollView {
     /// inside them: once zoomed the photo is free to grow across the full width
     /// and pass under the bar, which is what a zoom is for.
     var restingInsets: (left: CGFloat, right: CGFloat) = (0, 0)
+    /// Whether the slack around a photo smaller than the view is spent below
+    /// and to the right of it rather than split evenly around it — so the
+    /// picture sits in the top-leading corner instead of floating in the
+    /// middle.
+    ///
+    /// For a pane whose card is a fixed half of a display: the photo is
+    /// letterboxed inside it by however much its shape differs from the card's,
+    /// and centring that leaves a band of empty card above the picture and
+    /// another below. Anchored, the picture starts at the corner the card's own
+    /// curve is cut to and all the slack collects at the far end, where the
+    /// details panel is.
+    var anchorsTopLeading = false
     private var fittedForBounds: CGSize = .zero
 
     override func layoutSubviews() {
@@ -2138,9 +2141,10 @@ final class CenteringScrollView: UIScrollView {
     func centerContent() {
         let reference = fittedForBounds == .zero ? bounds.size : fittedForBounds
         let cs = contentSize
-        let y = max((reference.height - cs.height) / 2, 0)
+        let slack = max(reference.height - cs.height, 0)
+        let top = anchorsTopLeading ? 0 : slack / 2
         let (left, right) = horizontalInsets(contentWidth: cs.width, reference: reference.width)
-        contentInset = UIEdgeInsets(top: y, left: left, bottom: y, right: right)
+        contentInset = UIEdgeInsets(top: top, left: left, bottom: slack - top, right: right)
     }
 
     /// The photo's resting width — the part of `bounds` a side bar doesn't cross.
@@ -2166,8 +2170,9 @@ final class CenteringScrollView: UIScrollView {
     ) -> (left: CGFloat, right: CGFloat) {
         let resting = max(reference - restingInsets.left - restingInsets.right, 1)
         if contentWidth <= resting {
-            let slack = (resting - contentWidth) / 2
-            return (restingInsets.left + slack, restingInsets.right + slack)
+            let slack = resting - contentWidth
+            let left = anchorsTopLeading ? 0 : slack / 2
+            return (restingInsets.left + left, restingInsets.right + slack - left)
         }
 
         let bars = restingInsets.left + restingInsets.right

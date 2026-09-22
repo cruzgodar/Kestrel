@@ -40,6 +40,10 @@ struct HalfScreenSpeciesView: View {
     /// The bird a swipe landed on, so the tab's `selection` can follow it
     /// rather than yanking the pane back on the next render.
     var onPage: (String) -> Void = { _ in }
+    /// Which half of the display the pane has — see `SpeciesPane.Placement`.
+    /// It decides which corner the details panel tucks into, and nothing else:
+    /// the card is the same card either way.
+    var placement: SpeciesPane.Placement = .leadingHalf
     /// The display's own corner radius, so the card's corners can be cut
     /// concentric with it. `nil` where it could not be read, which falls back
     /// to a plain rounded rectangle.
@@ -162,11 +166,15 @@ struct HalfScreenSpeciesView: View {
             // so what the zoom floor is measured from.
             let cardWidth = max(0, proxy.size.width - Self.inset * 2)
 
-            ZStack {
-                // No backing fill: the pane sits over the Identify tab's own
-                // background and lets it show through around a photo that
-                // doesn't fill the card.
-                //
+            ZStack(alignment: .topLeading) {
+                // Nothing heard yet. A quiet grey rectangle with the bird
+                // glyph in it, the same placeholder the watch shows while it
+                // waits — an empty card would read as something that had
+                // failed to load.
+                if current == nil {
+                    placeholder
+                }
+
                 // The picture being left, held still while the new one comes
                 // up over it.
                 if let outgoing {
@@ -178,8 +186,12 @@ struct HalfScreenSpeciesView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .bottomLeading) {
-                if let shown {
+            // Into the card's free bottom corner: the one furthest from the
+            // photograph, which is anchored to the opposite one. Beside a list
+            // that is the bottom-leading corner; above one, the trailing side
+            // is where a letterboxed picture leaves the most room.
+            .overlay(alignment: placement == .topHalf ? .bottomTrailing : .bottomLeading) {
+                Group {
                     // One piece of chrome, in the one corner the card has to
                     // spare. The pane is a tall card standing beside a list,
                     // and a name capsule across its top and a panel across its
@@ -191,22 +203,26 @@ struct HalfScreenSpeciesView: View {
                     // beside it already carries both per row. The panel prints
                     // the same facts plainly — see `SpeciesInfoPanel`.
                     SpeciesInfoPanel(
-                        item: item(for: shown),
-                        observations: lifeListStore?.observations(for: shown) ?? [],
+                        item: shown.map { item(for: $0) },
+                        observations: shown.map {
+                            lifeListStore?.observations(for: $0) ?? []
+                        } ?? [],
                         contentWidth: cardWidth,
-                        // Tucked into the card's own bottom-leading corner, a
-                        // constant in from both edges so its curve is
-                        // concentric with the card's — which is in turn
-                        // concentric with the display's.
+                        // Tucked into a corner of the card, a constant in from
+                        // both of its edges so its curve is concentric with the
+                        // card's — which is in turn concentric with the
+                        // display's.
                         hugsCorner: true,
-                        title: commonName(for: shown)
+                        // Nothing heard yet: the panel says so rather than
+                        // leaving the card captionless.
+                        title: shown.map(commonName(for:)) ?? Self.idleTitle
                     )
-                    .padding(.leading, Self.cornerInset(cardRadius: radius))
-                    .padding(.bottom, Self.cornerInset(cardRadius: radius))
-                    .opacity(chromeVisible ? 1 : 0)
-                    .allowsHitTesting(chromeVisible)
-                    .animation(.easeInOut(duration: Self.chromeToggle), value: chromeVisible)
                 }
+                .padding(.horizontal, Self.cornerInset(cardRadius: radius))
+                .padding(.bottom, Self.cornerInset(cardRadius: radius))
+                .opacity(chromeVisible ? 1 : 0)
+                .allowsHitTesting(chromeVisible)
+                .animation(.easeInOut(duration: Self.chromeToggle), value: chromeVisible)
             }
             // The photo is fitted to the card, but a zoom can carry it past the
             // edges; this is what keeps it inside its own half.
@@ -224,6 +240,31 @@ struct HalfScreenSpeciesView: View {
         .accessibilityElement(children: .contain)
         .accessibilityLabel(shown.map { "Photo of \(commonName(for: $0))" } ?? "No bird heard yet")
     }
+
+    /// What the panel calls a pane with nothing on it yet.
+    private static let idleTitle = "Listening\u{2026}"
+
+    /// The card before anything has been heard: a low-opacity grey with the
+    /// bird glyph centred in it, the same placeholder the watch shows while it
+    /// waits.
+    ///
+    /// Grey on grey rather than the watch's white on black. The watch draws its
+    /// on a black screen and can spend white on the glyph; this card sits on
+    /// whatever the tab's background is, and white at half opacity all but
+    /// disappeared on a light one.
+    private var placeholder: some View {
+        Color.gray.opacity(Self.placeholderOpacity)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay {
+                Image(systemName: "bird.fill")
+                    .font(.system(size: 64))
+                    .foregroundStyle(Color.gray.opacity(Self.placeholderGlyphOpacity))
+            }
+    }
+
+    /// The placeholder's fill, and the glyph on it.
+    private static let placeholderOpacity: Double = 0.25
+    private static let placeholderGlyphOpacity: Double = 0.55
 
     /// One slot's paged photographs.
     ///
@@ -264,6 +305,7 @@ struct HalfScreenSpeciesView: View {
                     if chromeVisible == zoomed { chromeVisible = !zoomed }
                 },
                 onAtTopEdgeChange: { _ in },
+
                 onPageBeyondEdge: { direction in
                     guard isFront, index == pagedIndex else { return }
                     let target = min(
@@ -273,7 +315,14 @@ struct HalfScreenSpeciesView: View {
                     guard target != pagedIndex else { return }
                     pageCommand = PageCommand(index: target)
                 },
-                expandsIntoSafeArea: false
+                expandsIntoSafeArea: false,
+                // The card is a fixed half of a display and the photograph is
+                // whatever shape it is, so one of the two always has slack.
+                // Spent below and to the right of the picture rather than split
+                // around it: the picture then starts in the card's own top
+                // leading corner, and the slack collects at the far end, where
+                // the details panel is.
+                anchorsTopLeading: true
             )
         }
         .id(slot.id)

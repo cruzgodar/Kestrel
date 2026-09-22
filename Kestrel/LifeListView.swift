@@ -311,9 +311,9 @@ struct LifeListView: View {
     /// its right edge sits in from the edge like the heading buttons.
     private static let searchFieldHorizontalInset: CGFloat = 16 + headingButtonNudge
 
-    /// Whether the list is on a foldable's inner display, where it is laid out
-    /// as a grid of photos rather than a column of rows — see `speciesGrid`.
-    @State private var onInnerDisplay = false
+    /// Whether there is room to lay the list out as a grid of photographs
+    /// rather than a column of rows — see `speciesGrid`.
+    @State private var isGrid = false
 
     // The grid's three knobs. Between them they set how big the photographs
     // are and how many fit across, which is the whole of the grid's layout —
@@ -342,6 +342,9 @@ struct LifeListView: View {
     /// made concentric with.
     private static let gridThumbnailCornerRadius: CGFloat = 18
 
+    /// Width of a grid photograph — its height at 4:3.
+    private static var gridPhotoWidth: CGFloat { (gridThumbnailHeight * 4 / 3).rounded() }
+
     /// Gap between a grid photograph and the caption under it.
     private static let gridPhotoCaptionSpacing: CGFloat = 6
     /// Gap between the two lines of that caption — the name and its date.
@@ -360,18 +363,19 @@ struct LifeListView: View {
     }
 
     var body: some View {
-        // One or the other, and only ever swapped by a fold — which re-lays the
-        // whole screen anyway, so the scroll position it costs was going to move
-        // regardless. Everything else about the screen (the heading buttons, the
-        // search field, the flows and the confirmations) is shared below.
+        // One or the other, and only ever swapped by a resize — which re-lays
+        // the whole screen anyway, so the scroll position it costs was going to
+        // move regardless. Everything else about the screen (the heading
+        // buttons, the search field, the flows and the confirmations) is shared
+        // below.
         Group {
-            if onInnerDisplay {
+            if isGrid {
                 speciesGrid
             } else {
                 speciesList
             }
         }
-        .onInnerDisplayChange { onInnerDisplay = $0 }
+        .onDisplayLayoutChange { isGrid = $0.lifeListIsGrid }
         .overlay {
             // Empty-state placeholder — only when there's nothing to search
             // through *and* no active query. With a query present the List
@@ -647,6 +651,11 @@ struct LifeListView: View {
     /// Diameter of a row's own star button.
     private static let rowControlSize: CGFloat = 32
 
+    /// The row's own metrics.
+    private static let rowSpacing: CGFloat = 12
+    private static let rowHorizontalPadding: CGFloat = 16
+    private static let rowVerticalPadding: CGFloat = 4
+
     // MARK: - Grid (inner display)
 
     /// One section of the grid: a run of species under an optional heading.
@@ -744,28 +753,9 @@ struct LifeListView: View {
             detail: {
                 Text(entry.firstSeen, format: ObservationDate.dayStyle)
                     .monospacedDigit()
-            }
+            },
+            menu: { entryMenu(entry) }
         )
-        .contextMenu {
-            SpeciesRowMenu(
-                onEdit: { requestEdit(entry) },
-                onAddObservation: {
-                    beginAdd(
-                        scientificName: entry.scientificName,
-                        commonName: entry.commonName
-                    )
-                },
-                star: (entry.isStarred, {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    store.setStarred(
-                        scientificName: entry.scientificName,
-                        isStarred: !entry.isStarred
-                    )
-                }),
-                onViewImage: { presentPhoto(entry.scientificName) },
-                onDelete: { requestDelete(entry) }
-            )
-        }
     }
 
     /// A catalog suggestion as a tile. It has no sighting yet, so the date line
@@ -788,16 +778,9 @@ struct LifeListView: View {
             // A suggestion has no sighting yet, so there is no date to print
             // and nothing goes here. (The scientific name used to; the app no
             // longer shows one anywhere.)
-            detail: { EmptyView() }
+            detail: { EmptyView() },
+            menu: { suggestionMenu(scientificName: scientificName, commonName: commonName) }
         )
-        .contextMenu {
-            SpeciesRowMenu(
-                onAddObservation: {
-                    beginAdd(scientificName: scientificName, commonName: commonName)
-                },
-                onViewImage: { presentPhoto(scientificName) }
-            )
-        }
     }
 
     /// Diameter of the glyph inside a tile's own control — the star, or the add
@@ -805,17 +788,11 @@ struct LifeListView: View {
     /// photograph rather than standing alone at the end of a row.
     private static let gridControlSize: CGFloat = 20
 
-    /// Parks a tile's control in the bottom trailing corner of the photograph,
-    /// `gridOverlayMargin` in from both edges — the gap that makes its corner
-    /// concentric with the picture's.
+    /// A tile's control, `gridOverlayMargin` in from the photograph's edges —
+    /// the gap that makes its corner concentric with the picture's. Where it
+    /// lands is `tile`'s doing.
     private func overlayControl(@ViewBuilder content: () -> some View) -> some View {
-        content()
-            .padding(Self.gridOverlayMargin)
-            .frame(
-                maxWidth: .infinity,
-                maxHeight: .infinity,
-                alignment: .bottomTrailing
-            )
+        content().padding(Self.gridOverlayMargin)
     }
 
     /// The glass capsule the star rides in.
@@ -838,11 +815,21 @@ struct LifeListView: View {
 
     /// The shared tile: the photograph with its own control riding on it, the
     /// name under that, and one line of detail under the name.
+    ///
+    /// The haptic-touch menu goes on the photograph and the caption, not on
+    /// the tile: a context menu claims every touch inside the view it is
+    /// attached to, and on the tile that included the control riding on the
+    /// picture — resting a finger on the star to see what it does lifted the
+    /// whole tile and opened the menu. The control is added *after* both, as
+    /// an overlay on the tile, so it is a sibling of the menus rather than
+    /// something inside one. (The rows cannot do this; see
+    /// `swallowsLongPress`.)
     private func tile(
         scientificName: String,
         name: String,
         @ViewBuilder overlay: () -> some View,
-        @ViewBuilder detail: () -> some View
+        @ViewBuilder detail: () -> some View,
+        @ViewBuilder menu: @escaping () -> some View
     ) -> some View {
         // Centred throughout. The control used to sit beside the name and made
         // the column want a left edge to line up on; now that it rides on the
@@ -855,7 +842,18 @@ struct LifeListView: View {
                 cornerRadius: Self.gridThumbnailCornerRadius,
                 onTap: { presentPhoto(scientificName) }
             )
-            .overlay { overlay() }
+            // The lift follows the picture's own rounded outline. Left unsaid,
+            // the system takes the view's square bounds and draws a hard
+            // border around a shape that isn't there.
+            .contentShape(
+                .contextMenuPreview,
+                RoundedRectangle(
+                    cornerRadius: Self.gridThumbnailCornerRadius,
+                    style: .continuous
+                )
+            )
+            .contextMenu(menuItems: menu)
+
             // The name and its date are one caption, set tight together and
             // held away from the picture — otherwise the date floats between
             // the two and reads as if it belonged to neither.
@@ -874,24 +872,23 @@ struct LifeListView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+            .onTapGesture { presentPhoto(scientificName) }
+            .contextMenu(menuItems: menu)
         }
         .frame(width: Self.gridTileWidth, alignment: .top)
-        .contentShape(Rectangle())
-        .onTapGesture { presentPhoto(scientificName) }
-        // The lift a haptic touch gives the tile is drawn on an opaque platter
-        // cut to the tile's *bounds* — picture, name and date together — and
-        // that platter's edge is the hard outline that flashes around a pressed
-        // thumbnail. Naming the picture's own rounded rect cuts the platter to
-        // where the photograph already is, so its edge and the photograph's are
-        // the same edge and there is nothing left to see.
-        .contentShape(
-            .contextMenuPreview,
-            TilePhotoShape(
-                height: Self.gridThumbnailHeight,
-                width: (Self.gridThumbnailHeight * 4 / 3).rounded(),
-                cornerRadius: Self.gridThumbnailCornerRadius
-            )
-        )
+        // The control, outside both menus. Aligned to the top and given the
+        // photograph's own box, so it lands in the picture's bottom trailing
+        // corner without an offset to keep in step.
+        .overlay(alignment: .top) {
+            overlay()
+                .frame(
+                    width: Self.gridPhotoWidth,
+                    height: Self.gridThumbnailHeight,
+                    alignment: .bottomTrailing
+                )
+        }
     }
 
     /// The star toggle a life-list entry carries, at whatever size the layout
@@ -934,7 +931,7 @@ struct LifeListView: View {
 
     @ViewBuilder
     private func existingRow(entry: LifeListEntry) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Self.rowSpacing) {
             // Plain text, not a button: the row's actions are reached by
             // haptic touch anywhere on the row (see `.contextMenu` below), so
             // the name has no tap action of its own. The star and the
@@ -972,12 +969,11 @@ struct LifeListView: View {
                 presentPhoto(entry.scientificName)
             })
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 4)
+        .padding(.horizontal, Self.rowHorizontalPadding)
+        .padding(.vertical, Self.rowVerticalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        // The whole row opens the bird, not just its thumbnail. The star button
-        // sits inside this shape but is a `Button`, so it claims its own taps
-        // before they reach here.
+        // The whole row opens the bird, not just its thumbnail. The star
+        // claims its own taps before they reach here.
         .contentShape(Rectangle())
         .onTapGesture { presentPhoto(entry.scientificName) }
         .listRowInsets(EdgeInsets())
@@ -1021,29 +1017,35 @@ struct LifeListView: View {
             .tint(.kestrelEditGreen)
         }
         // Haptic touch anywhere on the row raises its actions — over the
-        // thumbnail and star as well as the name.
-        .contextMenu {
-            SpeciesRowMenu(
-                onEdit: { requestEdit(entry) },
-                onAddObservation: {
-                    beginAdd(
-                        scientificName: entry.scientificName,
-                        commonName: entry.commonName
-                    )
-                },
-                star: (entry.isStarred, {
-                    // The same single short tap the row's star button gives.
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                    store.setStarred(
-                        scientificName: entry.scientificName,
-                        isStarred: !entry.isStarred
-                    )
-                }),
-                onViewImage: { presentPhoto(entry.scientificName) },
-                // Routed through the same chooser / confirmation as the swipe.
-                onDelete: { requestDelete(entry) }
-            )
-        }
+        // thumbnail and star as well as the name. A `List` hoists this to the
+        // whole cell whatever it is attached to, which is why the star has to
+        // fend the press off itself: see `swallowsLongPress`.
+        .contextMenu { entryMenu(entry) }
+    }
+
+    /// A life-list row's haptic-touch actions.
+    @ViewBuilder
+    private func entryMenu(_ entry: LifeListEntry) -> some View {
+        SpeciesRowMenu(
+            onEdit: { requestEdit(entry) },
+            onAddObservation: {
+                beginAdd(
+                    scientificName: entry.scientificName,
+                    commonName: entry.commonName
+                )
+            },
+            star: (entry.isStarred, {
+                // The same single short tap the row's star button gives.
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                store.setStarred(
+                    scientificName: entry.scientificName,
+                    isStarred: !entry.isStarred
+                )
+            }),
+            onViewImage: { presentPhoto(entry.scientificName) },
+            // Routed through the same chooser / confirmation as the swipe.
+            onDelete: { requestDelete(entry) }
+        )
     }
 
     /// Catalog suggestion — species not yet on the life list. Trailing
@@ -1051,7 +1053,7 @@ struct LifeListView: View {
     /// so the tap is "I've seen this" rather than "alert me on this."
     @ViewBuilder
     private func suggestionRow(scientificName: String, commonName: String) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: Self.rowSpacing) {
             Text(commonName)
                 .font(.headline)
             Spacer()
@@ -1060,6 +1062,12 @@ struct LifeListView: View {
             // add flow puts it there — at which point the row is replaced by the
             // species' real life-list row on the same frame (see `visibleRows`).
             // There is no in-between state for a checkmark to describe.
+            // Always a plus, never a checkmark: a suggestion row is by
+            // definition a bird that isn't on the list yet, and confirming the
+            // add flow puts it there — at which point the row is replaced by
+            // the species' real life-list row on the same frame (see
+            // `visibleRows`). There is no in-between state for a checkmark to
+            // describe.
             AddGlyphButton(isAdded: false) {
                 // A Life List add is a bird the user is recalling, so it asks
                 // when, then where, before writing anything. See `beginAdd`.
@@ -1072,13 +1080,16 @@ struct LifeListView: View {
                 presentPhoto(scientificName)
             })
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 4)
+        .padding(.horizontal, Self.rowHorizontalPadding)
+        .padding(.vertical, Self.rowVerticalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         // Same whole-row tap the life-list rows carry; the add button claims
         // its own taps.
         .contentShape(Rectangle())
         .onTapGesture { presentPhoto(scientificName) }
+        .contextMenu {
+            suggestionMenu(scientificName: scientificName, commonName: commonName)
+        }
         .listRowInsets(EdgeInsets())
         .listRowSeparator(.hidden)
         // Redundant with the plus button sitting right there, but every other
@@ -1095,14 +1106,18 @@ struct LifeListView: View {
         // Same haptic-touch menu the life-list rows carry, minus the two
         // actions a suggestion has nothing to apply them to: there is no entry
         // to delete, and no bird on the list yet to be alerted about.
-        .contextMenu {
-            SpeciesRowMenu(
-                onAddObservation: {
-                    beginAdd(scientificName: scientificName, commonName: commonName)
-                },
-                onViewImage: { presentPhoto(scientificName) }
-            )
-        }
+    }
+
+    /// A suggestion row's haptic-touch actions — no Edit, no Delete: there is
+    /// nothing on record to act on yet.
+    @ViewBuilder
+    private func suggestionMenu(scientificName: String, commonName: String) -> some View {
+        SpeciesRowMenu(
+            onAddObservation: {
+                beginAdd(scientificName: scientificName, commonName: commonName)
+            },
+            onViewImage: { presentPhoto(scientificName) }
+        )
     }
 
     // MARK: - Add / edit / delete
@@ -1445,8 +1460,35 @@ private struct ImportInfoSheet: View {
 
     /// The height the copy and the button want, measured — see `CardSizing`.
     @State private var idealHeight: CGFloat?
+    /// The height the content actually got, so the chrome around it can be
+    /// worked out rather than guessed. See `CardSizing`.
+    @State private var laidOutHeight: CGFloat?
     /// The display's height, so a card can be stopped short of filling it.
     @State private var displayHeight: CGFloat = 0
+    /// The height asked for, and the detent that asks for it. `.medium` only
+    /// for the frame or two before the first measurement lands.
+    @State private var cardHeight: CGFloat?
+    @State private var detent: PresentationDetent = .medium
+
+    private var detents: Set<PresentationDetent> {
+        [cardHeight.map(PresentationDetent.height) ?? .medium]
+    }
+
+    /// Re-asks `CardSizing` for the card's height whenever one of its inputs
+    /// moves, and pins the presentation to the answer — a detent set whose
+    /// members change out from under a presentation does not reliably re-pick
+    /// on its own, and what it fell back to was half height.
+    private func resize() {
+        guard let height = CardSizing.height(
+            ideal: idealHeight,
+            laidOut: laidOutHeight,
+            asked: cardHeight,
+            displayHeight: displayHeight
+        ) else { return }
+        guard abs(height - (cardHeight ?? 0)) > 0.5 else { return }
+        cardHeight = height
+        detent = .height(height)
+    }
 
     // A bare `NavigationStack` for one toolbar item: the close button. The date
     // card's is the system's cancel-role button in a top-leading toolbar item,
@@ -1464,19 +1506,25 @@ private struct ImportInfoSheet: View {
                 }
         }
         // Tall enough for the copy, whatever the copy turns out to be.
-        .presentationDetents(
-            CardSizing.detents(contentHeight: idealHeight, displayHeight: displayHeight)
-        )
+        .presentationDetents(detents, selection: $detent)
         // Hidden grab handle to match the map's settings card (MapCardSheet).
         .presentationDragIndicator(.hidden)
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
         } action: { displayHeight = max(displayHeight, $0) }
+        .onChange(of: idealHeight) { _, _ in resize() }
+        .onChange(of: laidOutHeight) { _, _ in resize() }
+        .onChange(of: displayHeight) { _, _ in resize() }
     }
 
     private var content: some View {
         card(measuring: false)
             .measuringIdealHeight($idealHeight) { card(measuring: true) }
+            // What the content was actually given, which is the other half of
+            // working out what the presentation spends on chrome.
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                laidOutHeight = $0
+            }
     }
 
     /// The card's own content. `measuring` drops the spring that pushes the
@@ -1499,6 +1547,13 @@ private struct ImportInfoSheet: View {
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .tint(.accentColor)
+                    // Wrap, never truncate. Inside a stack with a spring in it
+                    // a `Text` is free to answer a height proposal by dropping
+                    // to one line and ending in an ellipsis, and it did: the
+                    // card had room to spare and still cut its explanation off
+                    // mid-sentence. `fixedSize` vertically makes it take the
+                    // lines it needs and the stack work around that.
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 28)
 
@@ -1557,7 +1612,35 @@ private struct ExportInfoSheet: View {
     /// paragraph and a half and two full-width buttons, and the fraction it
     /// used to be pinned to was a number that happened to fit on one phone.
     @State private var idealHeight: CGFloat?
+    /// The height the content actually got, so the chrome around it can be
+    /// worked out rather than guessed. See `CardSizing`.
+    @State private var laidOutHeight: CGFloat?
+    /// The display's height, so a card can be stopped short of filling it.
     @State private var displayHeight: CGFloat = 0
+    /// The height asked for, and the detent that asks for it. `.medium` only
+    /// for the frame or two before the first measurement lands.
+    @State private var cardHeight: CGFloat?
+    @State private var detent: PresentationDetent = .medium
+
+    private var detents: Set<PresentationDetent> {
+        [cardHeight.map(PresentationDetent.height) ?? .medium]
+    }
+
+    /// Re-asks `CardSizing` for the card's height whenever one of its inputs
+    /// moves, and pins the presentation to the answer — a detent set whose
+    /// members change out from under a presentation does not reliably re-pick
+    /// on its own, and what it fell back to was half height.
+    private func resize() {
+        guard let height = CardSizing.height(
+            ideal: idealHeight,
+            laidOut: laidOutHeight,
+            asked: cardHeight,
+            displayHeight: displayHeight
+        ) else { return }
+        guard abs(height - (cardHeight ?? 0)) > 0.5 else { return }
+        cardHeight = height
+        detent = .height(height)
+    }
 
     /// The same bare-toolbar close button the import card carries — see the
     /// comment there.
@@ -1570,13 +1653,14 @@ private struct ExportInfoSheet: View {
                     }
                 }
         }
-        .presentationDetents(
-            CardSizing.detents(contentHeight: idealHeight, displayHeight: displayHeight)
-        )
+        .presentationDetents(detents, selection: $detent)
         .presentationDragIndicator(.hidden)
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.height + proxy.safeAreaInsets.top + proxy.safeAreaInsets.bottom
         } action: { displayHeight = max(displayHeight, $0) }
+        .onChange(of: idealHeight) { _, _ in resize() }
+        .onChange(of: laidOutHeight) { _, _ in resize() }
+        .onChange(of: displayHeight) { _, _ in resize() }
         .fileExporter(
             isPresented: $session.isSaving,
             document: session.document,
@@ -1615,6 +1699,11 @@ private struct ExportInfoSheet: View {
     private var content: some View {
         card(measuring: false)
             .measuringIdealHeight($idealHeight) { card(measuring: true) }
+            // What the content was actually given, which is the other half of
+            // working out what the presentation spends on chrome.
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: {
+                laidOutHeight = $0
+            }
     }
 
     private func card(measuring: Bool) -> some View {
@@ -1634,6 +1723,13 @@ private struct ExportInfoSheet: View {
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.secondary)
                     .tint(.accentColor)
+                    // Wrap, never truncate. Inside a stack with a spring in it
+                    // a `Text` is free to answer a height proposal by dropping
+                    // to one line and ending in an ellipsis, and it did: the
+                    // card had room to spare and still cut its explanation off
+                    // mid-sentence. `fixedSize` vertically makes it take the
+                    // lines it needs and the stack work around that.
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 28)
 
@@ -1889,33 +1985,61 @@ nonisolated struct EBirdCSVDocument: FileDocument {
 /// tuned on. What it does then is clip, which for a card whose entire job is to
 /// explain something is the one failure it cannot afford.
 ///
-/// So the card measures. A copy of its own content is laid out at the card's
-/// width with `fixedSize` vertically, which is what makes it report the height
-/// it *wants* rather than the height it has been squeezed into; that copy is
-/// hidden, so it costs a layout pass and nothing else. The measurement becomes
-/// a `.height` detent, floored so a very short card is not a sliver and capped
-/// at `maximumFraction` of the display so a very long one becomes scrollable
-/// rather than taller than the screen.
+/// So the card measures, twice, because there are two unknowns.
+///
+/// **What the content wants.** A copy of it is laid out at the card's width
+/// with `fixedSize` vertically, which is what makes it report the height it
+/// *wants* rather than the height it has been squeezed into. The copy is
+/// hidden, so it costs a layout pass and nothing else.
+///
+/// **What the presentation takes.** A detent's height is the whole sheet —
+/// the navigation bar the close button sits in, the home indicator's
+/// clearance, and the 8pt iOS insets a sheet by, none of which the content
+/// ever sees. That was a constant at first and it was 25pt short, which is one
+/// line of body copy: the card came up looking right and quietly truncated its
+/// last sentence. It is measured now — what was asked for, less what the
+/// content actually got — so it is exact on whatever chrome the system decides
+/// to draw.
 enum CardSizing {
-    /// Chrome the content does not measure but the detent must pay for: the
-    /// navigation bar the close button lives in, and the home indicator's
-    /// clearance at the bottom.
-    static let chromeAllowance: CGFloat = 92
+    /// The chrome to assume for the first layout, before the real figure can
+    /// be measured. Only ever wrong for a frame.
+    static let chromeAllowance: CGFloat = 100
     /// The least a card may be.
     static let minimumHeight: CGFloat = 300
     /// The most, as a share of the display. Past this the card would be a
     /// full-screen sheet wearing a detent's clothes.
     static let maximumFraction: CGFloat = 0.92
 
-    /// The detent for a measured content height, or `.medium` until the
-    /// measurement lands.
-    static func detents(contentHeight: CGFloat?, displayHeight: CGFloat) -> Set<PresentationDetent> {
-        guard let contentHeight, contentHeight > 0 else { return [.medium] }
+    /// The height the card should be, or `nil` before its content has been
+    /// measured.
+    ///
+    /// Stable at a fixed point: asking for `ideal + chrome` leaves the content
+    /// exactly `ideal` tall, which re-measures the same `chrome`, which asks
+    /// for the same height.
+    ///
+    /// - Parameters:
+    ///   - ideal: The height the content wants.
+    ///   - laidOut: The height the content actually got, last time round.
+    ///   - asked: The height that was requested to produce `laidOut`.
+    ///   - displayHeight: The whole display, so a card can be stopped short of
+    ///     filling it.
+    static func height(
+        ideal: CGFloat?,
+        laidOut: CGFloat?,
+        asked: CGFloat?,
+        displayHeight: CGFloat
+    ) -> CGFloat? {
+        guard let ideal, ideal > 0 else { return nil }
+        let chrome: CGFloat = {
+            guard let asked, let laidOut, laidOut > 0, asked > laidOut else {
+                return chromeAllowance
+            }
+            return asked - laidOut
+        }()
         let ceiling = displayHeight > 0
             ? displayHeight * maximumFraction
             : .greatestFiniteMagnitude
-        let wanted = contentHeight + chromeAllowance
-        return [.height(min(max(wanted, minimumHeight), ceiling))]
+        return min(max(ideal + chrome, minimumHeight), ceiling)
     }
 }
 
@@ -1939,28 +2063,6 @@ extension View {
                     }
             }
         }
-    }
-}
-
-/// The top-centred photograph inside a Life List grid tile, as a shape.
-///
-/// A tile is a picture with two lines of text under it, and a `Shape` is handed
-/// the whole tile; this trims that back to the picture. Its one use is cutting
-/// a haptic touch's preview platter, which is otherwise the tile's square
-/// bounds and reads as a hard outline drawn around the picture and its name.
-private struct TilePhotoShape: Shape {
-    let height: CGFloat
-    let width: CGFloat
-    let cornerRadius: CGFloat
-
-    nonisolated func path(in rect: CGRect) -> Path {
-        let photo = CGRect(
-            x: rect.midX - width / 2,
-            y: rect.minY,
-            width: width,
-            height: min(height, rect.height)
-        )
-        return RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).path(in: photo)
     }
 }
 

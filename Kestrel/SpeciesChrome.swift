@@ -30,6 +30,16 @@ enum SpeciesChrome {
     /// One value, so the capsule and the panel can never drift apart. Raise the
     /// opacity to darken both.
     static let glass: Glass = .regular.tint(.black.opacity(0.55))
+
+    /// The colour a tappable thing on the panel is drawn in.
+    ///
+    /// Not the accent colour, which is the solid, fully-saturated purple meant
+    /// for filling a control. This is text on a dark glass panel over a
+    /// photograph, where the same job is done by the paler purple the watch
+    /// draws a new lifer's name in and the Identify tab washes its add rows
+    /// with — one definition, in `HighlightedText`, so all three stay the same
+    /// purple.
+    static let linkTint: Color = HighlightedText.addHighlight
 }
 
 // MARK: - Name capsule
@@ -108,7 +118,10 @@ struct SpeciesNameCapsule: View {
 /// presentation of its own to put a sheet on) passes neither, and the same
 /// panel renders the same facts as plain text.
 struct SpeciesInfoPanel: View {
-    let item: SpeciesPhotoItem
+    /// The bird the panel describes, or `nil` when there isn't one yet — the
+    /// Identify pane before anything has been heard, which shows the panel with
+    /// its heading and nothing under it rather than showing no panel at all.
+    let item: SpeciesPhotoItem?
     /// A heading set above everything else in the panel — the bird's name,
     /// where the host has nowhere else to put it. The full-screen viewer does
     /// (its own capsule, or the navigation bar) and passes `nil`; the Identify
@@ -136,7 +149,7 @@ struct SpeciesInfoPanel: View {
     var title: String?
 
     private var info: SpeciesPhotoInfo? {
-        SpeciesPhotoMetadata.shared.info(for: item.scientificName)
+        item.flatMap { SpeciesPhotoMetadata.shared.info(for: $0.scientificName) }
     }
 
     var body: some View {
@@ -155,11 +168,13 @@ struct SpeciesInfoPanel: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            sightingSection
+            if let item {
+                sightingSection(item)
+            }
 
             if let info {
                 attribution(info)
-            } else {
+            } else if item != nil {
                 // No photo for this species yet — reassure the user one is
                 // coming, in the same slot the attribution would occupy.
                 Text("Photo coming soon!")
@@ -187,7 +202,7 @@ struct SpeciesInfoPanel: View {
     /// sightings to whoever can present them — there is no one place and date
     /// to print, and listing them all would swamp the panel.
     @ViewBuilder
-    private var sightingSection: some View {
+    private func sightingSection(_ item: SpeciesPhotoItem) -> some View {
         if observations.count > 1 {
             countLine(observations.count)
         } else if item.showsAllObservations && observations.isEmpty {
@@ -200,7 +215,7 @@ struct SpeciesInfoPanel: View {
         } else {
             // `observations` is empty for a pin-scoped item, so this is where
             // its own sighting is printed.
-            singleSighting(observations.first ?? observation)
+            singleSighting(observations.first ?? observation, item: item)
         }
     }
 
@@ -216,7 +231,7 @@ struct SpeciesInfoPanel: View {
             }
         }
         .font(.subheadline)
-        .foregroundStyle(onShowObservations == nil ? Color.white : Color.accentColor)
+        .foregroundStyle(onShowObservations == nil ? Color.white : SpeciesChrome.linkTint)
         // The same generous hit area the single place-and-date line gets.
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
@@ -236,7 +251,10 @@ struct SpeciesInfoPanel: View {
 
     /// Place + date for a bird with one sighting to its name.
     @ViewBuilder
-    private func singleSighting(_ sighting: LifeListEntry.Observation?) -> some View {
+    private func singleSighting(
+        _ sighting: LifeListEntry.Observation?,
+        item: SpeciesPhotoItem
+    ) -> some View {
         let place = sighting?.location ?? item.placeName
         let date = sighting?.date ?? item.dateFound
         // Whether "Show on Map" has anywhere to go. A host's callback quietly
@@ -260,7 +278,7 @@ struct SpeciesInfoPanel: View {
                     }
                     .font(.subheadline)
                     .multilineTextAlignment(.center)
-                    .foregroundStyle(mappable ? Color.accentColor : Color.white)
+                    .foregroundStyle(mappable ? SpeciesChrome.linkTint : Color.white)
                 }
                 Text(date, format: ObservationDate.dayStyle)
                     .font(.subheadline)
@@ -298,7 +316,7 @@ struct SpeciesInfoPanel: View {
             if info.sourceURL != nil {
                 Text("View source")
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(Color.accentColor)
+                    .foregroundStyle(SpeciesChrome.linkTint)
             }
         }
         .padding(.horizontal, 4)
