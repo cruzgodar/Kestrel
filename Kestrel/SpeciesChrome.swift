@@ -21,22 +21,34 @@ enum SpeciesChrome {
     /// got by *placing* them rather than by bending their corners.
     static let cornerPillRadius: CGFloat = 24
 
-    /// The glass both pieces are cut from: tinted dark, so white text and an
-    /// accent-coloured link stay legible over a bright photograph. Untinted
-    /// glass takes its brightness from whatever is behind it, and behind this
-    /// is a photograph — a bird against a pale sky lifted the panel to nearly
-    /// white and took the text with it.
-    ///
-    /// One value, so the capsule and the panel can never drift apart. Raise
-    /// `glassTint` to darken both.
-    static let glass: Glass = .regular.tint(.black.opacity(glassTint))
+    /// The glass the viewer's chrome is cut from — the name capsule, the info
+    /// panel, and the Back and More buttons alike, so all four read as one set.
+    static let glass: Glass = .regular.tint(.black.opacity(glassTintOpacity))
 
-    /// How dark that glass is over a photograph.
-    static let glassTint: Double = 0.55
+    /// How dark that glass is. Raise it to darken all four pieces together;
+    /// 0 is plain system glass.
+    static let glassTintOpacity: Double = 0.3
 
-    /// How dark the half-screen pane's panel is, which is darker.
+    /// The glass Back and More are cut from: `glass`, reacting to a press.
     ///
-    /// Its own figure because it is not over a photograph. The pane's panel
+    /// The bar's own glass behind a button can't be tinted — a prominent
+    /// button style tints a `Button` but a toolbar `Menu` ignores it and
+    /// spends the tint on its glyph instead — so the viewer hides the bar's
+    /// background and each button draws this itself (`SpeciesChromeButtonLabel`).
+    static let buttonGlass: Glass = glass.interactive()
+
+    /// The diameter of a bar button's glass, the system's own size for one.
+    static let buttonSize: CGFloat = 44
+
+    /// How much farther in from the display edge the bar sets an item whose
+    /// shared background is hidden than it sets its own glass button —
+    /// measured in the simulator, and taken back off so Back and More land
+    /// where the system's buttons do.
+    static let buttonBarInset: CGFloat = 10
+
+    /// How dark the half-screen pane's panel is.
+    ///
+    /// Tinted because it is not over a photograph. The pane's panel
     /// sits mostly on the coloured card — a pale wash on a pale background —
     /// and glass over that is far lighter than glass over a picture, which
     /// left white text on it thinner than the same text in the viewer.
@@ -116,6 +128,31 @@ struct SpeciesNameCapsule: View {
             // absorbs; the transparent fit budget around it stays pass-through.
             .contentShape(shape)
             .onTapGesture { }
+    }
+}
+
+// MARK: - Bar buttons
+
+/// The face of the viewer's Back and More buttons: a glyph in a circle of the
+/// chrome's glass, standing in for the bar's untintable background.
+///
+/// Not a `Label`: the bar draws a label's icon itself and drops every
+/// modifier on it, glass included. The title goes to VoiceOver instead.
+struct SpeciesChromeButtonLabel: View {
+    let title: String
+    let systemImage: String
+
+    var body: some View {
+        ZStack {
+            Image(systemName: systemImage)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(.white)
+        }
+        .frame(width: SpeciesChrome.buttonSize, height: SpeciesChrome.buttonSize)
+        .glassEffect(SpeciesChrome.buttonGlass, in: .circle)
+        .contentShape(.circle)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
     }
 }
 

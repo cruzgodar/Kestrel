@@ -604,9 +604,10 @@ struct SpeciesPhotoFullScreen: View {
         // Driving it from the same gate as the card hands the status bar back the
         // moment the card starts away.
         .toolbarColorScheme(statusBarLight ? .dark : nil, for: .navigationBar)
-        // The same single tap that used to fade the floating chrome now takes the
-        // whole bar with it, and a zoom still auto-hides it.
-        .toolbar(uiVisible ? .visible : .hidden, for: .navigationBar)
+        // The bar itself stays up when a tap or a zoom hides the chrome: hiding
+        // it slides the items away instead of fading them with the info panel,
+        // and mid-slide the system redraws their glass a good deal lighter.
+        // Each item fades itself instead — see `barItem`.
         // Back and More are real bar items rather than glass circles we place
         // ourselves. Only system bar items take part when the system runs its
         // bars vertically — a foldable's outer display, and its inner display in
@@ -619,8 +620,12 @@ struct SpeciesPhotoFullScreen: View {
             // Leading at the top of a vertical bar, per the platform's placement
             // for a back/close control.
             ToolbarItem(placement: .cancellationAction) {
-                backButton
+                barItem(backButton)
             }
+            // The bar's own glass is untinted and cannot be tinted — see
+            // `SpeciesChrome.buttonGlass` — so it is taken off and each button
+            // wears the chrome's glass instead.
+            .sharedBackgroundVisibility(.hidden)
             // The species name, placed by the system in the middle of the bar —
             // which is exactly between Back and More, on any display, with no
             // measuring on our part. A principal item rather than
@@ -630,17 +635,18 @@ struct SpeciesPhotoFullScreen: View {
             // entirely where the capsule has moved into a corner of its own.
             if !panelHugsCorner, let item = currentItem {
                 ToolbarItem(placement: .principal) {
-                    SpeciesNameCapsule(
+                    barItem(SpeciesNameCapsule(
                         name: commonName(for: item),
                         contentWidth: contentWidth
-                    )
+                    ))
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {
                 if let item = currentItem {
-                    menuButton(for: item)
+                    barItem(menuButton(for: item))
                 }
             }
+            .sharedBackgroundVisibility(.hidden)
         }
         }
         }
@@ -855,13 +861,25 @@ struct SpeciesPhotoFullScreen: View {
         }
     }
 
-    /// Carries a title as well as a symbol: a bar item with only an image stays
-    /// horizontal when the system lays its bars out vertically, and this one has
-    /// to go into the vertical bar with the rest.
+    /// A bar item that fades with the rest of the chrome, the same way the info
+    /// panel does, rather than leaving with the bar.
+    private func barItem(_ content: some View) -> some View {
+        content
+            .opacity(uiVisible ? 1 : 0)
+            .allowsHitTesting(uiVisible)
+    }
+
+    /// A glyph in the chrome's own glass (`SpeciesChromeButtonLabel`), not a
+    /// system `Label`, because the bar's glass can't be tinted to match the
+    /// capsule and panel. Its title is for VoiceOver only now, so the system
+    /// no longer has one to show where it runs its bars vertically.
     private var backButton: some View {
         Button { dismissViewer() } label: {
-            Label("Back", systemImage: "chevron.backward")
+            SpeciesChromeButtonLabel(title: "Back", systemImage: "chevron.backward")
         }
+        // With its background hidden the bar still insets the item as though it
+        // had a platter; this puts the circle back where the system's sat.
+        .padding(.leading, -SpeciesChrome.buttonBarInset)
     }
 
     /// Whether this screen has anywhere to send a "show me this on the map" tap.
@@ -938,13 +956,15 @@ struct SpeciesPhotoFullScreen: View {
                 onDelete: actionable ? { deleteSighting(of: item) } : nil
             )
         } label: {
-            // Title as well as symbol, for the vertical bar — see `backButton`.
+            // The same face as `backButton`.
             // Never tinted for the star: this is a menu button, not a star
             // toggle, and coloring it made it read as a control whose state you
             // could change by tapping it, when tapping only opens a menu. The
             // star's own state is stated plainly inside that menu.
-            Label("More actions", systemImage: "ellipsis")
+            SpeciesChromeButtonLabel(title: "More actions", systemImage: "ellipsis")
         }
+        // See `backButton`.
+        .padding(.trailing, -SpeciesChrome.buttonBarInset)
     }
 
     /// Edit from the menu.

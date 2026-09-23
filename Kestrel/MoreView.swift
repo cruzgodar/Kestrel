@@ -58,7 +58,7 @@ struct MoreView: View {
             } header: {
                 Text("Alert After No Detections")
             } footer: {
-                Text("After Kestrel doesn\u{2019}t hear any birds for some time, it can send a notification asking whether to end the session to save battery life.")
+                Text("After Kestrel doesn\u{2019}t hear any birds for some time, it can offer to end the session to save battery life.")
             }
 
             // A single soft haptic for the everyday birds that otherwise buzz
