@@ -82,33 +82,47 @@ nonisolated struct DisplayLayout: Equatable {
 
     // MARK: - What each screen does with it
 
-    /// Where the Identify tab's species pane goes, and how big it is. `nil`
-    /// where there is no room for one, which is every phone, a foldable's
-    /// outer display, and either side of a split.
+    /// The Identify tab's species pane: how much of the tab it takes, and the
+    /// display's own corner radius so its card can be cut concentric. `nil`
+    /// where there is no room for one.
+    ///
+    /// Width is the axis it needs. A pane and a list side by side each want a
+    /// column, and only a display with width going spare has two to give; a
+    /// tall one divided the other way gave the pane a band the wrong shape for
+    /// a photograph and took the height from the list to pay for it. Where the
+    /// height is what is going spare, the tab spends it on bigger rows
+    /// instead — see `identifyRowsAreLarge`.
     var speciesPane: SpeciesPane? {
-        guard isExpanded else { return nil }
-        // Split along the long axis, so the pane and the list each get a shape
-        // they can use: side by side across a wide display, stacked down a tall
-        // one.
-        if isLandscape {
-            let inset = size.width / 2 - safeArea.leading
-            guard inset > 0 else { return nil }
-            return SpeciesPane(
-                placement: .leadingHalf,
-                contentInset: inset,
-                safeArea: safeArea,
-                displayCornerRadius: cornerRadius
-            )
-        }
-        let inset = size.height / 2 - safeArea.top
+        guard isExpanded, isLandscape else { return nil }
+        let inset = size.width / 2 - safeArea.leading
         guard inset > 0 else { return nil }
         return SpeciesPane(
-            placement: .topHalf,
             contentInset: inset,
             safeArea: safeArea,
             displayCornerRadius: cornerRadius
         )
     }
+
+    /// Whether the Identify list draws its rows at the larger of its two
+    /// sizes.
+    ///
+    /// Where the tab has a display's worth of room and is not giving half of
+    /// it to the species pane — which is to say, a large display held
+    /// portrait. The list has the whole width and more height than it has
+    /// birds to put in it, so it spends both on bigger photographs rather than
+    /// on a longer column of the same small ones.
+    var identifyRowsAreLarge: Bool { isExpanded && speciesPane == nil }
+
+    /// Whether a new lifer's row carries a full-width photograph under it.
+    ///
+    /// Only where nothing else on screen is already showing that bird big. On
+    /// a phone the hero is the one place its photograph appears, and worth
+    /// three rows' height for it. On a large display it is either the same
+    /// picture twice — the species pane is showing it beside the list — or a
+    /// third one, next to rows whose own thumbnails are already twice the size
+    /// (see `identifyRowsAreLarge`). Both cases give the row back the shape
+    /// every other row has: name, the purple add button, thumbnail.
+    var identifyShowsHeroRows: Bool { !isExpanded }
 
     /// Whether the Life List draws itself as a grid of photographs rather than
     /// a column of rows.
@@ -133,17 +147,9 @@ nonisolated struct DisplayLayout: Equatable {
 /// The half of the Identify tab the list steps out of, so the species pane can
 /// stand in it.
 nonisolated struct SpeciesPane: Equatable {
-    enum Placement {
-        /// Beside the list, on a display with width to spare.
-        case leadingHalf
-        /// Above the list, on a display with height to spare.
-        case topHalf
-    }
-
-    let placement: Placement
-
-    /// How far the tab's content is pushed in, measured **from the content's
-    /// own edge** — which the safe area may already have moved.
+    /// How far the tab's content is pushed in from its leading edge, measured
+    /// **from the content's own edge** — which the safe area may already have
+    /// moved.
     ///
     /// Insetting the content is deliberate, rather than giving it a half-size
     /// frame aligned the other way: SwiftUI hands a child the container's
@@ -156,8 +162,7 @@ nonisolated struct SpeciesPane: Equatable {
 
     /// What the system's bars took out of the display, which the pane needs
     /// because it is laid out full-bleed and so is told nothing about them by
-    /// its own proxy. Only the horizontal pair is used, by the placement that
-    /// keeps clear of them — see `HalfScreenSpeciesView`.
+    /// its own proxy.
     let safeArea: EdgeInsets
 
     /// The display's own corner radius, so the pane's card can be cut

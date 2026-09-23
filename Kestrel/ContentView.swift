@@ -64,9 +64,20 @@ struct ContentView: View {
     /// pane is something the user is actively looking at rather than a running
     /// commentary on the list. It catches up on the next bird after they zoom
     /// back out.
+    ///
+    /// Nothing at the top of the list clears the pane instead, back to the
+    /// placeholder and a panel that says it is listening. That is what
+    /// starting a session looks like from here — the detections go first, and
+    /// leaving the last bird of the last session standing over an empty list
+    /// would read as one that had just been heard. A zoom does not hold this
+    /// back: the picture being looked at is gone from the list it came from.
     private func showNewestOnPane(_ scientificName: String?) {
-        guard pane != nil, let scientificName, !paneZoomed else { return }
-        guard scientificName != paneSpecies else { return }
+        guard pane != nil else { return }
+        guard let scientificName else {
+            paneSpecies = nil
+            return
+        }
+        guard !paneZoomed, scientificName != paneSpecies else { return }
         paneSpecies = scientificName
     }
 
@@ -75,7 +86,19 @@ struct ContentView: View {
     /// can be cut concentric with it. `nil` anywhere there is no fold — every
     /// iPhone, a foldable's outer display, and either side of a split — where
     /// there is no pane at all.
-    @State private var pane: SpeciesPane?
+    @State private var layout: DisplayLayout?
+
+    /// The half the tab gives up, or `nil` where it gives up none.
+    private var pane: SpeciesPane? { layout?.speciesPane }
+
+    /// Height of the trailing thumbnail on detection rows, at whichever of its
+    /// two sizes this display calls for — see
+    /// `DisplayLayout.identifyRowsAreLarge`.
+    private var thumbnailHeight: CGFloat {
+        layout?.identifyRowsAreLarge == true
+            ? Self.largeRowThumbnailHeight
+            : Self.rowThumbnailHeight
+    }
     /// The bird the pane is showing. Follows the top of the list on its own
     /// (see `showNewestOnPane`) until the user taps a different one.
     @State private var paneSpecies: String?
@@ -98,6 +121,12 @@ struct ContentView: View {
 
     /// Height of the trailing thumbnail on detection rows. Width follows at 4:3.
     private static let rowThumbnailHeight: CGFloat = 72
+
+    /// The same, where the tab has a large display to itself and no species
+    /// pane to give half of it to — see `DisplayLayout.identifyRowsAreLarge`.
+    /// The row is built around the thumbnail, so this is what makes the whole
+    /// row taller.
+    private static let largeRowThumbnailHeight: CGFloat = rowThumbnailHeight * 2
 
     /// Height of the spectrogram strip pinned above the results while recording.
     private static let spectrogramHeight: CGFloat = 80
@@ -246,7 +275,7 @@ struct ContentView: View {
         // Everything above — list, spectrogram, placeholder and the floating
         // record button — is confined to the trailing half where there is a
         // display wide enough to be opened out.
-        .speciesPaneInset($pane)
+        .speciesPaneInset($layout)
 
         // ...and the half it gave up becomes the species pane. A background
         // rather than a sibling in a stack: the tab keeps its own identity and
@@ -262,7 +291,6 @@ struct ContentView: View {
                     // showing, so the next bird heard is compared against the
                     // page the user actually landed on.
                     onPage: { paneSpecies = $0 },
-                    placement: pane.placement,
                     safeArea: pane.safeArea,
                     displayCornerRadius: pane.displayCornerRadius
                 )
@@ -270,10 +298,9 @@ struct ContentView: View {
                 // own half of that. Handing it a half-sized frame to be
                 // aligned in was the obvious thing and it was wrong: a
                 // background is aligned inside what is left of the display
-                // after the bars, so the half landed a bar's width down in one
-                // placement and a bar's width *up* in the other, and the
-                // card's corners were then nowhere near the glass's for their
-                // radius to answer to.
+                // after the bars, so the half landed a bar's width in from
+                // where it belonged and the card's corners were then nowhere
+                // near the glass's for their radius to answer to.
                 .ignoresSafeArea()
             }
         }
@@ -285,7 +312,7 @@ struct ContentView: View {
         }
         // A bird tapped on the list crossfades the pane; when it later drops
         // back down the list, the pane keeps showing it.
-        .onChange(of: pane) { _, pane in
+        .onChange(of: layout?.speciesPane) { _, pane in
             if pane != nil, paneSpecies == nil {
                 showNewestOnPane(manager.detections.first?.scientificName)
             }
@@ -617,12 +644,13 @@ struct ContentView: View {
 
         // The hero image is what makes a new lifer's row three times the height
         // of every other one — worth it on a phone, where it is the only place
-        // that bird's photograph appears. With the species pane up it is the
-        // same photograph twice on one screen, so the row goes back to the
-        // shape the others have: name, the purple add button, thumbnail. That
-        // is exactly the Life List's own suggestion row, which is where the
-        // add button sits to the left of the image.
-        let showsHero = needsLifeListAdd && pane == nil
+        // that bird's photograph appears, and not on a display big enough to
+        // be showing that bird large already. See
+        // `DisplayLayout.identifyShowsHeroRows`; without it the row goes back
+        // to the shape the others have: name, the purple add button,
+        // thumbnail. That is exactly the Life List's own suggestion row, which
+        // is where the add button sits to the left of the image.
+        let showsHero = needsLifeListAdd && layout?.identifyShowsHeroRows != false
 
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 12) {
@@ -665,7 +693,7 @@ struct ContentView: View {
                 if !showsHero {
                     SpeciesThumbnail(
                         scientificName: detection.scientificName,
-                        height: Self.rowThumbnailHeight,
+                        height: thumbnailHeight,
                         // Routed through the tab rather than left to the
                         // presenter's default, so a tap moves the species pane
                         // where there is one instead of covering the list with
@@ -798,35 +826,27 @@ struct ContentView: View {
 /// Whether there is room at all, and which half is given up, comes from
 /// `DisplayLayout` — width and height, never a device or a pose.
 private struct SpeciesPaneInset: ViewModifier {
-    /// The half given up, reported back so the caller can put something in it.
-    /// `nil` wherever there isn't room for a pane, where the modifier is inert.
-    @Binding var pane: SpeciesPane?
-
-    private var leadingInset: CGFloat {
-        pane?.placement == .leadingHalf ? (pane?.contentInset ?? 0) : 0
-    }
-
-    private var topInset: CGFloat {
-        pane?.placement == .topHalf ? (pane?.contentInset ?? 0) : 0
-    }
+    /// How much room the tab has and everything that follows from it — the
+    /// half given up to the pane, if there is one, and how big the list's rows
+    /// are. Reported back so the caller can put something in that half.
+    @Binding var layout: DisplayLayout?
 
     func body(content: Content) -> some View {
         content
-            .padding(.leading, leadingInset)
-            .padding(.top, topInset)
+            .padding(.leading, layout?.speciesPane?.contentInset ?? 0)
             // Outside the padding, so it measures the space the tab was given
             // rather than the space left after insetting it — otherwise each
             // pass would halve the last one.
-            .onGeometryChange(for: SpeciesPane?.self) { proxy in
-                DisplayLayout(proxy).speciesPane
-            } action: { pane = $0 }
+            .onGeometryChange(for: DisplayLayout.self) { DisplayLayout($0) } action: {
+                layout = $0
+            }
     }
 }
 
 extension View {
     /// See `SpeciesPaneInset`.
-    fileprivate func speciesPaneInset(_ pane: Binding<SpeciesPane?>) -> some View {
-        modifier(SpeciesPaneInset(pane: pane))
+    fileprivate func speciesPaneInset(_ layout: Binding<DisplayLayout?>) -> some View {
+        modifier(SpeciesPaneInset(layout: layout))
     }
 }
 

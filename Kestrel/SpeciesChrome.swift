@@ -27,9 +27,23 @@ enum SpeciesChrome {
     /// is a photograph — a bird against a pale sky lifted the panel to nearly
     /// white and took the text with it.
     ///
-    /// One value, so the capsule and the panel can never drift apart. Raise the
-    /// opacity to darken both.
-    static let glass: Glass = .regular.tint(.black.opacity(0.55))
+    /// One value, so the capsule and the panel can never drift apart. Raise
+    /// `glassTint` to darken both.
+    static let glass: Glass = .regular.tint(.black.opacity(glassTint))
+
+    /// How dark that glass is over a photograph.
+    static let glassTint: Double = 0.55
+
+    /// How dark the half-screen pane's panel is, which is darker.
+    ///
+    /// Its own figure because it is not over a photograph. The pane's panel
+    /// sits mostly on the coloured card — a pale wash on a pale background —
+    /// and glass over that is far lighter than glass over a picture, which
+    /// left white text on it thinner than the same text in the viewer.
+    static let paneGlassTint: Double = 0.72
+
+    /// The glass the half-screen pane's panel is cut from. See `paneGlassTint`.
+    static let paneGlass: Glass = .regular.tint(.black.opacity(paneGlassTint))
 
     /// The colour a tappable thing on the panel is drawn in.
     ///
@@ -144,6 +158,10 @@ struct SpeciesInfoPanel: View {
     /// True where the panel is tucked into a display corner — see
     /// `SpeciesChrome.cornerPillRadius`.
     var hugsCorner: Bool = false
+    /// The glass to cut it from. The default is the one the viewer wears over
+    /// a photograph; the half-screen pane passes a darker one — see
+    /// `SpeciesChrome.paneGlassTint`.
+    var glass: Glass = SpeciesChrome.glass
     /// The heading, if the host wants one. Declared last so the existing
     /// call sites are untouched.
     var title: String?
@@ -188,7 +206,7 @@ struct SpeciesInfoPanel: View {
         .padding(.vertical, 14)
         .padding(.horizontal, 24)
         .frame(maxWidth: min(contentWidth - 80, 360))
-        .glassEffect(SpeciesChrome.glass, in: shape)
+        .glassEffect(glass, in: shape)
         // Swallow taps on blank areas of the panel so tapping the chrome
         // doesn't fire the photo's single-tap-to-hide. The inner map button /
         // source link keep working — their own gestures take precedence over
@@ -330,5 +348,87 @@ struct SpeciesInfoPanel: View {
         } else {
             block
         }
+    }
+}
+
+/// The wash a bird's chrome takes, the same one its row carries in the Identify
+/// list: purple for a bird not yet on the life list, blue for a starred one,
+/// grey for the rest.
+///
+/// The list leaves that last case untinted, because a row sits on the list's
+/// own background and needs no help to read as a row. The species pane's card
+/// has nothing behind it but the tab, so its plain case is a grey of the same
+/// weight rather than nothing at all.
+enum SpeciesTint: Equatable {
+    /// Not on the life list when the session began.
+    case newLifer
+    /// On the list, and starred.
+    case starred
+    /// Neither.
+    case plain
+
+    /// How much of the tint is laid over what is behind it. One figure for all
+    /// three, so they read as a set; the same one the rows wash themselves
+    /// with, so a bird's card and a bird's row are the same colour.
+    static let opacity: Double = 0.35
+
+    /// Grey at the weight of the other two. It cannot literally share their
+    /// HSB value — a colour with no saturation at brightness 1 is white — so
+    /// what it shares is the opacity and a mid brightness, which lands it at
+    /// the lightness the two washes come out at over a pale background.
+    private static let plainBase = Color(hue: 0, saturation: 0, brightness: 0.5)
+
+    /// Which wash a bird takes.
+    ///
+    /// `lifeListSnapshot` is the life list as it stood when the session began
+    /// (see `RecordingManager.lifeListSnapshot`), so a bird's colour does not
+    /// change under the user the instant they add it.
+    init(scientificName: String, lifeListSnapshot: Set<String>, starredNames: Set<String>) {
+        if !lifeListSnapshot.contains(scientificName) {
+            self = .newLifer
+        } else if starredNames.contains(scientificName) {
+            self = .starred
+        } else {
+            self = .plain
+        }
+    }
+
+    /// The tint at full strength.
+    var base: Color {
+        switch self {
+        case .newLifer: HighlightedText.addHighlight
+        case .starred: HighlightedText.starHighlight
+        case .plain: Self.plainBase
+        }
+    }
+
+    /// The tint as it is drawn.
+    var color: Color { base.opacity(Self.opacity) }
+
+    /// One tint `fraction` of the way to another, for a card whose colour has
+    /// to follow a swipe rather than jump when it lands.
+    ///
+    /// Mixed in RGB and drawn once, rather than the two washes stacked with
+    /// complementary opacities: stacked, the pair composite one over the other
+    /// instead of blending, and the total loses about a tenth of its strength
+    /// halfway across — the card visibly pales as the finger passes the middle.
+    static func blend(_ from: SpeciesTint, to: SpeciesTint, fraction: Double) -> Color {
+        let t = min(max(fraction, 0), 1)
+        guard from != to, t > 0 else { return from.color }
+        let a = from.components
+        let b = to.components
+        return Color(
+            .sRGB,
+            red: a.red + (b.red - a.red) * t,
+            green: a.green + (b.green - a.green) * t,
+            blue: a.blue + (b.blue - a.blue) * t,
+            opacity: opacity
+        )
+    }
+
+    private var components: (red: Double, green: Double, blue: Double) {
+        var red: CGFloat = 0, green: CGFloat = 0, blue: CGFloat = 0, alpha: CGFloat = 0
+        UIColor(base).getRed(&red, green: &green, blue: &blue, alpha: &alpha)
+        return (Double(red), Double(green), Double(blue))
     }
 }

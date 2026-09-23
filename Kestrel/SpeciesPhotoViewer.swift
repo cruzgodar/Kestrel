@@ -105,6 +105,13 @@ struct PagePlacement: Hashable {
     let spansDisplay: Bool
     let left: CGFloat
     let right: CGFloat
+    /// The radius the picture's own corners are cut to. Part of this value
+    /// because a page is a snapshot taken when it scrolled in: a radius that
+    /// changed afterwards — the pane being handed a new display's curve, or a
+    /// rotation giving it a different card — would be honoured by every page
+    /// built after the change and ignored by the one actually on screen, which
+    /// is a picture that is visibly the wrong shape until it is swiped away.
+    var cornerRadius: CGFloat = 0
 }
 
 struct PageCommand: Equatable {
@@ -1288,6 +1295,15 @@ struct PhotoPager<Page: View>: UIViewControllerRepresentable {
     /// Reports whether the pager is settled (true) or mid-swipe (false). Used to
     /// hold each page's full-resolution swap until the motion stops.
     var onSettledChange: ((Bool) -> Void)? = nil
+    /// The swipe as it happens: the page it started from, and how far it has
+    /// travelled — −1 to 1, negative toward the previous page, 0 at rest.
+    ///
+    /// `onIndexChange` already says *which* page a swipe has committed to, but
+    /// it says it once, halfway across. Anything that has to move with the
+    /// finger rather than snap when it lands — the pane's card takes its colour
+    /// from the bird, and the colour crosses over as the picture does — needs
+    /// the whole of the travel.
+    var onSwipeProgress: ((_ from: Int, _ fraction: CGFloat) -> Void)? = nil
     /// Everything a built page captured that can still change after it was built.
     /// A page is a snapshot taken by `makeHost` when it scrolled in, and nothing
     /// pushed a later value into one — so whichever page was on screen when such
@@ -1323,7 +1339,7 @@ struct PhotoPager<Page: View>: UIViewControllerRepresentable {
             scrollView.contentInsetAdjustmentBehavior = .never
             // Report the index switch as soon as the swipe crosses the halfway
             // point, rather than waiting for `didFinishAnimating` (full settle).
-            context.coordinator.observeOffset(of: scrollView)
+            context.coordinator.observeOffset(of: scrollView, in: pvc)
         }
         return pvc
     }
@@ -1385,6 +1401,7 @@ struct PhotoPager<Page: View>: UIViewControllerRepresentable {
                 clamped > currentIndex ? .forward : .reverse
             pvc.setViewControllers([makeHost(clamped)], direction: direction, animated: true)
             currentIndex = clamped
+            parent.onSwipeProgress?(clamped, 0)
             if lastReportedIndex != clamped {
                 lastReportedIndex = clamped
                 parent.onIndexChange(clamped)
@@ -1398,36 +1415,86 @@ struct PhotoPager<Page: View>: UIViewControllerRepresentable {
             parent.onSettledChange?(settled)
         }
 
-        /// Watch the paging scroll view's offset and flip the reported index the
-        /// instant the swipe is more than halfway to the neighboring page. The
-        /// scroll view rests with the current page centered at `contentOffset.x ==
-        /// bounds.width`; a drag moves it within ±`bounds.width` of that, so the
-        /// signed fraction past center tells us how far toward the next/previous
-        /// page the swipe has travelled. We KVO the offset rather than become the
-        /// scroll view's delegate, which `UIPageViewController` owns internally.
-        func observeOffset(of scrollView: UIScrollView) {
-            offsetObservation = scrollView.observe(\.contentOffset, options: [.new]) { [weak self] scrollView, _ in
-                guard let self else { return }
-                let width = scrollView.bounds.width
-                guard width > 0 else { return }
-                let fraction = (scrollView.contentOffset.x - width) / width
-                // Mid-swipe whenever the content is off its resting center; the
-                // pager recenters to `width` (fraction 0) at every page boundary,
-                // so this reads true again the instant the swipe comes to rest.
-                self.reportSettled(abs(fraction) < 0.001)
-                let target: Int
-                if fraction >= 0.5 {
-                    target = self.currentIndex + 1
-                } else if fraction <= -0.5 {
-                    target = self.currentIndex - 1
-                } else {
-                    target = self.currentIndex
-                }
-                let clamped = min(max(target, 0), max(self.parent.count - 1, 0))
+        /// Watch the paging scroll view's offset, and read the pager's position
+        /// off the pages themselves: which one is under the middle of the
+        /// viewport, and how far the next one along has come.
+        ///
+        /// **Why the pages and not the offset.** The obvious reading is
+        /// arithmetic — the scroll view rests with the current page centred at
+        /// `contentOffset.x == bounds.width`, so the signed distance past that,
+        /// over the width, is how far the swipe has travelled. It is wrong in
+        /// three places, and all three showed.
+        ///
+        /// It needs a page it can call "current", and the only one available
+        /// (`currentIndex`) is not updated until the transition *finishes*. A
+        /// second swipe started before the first has landed — which is what
+        /// moving more than one bird means — is therefore measured from a page
+        /// that is already behind, and the whole reading is off by one: the
+        /// wrong bird reported, the wrong two colours mixed.
+        ///
+        /// It assumes the current page rests at `width`, which is only true
+        /// with a page on either side of it. At the ends of the list there is
+        /// no page on one side, the content is two pages rather than three, and
+        /// the arithmetic reads a permanent whole-page offset that is not
+        /// there.
+        ///
+        /// And it is recentred at every page boundary, *before* the transition
+        /// is declared finished — so between those two moments it reads "at
+        /// rest, on the page this swipe started from", and anything following
+        /// it snaps back a bird each time one goes by.
+        ///
+        /// Asking the pages where they are has none of those problems: they are
+        /// laid out at their real positions whatever the pager believes, at
+        /// both ends and mid-transition alike.
+        ///
+        /// We KVO the offset rather than become the scroll view's delegate,
+        /// which `UIPageViewController` owns internally.
+        func observeOffset(of scrollView: UIScrollView, in pvc: UIPageViewController) {
+            offsetObservation = scrollView.observe(\.contentOffset, options: [.new]) {
+                [weak self, weak pvc] scrollView, _ in
+                guard let self, let pvc,
+                      let position = self.position(in: scrollView, of: pvc) else { return }
+                self.parent.onSwipeProgress?(position.index, position.fraction)
+                // Mid-swipe whenever the nearest page is off centre, which it
+                // is for the whole of a drag and at no other time.
+                self.reportSettled(abs(position.fraction) < 0.001)
+                let clamped = min(max(position.index, 0), max(self.parent.count - 1, 0))
                 guard clamped != self.lastReportedIndex else { return }
                 self.lastReportedIndex = clamped
                 self.parent.onIndexChange(clamped)
             }
+        }
+
+        /// Where the pager is: the page nearest the middle of the viewport, and
+        /// how far past it the swipe has carried, as a share of one page's
+        /// pitch (−1 to 1, negative toward the previous page).
+        ///
+        /// The nearest page rather than the one under the centre, which is the
+        /// same thing away from the boundaries and better defined at them: the
+        /// index changes over exactly halfway between two pages, and the
+        /// fraction passes through ±0.5 as it does, so the pair either side of
+        /// the change describe the same position.
+        private func position(
+            in scrollView: UIScrollView,
+            of pvc: UIPageViewController
+        ) -> (index: Int, fraction: CGFloat)? {
+            let pages = pvc.children
+                .compactMap { $0 as? IndexedHost<Page> }
+                .filter { $0.view.superview != nil }
+                .map { (index: $0.index, midX: $0.view.convert($0.view.bounds, to: scrollView).midX) }
+                .sorted { $0.midX < $1.midX }
+            guard let first = pages.first else { return nil }
+            let centre = scrollView.contentOffset.x + scrollView.bounds.width / 2
+            // Measured between two laid-out pages where there are two, so it
+            // is the real pitch — page width plus the gutter — rather than an
+            // assumption about either.
+            let pitch = pages.count > 1
+                ? pages[1].midX - first.midX
+                : scrollView.bounds.width + parent.interPageSpacing
+            guard pitch > 0 else { return nil }
+            let nearest = pages.min { abs($0.midX - centre) < abs($1.midX - centre) } ?? first
+            let fraction = (centre - nearest.midX) / pitch
+            return (nearest.index, min(max(fraction, -1), 1))
         }
 
         deinit { offsetObservation?.invalidate() }
@@ -1475,6 +1542,11 @@ struct PhotoPager<Page: View>: UIViewControllerRepresentable {
             }
             guard completed, let host = pvc.viewControllers?.first as? IndexedHost<Page> else { return }
             currentIndex = host.index
+            // The offset observer's last word was "at rest" against the page
+            // the swipe *started* from — it recentres before the transition is
+            // declared finished — so anything tracking the swipe would be left
+            // holding the old page. Say it again now the settled page is known.
+            parent.onSwipeProgress?(host.index, 0)
             // The halfway observer has usually already reported this index; keep
             // both in sync so the next swipe measures from the settled page and
             // an aborted swipe (snap-back) still re-reports correctly.
