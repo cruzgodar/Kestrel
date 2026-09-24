@@ -27,7 +27,7 @@ enum SpeciesChrome {
 
     /// How dark that glass is. Raise it to darken all four pieces together;
     /// 0 is plain system glass.
-    static let glassTintOpacity: Double = 0.3
+    static let glassTintOpacity: Double = 0.1
 
     /// The glass Back and More are cut from: `glass`, reacting to a press.
     ///

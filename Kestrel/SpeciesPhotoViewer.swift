@@ -296,22 +296,31 @@ struct SpeciesPhotoFullScreen: View {
         // A slight drag that ends in a near-tap should not toggle the chrome — only
         // a genuine tap (no drag) should.
         guard !touchTracker.dragged else { return }
-        withAnimation(.easeInOut(duration: Self.uiToggleDuration)) { uiVisible.toggle() }
+        setUIVisible(!uiVisible)
+    }
+
+    /// Fades the chrome — the bar's items and the info panel together.
+    ///
+    /// The navigation bar itself stays up: hiding it slides its items away
+    /// (and back in) rather than fading them, however the change is animated.
+    /// An empty bar would still have the photo's scroll views draw their edge
+    /// effect under it, so those are switched off — see `hideTopEdgeEffect`.
+    private func setUIVisible(_ visible: Bool) {
+        guard visible != uiVisible else { return }
+        withAnimation(.easeInOut(duration: Self.uiToggleDuration)) { uiVisible = visible }
     }
 
     /// Hides the chrome if it's showing — used when a zoom begins, so a zoomed-in
     /// photo is never cluttered by the bar or the info panel.
     private func hideUIForZoom() {
-        guard uiVisible else { return }
-        withAnimation(.easeInOut(duration: Self.uiToggleDuration)) { uiVisible = false }
+        setUIVisible(false)
     }
 
     /// Shows the chrome if it's hidden — used when the photo returns to minimum
     /// zoom, so zooming back out reveals the bar and info panel again
     /// (mirroring `hideUIForZoom`).
     private func revealUIAfterZoom() {
-        guard !uiVisible else { return }
-        withAnimation(.easeInOut(duration: Self.uiToggleDuration)) { uiVisible = true }
+        setUIVisible(true)
     }
 
     var body: some View {
@@ -604,10 +613,7 @@ struct SpeciesPhotoFullScreen: View {
         // Driving it from the same gate as the card hands the status bar back the
         // moment the card starts away.
         .toolbarColorScheme(statusBarLight ? .dark : nil, for: .navigationBar)
-        // The bar itself stays up when a tap or a zoom hides the chrome: hiding
-        // it slides the items away instead of fading them with the info panel,
-        // and mid-slide the system redraws their glass a good deal lighter.
-        // Each item fades itself instead — see `barItem`.
+        // Never hidden, even with the chrome faded out — see `setUIVisible`.
         // Back and More are real bar items rather than glass circles we place
         // ourselves. Only system bar items take part when the system runs its
         // bars vertically — a foldable's outer display, and its inner display in
@@ -863,10 +869,16 @@ struct SpeciesPhotoFullScreen: View {
 
     /// A bar item that fades with the rest of the chrome, the same way the info
     /// panel does, rather than leaving with the bar.
+    ///
+    /// Forced dark like the panel, too. The bar's own scheme follows the status
+    /// bar (`toolbarColorScheme`), which goes back to the app's light scheme
+    /// once a swipe-to-dismiss has dragged the card most of the way out of the
+    /// top safe area — and in the light scheme the items' glass turns pale.
     private func barItem(_ content: some View) -> some View {
         content
             .opacity(uiVisible ? 1 : 0)
             .allowsHitTesting(uiVisible)
+            .environment(\.colorScheme, .dark)
     }
 
     /// A glyph in the chrome's own glass (`SpeciesChromeButtonLabel`), not a
@@ -1357,6 +1369,7 @@ struct PhotoPager<Page: View>: UIViewControllerRepresentable {
         DispatchQueue.main.async {
             guard let scrollView = context.coordinator.pagingScrollView(in: pvc) else { return }
             scrollView.contentInsetAdjustmentBehavior = .never
+            hideTopEdgeEffect(of: scrollView)
             // Report the index switch as soon as the swipe crosses the halfway
             // point, rather than waiting for `didFinishAnimating` (full settle).
             context.coordinator.observeOffset(of: scrollView, in: pvc)
@@ -1854,6 +1867,7 @@ private struct ZoomableImageView: UIViewRepresentable {
         scroll.showsVerticalScrollIndicator = false
         scroll.showsHorizontalScrollIndicator = false
         scroll.contentInsetAdjustmentBehavior = .never
+        hideTopEdgeEffect(of: scroll)
         scroll.backgroundColor = .clear
         scroll.decelerationRate = .fast
 
@@ -2161,6 +2175,16 @@ private struct ZoomableImageView: UIViewRepresentable {
 /// gesture begin while zoomed. At zoom 1 the pan never starts, so horizontal
 /// drags fall through to `PhotoPager`'s paging scroll view and downward drags to
 /// the swipe-to-dismiss; pinch (a separate recognizer) still works at any zoom.
+/// Takes off the soft band a scroll view draws under the navigation bar.
+///
+/// The viewer's bar is never hidden (see `SpeciesPhotoFullScreen.setUIVisible`),
+/// so with the chrome faded out the band would be left over the top of the
+/// photo — a bar with nothing in it. The photo runs under the bar untouched
+/// instead, as it did when the bar used to leave with the chrome.
+func hideTopEdgeEffect(of scrollView: UIScrollView) {
+    scrollView.topEdgeEffect.isHidden = true
+}
+
 final class CenteringScrollView: UIScrollView {
     var imageView: UIImageView?
     /// Whether the resting size is the width-filling one rather than the fitting
