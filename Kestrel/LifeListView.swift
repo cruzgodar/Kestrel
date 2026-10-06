@@ -769,7 +769,9 @@ struct LifeListView: View {
                 // the same reason: a bird not on the list yet is added, not
                 // starred.
                 overlayControl {
-                    AddGlyphButton(isAdded: false, size: Self.gridOverlayRadius * 2) {
+                    AddGlyphButton(isAdded: false, size: Self.gridOverlayRadius * 2, hereAndNow: {
+                        await beginHereAndNowAdd(scientificName: scientificName, commonName: commonName)
+                    }) {
                         beginAdd(scientificName: scientificName, commonName: commonName)
                     }
                     .accessibilityLabel("Add \(commonName) to Life List")
@@ -1059,18 +1061,15 @@ struct LifeListView: View {
             Spacer()
             // Always a plus, never a checkmark: a suggestion row is by
             // definition a bird that isn't on the list yet, and confirming the
-            // add flow puts it there — at which point the row is replaced by the
-            // species' real life-list row on the same frame (see `visibleRows`).
-            // There is no in-between state for a checkmark to describe.
-            // Always a plus, never a checkmark: a suggestion row is by
-            // definition a bird that isn't on the list yet, and confirming the
             // add flow puts it there — at which point the row is replaced by
             // the species' real life-list row on the same frame (see
             // `visibleRows`). There is no in-between state for a checkmark to
             // describe.
-            AddGlyphButton(isAdded: false) {
-                // A Life List add is a bird the user is recalling, so it asks
-                // when, then where, before writing anything. See `beginAdd`.
+            AddGlyphButton(isAdded: false, hereAndNow: {
+                await beginHereAndNowAdd(scientificName: scientificName, commonName: commonName)
+            }) {
+                // A bird the user is recalling, so it asks when, then where,
+                // before writing anything. See `beginAdd`.
                 beginAdd(scientificName: scientificName, commonName: commonName)
             }
             .accessibilityLabel("Add \(commonName) to Life List")
@@ -1129,6 +1128,16 @@ struct LifeListView: View {
     /// sighting under a species that's already on the list.
     private func beginAdd(scientificName: String, commonName: String) {
         actions.add(scientificName: scientificName, commonName: commonName)
+    }
+
+    /// "Yes, here and now": filed outright, or the naming step when there is
+    /// no named place close enough to file it under.
+    private func beginHereAndNowAdd(scientificName: String, commonName: String) async {
+        actions.draft = await ObservationDraft.fileHereAndNow(
+            scientificName: scientificName,
+            commonName: commonName,
+            store: store
+        )
     }
 
     /// Edit, from a row that stands for the whole species. A bird seen once has
@@ -1462,31 +1471,6 @@ private struct ImportInfoSheet: View {
     @State private var idealHeight: CGFloat?
     /// What the presentation spends on chrome, measured. See `CardSizing`.
     @State private var chromeHeight: CGFloat?
-    /// The display's height, so a card can be stopped short of filling it.
-    @State private var displayHeight: CGFloat = 0
-    /// The height asked for, and the detent that asks for it. `.medium` only
-    /// for the frame or two before the first measurement lands.
-    @State private var cardHeight: CGFloat?
-    @State private var detent: PresentationDetent = .medium
-
-    private var detents: Set<PresentationDetent> {
-        [cardHeight.map(PresentationDetent.height) ?? .medium]
-    }
-
-    /// Re-asks `CardSizing` for the card's height whenever one of its inputs
-    /// moves, and pins the presentation to the answer — a detent set whose
-    /// members change out from under a presentation does not reliably re-pick
-    /// on its own, and what it fell back to was half height.
-    private func resize() {
-        guard let height = CardSizing.height(
-            ideal: idealHeight,
-            chrome: chromeHeight,
-            displayHeight: displayHeight
-        ) else { return }
-        guard abs(height - (cardHeight ?? 0)) > 0.5 else { return }
-        cardHeight = height
-        detent = .height(height)
-    }
 
     // A bare `NavigationStack` for one toolbar item: the close button. The date
     // card's is the system's cancel-role button in a top-leading toolbar item,
@@ -1504,19 +1488,9 @@ private struct ImportInfoSheet: View {
                 }
         }
         // Tall enough for the copy, whatever the copy turns out to be.
-        .presentationDetents(detents, selection: $detent)
+        .fittedCardDetent(.importInfo, ideal: idealHeight, chrome: chromeHeight)
         // Hidden grab handle to match the map's settings card (MapCardSheet).
         .presentationDragIndicator(.hidden)
-        // The display's height, read off the bottom of the sheet: a bottom
-        // sheet ends where the screen does, so how far down its own last point
-        // sits in the window *is* the display. Its own height is no use here —
-        // that is the thing being decided.
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.frame(in: .global).maxY + proxy.safeAreaInsets.bottom
-        } action: { displayHeight = max(displayHeight, $0) }
-        .onChange(of: idealHeight) { _, _ in resize() }
-        .onChange(of: chromeHeight) { _, _ in resize() }
-        .onChange(of: displayHeight) { _, _ in resize() }
     }
 
     private var content: some View {
@@ -1619,31 +1593,6 @@ private struct ExportInfoSheet: View {
     @State private var idealHeight: CGFloat?
     /// What the presentation spends on chrome, measured. See `CardSizing`.
     @State private var chromeHeight: CGFloat?
-    /// The display's height, so a card can be stopped short of filling it.
-    @State private var displayHeight: CGFloat = 0
-    /// The height asked for, and the detent that asks for it. `.medium` only
-    /// for the frame or two before the first measurement lands.
-    @State private var cardHeight: CGFloat?
-    @State private var detent: PresentationDetent = .medium
-
-    private var detents: Set<PresentationDetent> {
-        [cardHeight.map(PresentationDetent.height) ?? .medium]
-    }
-
-    /// Re-asks `CardSizing` for the card's height whenever one of its inputs
-    /// moves, and pins the presentation to the answer — a detent set whose
-    /// members change out from under a presentation does not reliably re-pick
-    /// on its own, and what it fell back to was half height.
-    private func resize() {
-        guard let height = CardSizing.height(
-            ideal: idealHeight,
-            chrome: chromeHeight,
-            displayHeight: displayHeight
-        ) else { return }
-        guard abs(height - (cardHeight ?? 0)) > 0.5 else { return }
-        cardHeight = height
-        detent = .height(height)
-    }
 
     /// The same bare-toolbar close button the import card carries — see the
     /// comment there.
@@ -1656,18 +1605,8 @@ private struct ExportInfoSheet: View {
                     }
                 }
         }
-        .presentationDetents(detents, selection: $detent)
+        .fittedCardDetent(.exportInfo, ideal: idealHeight, chrome: chromeHeight)
         .presentationDragIndicator(.hidden)
-        // The display's height, read off the bottom of the sheet: a bottom
-        // sheet ends where the screen does, so how far down its own last point
-        // sits in the window *is* the display. Its own height is no use here —
-        // that is the thing being decided.
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.frame(in: .global).maxY + proxy.safeAreaInsets.bottom
-        } action: { displayHeight = max(displayHeight, $0) }
-        .onChange(of: idealHeight) { _, _ in resize() }
-        .onChange(of: chromeHeight) { _, _ in resize() }
-        .onChange(of: displayHeight) { _, _ in resize() }
         .fileExporter(
             isPresented: $session.isSaving,
             document: session.document,
@@ -2017,7 +1956,46 @@ nonisolated struct EBirdCSVDocument: FileDocument {
 /// sheet was enough to shake it loose and land it somewhere else. Neither
 /// inset moves when the detent does, so measuring them is an answer: one pass,
 /// no loop, same height whether the card has been touched or not.
+///
+/// **When the answer is applied.** Not as each reading lands. Every one of
+/// them passes through nonsense while the sheet is presenting — the content is
+/// first laid out at about a quarter of the sheet's width, which makes the copy
+/// four times too tall, and the bar reports a taller inset than it settles on —
+/// so acting on each one resized the card three times inside the present
+/// animation. The simulator happened to get all three in before the first
+/// frame; a phone did not, and the card jumped into place instead of sliding.
+/// So readings are only acted on once they have stopped changing
+/// (`settleDelay`), and a card opens at the height it settled on last time
+/// (`remembered`), which makes the settled answer agree with where the sheet
+/// already is and leaves nothing to change at all. When it does differ — the
+/// first time a card is ever opened, or after the type size changes — the
+/// correction animates.
 enum CardSizing {
+    /// The cards that size themselves this way, each remembering its own
+    /// height.
+    enum Card: String {
+        case importInfo
+        case exportInfo
+    }
+
+    /// How long readings have to hold still before they count. Comfortably
+    /// longer than the burst of corrections a presenting sheet goes through,
+    /// and well inside its present animation.
+    static let settleDelay: Duration = .milliseconds(150)
+
+    private static func defaultsKey(_ card: Card) -> String { "CardSizing.\(card.rawValue)" }
+
+    /// The height `card` settled on the last time it was open, if it has
+    /// been open before.
+    static func remembered(_ card: Card) -> CGFloat? {
+        let height = UserDefaults.standard.double(forKey: defaultsKey(card))
+        return height > 0 ? height : nil
+    }
+
+    static func remember(_ height: CGFloat, for card: Card) {
+        UserDefaults.standard.set(Double(height), forKey: defaultsKey(card))
+    }
+
     /// The chrome to assume for the first layout, before the real figure can
     /// be measured. Only ever wrong for a frame.
     static let chromeAllowance: CGFloat = 100
@@ -2049,6 +2027,80 @@ enum CardSizing {
         // figure arrives.
         let chrome = (chrome ?? 0) > 0 ? (chrome ?? 0) : chromeAllowance
         return min(max(ideal + chrome, minimumHeight), ceiling)
+    }
+}
+
+extension View {
+    /// Sizes a sheet to its measured content — see `CardSizing`. `ideal` and
+    /// `chrome` are the two measurements the card takes of itself.
+    func fittedCardDetent(
+        _ card: CardSizing.Card,
+        ideal: CGFloat?,
+        chrome: CGFloat?
+    ) -> some View {
+        modifier(FittedCardDetent(card: card, ideal: ideal, chrome: chrome))
+    }
+}
+
+private struct FittedCardDetent: ViewModifier {
+    let card: CardSizing.Card
+    let ideal: CGFloat?
+    let chrome: CGFloat?
+
+    /// The display's height, so a card can be stopped short of filling it.
+    @State private var displayHeight: CGFloat = 0
+    /// The height asked for, and the detent that asks for it. A card that has
+    /// never been open asks for `.medium` until its first answer settles.
+    @State private var cardHeight: CGFloat?
+    @State private var detent: PresentationDetent
+
+    init(card: CardSizing.Card, ideal: CGFloat?, chrome: CGFloat?) {
+        self.card = card
+        self.ideal = ideal
+        self.chrome = chrome
+        let remembered = CardSizing.remembered(card)
+        _cardHeight = State(initialValue: remembered)
+        _detent = State(initialValue: remembered.map(PresentationDetent.height) ?? .medium)
+    }
+
+    private var detents: Set<PresentationDetent> {
+        [cardHeight.map(PresentationDetent.height) ?? .medium]
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .presentationDetents(detents, selection: $detent)
+            // The display's height, read off the bottom of the sheet: a bottom
+            // sheet ends where the screen does, so how far down its own last
+            // point sits in the window *is* the display. Its own height is no
+            // use here — that is the thing being decided.
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.frame(in: .global).maxY + proxy.safeAreaInsets.bottom
+            } action: { displayHeight = max(displayHeight, $0) }
+            // Restarted by every new reading, so only the last of a burst
+            // survives its wait. See `CardSizing`.
+            .task(id: [ideal ?? -1, chrome ?? -1, displayHeight]) {
+                do { try await Task.sleep(for: CardSizing.settleDelay) } catch { return }
+                resize()
+            }
+    }
+
+    /// Asks `CardSizing` for the card's height and pins the presentation to
+    /// the answer — a detent set whose members change out from under a
+    /// presentation does not reliably re-pick on its own, and what it fell
+    /// back to was half height.
+    private func resize() {
+        guard let height = CardSizing.height(
+            ideal: ideal,
+            chrome: chrome,
+            displayHeight: displayHeight
+        ) else { return }
+        CardSizing.remember(height, for: card)
+        guard abs(height - (cardHeight ?? 0)) > 0.5 else { return }
+        withAnimation(.smooth(duration: 0.3)) {
+            cardHeight = height
+            detent = .height(height)
+        }
     }
 }
 

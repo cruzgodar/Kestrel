@@ -636,13 +636,24 @@ final class LifeListStore {
         to coordinate: CLLocationCoordinate2D,
         within meters: CLLocationDistance
     ) async -> String? {
+        await nearestObservationPlace(to: coordinate, within: meters)?.name
+    }
+
+    /// `nearestObservationName(to:within:)` with the distance to that place
+    /// attached, for a caller that decides something by how far away it is —
+    /// the here-and-now add, which files under the name outright only when
+    /// it is close. `within` defaults to anywhere at all.
+    func nearestObservationPlace(
+        to coordinate: CLLocationCoordinate2D,
+        within meters: CLLocationDistance = .greatestFiniteMagnitude
+    ) async -> (name: String, distance: CLLocationDistance)? {
         // A value copy of the entry array (a retain, not a walk) is all that
         // happens on the main actor.
         let snapshot = entries
         let latitude = coordinate.latitude
         let longitude = coordinate.longitude
         return await Task.detached(priority: .userInitiated) {
-            Self.nearestObservationName(
+            Self.nearestObservationPlace(
                 toLatitude: latitude,
                 longitude: longitude,
                 within: meters,
@@ -651,18 +662,18 @@ final class LifeListStore {
         }.value
     }
 
-    /// The pure walk behind `nearestObservationName(to:within:)`. `nonisolated
+    /// The pure walk behind `nearestObservationPlace(to:within:)`. `nonisolated
     /// static`, taking its inputs by value, so it can run on a detached task —
     /// and so a test can drive it without a store.
     ///
     /// Takes bare coordinates rather than a `CLLocationCoordinate2D` so nothing
     /// about crossing an isolation boundary depends on that type's conformances.
-    nonisolated static func nearestObservationName(
+    nonisolated static func nearestObservationPlace(
         toLatitude targetLatitude: Double,
         longitude targetLongitude: Double,
         within meters: CLLocationDistance,
         in entries: [LifeListEntry]
-    ) -> String? {
+    ) -> (name: String, distance: CLLocationDistance)? {
         let target = CLLocation(latitude: targetLatitude, longitude: targetLongitude)
         var best: (distance: CLLocationDistance, name: String)?
         for entry in entries {
@@ -680,7 +691,7 @@ final class LifeListStore {
                 }
             }
         }
-        return best?.name
+        return best.map { (name: $0.name, distance: $0.distance) }
     }
 
     /// The common name the life list stores for a species, or `nil` when the

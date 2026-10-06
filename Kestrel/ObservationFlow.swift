@@ -46,6 +46,12 @@ struct ObservationDraft: Identifiable {
     /// work out its own suggestion (a nearby place you've already named, else
     /// the town).
     var placeName: String?
+    /// True for a sighting filed "here and now" from an add button's prompt
+    /// whose nearest named place was too far away to file it under outright.
+    /// Its date and coordinate are already settled — today, and where the
+    /// device is — so the flow skips the date and the map and opens straight
+    /// on the naming step. See `fileHereAndNow`.
+    var isHereAndNow = false
 
     /// Whether this flow may finish without a coordinate — and therefore whether
     /// the map opens with *no* pin instead of one on the user's current location.
@@ -75,6 +81,69 @@ struct ObservationDraft: Identifiable {
             // anyone far enough east or west.
             date: ObservationDate.today
         )
+    }
+
+    /// Ten miles. A sighting filed here and now goes straight onto the list
+    /// under the nearest place already named, as long as that place is within
+    /// this; any farther and the user is asked what to call where they are.
+    static let hereAndNowReuseRadius: CLLocationDistance = 16_093.44
+
+    /// Files a sighting of `scientificName` at the device's current location,
+    /// today — the "yes" answer to an add button's "did you see this bird here
+    /// and now?".
+    ///
+    /// With a named place within `hereAndNowReuseRadius` the sighting is
+    /// written outright under that name and this returns `nil`. Otherwise it
+    /// returns the draft to present: a here-and-now draft that opens on the
+    /// naming step, pre-filled with the nearest place name however far away it
+    /// is — or, when there is no current fix to file it at, the ordinary
+    /// when → where → name flow.
+    ///
+    /// "Current" means a fix inside `LocationCache.freshness`. The cache's own
+    /// fallback to an older coordinate is right for a map's default pin, which
+    /// the user can see and move, and wrong here, where nothing is shown before
+    /// the sighting is written. A watch session's fix counts: the watch feeds
+    /// its own coordinate into the cache, with or without the phone's location
+    /// permission.
+    static func fileHereAndNow(
+        scientificName: String,
+        commonName: String,
+        store: LifeListStore
+    ) async -> ObservationDraft? {
+        let fallback = ObservationDraft.adding(scientificName: scientificName, commonName: commonName)
+        let cache = LocationCache.shared
+        if !cache.isFresh() {
+            // Never prompts — the same rule the map picker's seed follows. A
+            // phone that has never been granted location just takes the
+            // ordinary flow.
+            let status = CLLocationManager().authorizationStatus
+            guard status == .authorizedWhenInUse || status == .authorizedAlways else {
+                return fallback
+            }
+            _ = await cache.current()
+        }
+        guard cache.isFresh(), let fix = cache.lastCoordinate else { return fallback }
+        let coordinate = CLLocationCoordinate2D(latitude: fix.latitude, longitude: fix.longitude)
+        let nearest = await store.nearestObservationPlace(to: coordinate)
+        if let nearest, nearest.distance <= hereAndNowReuseRadius {
+            store.recordObservation(
+                scientificName: scientificName,
+                commonName: commonName,
+                date: ObservationDate.today,
+                location: nearest.name,
+                latitude: coordinate.latitude,
+                longitude: coordinate.longitude
+            )
+            // The same two-pulse confirmation the naming step gives: this is
+            // the tap that wrote the sighting.
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            return nil
+        }
+        var draft = fallback
+        draft.coordinate = coordinate
+        draft.placeName = nearest?.name
+        draft.isHereAndNow = true
+        return draft
     }
 
     /// An edit of `observation`, opening on everything it currently holds.
@@ -129,7 +198,9 @@ extension View {
 /// sheet (see `ObservationDateSheet`), so it slides up over a sheet that stays
 /// put — the checkmark shows the map immediately instead of waiting out a sheet
 /// dismissal, and Back reveals the date sheet already sitting there rather than
-/// re-animating it in.
+/// re-animating it in. (A here-and-now draft has nothing to ask but the name,
+/// so the one sheet is the naming step instead — see
+/// `ObservationDraft.isHereAndNow`.)
 private struct ObservationFlowModifier: ViewModifier {
     @Binding var draft: ObservationDraft?
     /// Threaded rather than taken from the environment: `@Observable`
@@ -145,29 +216,50 @@ private struct ObservationFlowModifier: ViewModifier {
         // through the dismissal animation, so clearing the draft on save doesn't
         // blank the sheet out mid-slide.
         content.sheet(item: $draft) { presented in
-            ObservationDateSheet(
-                // Reads and writes the *live* draft so the wheel's value
-                // survives the detour out to the map and back.
-                date: Binding(
-                    get: { draft?.date ?? presented.date },
-                    set: { draft?.date = $0 }
-                ),
-                store: store,
-                initialCoordinate: presented.coordinate,
-                initialName: presented.placeName,
-                allowsMissingCoordinate: presented.allowsMissingCoordinate,
-                onCancel: { draft = nil },
-                onSave: { coordinate, name in
-                    commit(coordinate: coordinate, name: name)
-                    onCommit?()
-                    // Dismissing the date sheet takes its presented cover (and
-                    // the naming sheet above that) with it, so the whole stack
-                    // leaves in one animation rather than unwinding a step at a
-                    // time.
-                    draft = nil
-                }
-            )
+            if presented.isHereAndNow {
+                // Date and place are already settled; only the name is asked.
+                ObservationNameSheet(
+                    coordinate: presented.coordinate,
+                    store: store,
+                    initialName: presented.placeName,
+                    onCancel: { draft = nil },
+                    onSave: { name in
+                        commit(coordinate: presented.coordinate, name: name)
+                        onCommit?()
+                        draft = nil
+                    }
+                )
+            } else {
+                dateSheet(presented)
+            }
         }
+    }
+
+    /// The flow's usual first step, from which the map and the naming step
+    /// are raised in turn.
+    private func dateSheet(_ presented: ObservationDraft) -> some View {
+        ObservationDateSheet(
+            // Reads and writes the *live* draft so the wheel's value
+            // survives the detour out to the map and back.
+            date: Binding(
+                get: { draft?.date ?? presented.date },
+                set: { draft?.date = $0 }
+            ),
+            store: store,
+            initialCoordinate: presented.coordinate,
+            initialName: presented.placeName,
+            allowsMissingCoordinate: presented.allowsMissingCoordinate,
+            onCancel: { draft = nil },
+            onSave: { coordinate, name in
+                commit(coordinate: coordinate, name: name)
+                onCommit?()
+                // Dismissing the date sheet takes its presented cover (and
+                // the naming sheet above that) with it, so the whole stack
+                // leaves in one animation rather than unwinding a step at a
+                // time.
+                draft = nil
+            }
+        )
     }
 
     /// Writes the finished draft. An edit rewrites the sighting it started from;

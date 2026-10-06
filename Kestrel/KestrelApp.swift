@@ -232,6 +232,7 @@ struct KestrelApp: App {
             RootView(manager: recordingManager) {
                 mainInterface
             }
+            .phoneChrome()
         }
     }
 

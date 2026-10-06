@@ -669,13 +669,16 @@ struct ContentView: View {
                     // goes through a confirmation. Deleting a sighting belongs to
                     // the row's menu and swipe actions, which name what they act
                     // on and ask first.
-                    AddGlyphButton(isAdded: alreadyAdded) {
+                    AddGlyphButton(isAdded: alreadyAdded, hereAndNow: {
+                        await beginHereAndNowAdd(
+                            scientificName: detection.scientificName,
+                            commonName: detection.commonName
+                        )
+                    }) {
                         // Runs the same when → where → what's-it-called flow the
-                        // Life List tab uses. A live detection could be logged
-                        // here and now from the device's own fix, but that made
-                        // this the one add path that produced sightings with no
-                        // place name; going through the flow keeps every manual
-                        // add naming its location.
+                        // Life List tab uses. The here-and-now answer files from
+                        // the device's own fix, but still always under a place
+                        // name — see `ObservationDraft.fileHereAndNow`.
                         beginAdd(
                             scientificName: detection.scientificName,
                             commonName: detection.commonName
@@ -801,6 +804,16 @@ struct ContentView: View {
     /// is written until the naming step is confirmed.
     private func beginAdd(scientificName: String, commonName: String) {
         pendingObservation = .adding(scientificName: scientificName, commonName: commonName)
+    }
+
+    /// "Yes, here and now": filed outright, or the naming step when there is
+    /// no named place close enough to file it under.
+    private func beginHereAndNowAdd(scientificName: String, commonName: String) async {
+        pendingObservation = await ObservationDraft.fileHereAndNow(
+            scientificName: scientificName,
+            commonName: commonName,
+            store: lifeListStore
+        )
     }
 }
 

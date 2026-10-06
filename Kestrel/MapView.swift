@@ -939,7 +939,7 @@ struct MapView: View {
         //
         // So the bar steps aside instead, and the card is the system's own,
         // unaltered. On a phone this is invisible — the bar sits along the
-        // bottom edge, which the card covers at every detent either way — and
+        // bottom edge, which the card covers either way — and
         // on a display with a side bar it is the difference between a card
         // that has eaten the bar and a card that simply has the screen.
         .toolbar(mapCard == nil ? .visible : .hidden, for: .tabBar)
@@ -1385,9 +1385,9 @@ struct MapView: View {
         // pin where it was still changes what the card's menus should act on.
         //
         // Only from the life-list path (see the `.onChange` that passes
-        // `refreshCard`), never from a camera move: at the medium detent the map
-        // is live behind the card, so re-deriving on zoom would rewrite the
-        // card's contents under a user who was only panning.
+        // `refreshCard`), never from a camera move: the map is live behind the
+        // card, so re-deriving on zoom would rewrite the card's contents under
+        // a user who was only panning.
         if refreshCard { recomposeOpenCard(from: computed) }
         let oldReps = visibleReps
         var next: [String: RepInfo] = [:]
@@ -2232,23 +2232,6 @@ private struct MapCardSheet: View {
     /// here rather than on the map so its presentations layer over the card
     /// instead of making it leave first.
     @State private var actions = ObservationActions()
-    /// Current detent. A multi-bird cluster can be pulled up to `.large` to see
-    /// every bird.
-    @State private var detent: PresentationDetent = .medium
-    /// The horizontal safe area the card is covering, measured off the card
-    /// itself *after* it has been told to ignore it — see the overlay in
-    /// `body`. Spent as padding only at the full detent (`contentInsets`).
-    @State private var coveredSafeArea = EdgeInsets()
-
-    /// The detents allowed for the current card: clusters get medium + large;
-    /// no card (nil) falls back to medium.
-    private var detents: Set<PresentationDetent> {
-        switch card {
-        case .cluster: return [.medium, .large]
-        default:       return [.medium]
-        }
-    }
-
     /// Spacing between thumbnails, both between columns and rows.
     private static let gridSpacing: CGFloat = 12
     /// Target thumbnail width. The column count is chosen so each thumbnail is at
@@ -2302,28 +2285,6 @@ private struct MapCardSheet: View {
         max(0, sheetTopCornerRadius - Self.thumbInset + Self.thumbCornerRadiusAdjust)
     }
 
-    /// How long the content takes to narrow to the safe width as the card is
-    /// pulled up to full height, and to go full-bleed again on the way back
-    /// down. Shorter than the sheet's own travel on purpose: the insets are a
-    /// correction, and a correction that is still arriving after the card has
-    /// stopped moving reads as a second, separate animation.
-    private static let contentInsetDuration: Double = 0.1
-
-    /// Whether the card has been pulled up to fill the display.
-    private var isFullHeight: Bool { detent == .large }
-
-    /// What the content is inset by — nothing while the card is a strip along
-    /// the bottom, the safe area it is covering once it fills the display.
-    private var contentInsets: EdgeInsets {
-        guard isFullHeight else { return EdgeInsets() }
-        return EdgeInsets(
-            top: coveredSafeArea.top,
-            leading: coveredSafeArea.leading,
-            bottom: 0,
-            trailing: coveredSafeArea.trailing
-        )
-    }
-
     var body: some View {
         // A plain native sheet, matching the life-list import card: the system
         // draws the frosted surface and the corners (tight top, phone-concentric
@@ -2339,39 +2300,14 @@ private struct MapCardSheet: View {
                 Color.clear
             }
         }
-        // Full-bleed at the medium detent, safe-area-wide at the full one.
-        //
-        // A sheet is handed the scene's horizontal safe area, and honouring it
-        // stopped the grid a bar's width short of the card's own edge — 12pt
-        // of margin on one side and 88 on the other — for a bar that is not
-        // there to be avoided: it steps aside for as long as the card is up
-        // (see the map's `.toolbar(for: .tabBar)`). At the medium detent the
-        // card is a strip along the bottom, well clear of anything, and the
-        // grid's own `thumbInset` is the only margin it should keep.
-        //
-        // Pulled up to full height the card reaches the top of the display,
-        // where the status indicators and the camera cutout are, and there the
-        // safe area is describing something real. So the insets come back —
-        // the picture stops being edge to edge and the content narrows to the
-        // safe width, animating as the card rises rather than snapping when it
-        // arrives.
-        .padding(contentInsets)
-        .animation(.easeInOut(duration: Self.contentInsetDuration), value: isFullHeight)
+        // Full-bleed. A sheet is handed the scene's horizontal safe area, and
+        // honouring it stopped the grid a bar's width short of the card's own
+        // edge — 12pt of margin on one side and 88 on the other — for a bar
+        // that is not there to be avoided: it steps aside for as long as the
+        // card is up (see the map's `.toolbar(for: .tabBar)`). The card is a
+        // strip along the bottom, well clear of anything, and the grid's own
+        // `thumbInset` is the only margin it should keep.
         .ignoresSafeArea(.container, edges: .horizontal)
-        // Measured here, outside the `ignoresSafeArea` above, which is what
-        // makes the insets readable at all: inside it the card has already had
-        // them applied and reports zero. The overlay is an empty probe over
-        // the card's full-bleed frame, and `padding` above shrinks the content
-        // without shrinking that frame, so this cannot chase its own tail.
-        .overlay {
-            GeometryReader { proxy in
-                Color.clear
-                    .onGeometryChange(for: EdgeInsets.self) { _ in
-                        proxy.safeAreaInsets
-                    } action: { coveredSafeArea = $0 }
-            }
-            .allowsHitTesting(false)
-        }
         // Read the real top corner radius off the live presentation so the
         // thumbnails can be made concentric with it on any device.
         .background(
@@ -2388,7 +2324,9 @@ private struct MapCardSheet: View {
         // Layered over the card rather than replacing it, the same way the
         // full-screen photo is.
         .observationActions(actions, store: store)
-        .presentationDetents(detents, selection: $detent)
+        // Medium only: a cluster too big for the card scrolls in place rather
+        // than being pulled up over the map.
+        .presentationDetents([.medium])
         .presentationDragIndicator(.hidden)
         // Keep the map interactive (and undimmed) behind the card — this is what
         // lets you open other things from the card and tap the map to dismiss.
@@ -2521,8 +2459,8 @@ private struct MapCardSheet: View {
                     }
                 }
                 // Symmetric inset (shared with the thumbnail concentricity math);
-                // a bit more at the bottom so the last row clears the home
-                // indicator at the large detent.
+                // a bit more at the bottom so the last row clears the card's
+                // bottom edge.
                 .padding(.horizontal, Self.thumbInset)
                 .padding(.top, Self.thumbInset)
                 .padding(.bottom, 24)
