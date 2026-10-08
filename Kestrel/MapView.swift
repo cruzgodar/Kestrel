@@ -172,6 +172,11 @@ struct MapView: View {
         /// `nil` when the picker was confirmed with no pin down — see
         /// `seedsCurrentLocation`.
         let onConfirm: (CLLocationCoordinate2D?) -> Void
+        /// The commit button's title. The add flow's by default; the Targets
+        /// tab picks a place to look at rather than one to file a bird under.
+        var confirmTitle: String = "Save Observation"
+        /// What VoiceOver says the back button returns to.
+        var backAccessibilityLabel: String = "Back to the observation date"
     }
 
     /// Spelled out because the view's other stored properties are private, which
@@ -849,7 +854,7 @@ struct MapView: View {
                     // sheet), not on one that just moves the flow along.
                     picker.onConfirm(coordinate)
                 } label: {
-                    Text("Save Observation")
+                    Text(picker.confirmTitle)
                         .font(.title3.weight(.semibold))
                         .frame(height: 58)
                         .padding(.horizontal, 28)
@@ -874,7 +879,7 @@ struct MapView: View {
                     } label: {
                         Label("Back", systemImage: "chevron.left")
                     }
-                    .accessibilityLabel("Back to the observation date")
+                    .accessibilityLabel(picker.backAccessibilityLabel)
                 }
             }
             ToolbarItem(placement: .topBarTrailing) {

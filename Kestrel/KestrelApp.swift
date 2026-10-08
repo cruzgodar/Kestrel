@@ -122,7 +122,7 @@ struct KestrelApp: App {
     /// start/stop handshakes into `recordingManager`.
     private let watchBridge: WatchAudioBridge
 
-    enum AppTab: Hashable { case identify, lifeList, map, settings }
+    enum AppTab: Hashable { case identify, lifeList, map, targets, settings }
 
     init() {
         // Sweep the compiled CoreML models that pre-`CoreMLModelCache` builds
@@ -250,13 +250,18 @@ struct KestrelApp: App {
             Tab("Map", systemImage: "map", value: AppTab.map) {
                 MapView()
             }
+            Tab("Targets", systemImage: "target", value: AppTab.targets) {
+                NavigationStack {
+                    TargetsView()
+                }
+            }
             Tab("Settings", systemImage: "gearshape.fill", value: AppTab.settings) {
                 NavigationStack {
                     MoreView()
                 }
             }
         }
-        // Both tabs need both stores.
+        // Every tab needs both stores.
         .environment(recordingManager)
         .environment(lifeListStore)
         // Drives the full-screen photo viewer; read by every SpeciesPhoto

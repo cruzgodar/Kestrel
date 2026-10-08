@@ -587,22 +587,29 @@ struct ObservationNameSheet: View {
         if let nearby = await store.nearestObservationName(to: coordinate, within: Self.reuseRadius) {
             return nearby
         }
+        // Offline or rate-limited comes back nil: the field stays empty and
+        // the user types their own rather than being handed a guess.
+        return await Self.townName(at: coordinate)
+    }
+
+    /// The town a coordinate is in, by reverse geocoding — the naming step's
+    /// fallback suggestion, and the place the Targets tab says it is showing.
+    ///
+    /// `MKReverseGeocodingRequest` rather than `CLGeocoder`, which iOS 26
+    /// deprecated. `cityName` is the direct replacement for the placemark's
+    /// `locality` — the town on its own, with no state or street attached,
+    /// which is what a short place name wants. `cityWithContext` is the
+    /// fallback rather than `fullAddress`: out in a county with no
+    /// incorporated town, "Tompkins County, NY" is still a place a person
+    /// recognizes, whereas a street address is noise to type over.
+    static func townName(at coordinate: CLLocationCoordinate2D) async -> String? {
         let location = CLLocation(latitude: coordinate.latitude, longitude: coordinate.longitude)
-        // `MKReverseGeocodingRequest` rather than `CLGeocoder`, which iOS 26
-        // deprecated. `cityName` is the direct replacement for the placemark's
-        // `locality` — the town on its own, with no state or street attached,
-        // which is what a short place name wants. `cityWithContext` is the
-        // fallback rather than `fullAddress`: out in a county with no
-        // incorporated town, "Tompkins County, NY" is still a place a person
-        // recognizes, whereas a street address is noise to type over.
         guard let request = MKReverseGeocodingRequest(location: location) else { return nil }
         do {
             let items = try await request.mapItems
             guard let address = items.first?.addressRepresentations else { return nil }
             return address.cityName ?? address.cityWithContext
         } catch {
-            // Offline or rate-limited: leave the field empty and let the user
-            // type their own rather than guessing.
             Log.error("ObservationNameSheet: reverse geocode failed — \(error)")
             return nil
         }

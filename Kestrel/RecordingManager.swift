@@ -1655,6 +1655,22 @@ final class RecordingManager {
         }
     }
 
+    /// The geo model's per-species likelihoods at a place, for the current
+    /// BirdNET week — see `SpeciesRangeFilter.likelihoods`. Shares the session
+    /// recording already loads rather than standing up a second one. `nil` when
+    /// the model can't load or run.
+    func areaLikelihoods(latitude: Double, longitude: Double) async -> [Float]? {
+        guard let rangeFilter = await getRangeFilter() else { return nil }
+        do {
+            return try await rangeFilter.likelihoods(
+                lat: latitude, lon: longitude, week: SpeciesRangeFilter.birdnetWeek()
+            )
+        } catch {
+            Log.error("Area likelihoods failed — \(error)")
+            return nil
+        }
+    }
+
     private func getRangeFilter() async -> SpeciesRangeFilter? {
         if rangeFilterTask == nil { preload() }
         do {

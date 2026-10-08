@@ -56,6 +56,35 @@ actor SpeciesRangeFilter {
 
     /// Runs the geo model for the given location and persists the result.
     func computeAndCache(lat: Double, lon: Double, week: Int) throws -> Set<Int> {
+        let probs = try likelihoods(lat: lat, lon: lon, week: week)
+
+        var allowed: Set<Int> = []
+        allowed.reserveCapacity(512)
+        for (index, p) in probs.enumerated() where p >= Self.threshold {
+            allowed.insert(index)
+        }
+
+        let cached = CachedFilter(
+            latitude: lat,
+            longitude: lon,
+            week: week,
+            speciesCount: allowed.count,
+            allowedIndices: allowed.sorted(),
+            savedAt: Date()
+        )
+        try? Self.write(cached)
+        return allowed
+    }
+
+    /// The geo model's raw output for a place and week: one occurrence
+    /// likelihood per catalog index, in `SpeciesCatalog.all`'s order.
+    ///
+    /// Persists nothing, unlike `computeAndCache`. The Targets tab asks about
+    /// places the user has merely picked on a map, and the cache file is the
+    /// app's record of where the user actually *is* — writing a browsed place
+    /// into it would point the next recording's fallback filter at the wrong
+    /// continent.
+    func likelihoods(lat: Double, lon: Double, week: Int) throws -> [Float] {
         let samples: [Float] = [Float(lat), Float(lon), Float(week)]
         let byteCount = samples.count * MemoryLayout<Float>.stride
         let data = NSMutableData(length: byteCount)!
@@ -77,23 +106,7 @@ actor SpeciesRangeFilter {
         probs.withUnsafeMutableBytes { dst in
             outData.getBytes(dst.baseAddress!, length: outData.length)
         }
-
-        var allowed: Set<Int> = []
-        allowed.reserveCapacity(512)
-        for (index, p) in probs.enumerated() where p >= Self.threshold {
-            allowed.insert(index)
-        }
-
-        let cached = CachedFilter(
-            latitude: lat,
-            longitude: lon,
-            week: week,
-            speciesCount: allowed.count,
-            allowedIndices: allowed.sorted(),
-            savedAt: Date()
-        )
-        try? Self.write(cached)
-        return allowed
+        return probs
     }
 
     // MARK: Cache validity

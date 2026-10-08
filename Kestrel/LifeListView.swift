@@ -4,6 +4,17 @@ import UIKit
 import UniformTypeIdentifiers
 
 struct LifeListView: View {
+    /// Non-nil when this screen is the Targets tab rather than the Life List:
+    /// the same rows, grid, search and add flows, run over the birds expected
+    /// at one place instead of over the life list. See `targetRows`.
+    let targets: TargetsModel?
+
+    /// Spelled out because the view's other stored properties are private,
+    /// which makes the synthesized memberwise initializer private too.
+    init(targets: TargetsModel? = nil) {
+        self.targets = targets
+    }
+
     @Environment(LifeListStore.self) private var store
     /// Drives the full-screen viewer. Life-list rows open it over the whole
     /// ordered list so the user can swipe between birds.
@@ -143,6 +154,7 @@ struct LifeListView: View {
     /// before you could add anything. Worth knowing about before reading the
     /// subtitle as a description of everything below it.
     private var visibleRows: [SearchRow] {
+        if let targets { return targetRows(targets) }
         let lifeMatches = matchingEntries
         let q = trimmedSearch
         guard !q.isEmpty else { return lifeMatches.map { .existing($0) } }
@@ -160,6 +172,49 @@ struct LifeListView: View {
         }
         let rows = lifeMatches.map { SearchRow.existing($0) } + fresh
         return Self.partitionByRange(rows, allowed: allowedIndices)
+    }
+
+    /// The Targets tab's rows: the birds expected at the place that aren't on
+    /// the life list yet, then — under a heading — the ones that are, each run
+    /// in the model's order (most likely first). The search field narrows both;
+    /// it never reaches past the place into the wider catalog.
+    ///
+    /// Membership is read live from the store, so a bird added from here moves
+    /// down into the second run on the same frame its sighting is written.
+    private func targetRows(_ targets: TargetsModel) -> [SearchRow] {
+        guard let species = targets.species else { return [] }
+        let needle = trimmedSearch.lowercased()
+        let lookup = lifeListLookup
+        var unseen: [SearchRow] = []
+        var seen: [SearchRow] = []
+        for bird in species {
+            if !needle.isEmpty {
+                let hay = "\(bird.commonName) \(bird.scientificName)".lowercased()
+                guard Self.scoreMatch(hay, needle: needle, allowFuzzy: needle.count >= 3) != nil else { continue }
+            }
+            if let entry = lookup(bird) {
+                seen.append(.existing(entry))
+            } else {
+                unseen.append(.suggestion(scientificName: bird.scientificName, commonName: bird.commonName))
+            }
+        }
+        guard !seen.isEmpty else { return unseen }
+        return unseen + [.header("On your life list")] + seen
+    }
+
+    /// Finds a target's life-list entry. By common name as well as scientific,
+    /// for the same reason the catalog suggestions are: an entry filed under an
+    /// older genus is still the same bird.
+    private var lifeListLookup: (TargetsModel.AreaSpecies) -> LifeListEntry? {
+        var byScientific: [String: LifeListEntry] = [:]
+        var byCommon: [String: LifeListEntry] = [:]
+        for entry in store.entries {
+            byScientific[entry.scientificName] = entry
+            byCommon[entry.commonName.lowercased()] = entry
+        }
+        return { bird in
+            byScientific[bird.scientificName] ?? byCommon[bird.commonName.lowercased()]
+        }
     }
 
     /// The species currently rendered, in screen order — the swipe list the
@@ -377,11 +432,13 @@ struct LifeListView: View {
         }
         .onDisplayLayoutChange { isGrid = $0.lifeListIsGrid }
         .overlay {
+            if let targets {
+                targetsPlaceholder(targets)
             // Empty-state placeholder — only when there's nothing to search
             // through *and* no active query. With a query present the List
             // still shows catalog suggestions so the user can build a life
             // list from scratch via search.
-            if store.entries.isEmpty && trimmedSearch.isEmpty {
+            } else if store.entries.isEmpty && trimmedSearch.isEmpty {
                 ContentUnavailableView {
                     Label("Your life list is empty", systemImage: "bird")
                 } description: {
@@ -389,7 +446,7 @@ struct LifeListView: View {
                 }
             }
         }
-        .navigationTitle("Life List")
+        .navigationTitle(targets == nil ? "Life List" : "Targets")
         .navigationSubtitle(speciesCountText)
         // Keep the title big and leading-aligned on its own line (inlineLarge),
         // sitting level with the filter/import toolbar buttons.
@@ -429,7 +486,7 @@ struct LifeListView: View {
         .safeAreaInset(edge: .bottom, spacing: 0) {
             BottomSearchField(
                 text: $searchText,
-                prompt: "Search or add species",
+                prompt: targets == nil ? "Search or add species" : "Search targets",
                 horizontalInset: Self.searchFieldHorizontalInset,
                 // The chooser counts too: an edit started from it runs the same
                 // date → map → name flow, but out of that sheet's own draft
@@ -447,67 +504,8 @@ struct LifeListView: View {
                     proxy.frame(in: .global).minY
                 } action: { searchFieldTop = $0 }
         }
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    // Re-snapshot the currently-starred species each time the
-                    // filter is switched on. This frozen set drives which rows
-                    // show while filtering, so unstarring leaves a bird visible
-                    // until the filter is toggled off and on again.
-                    if !showStarredOnly {
-                        starredSnapshot = Set(
-                            store.entries.lazy.filter(\.isStarred).map(\.scientificName)
-                        )
-                    }
-                    showStarredOnly.toggle()
-                } label: {
-                    Image(systemName: "line.3.horizontal.decrease")
-                        .foregroundStyle(showStarredOnly ? .white : .primary)
-                        .frame(width: 28, height: 28)
-                        .background {
-                            // The star blue, not the app accent: the filter
-                            // shows starred species, so it takes the color of
-                            // the stars it filters to.
-                            Circle()
-                                .fill(Self.starButtonTint)
-                                .frame(
-                                    width: showStarredOnly ? 36 : 28,
-                                    height: showStarredOnly ? 36 : 28
-                                )
-                                .opacity(showStarredOnly ? 1 : 0)
-                        }
-                        .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
-                }
-                .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
-            }
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showImportInfo = true
-                } label: {
-                    Image(systemName: "square.and.arrow.down")
-                }
-                .accessibilityLabel("Import eBird CSV")
-            }
-            // No `ToolbarSpacer` between import and export: a spacer is what
-            // breaks the Liquid Glass capsule, so leaving it out is what joins
-            // the two into one. They are the same operation in two directions,
-            // and they read as a pair rather than as two unrelated controls.
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    showExportInfo = true
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .accessibilityLabel("Export eBird CSV")
-            }
-            // Trailing spacer to nudge the whole pair in from the screen edge.
-            // An `.offset` on the buttons themselves only slid the glyphs inside
-            // their fixed Liquid Glass capsules (the capsules are positioned by
-            // the toolbar, not the button content); a `ToolbarSpacer` sits
-            // outside the glass, so it moves the capsules as whole units.
-            ToolbarSpacer(.fixed, placement: .topBarTrailing)
-        }
+        // The Targets tab brings its own location button in place of these.
+        .toolbar { if targets == nil { lifeListToolbar } }
         // Recompute catalog suggestions whenever the query changes, but
         // wait out a short debounce so mid-typing keystrokes don't each
         // kick off a 6,500-species scan. SwiftUI cancels the previous
@@ -521,38 +519,17 @@ struct LifeListView: View {
         // what stops the added bird from rendering twice — that's handled on the
         // same frame by the filter in `visibleRows`, since this scan only lands
         // after the debounce.
+        //
+        // Not on the Targets tab, whose search only narrows the place's list.
         .task(id: "\(searchText)|\(allowedIndices != nil)|\(store.entries.count)") {
-            let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !q.isEmpty else {
-                if !asyncSuggestions.isEmpty { asyncSuggestions = [] }
-                return
-            }
-            do {
-                try await Task.sleep(for: .milliseconds(160))
-            } catch {
-                return
-            }
-            let needle = q.lowercased()
-            // The store's maintained membership set — the same one `visibleRows`
-            // reads — rather than a fresh one built per scan.
-            let lifeNames = store.speciesNames
-            let lifeCommonNames = Set(store.entries.map { $0.commonName.lowercased() })
-            let allowed = allowedIndices
-            let result = await Task.detached(priority: .userInitiated) {
-                Self.computeSuggestions(
-                    needle: needle,
-                    excluding: lifeNames,
-                    lifeCommonNames: lifeCommonNames,
-                    allowed: allowed
-                )
-            }.value
-            guard !Task.isCancelled else { return }
-            asyncSuggestions = result
+            guard targets == nil else { return }
+            await refreshSuggestions()
         }
         // Load the cached geo range filter once so search results can be
         // grouped into in-range / out-of-range birds. Reads straight off
         // disk — no ORT session is constructed.
         .task {
+            guard targets == nil else { return }
             let allowed = await Task.detached(priority: .utility) {
                 SpeciesRangeFilter.cachedAllowedIndices()
             }.value
@@ -597,6 +574,101 @@ struct LifeListView: View {
             onExport: { scope in Task { await beginExport(scope: scope) } },
             onExported: handleExport(_:)
         ))
+    }
+
+    /// The filter, import and export buttons.
+    @ToolbarContentBuilder
+    private var lifeListToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                // Re-snapshot the currently-starred species each time the
+                // filter is switched on. This frozen set drives which rows
+                // show while filtering, so unstarring leaves a bird visible
+                // until the filter is toggled off and on again.
+                if !showStarredOnly {
+                    starredSnapshot = Set(
+                        store.entries.lazy.filter(\.isStarred).map(\.scientificName)
+                    )
+                }
+                showStarredOnly.toggle()
+            } label: {
+                Image(systemName: "line.3.horizontal.decrease")
+                    .foregroundStyle(showStarredOnly ? .white : .primary)
+                    .frame(width: 28, height: 28)
+                    .background {
+                        // The star blue, not the app accent: the filter
+                        // shows starred species, so it takes the color of
+                        // the stars it filters to.
+                        Circle()
+                            .fill(Self.starButtonTint)
+                            .frame(
+                                width: showStarredOnly ? 36 : 28,
+                                height: showStarredOnly ? 36 : 28
+                            )
+                            .opacity(showStarredOnly ? 1 : 0)
+                    }
+                    .animation(.spring(response: 0.28, dampingFraction: 0.78), value: showStarredOnly)
+            }
+            .accessibilityLabel(showStarredOnly ? "Show all species" : "Show starred only")
+        }
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                showImportInfo = true
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+            }
+            .accessibilityLabel("Import eBird CSV")
+        }
+        // No `ToolbarSpacer` between import and export: a spacer is what
+        // breaks the Liquid Glass capsule, so leaving it out is what joins
+        // the two into one. They are the same operation in two directions,
+        // and they read as a pair rather than as two unrelated controls.
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                showExportInfo = true
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .accessibilityLabel("Export eBird CSV")
+        }
+        // Trailing spacer to nudge the whole pair in from the screen edge.
+        // An `.offset` on the buttons themselves only slid the glyphs inside
+        // their fixed Liquid Glass capsules (the capsules are positioned by
+        // the toolbar, not the button content); a `ToolbarSpacer` sits
+        // outside the glass, so it moves the capsules as whole units.
+        ToolbarSpacer(.fixed, placement: .topBarTrailing)
+    }
+
+    /// The catalog scan behind the search's add suggestions, debounced. See
+    /// the `.task(id:)` that runs it.
+    private func refreshSuggestions() async {
+        let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else {
+            if !asyncSuggestions.isEmpty { asyncSuggestions = [] }
+            return
+        }
+        do {
+            try await Task.sleep(for: .milliseconds(160))
+        } catch {
+            return
+        }
+        let needle = q.lowercased()
+        // The store's maintained membership set — the same one `visibleRows`
+        // reads — rather than a fresh one built per scan.
+        let lifeNames = store.speciesNames
+        let lifeCommonNames = Set(store.entries.map { $0.commonName.lowercased() })
+        let allowed = allowedIndices
+        let result = await Task.detached(priority: .userInitiated) {
+            Self.computeSuggestions(
+                needle: needle,
+                excluding: lifeNames,
+                lifeCommonNames: lifeCommonNames,
+                allowed: allowed
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        asyncSuggestions = result
     }
 
     /// The Life List as a column of rows — every display but a foldable's
@@ -1196,8 +1268,46 @@ struct LifeListView: View {
     /// row is plainly a different thing from a lifer's — see `visibleRows`, where
     /// the filter and the suggestions are likewise kept apart.
     private var speciesCountText: String {
+        if let targets { return targetsCountText(targets) }
         let n = matchingEntries.count
         return showStarredOnly ? "Filtered to \(n) starred species" : "\(n) species"
+    }
+
+    /// The Targets subtitle: how many of the place's birds are on the life
+    /// list, out of how many it has. Counts the whole place rather than what
+    /// the search has narrowed it to — the sentence names the place, and "3/5
+    /// species in Ithaca" over a search for warblers would be untrue of it.
+    private func targetsCountText(_ targets: TargetsModel) -> String {
+        guard let species = targets.species else {
+            return targets.status == .noLocation ? "No location" : "Finding birds…"
+        }
+        let lookup = lifeListLookup
+        let observed = species.reduce(0) { $0 + (lookup($1) == nil ? 0 : 1) }
+        let counts = "\(observed)/\(species.count) species"
+        if let place = targets.placeName { return "\(counts) in \(place)" }
+        return targets.usesCurrentLocation ? "\(counts) nearby" : "\(counts) here"
+    }
+
+    /// What the Targets tab shows with no rows to show.
+    @ViewBuilder
+    private func targetsPlaceholder(_ targets: TargetsModel) -> some View {
+        if targets.species == nil {
+            if targets.status == .noLocation {
+                ContentUnavailableView {
+                    Label("No location", systemImage: "location.slash")
+                } description: {
+                    Text("Allow location access in Settings, or tap the location button above to choose a place.")
+                }
+            } else {
+                ProgressView()
+            }
+        } else if targets.species?.isEmpty == true {
+            ContentUnavailableView {
+                Label("No birds expected here", systemImage: "target")
+            } description: {
+                Text("Tap the location button above to choose another place.")
+            }
+        }
     }
 
     /// Builds the CSV for `scope` and raises the system save panel over the
