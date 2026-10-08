@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// The single place a *sighting's* date is converted between a stored instant, a
 /// picker, and text.
@@ -92,14 +93,22 @@ nonisolated enum ObservationDate {
     /// (month names and field order follow the user's locale) but fixed to UTC,
     /// so the day shown is the day stored. Every list, card, and panel that
     /// prints a sighting's date uses this one style.
-    static let dayStyle: Date.FormatStyle = {
+    ///
+    /// Private, and reached only through `dayString` and
+    /// `Text(observationDay:)`, because the obvious way to put it on screen is
+    /// wrong: `Text(date, format: dayStyle)` reformats in the *environment's*
+    /// time zone, overriding the UTC set here, so every sighting printed as the
+    /// day before anywhere west of Greenwich — the row said Oct 5 over a record
+    /// stored as midnight UTC on Oct 6, while the delete alert beneath it,
+    /// which goes through `dayString`, said Oct 6.
+    private static let dayStyle: Date.FormatStyle = {
         var style = Date.FormatStyle.dateTime.year().month(.abbreviated).day()
         style.timeZone = utc
         return style
     }()
 
-    /// `dayStyle` as a plain string, for the places that can't take a `Text` —
-    /// an alert's message, an accessibility label.
+    /// `dayStyle` as a plain string — the one way a sighting's date becomes
+    /// text. On screen, use `Text(observationDay:)`, which is this.
     static func dayString(_ date: Date) -> String {
         date.formatted(dayStyle)
     }
@@ -134,4 +143,13 @@ nonisolated enum ObservationDate {
 
     private static let isoDayFormatter = fixedFormatter("yyyy-MM-dd")
     private static let eBirdDayFormatter = fixedFormatter("MM/dd/yyyy")
+}
+
+extension Text {
+    /// A sighting's date on screen, in the app's standard style — the day it
+    /// was stored as, wherever the device is. See `ObservationDate.dayStyle`
+    /// for why this is a pre-formatted string rather than a format style.
+    init(observationDay date: Date) {
+        self.init(verbatim: ObservationDate.dayString(date))
+    }
 }

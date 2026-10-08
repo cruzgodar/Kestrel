@@ -751,7 +751,7 @@ struct LifeListView: View {
                 }
             },
             detail: {
-                Text(entry.firstSeen, format: ObservationDate.dayStyle)
+                Text(observationDay: entry.firstSeen)
                     .monospacedDigit()
             },
             menu: { entryMenu(entry) }
@@ -953,7 +953,7 @@ struct LifeListView: View {
                             .fixedSize(horizontal: false, vertical: true)
                         Text("•")
                     }
-                    Text(entry.firstSeen, format: ObservationDate.dayStyle)
+                    Text(observationDay: entry.firstSeen)
                         .monospacedDigit()
                 }
                 .font(.caption)

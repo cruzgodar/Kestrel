@@ -335,7 +335,7 @@ struct SpeciesInfoPanel: View {
                     .multilineTextAlignment(.center)
                     .foregroundStyle(mappable ? SpeciesChrome.linkTint : Color.white)
                 }
-                Text(date, format: ObservationDate.dayStyle)
+                Text(observationDay: date)
                     .font(.subheadline)
                     .monospacedDigit()
                     .foregroundStyle(.white)

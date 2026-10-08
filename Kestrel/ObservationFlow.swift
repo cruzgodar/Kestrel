@@ -1059,7 +1059,7 @@ struct ObservationRowLabel: View {
                 Text("•")
                     .foregroundStyle(.secondary)
             }
-            Text(observation.date, format: ObservationDate.dayStyle)
+            Text(observationDay: observation.date)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
         }
