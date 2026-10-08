@@ -177,6 +177,10 @@ struct MapView: View {
         var confirmTitle: String = "Save Observation"
         /// What VoiceOver says the back button returns to.
         var backAccessibilityLabel: String = "Back to the observation date"
+        /// Whether the dropped pin carries a plus. It does when the pin is
+        /// where a sighting is about to be added; a place picked only to look
+        /// at gets a plain pin.
+        var pinShowsPlus: Bool = true
     }
 
     /// Spelled out because the view's other stored properties are private, which
@@ -249,15 +253,39 @@ struct MapView: View {
         return "No location recorded — long press to add one"
     }
 
+    /// `pickerInstruction` in its glass capsule — see the principal item in
+    /// the body's toolbar.
+    private var pickerInstructionCapsule: some View {
+        Text(pickerInstruction)
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            // Scales further than the one-line default would need, because the
+            // "no location recorded" wording is half again as long as the plain
+            // instruction and still has to fit between the bar's buttons on the
+            // narrowest phone.
+            .minimumScaleFactor(0.65)
+            .contentTransition(.opacity)
+            .animation(.easeInOut(duration: 0.2), value: pickerInstruction)
+            .padding(.horizontal, 18)
+            .frame(height: Self.instructionHeight)
+            .glassEffect(.regular, in: .capsule)
+            // Room for Back and recenter either side of it.
+            .frame(maxWidth: max(viewSize.width - Self.instructionReservedWidth, 120))
+            .allowsHitTesting(false)
+    }
+
+    /// Width the instruction leaves for the bar's buttons and margins.
+    private static let instructionReservedWidth: CGFloat = 136
+
     /// Birds per row in the cluster card — see `DisplayLayout.mapCardColumns`.
     private var cardColumnCount: Int? { layout?.mapCardColumns }
 
     /// How long the pin takes to dissolve from its old spot to the new one.
     private static let pinCrossfade: Double = 0.22
 
-    /// Height of the picker's standing instruction capsule. Was borrowed from
-    /// the glass recenter button it used to share a row with; now that those
-    /// are system bar items, it is a control-sized capsule in its own right.
+    /// Height of the picker's standing instruction capsule: the bar buttons'
+    /// own height, so it sits in line with them as one row.
     private static let instructionHeight: CGFloat = 44
 
     /// Drops the picker's default pin — the current location — so the flow
@@ -653,6 +681,7 @@ struct MapView: View {
                     ForEach(pickedPins) { pin in
                         Annotation("Chosen location", coordinate: pin.coordinate, anchor: .bottom) {
                             PickedLocationMarker(
+                                showsPlus: picker?.pinShowsPlus ?? true,
                                 isCurrent: pin.id == pickedPins.last?.id,
                                 fadeDuration: Self.pinCrossfade
                             )
@@ -806,32 +835,6 @@ struct MapView: View {
                 .observationActions(actions, store: store)
 
             if let picker {
-                // Standing instruction across the top, directly under the bar
-                // the back and recenter buttons now live in. It sat *between*
-                // those two while they were glass circles of our own, which is
-                // no longer a row we can place anything in — the bar owns it,
-                // and on a foldable the bar may not be along the top at all. A
-                // row of its own inside the safe area lands correctly either
-                // way, and needs no measuring against the buttons' widths.
-                Text(pickerInstruction)
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    // Scales further than the one-line default would need,
-                    // because the "no location recorded" wording is half again
-                    // as long as the plain instruction and still has to fit
-                    // across the narrowest phone in one line.
-                    .minimumScaleFactor(0.65)
-                    .contentTransition(.opacity)
-                    .animation(.easeInOut(duration: 0.2), value: pickerInstruction)
-                    .padding(.horizontal, 18)
-                    .frame(height: Self.instructionHeight)
-                    .glassEffect(.regular, in: .capsule)
-                    .allowsHitTesting(false)
-                    .padding(.top, 8)
-                    .padding(.horizontal, 12)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-
                 // The commit button stands the whole time the picker is up —
                 // there is no "nothing chosen yet" state to wait out, since the
                 // picker opens with the current location already pinned (see
@@ -869,6 +872,11 @@ struct MapView: View {
         // its bars vertically — a strip that draws a background this will not
         // take off (see `SpeciesPhotoViewer`, which learned it the hard way).
         .toolbarBackgroundVisibility(.hidden, for: .navigationBar)
+        // The picker's instruction is a principal bar item, and custom content
+        // in the bar makes MapKit draw its own top edge effect: a solid band,
+        // with a hard line under it, across the top of the map. Nothing public
+        // turns it off — `scrollEdgeEffectHidden` only reaches scroll views.
+        .background { if picker != nil { MapTopEdgeEffectHider() } }
         .toolbar {
             // Leading at the top of a vertical bar, per the platform's
             // placement for a back/close control.
@@ -881,6 +889,18 @@ struct MapView: View {
                     }
                     .accessibilityLabel(picker.backAccessibilityLabel)
                 }
+            }
+            // The standing instruction, as the bar's principal item: the system
+            // centres it between Back and recenter, in line with them, the way
+            // the photo viewer places its name capsule — and on a foldable whose
+            // bar runs down one side, it goes wherever the bar does. A principal
+            // item rather than a title, which the system would keep in a
+            // horizontal strip with a background of its own.
+            if picker != nil {
+                ToolbarItem(placement: .principal) {
+                    pickerInstructionCapsule
+                }
+                .sharedBackgroundVisibility(.hidden)
             }
             ToolbarItem(placement: .topBarTrailing) {
                 Button(action: recenterOnUser) {
@@ -1946,7 +1966,10 @@ private struct FadingAnnotationContent<Menu: View>: View {
                 // Two buzzes for one press, one of them announcing a gesture that
                 // wasn't going to happen.
                 if !interactive {
+                    // Kept under the picker's pin even when a press selects
+                    // it — see `AnnotationZPriority`.
                     content
+                        .background(AnnotationZPriority(raised: false))
                 // Only a lone bird gets a menu — see `MapView.annotationMenu`.
                 } else if rendered.count == 1 {
                     content
@@ -2087,7 +2110,7 @@ private struct MapAnnotationContent: View {
             BirdMapThumbnail(
                 scientificName: point.scientificName,
                 size: thumbSize,
-                cornerRadius: 8,
+                cornerRadius: BirdMapThumbnail.mapCornerRadius,
                 showBorder: true
             )
             Text(labelText)
@@ -2634,6 +2657,9 @@ private struct BirdMapThumbnail: View {
     let scientificName: String
     let size: CGSize
     var cornerRadius: CGFloat = 8
+    /// How round a thumbnail standing on the map is — the Life List grid's
+    /// radius, so a bird's picture has the same shape in both places.
+    static let mapCornerRadius: CGFloat = 16
     /// White hairline border + shadow look right on the map but fight
     /// the frosted card. Caller picks.
     var showBorder: Bool = true
@@ -2668,7 +2694,8 @@ private struct BirdMapThumbnail: View {
 
 /// Material Symbols' `add_location`, transcribed from its 24×24 path: a map-pin
 /// balloon with a plus in the head. SF Symbols has no equivalent (there's no
-/// `mappin.badge.plus`), so it's drawn directly.
+/// `mappin.badge.plus`), so it's drawn directly. The `dot` part swaps the plus
+/// for `location_on`'s round hole, for the plain pin.
 ///
 /// The two halves are separate `part`s rather than one even-odd path, so the plus
 /// can be painted a solid color instead of being a hole — over a map, a knocked-out
@@ -2686,6 +2713,8 @@ struct AddLocationShape: Shape {
         case balloon
         /// The plus inside the head.
         case plus
+        /// The round dot inside a plain pin's head, in place of the plus.
+        case dot
     }
 
     var part: Part = .balloon
@@ -2739,6 +2768,11 @@ struct AddLocationShape: Shape {
                 CGPoint(x: 13, y: 5), CGPoint(x: 13, y: 8), CGPoint(x: 16, y: 8),
             ])
             path.closeSubpath()
+
+        case .dot:
+            // `location_on`'s `M12 11.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5
+            // 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z` — a circle.
+            path.addEllipse(in: CGRect(x: 9.5, y: 6.5, width: 5, height: 5))
         }
 
         let transform = CGAffineTransform(
@@ -2754,8 +2788,10 @@ struct AddLocationShape: Shape {
 }
 
 /// The pin dropped by a long press in the map's location-picker mode: the
-/// `add_location` glyph in solid purple, its tip sitting on the chosen
-/// coordinate (the annotation anchors it `.bottom`).
+/// `add_location` glyph in solid purple (or a plain pin — see
+/// `LocationPicker.pinShowsPlus`), its tip sitting on the chosen coordinate (the
+/// annotation anchors it `.bottom`). Always drawn above the birds' thumbnails —
+/// see `AnnotationZPriority`.
 ///
 /// It owns its own fade because MapKit doesn't run SwiftUI insert/remove
 /// transitions on annotations (the same reason `FadingAnnotationContent` exists).
@@ -2763,6 +2799,7 @@ struct AddLocationShape: Shape {
 /// it's no longer current, so the two crossfade in place instead of one pin
 /// sliding across the map.
 private struct PickedLocationMarker: View {
+    let showsPlus: Bool
     let isCurrent: Bool
     let fadeDuration: Double
 
@@ -2774,7 +2811,7 @@ private struct PickedLocationMarker: View {
     var body: some View {
         ZStack {
             AddLocationShape(part: .balloon).fill(Color.kestrelPurple)
-            AddLocationShape(part: .plus).fill(.white)
+            AddLocationShape(part: showsPlus ? .plus : .dot).fill(.white)
         }
             .frame(
                 width: Self.height * AddLocationShape.aspectRatio,
@@ -2784,6 +2821,7 @@ private struct PickedLocationMarker: View {
             // MapKit measures the hosting view once from the content's intrinsic
             // size; without this the glyph can be clipped (see MapAnnotationContent).
             .fixedSize()
+            .background(AnnotationZPriority(raised: true))
             .opacity(opacity)
             .onAppear {
                 withAnimation(.easeInOut(duration: fadeDuration)) {
@@ -2795,6 +2833,63 @@ private struct PickedLocationMarker: View {
                     opacity = current ? 1 : 0
                 }
             }
+    }
+}
+
+/// Sets the stacking priority of the map annotation it sits in: raised for
+/// the picker's pin, lowered for the bird thumbnails around it.
+///
+/// MapKit stacks annotation views by its own rules — `zPriority`, then roughly
+/// further south on top — so the picker's pin went behind some cluster
+/// thumbnails and not others depending on where each sat. SwiftUI's
+/// `Annotation` has no z-order of its own to set, but it is hosted in a UIKit
+/// `MKAnnotationView`, so the probe walks up to that host and sets it there.
+///
+/// Raising the pin alone isn't enough. `.max` is the same priority MapKit
+/// gives any *selected* annotation, and a long press on a thumbnail selects it
+/// — so a pin dropped on a cluster tied with it, and lost the tie whenever the
+/// cluster sat further south. Picker thumbnails are display-only (see
+/// `FadingAnnotationContent.interactive`), so they're held at the default
+/// priority even when selected, and the pin is the only thing up there.
+private struct AnnotationZPriority: UIViewRepresentable {
+    let raised: Bool
+
+    func makeUIView(context: Context) -> ProbeView { ProbeView(raised: raised) }
+    func updateUIView(_ uiView: ProbeView, context: Context) {
+        uiView.raised = raised
+        uiView.apply()
+    }
+
+    final class ProbeView: UIView {
+        var raised: Bool
+
+        init(raised: Bool) {
+            self.raised = raised
+            super.init(frame: .zero)
+            isUserInteractionEnabled = false
+            backgroundColor = .clear
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            apply()
+        }
+
+        func apply() {
+            var view: UIView? = superview
+            while let current = view {
+                if let host = current as? MKAnnotationView {
+                    let priority: MKAnnotationViewZPriority = raised ? .max : .defaultUnselected
+                    host.zPriority = priority
+                    host.selectedZPriority = priority
+                    return
+                }
+                view = current.superview
+            }
+        }
     }
 }
 
@@ -2833,4 +2928,56 @@ private final class CameraTracker {
 #Preview {
     MapView()
         .environment(LifeListStore())
+}
+
+/// Hides the top edge effect MapKit draws over the map under a bar with custom
+/// content in it — see the picker's principal bar item in `MapView`.
+///
+/// MapKit hosts the effect in a private view, `ScrollEdgeEffectView`, inside
+/// the map view. There is no API for it, so it is found by name. Should a
+/// later MapKit rename it, this finds nothing and the band comes back — a
+/// cosmetic failure, never a broken map.
+private struct MapTopEdgeEffectHider: UIViewRepresentable {
+    func makeUIView(context: Context) -> ProbeView { ProbeView() }
+    func updateUIView(_ uiView: ProbeView, context: Context) { uiView.apply() }
+
+    final class ProbeView: UIView {
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            apply()
+            // The map mounts, and builds the effect, after this does.
+            DispatchQueue.main.async { [weak self] in self?.apply() }
+        }
+
+        func apply() {
+            // Up to the nearest ancestor holding the map: this sits beside it,
+            // not inside it.
+            var node = superview
+            while let current = node {
+                if let map = Self.mapView(in: current) {
+                    Self.hideEdgeEffects(in: map)
+                    return
+                }
+                node = current.superview
+            }
+        }
+
+        private static func mapView(in view: UIView) -> MKMapView? {
+            if let map = view as? MKMapView { return map }
+            for child in view.subviews {
+                if let map = mapView(in: child) { return map }
+            }
+            return nil
+        }
+
+        private static func hideEdgeEffects(in view: UIView) {
+            for child in view.subviews {
+                if String(describing: type(of: child)) == "ScrollEdgeEffectView" {
+                    child.isHidden = true
+                } else {
+                    hideEdgeEffects(in: child)
+                }
+            }
+        }
+    }
 }

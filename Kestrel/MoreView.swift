@@ -370,7 +370,7 @@ struct MoreView: View {
             )
         }
         return Self.markdown(
-            "Kestrel uses freely-available (creative commons) images. Currently, over \(floored.formatted()) species have images, and more are coming soon!"
+            "Kestrel uses freely-available (creative commons) images that I choose by hand, so it takes time to add more. Currently, the \(floored.formatted()) most common species have images, and I add more frequently!"
         )
     }
 

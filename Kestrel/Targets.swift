@@ -2,25 +2,84 @@ import CoreLocation
 import SwiftUI
 
 /// What the Targets tab is showing: every bird the geo model expects at one
-/// place this week, ranked from most to least likely, and what that place is
-/// called.
+/// place in one month, ranked from most to least likely, and what that place
+/// is called.
 ///
 /// **Ranking.** The geo model (`SpeciesRangeFilter`) scores every catalog
-/// species with an occurrence likelihood for a place and week — the same
-/// numbers the recording filter thresholds into a yes/no list. Here they are
-/// kept and sorted on, so the commonest birds come first and the rarities
-/// last. The bundled offline grid only knows yes/no, so when the live model
-/// can't run the list falls back to alphabetical.
+/// species with an occurrence likelihood for a place and BirdNET week — the
+/// same numbers the recording filter thresholds into a yes/no list. A month
+/// is the four BirdNET weeks inside it (see `weeks(in:)`): a bird is a target
+/// if it clears the threshold in any of them, and is ranked by its average
+/// over all four, so a bird around all month outranks one passing through for
+/// a week. The order runs commonest first or rarest first — see `Sort`. The
+/// bundled offline grid only knows yes/no, so when the live model can't run,
+/// rarity order falls back to alphabetical.
 ///
-/// **Which place.** The current location by default, or a spot picked on the
-/// map, which persists across launches until Current Location is chosen
-/// again.
+/// **Which place and month.** The current location and month by default, or a
+/// spot picked on the map (one where the user is goes back to following them)
+/// and a month picked from the calendar menu — which
+/// also offers Any Month, the whole year at once. Neither is saved: every
+/// launch starts back on here and now, with only the birds not yet found —
+/// Include Life List Species isn't saved either.
 @Observable
 final class TargetsModel {
     /// One species expected at the place.
     struct AreaSpecies: Hashable, Sendable {
         let scientificName: String
         let commonName: String
+    }
+
+    /// How the list is ordered. Picked from the sort menu, which offers the
+    /// two `Kind`s and flips the direction of whichever is already chosen.
+    enum Sort: String {
+        case mostCommonFirst, rarestFirst, aToZ, zToA
+
+        enum Kind: CaseIterable, Identifiable {
+            case rarity, alphabetical
+
+            var id: Self { self }
+
+            var title: String {
+                switch self {
+                case .rarity: "Rarity"
+                case .alphabetical: "Alphabetical"
+                }
+            }
+
+            /// The direction a kind starts in when it is picked.
+            var defaultSort: Sort {
+                switch self {
+                case .rarity: .mostCommonFirst
+                case .alphabetical: .aToZ
+                }
+            }
+        }
+
+        var kind: Kind {
+            switch self {
+            case .mostCommonFirst, .rarestFirst: .rarity
+            case .aToZ, .zToA: .alphabetical
+            }
+        }
+
+        /// The direction, shown under the checked kind in the menu.
+        var subtitle: String {
+            switch self {
+            case .mostCommonFirst: "Most Common First"
+            case .rarestFirst: "Rarest First"
+            case .aToZ: "A–Z"
+            case .zToA: "Z–A"
+            }
+        }
+
+        var reversed: Sort {
+            switch self {
+            case .mostCommonFirst: .rarestFirst
+            case .rarestFirst: .mostCommonFirst
+            case .aToZ: .zToA
+            case .zToA: .aToZ
+            }
+        }
     }
 
     enum Status {
@@ -40,11 +99,66 @@ final class TargetsModel {
     private(set) var placeName: String?
     /// Ranked most likely first. `nil` until the first list lands.
     private(set) var species: [AreaSpecies]?
+
+    private(set) var sort: Sort {
+        didSet { UserDefaults.standard.set(sort.rawValue, forKey: Self.sortKey) }
+    }
+
+    /// `species` in the order the sort menu asks for.
+    var sortedSpecies: [AreaSpecies]? {
+        guard let species else { return nil }
+        switch sort {
+        case .mostCommonFirst: return species
+        case .rarestFirst: return species.reversed()
+        case .aToZ: return species.sorted { $0.commonName < $1.commonName }
+        case .zToA: return species.sorted { $0.commonName > $1.commonName }
+        }
+    }
+
+    /// A sort menu pick: the kind already chosen flips direction, and a new
+    /// one starts in its default direction — the Music app's sort menu.
+    func select(_ kind: Sort.Kind) {
+        sort = sort.kind == kind ? sort.reversed : kind.defaultSort
+    }
     private(set) var status: Status = .loading
 
-    /// Where and for which week `species` was worked out, so a refresh that
+    /// Whether the birds already on the life list are shown too, among the
+    /// rest in the sort's order. Off at every launch.
+    var includesLifeList = false
+
+    /// The month the list is for, 1–12, or `nil` for any time of year. The
+    /// current month until one is picked.
+    private(set) var month: Int? = Calendar.current.component(.month, from: Date())
+
+    /// `month`'s name, in the user's language; `nil` for Any Month.
+    var monthName: String? { month.map(Self.monthName) }
+
+    static func monthName(_ month: Int) -> String {
+        Calendar.current.standaloneMonthSymbols[month - 1]
+    }
+
+    /// Shows another month's birds, or (`nil`) the whole year's.
+    func setMonth(_ month: Int?, manager: RecordingManager) async {
+        guard month != self.month else { return }
+        // The same place as the list on screen: a month change shouldn't wait
+        // seconds on a fresh location fix to land back where it already was.
+        let place = loaded?.coordinate
+        clear()
+        self.month = month
+        await refresh(manager: manager, at: place)
+    }
+
+    /// The BirdNET weeks a month spans. BirdNET splits every month into four
+    /// "weeks" (see `SpeciesRangeFilter.birdnetWeek`), so these are exactly
+    /// the weeks that overlap it. Any Month is all 48.
+    nonisolated static func weeks(in month: Int?) -> ClosedRange<Int> {
+        guard let month else { return 1...48 }
+        return ((month - 1) * 4 + 1)...(month * 4)
+    }
+
+    /// Where and for which month `species` was worked out, so a refresh that
     /// finds neither has moved can leave the list alone.
-    private var loaded: (coordinate: CLLocationCoordinate2D, week: Int)?
+    private var loaded: (coordinate: CLLocationCoordinate2D, month: Int?)?
     /// Bumped by every refresh, so a slow one finishing after a newer one has
     /// started can't publish over it.
     private var generation = 0
@@ -54,45 +168,49 @@ final class TargetsModel {
     /// closer is the same list.
     private static let sameAreaRadius: CLLocationDistance = 2_000
 
-    private static let latitudeKey = "Targets.chosenLatitude"
-    private static let longitudeKey = "Targets.chosenLongitude"
+    private static let sortKey = "Targets.sort"
 
     init() {
-        let defaults = UserDefaults.standard
-        if let latitude = defaults.object(forKey: Self.latitudeKey) as? Double,
-           let longitude = defaults.object(forKey: Self.longitudeKey) as? Double {
-            chosenCoordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
-        }
+        sort = UserDefaults.standard.string(forKey: Self.sortKey)
+            .flatMap(Sort.init(rawValue:)) ?? .mostCommonFirst
     }
 
     /// Follows the current location from now on.
-    func useCurrentLocation(manager: RecordingManager) async {
+    private func useCurrentLocation(manager: RecordingManager) async {
         // Leaving a picked place: the fix can take seconds, and the old list
-        // shouldn't stand under the solid arrow while it does.
+        // shouldn't stand while it does.
         if chosenCoordinate != nil { clear() }
         chosenCoordinate = nil
-        UserDefaults.standard.removeObject(forKey: Self.latitudeKey)
-        UserDefaults.standard.removeObject(forKey: Self.longitudeKey)
         await refresh(manager: manager)
     }
 
-    /// Shows a place picked on the map, until Current Location is chosen again.
+    /// Shows a place picked on the map — or, for a spot where the user is,
+    /// goes back to following them. The picker is the only way to choose, so
+    /// this is how "here" is chosen again: the picker opens on the current
+    /// location, or recenters on it, and confirming that follows it.
     func choose(_ coordinate: CLLocationCoordinate2D, manager: RecordingManager) async {
+        if let here = LocationCache.shared.lastCoordinate,
+           Self.distance(CLLocationCoordinate2D(latitude: here.latitude, longitude: here.longitude), coordinate)
+            < Self.sameAreaRadius {
+            await useCurrentLocation(manager: manager)
+            return
+        }
         clear()
         chosenCoordinate = coordinate
-        UserDefaults.standard.set(coordinate.latitude, forKey: Self.latitudeKey)
-        UserDefaults.standard.set(coordinate.longitude, forKey: Self.longitudeKey)
         await refresh(manager: manager)
     }
 
-    /// Works the list out again if the place or the week has changed since it
-    /// last was. Cheap to call on every appearance.
-    func refresh(manager: RecordingManager) async {
+    /// Works the list out again if the place or the month has changed since it
+    /// last was. Cheap to call on every appearance. `place` skips looking up
+    /// where the user is, for a caller that already knows.
+    func refresh(manager: RecordingManager, at place: CLLocationCoordinate2D? = nil) async {
         generation += 1
         let run = generation
 
         let target: CLLocationCoordinate2D
-        if let chosenCoordinate {
+        if let place {
+            target = place
+        } else if let chosenCoordinate {
             target = chosenCoordinate
         } else if let here = await Self.currentCoordinate() {
             target = here
@@ -104,8 +222,8 @@ final class TargetsModel {
         }
         guard run == generation else { return }
 
-        let week = SpeciesRangeFilter.birdnetWeek()
-        if let loaded, species != nil, loaded.week == week,
+        let month = month
+        if let loaded, species != nil, loaded.month == month,
            Self.distance(loaded.coordinate, target) < Self.sameAreaRadius {
             // Same list. A name that failed to look up last time (offline) is
             // worth another try, though.
@@ -114,17 +232,17 @@ final class TargetsModel {
         }
 
         // A different place: clear the old list rather than leave it standing
-        // under a subtitle that no longer describes it.
+        // under a heading that no longer describes it.
         clear()
-        let ranked = await Self.rankedSpecies(at: target, week: week, manager: manager)
+        let ranked = await Self.rankedSpecies(at: target, month: month, manager: manager)
         guard run == generation else { return }
         species = ranked
-        loaded = (target, week)
+        loaded = (target, month)
         status = .ready
         await lookUpPlaceName(at: target, run: run)
     }
 
-    /// Drops the list on a deliberate change of place, so the spinner shows
+    /// Drops the list on a deliberate change of place or month, so the spinner shows
     /// until the new one lands.
     private func clear() {
         loaded = nil
@@ -156,40 +274,47 @@ final class TargetsModel {
 
     private static func rankedSpecies(
         at coordinate: CLLocationCoordinate2D,
-        week: Int,
+        month: Int?,
         manager: RecordingManager
     ) async -> [AreaSpecies] {
+        let weeks = Array(weeks(in: month))
         if let likelihoods = await manager.areaLikelihoods(
-            latitude: coordinate.latitude, longitude: coordinate.longitude
+            latitude: coordinate.latitude, longitude: coordinate.longitude, weeks: weeks
         ) {
             return await Task.detached(priority: .userInitiated) {
-                rank(likelihoods: likelihoods)
+                rank(weeklyLikelihoods: likelihoods)
             }.value
         }
-        // No live model: the offline grid's yes/no list, which has nothing to
+        // No live model: the offline grid's yes/no lists, which have nothing to
         // rank on.
-        let allowed = OfflineSpeciesFilter.shared.allowedIndices(
-            lat: coordinate.latitude, lon: coordinate.longitude, week: week
-        ) ?? []
-        return await Task.detached(priority: .userInitiated) {
+        var allowed = Set<Int>()
+        for week in weeks {
+            allowed.formUnion(OfflineSpeciesFilter.shared.allowedIndices(
+                lat: coordinate.latitude, lon: coordinate.longitude, week: week
+            ) ?? [])
+        }
+        return await Task.detached(priority: .userInitiated) { [allowed] in
             alphabetical(allowed)
         }.value
     }
 
     /// The species the geo model puts at or above the range filter's own
-    /// threshold, most likely first. Ties go alphabetically by common name so
-    /// two runs over the same numbers always give the same order.
+    /// threshold in any of the given weeks, ranked by their average over all of
+    /// them, most likely first. Ties go alphabetically by common name so two
+    /// runs over the same numbers always give the same order.
     nonisolated static func rank(
-        likelihoods: [Float],
+        weeklyLikelihoods: [[Float]],
         threshold: Float = SpeciesRangeFilter.threshold
     ) -> [AreaSpecies] {
         let catalog = SpeciesCatalog.shared.all
+        guard let count = weeklyLikelihoods.map(\.count).min(), count > 0 else { return [] }
         var scored: [(likelihood: Float, species: SpeciesCatalog.Species)] = []
-        for (index, likelihood) in likelihoods.enumerated()
-        where likelihood >= threshold && catalog.indices.contains(index) {
+        for index in 0..<min(count, catalog.count) {
+            let values = weeklyLikelihoods.map { $0[index] }
+            guard values.contains(where: { $0 >= threshold }) else { continue }
             let species = catalog[index]
             guard isBird(species) else { continue }
-            scored.append((likelihood, species))
+            scored.append((values.reduce(0, +) / Float(values.count), species))
         }
         return scored
             .sorted { a, b in
@@ -233,34 +358,62 @@ struct TargetsView: View {
     var body: some View {
         LifeListView(targets: model)
             .toolbar {
+                // No spacers between the three: that is what joins them into
+                // one glass capsule, as the Life List's import and export are.
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button {
+                        showPicker = true
+                    } label: {
+                        Label("Choose Location", systemImage: "mappin.circle")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        Button {
-                            Task { await model.useCurrentLocation(manager: manager) }
-                        } label: {
-                            Label("Current Location", systemImage: "location")
+                        Picker("Month", selection: Binding(
+                            get: { model.month },
+                            set: { month in Task { await model.setMonth(month, manager: manager) } }
+                        )) {
+                            Text("Any Month").tag(Int?.none)
+                            ForEach(1...12, id: \.self) { month in
+                                Text(TargetsModel.monthName(month)).tag(Int?.some(month))
+                            }
                         }
-                        Button {
-                            showPicker = true
-                        } label: {
-                            Label("Choose Location", systemImage: "map")
+                        .pickerStyle(.inline)
+                    } label: {
+                        Label("Month", systemImage: "calendar")
+                    }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Section("Sort By") {
+                            ForEach(TargetsModel.Sort.Kind.allCases) { kind in
+                                // A toggle rather than a button for the system
+                                // checkmark. Tapping the checked one "turns it
+                                // off", which `select` reads as flipping its
+                                // direction.
+                                Toggle(isOn: Binding(
+                                    get: { model.sort.kind == kind },
+                                    set: { _ in model.select(kind) }
+                                )) {
+                                    Text(kind.title)
+                                    if model.sort.kind == kind {
+                                        Text(model.sort.subtitle)
+                                    }
+                                }
+                            }
+                        }
+                        Section {
+                            Toggle("Include Life List Species", isOn: $model.includesLifeList)
                         }
                     } label: {
-                        // Solid while following the current location, hollow
-                        // while showing a place picked on the map.
-                        Label(
-                            "Location",
-                            systemImage: model.usesCurrentLocation ? "location.fill" : "location"
-                        )
-                        .contentTransition(.symbolEffect(.replace))
+                        Label("More", systemImage: "ellipsis")
                     }
                 }
                 // The same trailing inset the Life List's buttons carry.
                 ToolbarSpacer(.fixed, placement: .topBarTrailing)
             }
             // Every appearance, and every return to the foreground: the user
-            // may have walked somewhere new, or the week may have turned over.
-            // Both are no-ops when nothing has changed.
+            // may have walked somewhere new. A no-op when they haven't.
             .task { await model.refresh(manager: manager) }
             .onChange(of: scenePhase) { _, phase in
                 guard phase == .active else { return }
@@ -278,7 +431,9 @@ struct TargetsView: View {
                         Task { await model.choose(coordinate, manager: manager) }
                     },
                     confirmTitle: "Show Targets",
-                    backAccessibilityLabel: "Back to Targets"
+                    backAccessibilityLabel: "Back to Targets",
+                    // A place to look at, not a sighting being added.
+                    pinShowsPlus: false
                 ))
                 // `@Observable` environment objects don't cross a cover.
                 .environment(store)

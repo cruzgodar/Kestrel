@@ -175,31 +175,21 @@ struct LifeListView: View {
     }
 
     /// The Targets tab's rows: the birds expected at the place that aren't on
-    /// the life list yet, then — under a heading — the ones that are, each run
-    /// in the model's order (most likely first). The search field narrows both;
-    /// it never reaches past the place into the wider catalog.
+    /// the life list yet, in the sort menu's order — or, with Include Life List
+    /// Species on, every bird expected there, the ones already found
+    /// interleaved where the sort puts them.
     ///
-    /// Membership is read live from the store, so a bird added from here moves
-    /// down into the second run on the same frame its sighting is written.
+    /// Membership is read live from the store, so a bird added from here drops
+    /// out on the same frame its sighting is written.
     private func targetRows(_ targets: TargetsModel) -> [SearchRow] {
-        guard let species = targets.species else { return [] }
-        let needle = trimmedSearch.lowercased()
+        guard let species = targets.sortedSpecies else { return [] }
         let lookup = lifeListLookup
-        var unseen: [SearchRow] = []
-        var seen: [SearchRow] = []
-        for bird in species {
-            if !needle.isEmpty {
-                let hay = "\(bird.commonName) \(bird.scientificName)".lowercased()
-                guard Self.scoreMatch(hay, needle: needle, allowFuzzy: needle.count >= 3) != nil else { continue }
-            }
+        return species.compactMap { bird in
             if let entry = lookup(bird) {
-                seen.append(.existing(entry))
-            } else {
-                unseen.append(.suggestion(scientificName: bird.scientificName, commonName: bird.commonName))
+                return targets.includesLifeList ? .existing(entry) : nil
             }
+            return .suggestion(scientificName: bird.scientificName, commonName: bird.commonName)
         }
-        guard !seen.isEmpty else { return unseen }
-        return unseen + [.header("On your life list")] + seen
     }
 
     /// Finds a target's life-list entry. By common name as well as scientific,
@@ -375,30 +365,75 @@ struct LifeListView: View {
     // `LazyVGrid` fits as many `gridTileWidth` columns as the display has room
     // for, so widening a tile means fewer per row and narrowing it means more.
 
-    /// Height of a grid tile's photograph. Its width follows at 4:3. Separate
-    /// from `rowThumbnailHeight` on purpose: the rows and the grid are two
-    /// layouts on two different displays, and sizing the grid's pictures should
-    /// not quietly resize every row on every phone.
+    /// Height of a grid tile's photograph on a display wide enough to fit as
+    /// many as it likes. Its width follows at 4:3. Separate from
+    /// `rowThumbnailHeight` on purpose: the rows and the grid are two layouts on
+    /// two different displays, and sizing the grid's pictures should not quietly
+    /// resize every row on every phone.
     private static let gridThumbnailHeight: CGFloat = 96
-    /// Gap between tiles, and between a section's heading and its tiles.
+    /// Gap between tiles side by side, and between a section's heading and
+    /// its tiles.
     private static let gridSpacing: CGFloat = 4
+    /// Gap between one row's names and the next row's photographs. Wider than
+    /// `gridSpacing` so a two-line name doesn't read as captioning the picture
+    /// under it.
+    private static let gridRowSpacing: CGFloat = 8
     /// How much wider a tile is than the photograph in it, so a two-word name
     /// has somewhere to go.
     private static let gridTileExtraWidth: CGFloat = 4
 
     /// Width of one grid tile: its photograph, plus the margin around the name.
-    private static var gridTileWidth: CGFloat {
-        (gridThumbnailHeight * 4 / 3).rounded() + gridTileExtraWidth
+    private var gridTileWidth: CGFloat { gridPhotoWidth + Self.gridTileExtraWidth }
+
+    /// The grid's width, measured, so a phone-width grid can size its tiles to
+    /// fit `fittedGridColumns` across.
+    @State private var gridWidth: CGFloat = 0
+
+    /// Columns across the Targets tab's grid on a phone. The open Duo's grid
+    /// fits as many as its width takes; a phone fits two at that size, so here
+    /// the photographs shrink to make it three instead.
+    private static let fittedGridColumns = 3
+
+    /// Whether the grid is the phone's three-across one rather than the open
+    /// Duo's — see `fittedGridColumns`.
+    private var gridIsFitted: Bool { targets != nil && !isGrid && gridWidth > 0 }
+
+    /// Height of a grid photograph: the fixed size on a wide display, or what
+    /// fits three tiles across a phone.
+    private var gridPhotoHeight: CGFloat {
+        gridIsFitted ? gridPhotoWidth * 3 / 4 : Self.gridThumbnailHeight
+    }
+
+    /// Margin between the grid and the display's edges. A fitted grid's is
+    /// short by the half of `gridTileExtraWidth` either side of a photograph,
+    /// so the photographs themselves land on the Life List rows' 16pt margin.
+    private var gridHorizontalPadding: CGFloat {
+        gridIsFitted ? Self.rowHorizontalPadding - Self.gridTileExtraWidth / 2 : 16
     }
 
     /// How round a grid photograph's corners are. Its own constant rather than
-    /// the rows' 6pt: a grid picture is the whole of its tile and is shown
+    /// the rows' 8pt: a grid picture is the whole of its tile and is shown
     /// several times the size, and it is what the star button riding on it is
-    /// made concentric with.
-    private static let gridThumbnailCornerRadius: CGFloat = 18
+    /// made concentric with. The map's thumbnails match it
+    /// (`BirdMapThumbnail.mapCornerRadius`).
+    private static let gridThumbnailCornerRadius: CGFloat = 16
 
-    /// Width of a grid photograph — its height at 4:3.
-    private static var gridPhotoWidth: CGFloat { (gridThumbnailHeight * 4 / 3).rounded() }
+    /// How round the Targets tab's photographs are.
+    private static let targetsThumbnailCornerRadius: CGFloat = 16
+
+    private var tileCornerRadius: CGFloat {
+        targets == nil ? Self.gridThumbnailCornerRadius : Self.targetsThumbnailCornerRadius
+    }
+
+    /// Width of a grid photograph — its height at 4:3, or on a phone, whatever
+    /// fits three tiles exactly across the margins.
+    private var gridPhotoWidth: CGFloat {
+        guard gridIsFitted else { return (Self.gridThumbnailHeight * 4 / 3).rounded() }
+        let columns = CGFloat(Self.fittedGridColumns)
+        let available = gridWidth - 2 * gridHorizontalPadding
+        let tile = (available - (columns - 1) * Self.gridSpacing) / columns
+        return tile - Self.gridTileExtraWidth
+    }
 
     /// Gap between a grid photograph and the caption under it.
     private static let gridPhotoCaptionSpacing: CGFloat = 6
@@ -423,8 +458,11 @@ struct LifeListView: View {
         // move regardless. Everything else about the screen (the heading
         // buttons, the search field, the flows and the confirmations) is shared
         // below.
+        //
+        // The Targets tab is always the grid: on a phone, it is the open Duo's
+        // grid fitted three across.
         Group {
-            if isGrid {
+            if isGrid || targets != nil {
                 speciesGrid
             } else {
                 speciesList
@@ -446,8 +484,8 @@ struct LifeListView: View {
                 }
             }
         }
-        .navigationTitle(targets == nil ? "Life List" : "Targets")
-        .navigationSubtitle(speciesCountText)
+        .navigationTitle(targets == nil ? "Life List" : "Target Species")
+        .navigationSubtitle(targets.map(targetsSubtitle) ?? speciesCountText)
         // Keep the title big and leading-aligned on its own line (inlineLarge),
         // sitting level with the filter/import toolbar buttons.
         .toolbarTitleDisplayMode(.inlineLarge)
@@ -483,26 +521,30 @@ struct LifeListView: View {
             .ignoresSafeArea(.container, edges: .bottom)
             .allowsHitTesting(searchFieldTop > 0)
         }
+        // No search on the Targets tab: it is one place's birds, and a grid
+        // of them is short enough to look through.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            BottomSearchField(
-                text: $searchText,
-                prompt: targets == nil ? "Search or add species" : "Search targets",
-                horizontalInset: Self.searchFieldHorizontalInset,
-                // The chooser counts too: an edit started from it runs the same
-                // date → map → name flow, but out of that sheet's own draft
-                // rather than this one, so watching `draft` alone would let the
-                // keyboard flash back up between the steps of exactly those
-                // edits. So does a pending delete — its confirmation is an alert
-                // rather than a sheet, so it doesn't take first responder itself,
-                // and a swipe-delete from a focused search left the keyboard
-                // standing under the question.
-                addFlowActive: actions.draft != nil
-                    || actions.choice != nil
-                    || actions.pendingDelete != nil
-            )
-                .onGeometryChange(for: CGFloat.self) { proxy in
-                    proxy.frame(in: .global).minY
-                } action: { searchFieldTop = $0 }
+            if targets == nil {
+                BottomSearchField(
+                    text: $searchText,
+                    prompt: "Search or add species",
+                    horizontalInset: Self.searchFieldHorizontalInset,
+                    // The chooser counts too: an edit started from it runs the same
+                    // date → map → name flow, but out of that sheet's own draft
+                    // rather than this one, so watching `draft` alone would let the
+                    // keyboard flash back up between the steps of exactly those
+                    // edits. So does a pending delete — its confirmation is an alert
+                    // rather than a sheet, so it doesn't take first responder itself,
+                    // and a swipe-delete from a focused search left the keyboard
+                    // standing under the question.
+                    addFlowActive: actions.draft != nil
+                        || actions.choice != nil
+                        || actions.pendingDelete != nil
+                )
+                    .onGeometryChange(for: CGFloat.self) { proxy in
+                        proxy.frame(in: .global).minY
+                    } action: { searchFieldTop = $0 }
+            }
         }
         // The Targets tab brings its own location button in place of these.
         .toolbar { if targets == nil { lifeListToolbar } }
@@ -720,6 +762,8 @@ struct LifeListView: View {
     /// Height of the trailing thumbnail on life-list and catalog-suggestion
     /// rows. Width follows at 4:3.
     private static let rowThumbnailHeight: CGFloat = 72
+    /// How round a row's thumbnail is.
+    private static let rowThumbnailCornerRadius: CGFloat = 8
     /// Diameter of a row's own star button.
     private static let rowControlSize: CGFloat = 32
 
@@ -772,8 +816,16 @@ struct LifeListView: View {
     /// Edit, Add, Star and Delete reachable with the phone open.
     private var speciesGrid: some View {
         ScrollView {
+            let sections = gridSections
             LazyVStack(alignment: .leading, spacing: Self.gridSpacing) {
-                ForEach(gridSections) { section in
+                if let targets, let heading = targetsHeading(targets) {
+                    Text(heading)
+                        .font(.title3.weight(.bold))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: .infinity)
+                        .padding(.bottom, 4)
+                }
+                ForEach(sections) { section in
                     if let title = section.title {
                         Text(title)
                             .font(.subheadline.weight(.semibold))
@@ -781,13 +833,9 @@ struct LifeListView: View {
                             .padding(.top, 4)
                     }
                     LazyVGrid(
-                        columns: [GridItem(
-                            .adaptive(minimum: Self.gridTileWidth),
-                            spacing: Self.gridSpacing,
-                            alignment: .top
-                        )],
+                        columns: gridColumns,
                         alignment: .leading,
-                        spacing: Self.gridSpacing
+                        spacing: Self.gridRowSpacing
                     ) {
                         ForEach(section.rows) { row in
                             switch row {
@@ -802,11 +850,33 @@ struct LifeListView: View {
                     }
                 }
             }
-            .padding(.horizontal, 16)
+            .padding(.horizontal, gridHorizontalPadding)
             .padding(.top, 8)
             .padding(.bottom, 16)
         }
         .scrollBounceBehavior(.basedOnSize)
+        // The same reset-to-top on a new query the rows have — see
+        // `speciesList`. Only one of the two is ever mounted, so they share
+        // the one position.
+        .scrollPosition($scrollPosition)
+        .onChange(of: searchText) { _, _ in
+            withAnimation(.easeOut(duration: 0.2)) {
+                scrollPosition.scrollTo(edge: .top)
+            }
+        }
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
+    }
+
+    /// As many columns as fit on a wide display; exactly three, sized to fit,
+    /// on a phone's Targets tab.
+    private var gridColumns: [GridItem] {
+        guard gridIsFitted else {
+            return [GridItem(.adaptive(minimum: gridTileWidth), spacing: Self.gridSpacing, alignment: .top)]
+        }
+        return Array(
+            repeating: GridItem(.fixed(gridTileWidth), spacing: Self.gridSpacing, alignment: .top),
+            count: Self.fittedGridColumns
+        )
     }
 
     /// A life-list entry as a tile: its photograph, its name, the day it was
@@ -815,16 +885,24 @@ struct LifeListView: View {
         tile(
             scientificName: entry.scientificName,
             name: entry.commonName,
+            // The Targets tab's tiles carry no control: the photograph and the
+            // name, and the menu for everything else.
             overlay: {
-                overlayControl {
-                    overlayCapsule {
-                        starButton(for: entry, size: Self.gridControlSize)
+                if targets == nil {
+                    overlayControl {
+                        overlayCapsule {
+                            starButton(for: entry, size: Self.gridControlSize)
+                        }
                     }
                 }
             },
+            // The Targets tab's tiles are about which birds, not when: just
+            // the name.
             detail: {
-                Text(observationDay: entry.firstSeen)
-                    .monospacedDigit()
+                if targets == nil {
+                    Text(observationDay: entry.firstSeen)
+                        .monospacedDigit()
+                }
             },
             menu: { entryMenu(entry) }
         )
@@ -839,14 +917,16 @@ struct LifeListView: View {
             overlay: {
                 // The same purple plus the suggestion *row* carries, and for
                 // the same reason: a bird not on the list yet is added, not
-                // starred.
-                overlayControl {
-                    AddGlyphButton(isAdded: false, size: Self.gridOverlayRadius * 2, hereAndNow: {
-                        await beginHereAndNowAdd(scientificName: scientificName, commonName: commonName)
-                    }) {
-                        beginAdd(scientificName: scientificName, commonName: commonName)
+                // starred. Not on the Targets tab, whose tiles carry none.
+                if targets == nil {
+                    overlayControl {
+                        AddGlyphButton(isAdded: false, size: Self.gridOverlayRadius * 2, hereAndNow: {
+                            await beginHereAndNowAdd(scientificName: scientificName, commonName: commonName)
+                        }) {
+                            beginAdd(scientificName: scientificName, commonName: commonName)
+                        }
+                        .accessibilityLabel("Add \(commonName) to Life List")
                     }
-                    .accessibilityLabel("Add \(commonName) to Life List")
                 }
             },
             // A suggestion has no sighting yet, so there is no date to print
@@ -912,8 +992,8 @@ struct LifeListView: View {
         VStack(alignment: .center, spacing: Self.gridPhotoCaptionSpacing) {
             SpeciesThumbnail(
                 scientificName: scientificName,
-                height: Self.gridThumbnailHeight,
-                cornerRadius: Self.gridThumbnailCornerRadius,
+                height: gridPhotoHeight,
+                cornerRadius: tileCornerRadius,
                 onTap: { presentPhoto(scientificName) }
             )
             // The lift follows the picture's own rounded outline. Left unsaid,
@@ -922,7 +1002,7 @@ struct LifeListView: View {
             .contentShape(
                 .contextMenuPreview,
                 RoundedRectangle(
-                    cornerRadius: Self.gridThumbnailCornerRadius,
+                    cornerRadius: tileCornerRadius,
                     style: .continuous
                 )
             )
@@ -933,7 +1013,7 @@ struct LifeListView: View {
             // the two and reads as if it belonged to neither.
             VStack(spacing: Self.gridCaptionLineSpacing) {
                 Text(name)
-                    .font(.subheadline)
+                    .font(.subheadline.weight(.medium))
                     .multilineTextAlignment(.center)
                     // No line limit and no scaling: a name gets as many lines
                     // as it needs. A grid tile is narrow enough that two words
@@ -951,15 +1031,15 @@ struct LifeListView: View {
             .onTapGesture { presentPhoto(scientificName) }
             .contextMenu(menuItems: menu)
         }
-        .frame(width: Self.gridTileWidth, alignment: .top)
+        .frame(width: gridTileWidth, alignment: .top)
         // The control, outside both menus. Aligned to the top and given the
         // photograph's own box, so it lands in the picture's bottom trailing
         // corner without an offset to keep in step.
         .overlay(alignment: .top) {
             overlay()
                 .frame(
-                    width: Self.gridPhotoWidth,
-                    height: Self.gridThumbnailHeight,
+                    width: gridPhotoWidth,
+                    height: gridPhotoHeight,
                     alignment: .bottomTrailing
                 )
         }
@@ -1037,7 +1117,7 @@ struct LifeListView: View {
             .contentShape(Rectangle())
             .foregroundStyle(.primary)
             starButton(for: entry, size: Self.rowControlSize)
-            SpeciesThumbnail(scientificName: entry.scientificName, height: Self.rowThumbnailHeight, onTap: {
+            SpeciesThumbnail(scientificName: entry.scientificName, height: Self.rowThumbnailHeight, cornerRadius: Self.rowThumbnailCornerRadius, onTap: {
                 // Open the viewer over the rows currently on screen, in screen
                 // order, so swipes stay inside the active search / filter.
                 presentPhoto(entry.scientificName)
@@ -1145,7 +1225,7 @@ struct LifeListView: View {
                 beginAdd(scientificName: scientificName, commonName: commonName)
             }
             .accessibilityLabel("Add \(commonName) to Life List")
-            SpeciesThumbnail(scientificName: scientificName, height: Self.rowThumbnailHeight, onTap: {
+            SpeciesThumbnail(scientificName: scientificName, height: Self.rowThumbnailHeight, cornerRadius: Self.rowThumbnailCornerRadius, onTap: {
                 // Suggestions are part of what's on screen, so they're part of
                 // the swipe list too (see `presentPhoto`).
                 presentPhoto(scientificName)
@@ -1268,24 +1348,39 @@ struct LifeListView: View {
     /// row is plainly a different thing from a lifer's — see `visibleRows`, where
     /// the filter and the suggestions are likewise kept apart.
     private var speciesCountText: String {
-        if let targets { return targetsCountText(targets) }
         let n = matchingEntries.count
         return showStarredOnly ? "Filtered to \(n) starred species" : "\(n) species"
     }
 
-    /// The Targets subtitle: how many of the place's birds are on the life
-    /// list, out of how many it has. Counts the whole place rather than what
-    /// the search has narrowed it to — the sentence names the place, and "3/5
-    /// species in Ithaca" over a search for warblers would be untrue of it.
-    private func targetsCountText(_ targets: TargetsModel) -> String {
-        guard let species = targets.species else {
-            return targets.status == .noLocation ? "No location" : "Finding birds…"
-        }
+    /// How many of the place's birds are on the life list, out of how many it
+    /// has that month. `nil` until there is a list to count.
+    private func targetCounts(_ targets: TargetsModel) -> (found: Int, total: Int)? {
+        guard let species = targets.species else { return nil }
         let lookup = lifeListLookup
-        let observed = species.reduce(0) { $0 + (lookup($1) == nil ? 0 : 1) }
-        let counts = "\(observed)/\(species.count) species"
-        if let place = targets.placeName { return "\(counts) in \(place)" }
-        return targets.usesCurrentLocation ? "\(counts) nearby" : "\(counts) here"
+        let found = species.reduce(0) { $0 + (lookup($1) == nil ? 0 : 1) }
+        return (found, species.count)
+    }
+
+    /// The Targets heading — "104 species left to find in Ithaca in
+    /// October", or with the life list's birds included, "105 species in
+    /// Ithaca in October". Any Month names no month; a place whose name hasn't
+    /// come back (offline) is "nearby" or "here".
+    private func targetsHeading(_ targets: TargetsModel) -> String? {
+        guard let counts = targetCounts(targets) else { return nil }
+        let place = targets.placeName.map { "in \($0)" }
+            ?? (targets.usesCurrentLocation ? "nearby" : "here")
+        let when = targets.monthName.map { " in \($0)" } ?? ""
+        let count = targets.includesLifeList
+            ? "\(counts.total) species"
+            : "\(counts.total - counts.found) species left to find"
+        return "\(count) \(place)\(when)"
+    }
+
+    /// The Targets tab's line under its title: how many of the place's birds
+    /// are on the life list, whichever birds the grid is showing.
+    private func targetsSubtitle(_ targets: TargetsModel) -> String {
+        guard let counts = targetCounts(targets) else { return "" }
+        return "Found \(counts.found)/\(counts.total)"
     }
 
     /// What the Targets tab shows with no rows to show.
