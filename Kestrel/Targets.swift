@@ -92,13 +92,24 @@ final class TargetsModel {
     /// The place picked on the map, or `nil` while following the current
     /// location.
     private(set) var chosenCoordinate: CLLocationCoordinate2D?
-    var usesCurrentLocation: Bool { chosenCoordinate == nil }
 
-    /// The town the list describes, once the reverse lookup lands. `nil` while
-    /// it's in flight, and for good when it fails (offline).
-    private(set) var placeName: String?
+    // The list on screen, and what it describes. A change of place or month
+    // leaves all of these standing until the new list is ready, then replaces
+    // them together — so the screen never blanks while it works, and the
+    // heading never names a place or month the birds under it aren't for.
+
     /// Ranked most likely first. `nil` until the first list lands.
     private(set) var species: [AreaSpecies]?
+    /// The town the list describes. `nil` when the lookup failed (offline).
+    private(set) var placeName: String?
+    /// The month the list is for; `nil` for Any Month. Can trail `month`,
+    /// which changes the moment one is picked.
+    private(set) var listMonth: Int?
+    /// Whether the list is for wherever the user is, rather than a place
+    /// picked on the map.
+    private(set) var listFollowsUser = true
+    /// Bumped each time a new list replaces the one on screen.
+    private(set) var listRevision = 0
 
     private(set) var sort: Sort {
         didSet { UserDefaults.standard.set(sort.rawValue, forKey: Self.sortKey) }
@@ -130,8 +141,8 @@ final class TargetsModel {
     /// current month until one is picked.
     private(set) var month: Int? = Calendar.current.component(.month, from: Date())
 
-    /// `month`'s name, in the user's language; `nil` for Any Month.
-    var monthName: String? { month.map(Self.monthName) }
+    /// `listMonth`'s name, in the user's language; `nil` for Any Month.
+    var listMonthName: String? { listMonth.map(Self.monthName) }
 
     static func monthName(_ month: Int) -> String {
         Calendar.current.standaloneMonthSymbols[month - 1]
@@ -143,7 +154,6 @@ final class TargetsModel {
         // The same place as the list on screen: a month change shouldn't wait
         // seconds on a fresh location fix to land back where it already was.
         let place = loaded?.coordinate
-        clear()
         self.month = month
         await refresh(manager: manager, at: place)
     }
@@ -177,9 +187,6 @@ final class TargetsModel {
 
     /// Follows the current location from now on.
     private func useCurrentLocation(manager: RecordingManager) async {
-        // Leaving a picked place: the fix can take seconds, and the old list
-        // shouldn't stand while it does.
-        if chosenCoordinate != nil { clear() }
         chosenCoordinate = nil
         await refresh(manager: manager)
     }
@@ -195,7 +202,6 @@ final class TargetsModel {
             await useCurrentLocation(manager: manager)
             return
         }
-        clear()
         chosenCoordinate = coordinate
         await refresh(manager: manager)
     }
@@ -223,38 +229,42 @@ final class TargetsModel {
         guard run == generation else { return }
 
         let month = month
+        let followsUser = chosenCoordinate == nil
         if let loaded, species != nil, loaded.month == month,
            Self.distance(loaded.coordinate, target) < Self.sameAreaRadius {
             // Same list. A name that failed to look up last time (offline) is
             // worth another try, though.
-            if placeName == nil { await lookUpPlaceName(at: loaded.coordinate, run: run) }
+            listFollowsUser = followsUser
+            if placeName == nil {
+                let name = await ObservationNameSheet.townName(at: loaded.coordinate)
+                guard run == generation else { return }
+                placeName = name
+            }
             return
         }
 
-        // A different place: clear the old list rather than leave it standing
-        // under a heading that no longer describes it.
-        clear()
+        // A different list. The old one stays up while this one is worked
+        // out, and the town name is looked up alongside it so the two land on
+        // screen together.
+        async let name = ObservationNameSheet.townName(at: target)
         let ranked = await Self.rankedSpecies(at: target, month: month, manager: manager)
+        let town = await name
         guard run == generation else { return }
         species = ranked
+        placeName = town
+        listMonth = month
+        listFollowsUser = followsUser
+        listRevision += 1
         loaded = (target, month)
         status = .ready
-        await lookUpPlaceName(at: target, run: run)
     }
 
-    /// Drops the list on a deliberate change of place or month, so the spinner shows
-    /// until the new one lands.
+    /// Drops the list when there is nothing to show in its place.
     private func clear() {
         loaded = nil
         species = nil
         placeName = nil
         status = .loading
-    }
-
-    private func lookUpPlaceName(at coordinate: CLLocationCoordinate2D, run: Int) async {
-        let name = await ObservationNameSheet.townName(at: coordinate)
-        guard run == generation else { return }
-        placeName = name
     }
 
     /// Where the user is, without ever prompting for access. A fresh fix when

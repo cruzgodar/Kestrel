@@ -54,6 +54,8 @@ struct LifeListView: View {
     /// The list's scroll offset, so editing the query can send it back to the
     /// top — see the `searchText` change handler.
     @State private var scrollPosition = ScrollPosition()
+    /// The Targets heading's count — twice the size of the line under it.
+    @ScaledMetric(relativeTo: .title3) private var targetsCountSize: CGFloat = 40
     /// Global-space Y of the top edge of the bottom search field, measured so
     /// the tap-swallowing overlay (see `body`) knows where the list content
     /// stops being directly tappable.
@@ -819,11 +821,16 @@ struct LifeListView: View {
             let sections = gridSections
             LazyVStack(alignment: .leading, spacing: Self.gridSpacing) {
                 if let targets, let heading = targetsHeading(targets) {
-                    Text(heading)
-                        .font(.title3.weight(.bold))
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: .infinity)
-                        .padding(.bottom, 4)
+                    VStack(spacing: 0) {
+                        Text(heading.count)
+                            .font(.system(size: targetsCountSize, weight: .bold))
+                        Text(heading.detail)
+                            .font(.title3.weight(.bold))
+                    }
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+                    // With the stack's own spacing, 32pt down to the photographs.
+                    .padding(.bottom, 32 - Self.gridSpacing)
                 }
                 ForEach(sections) { section in
                     if let title = section.title {
@@ -863,6 +870,11 @@ struct LifeListView: View {
             withAnimation(.easeOut(duration: 0.2)) {
                 scrollPosition.scrollTo(edge: .top)
             }
+        }
+        // A new place or month's list starts from its top, as a fresh screen
+        // would. Unanimated: it lands with the new birds, in the same frame.
+        .onChange(of: targets?.listRevision) { _, _ in
+            scrollPosition.scrollTo(edge: .top)
         }
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { gridWidth = $0 }
     }
@@ -1361,19 +1373,19 @@ struct LifeListView: View {
         return (found, species.count)
     }
 
-    /// The Targets heading — "104 species left to find in Ithaca in
-    /// October", or with the life list's birds included, "105 species in
-    /// Ithaca in October". Any Month names no month; a place whose name hasn't
-    /// come back (offline) is "nearby" or "here".
-    private func targetsHeading(_ targets: TargetsModel) -> String? {
+    /// The Targets heading, in two lines: the count — "104 species" — and
+    /// what it counts — "left to find in Ithaca in October", or with the life
+    /// list's birds included, "in Ithaca in October". Any Month names no month;
+    /// a place whose name hasn't come back (offline) is "nearby" or "here".
+    private func targetsHeading(_ targets: TargetsModel) -> (count: String, detail: String)? {
         guard let counts = targetCounts(targets) else { return nil }
         let place = targets.placeName.map { "in \($0)" }
-            ?? (targets.usesCurrentLocation ? "nearby" : "here")
-        let when = targets.monthName.map { " in \($0)" } ?? ""
-        let count = targets.includesLifeList
-            ? "\(counts.total) species"
-            : "\(counts.total - counts.found) species left to find"
-        return "\(count) \(place)\(when)"
+            ?? (targets.listFollowsUser ? "nearby" : "here")
+        let when = targets.listMonthName.map { " in \($0)" } ?? ""
+        let detail = "\(place)\(when)"
+        return targets.includesLifeList
+            ? ("\(counts.total) species", detail)
+            : ("\(counts.total - counts.found) species", "left to find \(detail)")
     }
 
     /// The Targets tab's line under its title: how many of the place's birds
@@ -1401,6 +1413,15 @@ struct LifeListView: View {
                 Label("No birds expected here", systemImage: "target")
             } description: {
                 Text("Tap the location button above to choose another place.")
+            }
+        } else if !targets.includesLifeList,
+                  let counts = targetCounts(targets), counts.found == counts.total {
+            // Every bird here is on the life list: the grid is empty under
+            // its "0 species left to find" heading.
+            ContentUnavailableView {
+                Label("No targets left", systemImage: "target")
+            } description: {
+                Text("You\u{2019}ve found every bird expected here. Choose another place or month to find more!")
             }
         }
     }
