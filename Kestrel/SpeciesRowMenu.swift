@@ -21,6 +21,11 @@ import SwiftUI
 /// - **Delete Observation** removes one recorded sighting — never the species'
 ///   whole history, which only "Delete All Entries" does. It belongs where the
 ///   row stands for a sighting; `onDelete: nil` leaves it off.
+/// - **Find Nearby Sightings** opens eBird's map of the bird around the user
+///   (see `NearbySightings`). Last, in a section of its own, because it is the
+///   one item that leaves the app. Off when `nearbySpecies` is `nil` — the
+///   Targets tab's viewer, which has a button for it instead — and for a bird
+///   eBird has no page for.
 struct SpeciesRowMenu: View {
     /// Re-opens the date → map → name flow on an existing sighting. `nil` on
     /// rows with no sighting to edit.
@@ -35,6 +40,8 @@ struct SpeciesRowMenu: View {
     var onViewImage: (() -> Void)?
     /// `nil` on rows where deleting doesn't apply.
     var onDelete: (() -> Void)?
+    /// The bird Find Nearby Sightings looks up. `nil` leaves the item off.
+    var nearbySpecies: (scientificName: String, commonName: String)?
 
     var body: some View {
         if let onEdit {
@@ -74,6 +81,22 @@ struct SpeciesRowMenu: View {
                 onDelete()
             } label: {
                 Label("Delete Observation", systemImage: "trash")
+            }
+        }
+        if let nearbySpecies,
+           SpeciesCatalog.shared.eBirdCode(
+               scientificName: nearbySpecies.scientificName,
+               commonName: nearbySpecies.commonName
+           ) != nil {
+            Section {
+                Button {
+                    NearbySightings.open(
+                        scientificName: nearbySpecies.scientificName,
+                        commonName: nearbySpecies.commonName
+                    )
+                } label: {
+                    Label(NearbySightings.title, systemImage: NearbySightings.systemImage)
+                }
             }
         }
     }

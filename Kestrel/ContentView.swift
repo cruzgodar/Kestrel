@@ -793,7 +793,8 @@ struct ContentView: View {
                         isStarred: !isStarred
                     )
                 }) : nil,
-                onViewImage: { presentViewer(for: detection.scientificName) }
+                onViewImage: { presentViewer(for: detection.scientificName) },
+                nearbySpecies: (detection.scientificName, detection.commonName)
             )
         }
     }

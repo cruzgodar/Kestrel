@@ -306,7 +306,8 @@ struct KestrelApp: App {
                     guard let latitude = observation.latitude,
                           let longitude = observation.longitude else { return }
                     showOnMap(latitude: latitude, longitude: longitude)
-                }
+                },
+                showsNearbySightingsButton: presentation.fromTargets
             )
             // Re-inject the store: with the Observation framework, `.environment`
             // objects don't reliably cross a fullScreenCover boundary, so the

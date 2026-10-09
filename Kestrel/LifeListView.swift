@@ -231,10 +231,10 @@ struct LifeListView: View {
     private func presentPhoto(_ scientificName: String) {
         let names = visibleNames
         guard let idx = names.firstIndex(of: scientificName) else {
-            photoPresenter?.present(scientificName)
+            photoPresenter?.present(scientificName, fromTargets: targets != nil)
             return
         }
-        photoPresenter?.present(names: names, index: idx)
+        photoPresenter?.present(names: names, index: idx, fromTargets: targets != nil)
     }
 
     /// Splits search-result rows into in-range and out-of-range groups,
@@ -1210,7 +1210,8 @@ struct LifeListView: View {
             }),
             onViewImage: { presentPhoto(entry.scientificName) },
             // Routed through the same chooser / confirmation as the swipe.
-            onDelete: { requestDelete(entry) }
+            onDelete: { requestDelete(entry) },
+            nearbySpecies: (entry.scientificName, entry.commonName)
         )
     }
 
@@ -1279,7 +1280,8 @@ struct LifeListView: View {
             onAddObservation: {
                 beginAdd(scientificName: scientificName, commonName: commonName)
             },
-            onViewImage: { presentPhoto(scientificName) }
+            onViewImage: { presentPhoto(scientificName) },
+            nearbySpecies: (scientificName, commonName)
         )
     }
 

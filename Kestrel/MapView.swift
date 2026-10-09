@@ -188,7 +188,31 @@ struct MapView: View {
     /// invisible to the add flow that presents the picker.
     init(picker: LocationPicker? = nil) {
         self.picker = picker
+        _position = State(initialValue: Self.openingPosition(for: picker))
     }
+
+    /// Where the camera starts: the sighting being edited, or else the last
+    /// place the user is known to have been, as a fixed region rather than
+    /// MapKit's follow-the-user mode.
+    ///
+    /// Not `.userLocation`: that mode stays in force until the first location
+    /// fix lands, a second or so after the map opens, and a pan in that second
+    /// didn't end it — the fix arrived and threw the camera back onto the
+    /// user. A fixed region can't move by itself. The fresh fix is taken up
+    /// afterwards by `moveToFirstFix`, and only if nothing has claimed the
+    /// camera by then. `.automatic` (every bird in view) when there is no
+    /// place to start from at all.
+    private static func openingPosition(for picker: LocationPicker?) -> MapCameraPosition {
+        let known = LocationCache.shared.lastCoordinate ?? savedCoordinate
+        guard let start = picker?.initialCoordinate
+            ?? known.map({ CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) })
+        else { return .automatic }
+        return .region(MKCoordinateRegion(center: start, span: focusSpan))
+    }
+
+    /// The range filter's saved place, read once: this runs from `init`, which
+    /// SwiftUI calls on every redraw of whatever holds the map.
+    private static let savedCoordinate = SpeciesRangeFilter.cachedCoordinate()
 
     @Environment(LifeListStore.self) private var store
     @Environment(MapNavigator.self) private var navigator: MapNavigator?
@@ -329,6 +353,7 @@ struct MapView: View {
     private func seedPickerPinFromEdit() {
         guard let initial = picker?.initialCoordinate, pickedPins.isEmpty else { return }
         dropPin(at: initial)
+        cameraClaimed = true
         let focus = MapFocus(
             latitude: initial.latitude,
             longitude: initial.longitude,
@@ -364,9 +389,12 @@ struct MapView: View {
         }
     }
 
-    @State private var position: MapCameraPosition = .userLocation(
-        fallback: .automatic
-    )
+    /// Set in `init` — see `openingPosition`.
+    @State private var position: MapCameraPosition
+    /// Whether anything has put the camera somewhere on purpose — a pan or
+    /// zoom of the user's, a focus request, the recenter button. Once it has,
+    /// a location fix arriving late leaves the camera alone.
+    @State private var cameraClaimed = false
     /// Per-frame camera bookkeeping (latest span/center, last zoom step, last
     /// cull center/span). Held in a plain reference type — NOT as individual
     /// `@State` — so the `.continuous` camera callback can record the latest
@@ -389,16 +417,14 @@ struct MapView: View {
     /// A focus request that hasn't visibly landed yet, held so it can be
     /// re-asserted rather than applied once and forgotten.
     ///
-    /// This is what fixes "Show on Map opens the Map tab but leaves the camera
-    /// where I am." The first time the tab is opened after a launch, the map is
-    /// built with `position == .userLocation(fallback: .automatic)` and is still
-    /// resolving that when our `onAppear` write lands — the map is mid-layout
-    /// (zero-sized inside its `GeometryReader`) and MapKit is in follow mode, so
-    /// the first location fix arrives *after* the write and throws the camera
-    /// back onto the user. Every subsequent open finds the camera already
-    /// settled, which is why the bug only shows up once per launch. Holding the
-    /// request and re-asserting it on each camera settle makes the outcome
-    /// independent of who moved the camera last.
+    /// This is what fixed "Show on Map opens the Map tab but leaves the camera
+    /// where I am." The map used to open in MapKit's follow mode, and the first
+    /// location fix landing after our `onAppear` write threw the camera back
+    /// onto the user. It no longer opens in follow mode (see
+    /// `openingPosition`), but the first write still lands while the map is
+    /// mid-layout, zero-sized inside its `GeometryReader`, and can be dropped —
+    /// so the request is still held and re-asserted on each camera settle. A
+    /// pan or zoom of the user's ends it at once (see `cameraClaimed`).
     @State private var focusRequest: MapFocus?
     /// When to stop re-asserting `focusRequest`. Kept short: long enough for the
     /// initial location fix (the thing that overrides us) to land, short enough
@@ -777,6 +803,15 @@ struct MapView: View {
                 .onMapCameraChange(frequency: .continuous) { context in
                     cacheCamera(context)
                 }
+                // The map writes a user-positioned value back through the
+                // binding the moment a pan or zoom starts. From then on the
+                // camera is theirs: a focus request stops re-asserting itself,
+                // and a late location fix doesn't move it.
+                .onChange(of: position.positionedByUser) { _, byUser in
+                    guard byUser else { return }
+                    cameraClaimed = true
+                    focusRequest = nil
+                }
                 // Rebuild/cull the thumbnails ONLY when the map comes to a complete
                 // stop — `.onEnd` fires once the camera stops changing (after any
                 // fling has fully decelerated), not at finger-up. Driving the update
@@ -924,8 +959,9 @@ struct MapView: View {
             // fix so the recenter button and user dot work immediately; otherwise
             // do nothing and leave the camera on its automatic fallback.
             let status = CLLocationManager().authorizationStatus
-            if status == .authorizedWhenInUse || status == .authorizedAlways {
-                _ = await LocationCache.shared.current()
+            if status == .authorizedWhenInUse || status == .authorizedAlways,
+               let fix = await LocationCache.shared.current() {
+                moveToFirstFix(fix)
             }
             // Picker mode opens with the current location already chosen — the
             // same warmed fix, so this costs nothing extra.
@@ -1030,6 +1066,7 @@ struct MapView: View {
     private func applyPendingFocus(animated: Bool) {
         guard let focus = navigator?.pendingFocus else { return }
         navigator?.pendingFocus = nil
+        cameraClaimed = true
         focusRequest = focus
         focusDeadline = Date.now + Self.focusReassertWindow
         moveCamera(to: focus, animated: animated)
@@ -1106,11 +1143,30 @@ struct MapView: View {
         return MKCoordinateRegion(center: center, span: span)
     }
 
+    /// Puts the camera on a fresh location fix — the one `.task` waited for —
+    /// unless something has put it somewhere else in the meantime. Run on
+    /// every appearance until then, so a map nobody has touched keeps opening
+    /// on wherever the user now is, as the follow mode it replaces did.
+    private func moveToFirstFix(_ fix: (latitude: Double, longitude: Double)) {
+        guard !cameraClaimed else { return }
+        let region = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(latitude: fix.latitude, longitude: fix.longitude),
+            span: Self.focusSpan
+        )
+        withAnimation(.easeInOut(duration: 0.45)) { position = .region(region) }
+    }
+
     /// Puts the camera back on the user, at a neighborhood-sized span. The
-    /// recenter bar button's action.
+    /// recenter bar button's action. In the picker it moves the pin there too:
+    /// recentering is how a picked place is put back to "here".
     private func recenterOnUser() {
         Task {
             guard let coord = await LocationCache.shared.current() else { return }
+            cameraClaimed = true
+            focusRequest = nil
+            if picker != nil {
+                dropPin(at: CLLocationCoordinate2D(latitude: coord.latitude, longitude: coord.longitude))
+            }
             // Fill the icon on recenter; skip clearing it for the duration of
             // the recenter animation (the grace window).
             withAnimation(.easeInOut(duration: 0.2)) { centeredOnUser = true }
@@ -1890,7 +1946,8 @@ private struct MapPointMenu: View {
                     commonName: point.commonName,
                     among: sightings
                 )
-            }
+            },
+            nearbySpecies: (point.scientificName, point.commonName)
         )
     }
 }

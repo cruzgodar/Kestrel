@@ -30,7 +30,19 @@ final class SpeciesCatalog: @unchecked Sendable {
     /// against `SpeciesRangeFilter`'s cached allowed-index set.
     let indexByScientificName: [String: Int]
 
+    /// eBird's species code for each entry of `all`, by index — "carwre" for
+    /// Carolina Wren. From `BirdNET_GLOBAL_6K_V2.4_eBirdCodes.txt`, one code
+    /// per line in the labels file's order, generated from BirdNET-Analyzer's
+    /// `eBird_taxonomy_codes_2024E.json`. Empty if the file is missing.
+    private let eBirdCodes: [String]
+
     private init() {
+        self.eBirdCodes = Bundle.main.url(
+            forResource: "BirdNET_GLOBAL_6K_V2.4_eBirdCodes",
+            withExtension: "txt"
+        )
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
+        .map { $0.split(whereSeparator: { $0.isNewline }).map(String.init) } ?? []
         guard
             let url = Bundle.main.url(
                 forResource: "BirdNET_GLOBAL_6K_V2.4_Labels",
@@ -63,5 +75,21 @@ final class SpeciesCatalog: @unchecked Sendable {
     func commonName(for scientificName: String) -> String? {
         guard let i = indexByScientificName[scientificName] else { return nil }
         return all[i].commonName
+    }
+
+    /// eBird's species code for a bird, for linking to its pages on eBird.
+    /// Found by scientific name, then through `TaxonomyAliases` for a name
+    /// eBird has since changed, then by common name. `nil` for the labels
+    /// file's noise and human classes, which have no eBird page.
+    func eBirdCode(scientificName: String, commonName: String? = nil) -> String? {
+        let index = indexByScientificName[scientificName]
+            ?? TaxonomyAliases.ebirdToBirdNET[scientificName].flatMap { indexByScientificName[$0] }
+            ?? commonName.flatMap { name in
+                all.firstIndex { $0.commonName.caseInsensitiveCompare(name) == .orderedSame }
+            }
+        guard let index, eBirdCodes.indices.contains(index),
+              !BirdNETClassifier.nonBirdLabels.contains(all[index].scientificName)
+        else { return nil }
+        return eBirdCodes[index]
     }
 }

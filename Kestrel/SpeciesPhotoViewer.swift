@@ -52,19 +52,27 @@ final class SpeciesPhotoPresenter {
         let id = UUID()
         var names: [String]
         var index: Int
+        /// Opened from the Targets tab, whose birds are ones to go and find:
+        /// the viewer puts Find Nearby Sightings on a button of its own rather
+        /// than at the bottom of its menu.
+        var fromTargets = false
     }
 
     var presented: Presentation?
 
     /// Opens the viewer on a single bird with nothing to swipe to.
-    func present(_ scientificName: String) {
-        presented = Presentation(names: [scientificName], index: 0)
+    func present(_ scientificName: String, fromTargets: Bool = false) {
+        presented = Presentation(names: [scientificName], index: 0, fromTargets: fromTargets)
     }
 
     /// Opens the viewer over an ordered list of birds, starting on `index`.
-    func present(names: [String], index: Int) {
+    func present(names: [String], index: Int, fromTargets: Bool = false) {
         guard !names.isEmpty else { return }
-        presented = Presentation(names: names, index: min(max(index, 0), names.count - 1))
+        presented = Presentation(
+            names: names,
+            index: min(max(index, 0), names.count - 1),
+            fromTargets: fromTargets
+        )
     }
 }
 
@@ -136,6 +144,10 @@ struct SpeciesPhotoFullScreen: View {
     /// Action for a row tapped in the observation list — focus the map on that
     /// particular sighting. `nil` makes the rows non-interactive.
     var onShowObservationOnMap: ((LifeListEntry.Observation) -> Void)? = nil
+    /// Whether Find Nearby Sightings is a button over the info panel rather
+    /// than the last item of the More menu — the Targets tab's viewer, where
+    /// it is what the screen is for.
+    var showsNearbySightingsButton = false
 
     @Environment(\.dismiss) private var dismiss
     /// Chooses how the photo is sized at rest. Regular width means the app has a
@@ -251,12 +263,14 @@ struct SpeciesPhotoFullScreen: View {
         initialIndex: Int = 0,
         mapButtonTitle: String? = nil,
         onShowOnMap: ((SpeciesPhotoItem) -> Void)? = nil,
-        onShowObservationOnMap: ((LifeListEntry.Observation) -> Void)? = nil
+        onShowObservationOnMap: ((LifeListEntry.Observation) -> Void)? = nil,
+        showsNearbySightingsButton: Bool = false
     ) {
         self.items = items
         self.mapButtonTitle = mapButtonTitle
         self.onShowOnMap = onShowOnMap
         self.onShowObservationOnMap = onShowObservationOnMap
+        self.showsNearbySightingsButton = showsNearbySightingsButton
         _scrolledID = State(initialValue: min(max(initialIndex, 0), max(items.count - 1, 0)))
     }
 
@@ -833,7 +847,7 @@ struct SpeciesPhotoFullScreen: View {
                     // Measured from the display, not the safe area: the inset has
                     // to be the real distance from the corner for the panel's own
                     // corners to be concentric with it.
-                    infoPanel(for: item, contentWidth: contentWidth, hugsCorner: true)
+                    panelWithNearbyButton(for: item, contentWidth: contentWidth, hugsCorner: true)
                         .padding(.trailing, cornerInset)
                         .padding(.bottom, cornerInset)
                         .frame(
@@ -850,7 +864,7 @@ struct SpeciesPhotoFullScreen: View {
                         // Always shown: it carries the sighting place/date and the
                         // photo attribution — or, for a species we don't have a
                         // photo for yet, a "coming soon" notice in its place.
-                        infoPanel(for: item, contentWidth: contentWidth, hugsCorner: false)
+                        panelWithNearbyButton(for: item, contentWidth: contentWidth, hugsCorner: false)
                             .padding(.bottom, bottomInset + 8)
                     }
                     // The chrome is interactive foreground content sitting in a
@@ -965,7 +979,11 @@ struct SpeciesPhotoFullScreen: View {
                 // turn them off. It is reachable here by searching the species in
                 // the Life List tab and opening its photo.
                 star: starToggle,
-                onDelete: actionable ? { deleteSighting(of: item) } : nil
+                onDelete: actionable ? { deleteSighting(of: item) } : nil,
+                // The Targets tab's viewer has a button for it instead.
+                nearbySpecies: showsNearbySightingsButton
+                    ? nil
+                    : (item.scientificName, commonName(for: item))
             )
         } label: {
             // The same face as `backButton`.
@@ -1045,6 +1063,31 @@ struct SpeciesPhotoFullScreen: View {
         guard item.showsAllObservations else { return [] }
         return lifeListStore?.observations(for: item.scientificName) ?? []
     }
+
+    /// The info panel, with the Targets tab's Find Nearby Sightings button
+    /// standing over it. Stacked rather than placed apart so the button is
+    /// centred on the panel wherever the panel goes — the middle of a phone,
+    /// a corner of the open Duo.
+    @ViewBuilder
+    private func panelWithNearbyButton(
+        for item: SpeciesPhotoItem,
+        contentWidth: CGFloat,
+        hugsCorner: Bool
+    ) -> some View {
+        let name = commonName(for: item)
+        if showsNearbySightingsButton,
+           SpeciesCatalog.shared.eBirdCode(scientificName: item.scientificName, commonName: name) != nil {
+            VStack(spacing: Self.nearbyButtonSpacing) {
+                NearbySightingsButton(scientificName: item.scientificName, commonName: name)
+                infoPanel(for: item, contentWidth: contentWidth, hugsCorner: hugsCorner)
+            }
+        } else {
+            infoPanel(for: item, contentWidth: contentWidth, hugsCorner: hugsCorner)
+        }
+    }
+
+    /// Gap between the Find Nearby Sightings button and the panel under it.
+    private static let nearbyButtonSpacing: CGFloat = 12
 
     /// Bottom details — the sighting and the photo attribution — in the shared
     /// glass panel (see `SpeciesInfoPanel`). This screen hands it everything it
@@ -2361,5 +2404,27 @@ final class CenteringScrollView: UIScrollView {
         if velocity.x > 0, atLeftEdge { return false }   // swipe right at left edge → previous bird
         if velocity.x < 0, atRightEdge { return false }  // swipe left at right edge → next bird
         return true
+    }
+}
+
+/// The Targets tab viewer's Find Nearby Sightings button: the link's glyph and
+/// title in a capsule of the chrome's own glass, the name capsule's height.
+private struct NearbySightingsButton: View {
+    let scientificName: String
+    let commonName: String
+
+    var body: some View {
+        Button {
+            NearbySightings.open(scientificName: scientificName, commonName: commonName)
+        } label: {
+            Label(NearbySightings.title, systemImage: NearbySightings.systemImage)
+                .font(.headline)
+                .foregroundStyle(.white)
+                .padding(.horizontal, 18)
+                .frame(height: SpeciesChrome.height)
+                .glassEffect(SpeciesChrome.buttonGlass, in: .capsule)
+                .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
     }
 }
