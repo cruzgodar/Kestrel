@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The furniture both species views wear: the name capsule at the top and the
 /// details panel at the bottom.
@@ -153,6 +154,98 @@ struct SpeciesChromeButtonLabel: View {
         .contentShape(.circle)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
+    }
+}
+
+extension View {
+    /// Takes back the extra inset a bar gives an item whose shared background
+    /// is hidden (`SpeciesChrome.buttonBarInset`), on the side of the item
+    /// facing the display edge — but only in a horizontal bar. In a vertical
+    /// bar the items are stacked and centred across it, and the same shift
+    /// pushed them off its centre line.
+    func barButtonInset(_ edge: HorizontalEdge) -> some View {
+        modifier(BarButtonInset(edge: edge))
+    }
+}
+
+private struct BarButtonInset: ViewModifier {
+    let edge: HorizontalEdge
+    @State private var inVerticalBar = false
+
+    func body(content: Content) -> some View {
+        content
+            .padding(
+                edge == .leading ? .leading : .trailing,
+                inVerticalBar ? 0 : -SpeciesChrome.buttonBarInset
+            )
+            .background { VerticalBarReader(inVerticalBar: $inVerticalBar) }
+    }
+}
+
+/// Whether the system is running its bars down one side of the display — a
+/// foldable closed, or open and held landscape. UIKit's `verticalBarEdge`,
+/// which SwiftUI doesn't expose; read from inside the bar item itself, so it
+/// answers for the bar the item is actually in.
+private struct VerticalBarReader: UIViewRepresentable {
+    @Binding var inVerticalBar: Bool
+
+    func makeUIView(context: Context) -> ReaderView { ReaderView() }
+
+    func updateUIView(_ view: ReaderView, context: Context) {
+        view.report = { inVerticalBar = $0 }
+        view.reportIfChanged()
+    }
+
+    final class ReaderView: UIView {
+        var report: ((Bool) -> Void)?
+        private var reported: Bool?
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            isUserInteractionEnabled = false
+            if #available(iOS 27.1, *) {
+                registerForTraitChanges(UITraitCollection.systemTraitsAffectingVerticalBarEdge) {
+                    (view: ReaderView, _: UITraitCollection) in
+                    view.reportIfChanged()
+                }
+            }
+        }
+
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            reportIfChanged()
+        }
+
+        func reportIfChanged() {
+            guard window != nil else { return }
+            var vertical = false
+            if #available(iOS 27.1, *) {
+                vertical = traitCollection.verticalBarEdge != .unspecified
+            }
+            guard vertical != reported else { return }
+            reported = vertical
+            // Out of the update pass: SwiftUI state can't change inside it.
+            let report = report
+            Task { @MainActor in report?(vertical) }
+        }
+    }
+}
+
+extension ToolbarContent {
+    /// Lets a bar item drawn with `SpeciesChromeButtonLabel` into a vertical
+    /// bar. The system works out which axes an item supports from its
+    /// contents, and a custom face is something it only trusts in a
+    /// horizontal bar — so without this, on a foldable that runs its bars
+    /// down one side, the item stays in a strip across the top.
+    @ToolbarContentBuilder
+    func allowsVerticalBar() -> some ToolbarContent {
+        if #available(iOS 27.1, *) {
+            axisBehavior(.verticalPreferred)
+        } else {
+            self
+        }
     }
 }
 

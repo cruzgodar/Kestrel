@@ -646,6 +646,9 @@ struct SpeciesPhotoFullScreen: View {
             // `SpeciesChrome.buttonGlass` — so it is taken off and each button
             // wears the chrome's glass instead.
             .sharedBackgroundVisibility(.hidden)
+            // A face of our own keeps the item out of a vertical bar unless
+            // it is let in.
+            .allowsVerticalBar()
             // The species name, placed by the system in the middle of the bar —
             // which is exactly between Back and More, on any display, with no
             // measuring on our part. A principal item rather than
@@ -667,6 +670,7 @@ struct SpeciesPhotoFullScreen: View {
                 }
             }
             .sharedBackgroundVisibility(.hidden)
+            .allowsVerticalBar()
         }
         }
         }
@@ -897,15 +901,16 @@ struct SpeciesPhotoFullScreen: View {
 
     /// A glyph in the chrome's own glass (`SpeciesChromeButtonLabel`), not a
     /// system `Label`, because the bar's glass can't be tinted to match the
-    /// capsule and panel. Its title is for VoiceOver only now, so the system
-    /// no longer has one to show where it runs its bars vertically.
+    /// capsule and panel. Its title is for VoiceOver only, which leaves the
+    /// system nothing it recognises as a bar button — see `allowsVerticalBar`
+    /// for how it still gets into a vertical bar.
     private var backButton: some View {
         Button { dismissViewer() } label: {
             SpeciesChromeButtonLabel(title: "Back", systemImage: "chevron.backward")
         }
         // With its background hidden the bar still insets the item as though it
         // had a platter; this puts the circle back where the system's sat.
-        .padding(.leading, -SpeciesChrome.buttonBarInset)
+        .barButtonInset(.leading)
     }
 
     /// Whether this screen has anywhere to send a "show me this on the map" tap.
@@ -994,7 +999,7 @@ struct SpeciesPhotoFullScreen: View {
             SpeciesChromeButtonLabel(title: "More actions", systemImage: "ellipsis")
         }
         // See `backButton`.
-        .padding(.trailing, -SpeciesChrome.buttonBarInset)
+        .barButtonInset(.trailing)
     }
 
     /// Edit from the menu.
