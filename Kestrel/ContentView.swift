@@ -884,7 +884,7 @@ private struct SpeciesHeroImage: View {
             progressive: true,
             onTap: onTap
         ) {
-            Image(systemName: "bird")
+            SpeciesPhotoPlaceholderGlyph()
                 .font(.system(size: 36))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)

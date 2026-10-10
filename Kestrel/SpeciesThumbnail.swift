@@ -41,7 +41,7 @@ struct SpeciesThumbnail: View {
         // Credit caption omitted at this size — it's unreadable behind a 60pt
         // box. The hero image and map card carry the attribution instead.
         SpeciesPhoto(scientificName: scientificName, usesThumbnail: usesThumbnail, onTap: onTap) {
-            Image(systemName: "bird")
+            SpeciesPhotoPlaceholderGlyph()
                 .foregroundStyle(.secondary)
                 .frame(width: width, height: height)
                 .background(.fill.tertiary)

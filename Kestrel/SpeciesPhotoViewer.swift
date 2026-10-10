@@ -1796,17 +1796,17 @@ struct ZoomablePhotoPage: View {
                 onAtTopEdgeChange: onAtTopEdgeChange,
                 onPageBeyondEdge: onPageBeyondEdge
             )
-        } else if loadFailed {
-            // No photo exists for this species yet (or one failed to load) — a
-            // centered bird-glyph placeholder. It fills the page and lives inside
-            // the paged, offsetting card, so it tracks the swipe-to-dismiss drag
-            // 1:1 exactly like a real photo does.
-            Image(systemName: "bird")
-                .font(.system(size: 64))
-                .foregroundStyle(.white.opacity(0.35))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ProgressView().tint(.white)
+            // A bird when no photo exists for this species, and a download
+            // arrow in a circle while the photo is on its way. It fills
+            // the page and lives inside the paged, offsetting card, so it
+            // tracks the swipe-to-dismiss drag 1:1 exactly like a real photo
+            // does.
+            SpeciesPhotoPlaceholderGlyph()
+                .font(.system(size: loadFailed ? 64 : 44))
+                .foregroundStyle(.white.opacity(loadFailed ? 0.35 : 0.6))
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .environment(\.speciesPhotoIsDownloading, !loadFailed)
         }
     }
 
@@ -1823,14 +1823,6 @@ struct ZoomablePhotoPage: View {
         fullResLoaded = false
         let name = item.scientificName
 
-        // No photo exists for this species (no remote metadata) — show the
-        // bird-glyph placeholder immediately, skipping the pointless network
-        // round-trip and the loading spinner that a real photo would need.
-        guard SpeciesPhotoMetadata.shared.info(for: name) != nil else {
-            loadFailed = true
-            return
-        }
-
         // Already have the true full-res image resident (a previous open this
         // session): show it straight away, no download or swap needed.
         if let full = RemoteSpeciesImageStore.shared.memoryFullResolutionImage(for: name) {
@@ -1843,13 +1835,22 @@ struct ZoomablePhotoPage: View {
         // appears immediately. The full-resolution download is deferred until the
         // viewer settles (see `startFullResIfNeeded`), so it never competes with the
         // open slide or a swipe.
+        //
+        // A photo the manifest lists is retried until it arrives, rather than
+        // falling back to the placeholder on the first failure (see
+        // `SpeciesPhotoLoading`); `loadFailed` now means only that no photo of
+        // this species is published, which shows the bird straight away.
         if let mem = RemoteSpeciesImageStore.shared.memoryImage(for: name) {
             image = mem
         } else {
-            let loaded = await RemoteSpeciesImageStore.shared.image(for: name)
-            guard !Task.isCancelled else { return }
+            let loaded = await SpeciesPhotoLoading.load(name, phase: { phase in
+                loadFailed = phase == .unpublished
+            }) {
+                await RemoteSpeciesImageStore.shared.image(for: name)
+            }
+            guard !Task.isCancelled, let loaded else { return }
+            loadFailed = false
             image = loaded
-            loadFailed = loaded == nil
         }
 
         guard image != nil else { return }

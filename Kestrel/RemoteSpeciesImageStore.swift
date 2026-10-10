@@ -150,6 +150,31 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         SpeciesPhotoMetadata.shared.info(for: scientificName) != nil
     }
 
+    /// Whether the published photo set has a photo of this species — and so
+    /// every size of it, which is what lets a view keep retrying a failed load
+    /// rather than settle for the placeholder (see `SpeciesPhotoLoading`).
+    func isPhotographed(_ scientificName: String) -> Bool {
+        !SpeciesImage.slug(for: scientificName).isEmpty && isAttributed(scientificName)
+    }
+
+    /// The image cached at `url`, or nil when there is none.
+    ///
+    /// A file that is there but won't decode is deleted, not just skipped.
+    /// Every download path checks the disk before the network, so a bad file
+    /// left in place is handed back as though it were the photo — and that
+    /// size of that bird never loads again, however many times it is asked
+    /// for. Writes are atomic and checked first, so this should never fire;
+    /// it is here so that if it ever does, the cost is one re-download.
+    private func diskData(at url: URL) -> (data: Data, image: UIImage)? {
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        guard let image = UIImage(data: data) else {
+            try? FileManager.default.removeItem(at: url)
+            Log.info("Photo cache: dropped an undecodable \(url.lastPathComponent)")
+            return nil
+        }
+        return (data, image)
+    }
+
     /// Synchronous in-memory lookup only (no disk, no network). Safe + instant
     /// on the main actor — used to avoid a placeholder flash for photos already
     /// decoded this session.
@@ -189,8 +214,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         if let cached = memory.object(forKey: key) { return cached }
 
         // Disk.
-        if let data = try? Data(contentsOf: fileURL(forSlug: slug)),
-           let img = UIImage(data: data) {
+        if let img = diskData(at: fileURL(forSlug: slug))?.image {
             let prepared = img.preparingForDisplay() ?? img
             memory.setObject(prepared, forKey: key)
             return prepared
@@ -243,8 +267,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         if let cached = thumbnailMemory.object(forKey: key) { return cached }
 
         // Disk thumbnail.
-        if let data = try? Data(contentsOf: thumbFileURL(forSlug: slug)),
-           let img = UIImage(data: data) {
+        if let img = diskData(at: thumbFileURL(forSlug: slug))?.image {
             let prepared = img.preparingForDisplay() ?? img
             thumbnailMemory.setObject(prepared, forKey: key)
             return prepared
@@ -267,7 +290,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     func thumbnailData(for scientificName: String) async -> Data? {
         let slug = SpeciesImage.slug(for: scientificName)
         guard !slug.isEmpty, isAttributed(scientificName) else { return nil }
-        if let data = try? Data(contentsOf: thumbFileURL(forSlug: slug)) { return data }
+        if let cached = diskData(at: thumbFileURL(forSlug: slug)) { return cached.data }
         return await queue.fetch(slug: slug, name: scientificName, size: .thumb)
     }
 
@@ -299,14 +322,21 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
     private func downloadAndStore(slug: String, name: String, size: ImageSize) async -> Data? {
         guard isAttributed(name) else { return nil }
         let dest = fileURL(forSlug: slug, size: size)
-        if let data = try? Data(contentsOf: dest) { return data }
+        if let cached = diskData(at: dest) { return cached.data }
 
         guard let url = Self.assetURL(slug: slug, folder: size.folder),
               let data = await download(url),
               UIImage(data: data) != nil else {
             return nil
         }
-        try? data.write(to: dest, options: .atomic)
+        // A failed write (a full disk, say) still hands back the bytes: the
+        // photo is on screen this time and simply downloads again next time.
+        do {
+            try data.write(to: dest, options: .atomic)
+        } catch {
+            Log.info("Photo cache: couldn't write \(dest.lastPathComponent): \(error.localizedDescription)")
+            return data
+        }
         // Bytes just off the CDN are current by definition, so start the slug's
         // freshness window now (see `revalidateStaleImages`).
         PhotoManifestStore.shared.markDownloaded(slug)
@@ -322,7 +352,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         let slug = SpeciesImage.slug(for: scientificName)
         guard !slug.isEmpty, isAttributed(scientificName) else { return nil }
         let dest = fileURL(forSlug: slug)
-        if FileManager.default.fileExists(atPath: dest.path) { return dest }
+        if diskData(at: dest) != nil { return dest }
         _ = await queue.fetch(slug: slug, name: scientificName, size: .medium)
         return FileManager.default.fileExists(atPath: dest.path) ? dest : nil
     }
@@ -386,13 +416,65 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         return out
     }
 
+    /// How many times one download is tried before it is reported as failed.
+    private static let downloadAttempts = 3
+
+    /// GETs `url`, trying again after a short pause when the failure looks
+    /// transient — a timeout, a dropped connection, a server error. Callers
+    /// see one answer rather than every hiccup; the views go on retrying past
+    /// this for as long as they are showing the photo (see
+    /// `SpeciesPhotoLoading`).
     private func download(_ url: URL) async -> Data? {
-        guard let (data, response) = try? await session.data(from: url),
-              let http = response as? HTTPURLResponse,
-              200..<300 ~= http.statusCode else {
-            return nil
+        var pause: Duration = .milliseconds(500)
+        for attempt in 1...Self.downloadAttempts {
+            let outcome = await downloadOnce(url)
+            switch outcome {
+            case .success(let data):
+                return data
+            case .permanent:
+                return nil
+            case .transient:
+                guard attempt < Self.downloadAttempts else { return nil }
+                try? await Task.sleep(for: pause)
+                pause *= 4
+            }
         }
-        return data
+        return nil
+    }
+
+    private enum DownloadOutcome {
+        case success(Data)
+        /// Worth trying again shortly.
+        case transient
+        /// Trying again straight away won't change the answer: offline, or the
+        /// server says the file isn't there.
+        case permanent
+    }
+
+    private func downloadOnce(_ url: URL) async -> DownloadOutcome {
+        do {
+            let (data, response) = try await session.data(from: url)
+            guard let http = response as? HTTPURLResponse else { return .transient }
+            switch http.statusCode {
+            case 200..<300:
+                return .success(data)
+            case 408, 429, 500...:
+                return .transient
+            default:
+                return .permanent
+            }
+        } catch let error as URLError {
+            switch error.code {
+            // No route at all: a retry a second from now will find the same.
+            // `PhotoRetrySignal` wakes the views when the network returns.
+            case .notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff, .cancelled:
+                return .permanent
+            default:
+                return .transient
+            }
+        } catch {
+            return .transient
+        }
     }
 
     /// Life-list + currently-cached region species: the set prefetched at
@@ -485,6 +567,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
 
         let applied = PhotoManifestStore.shared.apply(remote)
         discardWithdrawn(applied.removedSlugs)
+        announcePhotoSetChange(applied)
         var result = PhotoUpdateResult(
             newCount: applied.newSlugs.count,
             changedCount: applied.changedSlugs.count,
@@ -585,6 +668,16 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         let fm = FileManager.default
         return fm.fileExists(atPath: thumbFileURL(forSlug: slug).path)
             || fm.fileExists(atPath: fileURL(forSlug: slug).path)
+    }
+
+    /// Wakes any view waiting on a photo, when a manifest has changed which
+    /// species have one. A bird that was showing "no photo" may now have one,
+    /// and the first manifest on a fresh install is what makes every photo
+    /// loadable at all.
+    private func announcePhotoSetChange(_ applied: PhotoManifestStore.ApplyResult) {
+        guard !applied.newSlugs.isEmpty || !applied.changedSlugs.isEmpty
+            || !applied.removedSlugs.isEmpty else { return }
+        PhotoRetrySignal.fireFromAnywhere()
     }
 
     /// Deletes the cached bytes of species the published manifest has stopped
@@ -790,6 +883,7 @@ nonisolated final class RemoteSpeciesImageStore: @unchecked Sendable {
         // their hash + attribution recorded, and credit fixes propagate.
         let applied = PhotoManifestStore.shared.apply(remote)
         discardWithdrawn(applied.removedSlugs)
+        announcePhotoSetChange(applied)
         // Including the settling of changed species with nothing cached. This
         // pass fetches the same manifest the discovery check does, so it parks
         // the same held-back credits and has to release the same ones — a slug

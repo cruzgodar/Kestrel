@@ -2670,14 +2670,15 @@ private struct ClusterGridItem: View {
                     ) {
                         Color.gray
                             .overlay {
-                                Image(systemName: "bird")
+                                SpeciesPhotoPlaceholderGlyph()
                                     .foregroundStyle(.white)
                             }
                     }
                 }
                 .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            // The weight the Life List's and Targets' grids give a name.
             Text(point.commonName)
-                .font(.caption)
+                .font(.caption.weight(.medium))
                 .multilineTextAlignment(.center)
                 .lineLimit(2)
             Spacer(minLength: 0)
@@ -2729,7 +2730,7 @@ private struct BirdMapThumbnail: View {
         SpeciesPhoto(scientificName: scientificName, showsCredit: false, tappable: false, usesThumbnail: true) {
             Color.gray
                 .overlay {
-                    Image(systemName: "bird")
+                    SpeciesPhotoPlaceholderGlyph()
                         .foregroundStyle(.white)
                 }
         }

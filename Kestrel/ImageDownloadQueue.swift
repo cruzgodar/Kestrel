@@ -196,7 +196,11 @@ actor ImageDownloadQueue {
         }
         inFlight[key] = task
         let data = await task.value
-        inFlight[key] = nil
+        // Only this task's own entry. Between the download finishing and this
+        // line, a caller can find the key free and start a fresh download of
+        // it — a retry after a failure, say — and clearing that one would let
+        // a third caller start a duplicate alongside it.
+        if inFlight[key] == task { inFlight[key] = nil }
         return data
     }
 

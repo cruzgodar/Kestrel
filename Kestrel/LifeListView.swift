@@ -183,10 +183,21 @@ struct LifeListView: View {
     ///
     /// Membership is read live from the store, so a bird added from here drops
     /// out on the same frame its sighting is written.
+    ///
+    /// The search narrows the place's birds and nothing more: it matches the
+    /// way the Life List's does, keeps the sort's order, and suggests nothing
+    /// from outside the place.
     private func targetRows(_ targets: TargetsModel) -> [SearchRow] {
         guard let species = targets.sortedSpecies else { return [] }
         let lookup = lifeListLookup
+        let needle = trimmedSearch.lowercased()
         return species.compactMap { bird in
+            if !needle.isEmpty {
+                let hay = "\(bird.commonName) \(bird.scientificName)".lowercased()
+                guard Self.scoreMatch(hay, needle: needle, allowFuzzy: needle.count >= 3) != nil else {
+                    return nil
+                }
+            }
             if let entry = lookup(bird) {
                 return targets.includesLifeList ? .existing(entry) : nil
             }
@@ -376,10 +387,11 @@ struct LifeListView: View {
     /// Gap between tiles side by side, and between a section's heading and
     /// its tiles.
     private static let gridSpacing: CGFloat = 4
-    /// Gap between one row's names and the next row's photographs. Wider than
-    /// `gridSpacing` so a two-line name doesn't read as captioning the picture
-    /// under it.
-    private static let gridRowSpacing: CGFloat = 8
+    /// Gap between one row's names and the next row's photographs. Well over
+    /// the gap between a photograph and its own name (`gridPhotoCaptionSpacing`),
+    /// so a name plainly belongs to the picture above it and not the one
+    /// below.
+    private static let gridRowSpacing: CGFloat = 16
     /// How much wider a tile is than the photograph in it, so a two-word name
     /// has somewhere to go.
     private static let gridTileExtraWidth: CGFloat = 4
@@ -523,30 +535,28 @@ struct LifeListView: View {
             .ignoresSafeArea(.container, edges: .bottom)
             .allowsHitTesting(searchFieldTop > 0)
         }
-        // No search on the Targets tab: it is one place's birds, and a grid
-        // of them is short enough to look through.
+        // On the Targets tab the field only narrows the place's birds — see
+        // `targetRows` — so it doesn't offer to add anything.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if targets == nil {
-                BottomSearchField(
-                    text: $searchText,
-                    prompt: "Search or add species",
-                    horizontalInset: Self.searchFieldHorizontalInset,
-                    // The chooser counts too: an edit started from it runs the same
-                    // date → map → name flow, but out of that sheet's own draft
-                    // rather than this one, so watching `draft` alone would let the
-                    // keyboard flash back up between the steps of exactly those
-                    // edits. So does a pending delete — its confirmation is an alert
-                    // rather than a sheet, so it doesn't take first responder itself,
-                    // and a swipe-delete from a focused search left the keyboard
-                    // standing under the question.
-                    addFlowActive: actions.draft != nil
-                        || actions.choice != nil
-                        || actions.pendingDelete != nil
-                )
-                    .onGeometryChange(for: CGFloat.self) { proxy in
-                        proxy.frame(in: .global).minY
-                    } action: { searchFieldTop = $0 }
-            }
+            BottomSearchField(
+                text: $searchText,
+                prompt: targets == nil ? "Search or add species" : "Search species",
+                horizontalInset: Self.searchFieldHorizontalInset,
+                // The chooser counts too: an edit started from it runs the same
+                // date → map → name flow, but out of that sheet's own draft
+                // rather than this one, so watching `draft` alone would let the
+                // keyboard flash back up between the steps of exactly those
+                // edits. So does a pending delete — its confirmation is an alert
+                // rather than a sheet, so it doesn't take first responder itself,
+                // and a swipe-delete from a focused search left the keyboard
+                // standing under the question.
+                addFlowActive: actions.draft != nil
+                    || actions.choice != nil
+                    || actions.pendingDelete != nil
+            )
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.frame(in: .global).minY
+                } action: { searchFieldTop = $0 }
         }
         // The Targets tab brings its own location button in place of these.
         .toolbar { if targets == nil { lifeListToolbar } }
@@ -820,7 +830,9 @@ struct LifeListView: View {
         ScrollView {
             let sections = gridSections
             LazyVStack(alignment: .leading, spacing: Self.gridSpacing) {
-                if let targets, let heading = targetsHeading(targets) {
+                // The count describes the whole place, so it steps aside while
+                // a search is narrowing the grid to a few of its birds.
+                if let targets, trimmedSearch.isEmpty, let heading = targetsHeading(targets) {
                     VStack(spacing: 0) {
                         Text(heading.count)
                             .font(.system(size: targetsCountSize, weight: .bold))
@@ -1381,13 +1393,20 @@ struct LifeListView: View {
     /// a place whose name hasn't come back (offline) is "nearby" or "here".
     private func targetsHeading(_ targets: TargetsModel) -> (count: String, detail: String)? {
         guard let counts = targetCounts(targets) else { return nil }
-        let place = targets.placeName.map { "in \($0)" }
-            ?? (targets.listFollowsUser ? "nearby" : "here")
-        let when = targets.listMonthName.map { " in \($0)" } ?? ""
-        let detail = "\(place)\(when)"
+        let detail = targetsWhereAndWhen(targets)
         return targets.includesLifeList
             ? ("\(counts.total) species", detail)
             : ("\(counts.total - counts.found) species", "left to find \(detail)")
+    }
+
+    /// Where and when the Targets list is for — "in Ithaca in October", or
+    /// "in Ithaca" for Any Month. A place whose name hasn't come back
+    /// (offline) is "nearby" or "here".
+    private func targetsWhereAndWhen(_ targets: TargetsModel) -> String {
+        let place = targets.placeName.map { "in \($0)" }
+            ?? (targets.listFollowsUser ? "nearby" : "here")
+        let when = targets.listMonthName.map { " in \($0)" } ?? ""
+        return "\(place)\(when)"
     }
 
     /// The Targets tab's line under its title: how many of the place's birds
@@ -1424,6 +1443,13 @@ struct LifeListView: View {
                 Label("No targets left", systemImage: "target")
             } description: {
                 Text("You\u{2019}ve found every bird expected here. Choose another place or month to find more!")
+            }
+        } else if !trimmedSearch.isEmpty, visibleRows.isEmpty {
+            ContentUnavailableView {
+                Label(
+                    "No matching species found \(targetsWhereAndWhen(targets))",
+                    systemImage: "target"
+                )
             }
         }
     }

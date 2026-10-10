@@ -357,7 +357,11 @@ struct HalfScreenSpeciesView: View {
                 photoAspect = nil
                 return
             }
-            let size = await RemoteSpeciesImageStore.shared.image(for: shown)?.size
+            // Retried with the photo itself (see `SpeciesPhotoLoading`), so a
+            // first load that failed doesn't leave the pane without its shape.
+            let size = await SpeciesPhotoLoading.load(shown, phase: { _ in }) {
+                await RemoteSpeciesImageStore.shared.image(for: shown)
+            }?.size
             guard let size, size.height > 0 else { return }
             photoAspect = size.width / size.height
         }

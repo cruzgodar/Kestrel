@@ -74,7 +74,9 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
     @ViewBuilder var placeholder: () -> Placeholder
 
     @State private var image: UIImage?
-    @State private var loaded = false
+    /// Whether the species has no published photo, so the placeholder shows
+    /// the bird rather than the download indicator.
+    @State private var unpublished = false
     /// The species `image` was loaded for. `.task(id:)` re-runs when the name
     /// changes without the view's identity changing — that is the whole point of
     /// the `id:` — but `@State` survives that, so without this the previous
@@ -93,20 +95,32 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
                             speciesPhotoCredit(attr)
                         }
                     }
-            } else if loaded {
-                placeholder()
             } else {
-                placeholder().redacted(reason: .placeholder)
+                placeholder()
+                    .environment(
+                        \.speciesPhotoIsDownloading,
+                        !unpublished && RemoteSpeciesImageStore.shared.isPhotographed(scientificName)
+                    )
             }
         }
-        .task(id: scientificName) {
+        // The tier is part of the id: a box that changes size can move from
+        // the thumbnail to the medium image (see `SpeciesThumbnail`).
+        .task(id: LoadID(name: scientificName, usesThumbnail: usesThumbnail, progressive: progressive)) {
             let store = RemoteSpeciesImageStore.shared
             // A different bird than the one on screen: drop the old photo before
             // loading, so the wrong species is never shown under the right name.
             if loadedName != scientificName {
                 loadedName = scientificName
                 image = nil
-                loaded = false
+                unpublished = false
+            }
+
+            // Every load below goes on until it lands — see
+            // `SpeciesPhotoLoading`. A photo the manifest lists is never
+            // given up on while it is on screen.
+            let setPhase: (SpeciesPhotoLoading.Phase) -> Void = { phase in
+                unpublished = phase == .unpublished
+                if unpublished { image = nil }
             }
 
             if progressive {
@@ -114,25 +128,28 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
                 // no thumbnail flash.
                 if let mem = store.memoryImage(for: scientificName) {
                     image = mem
-                    loaded = true
                     return
                 }
                 // Paint the thumbnail first (instant if it's the one just sent
-                // to the watch), then upgrade to the medium image.
-                var thumb = store.memoryThumbnail(for: scientificName)
-                if thumb == nil {
-                    thumb = await store.thumbnailImage(for: scientificName)
-                }
-                if let thumb {
+                // to the watch), then upgrade to the medium image. The thumbnail
+                // is a stopgap, so it gets one try: the medium image is the one
+                // that is retried until it arrives, and it replaces the
+                // thumbnail whenever it does.
+                if let thumb = store.memoryThumbnail(for: scientificName) {
+                    image = thumb
+                } else if store.isPhotographed(scientificName),
+                          let thumb = await store.thumbnailImage(for: scientificName) {
                     guard !Task.isCancelled else { return }
                     image = thumb
-                    loaded = true
                 }
-                let medium = await store.image(for: scientificName)
-                guard !Task.isCancelled else { return }
-                // Keep the thumbnail showing if the medium failed to load.
-                if let medium { image = medium }
-                loaded = true
+                let medium = await SpeciesPhotoLoading.load(scientificName, phase: { phase in
+                    // The thumbnail stays up while the medium image is retried.
+                    if phase == .unpublished || image == nil { setPhase(phase) }
+                }) {
+                    await store.image(for: scientificName)
+                }
+                guard !Task.isCancelled, let medium else { return }
+                image = medium
                 return
             }
 
@@ -142,18 +159,23 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
                 ? store.memoryThumbnail(for: scientificName)
                 : store.memoryImage(for: scientificName) {
                 image = mem
-                loaded = true
                 return
             }
-            // Remote only — no bundled fallback. Species without remote metadata
-            // (e.g. Indonesian Honeyeater) show the placeholder.
-            let img = usesThumbnail
-                ? await store.thumbnailImage(for: scientificName)
-                : await store.image(for: scientificName)
-            guard !Task.isCancelled else { return }
-            image = img
-            loaded = true
+            let loaded = await SpeciesPhotoLoading.load(scientificName, phase: setPhase) {
+                usesThumbnail
+                    ? await store.thumbnailImage(for: scientificName)
+                    : await store.image(for: scientificName)
+            }
+            guard !Task.isCancelled, let loaded else { return }
+            unpublished = false
+            image = loaded
         }
+    }
+
+    private struct LoadID: Hashable {
+        let name: String
+        let usesThumbnail: Bool
+        let progressive: Bool
     }
 }
 
