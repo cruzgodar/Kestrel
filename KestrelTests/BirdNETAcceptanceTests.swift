@@ -116,6 +116,23 @@ struct BirdNETAcceptanceTests {
         ))
     }
 
+    /// A rare species is in range, so it beats the out-of-range bar, but it
+    /// needs more than a common one.
+    @Test("a rare in-range species needs the rare bar")
+    func rareUsesTheRareBar() {
+        let rareBar = BirdNETClassifier.rareThreshold
+        #expect(rareBar > inRangeBar && rareBar < BirdNETClassifier.outOfRangeThreshold)
+        #expect(BirdNETClassifier.accepts(
+            confidence: rareBar, isNonBird: false, inRange: true, isRare: true
+        ))
+        #expect(!BirdNETClassifier.accepts(
+            confidence: rareBar.nextDown, isNonBird: false, inRange: true, isRare: true
+        ))
+        #expect(!BirdNETClassifier.accepts(
+            confidence: 1.0, isNonBird: true, inRange: true, isRare: true
+        ), "rare or not, noise is never a bird")
+    }
+
     // MARK: the label set the guard is built from
 
     /// The guard resolves `nonBirdLabels` to indices once at load, so the names

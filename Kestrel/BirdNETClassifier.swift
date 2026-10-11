@@ -30,6 +30,13 @@ actor BirdNETClassifier {
     /// the non-species classes below — see `nonBirdLabels`.
     static let outOfRangeThreshold: Float = 1.0
 
+    /// Confidence a species must clear when it is in range but *rare* there —
+    /// reported around this place and season, but seldom (see
+    /// `EBirdSpecies.commonFrequency`). Between the two bars above: a rarity
+    /// that really is singing gets through, but a half-heard one doesn't get
+    /// the benefit of the doubt a Song Sparrow does.
+    static let rareThreshold: Float = 0.6
+
     /// Non-species classes in the BirdNET 6K v2.4 label set (noise/anthropogenic
     /// sounds). These must *never* be reported as detections — they aren't birds.
     ///
@@ -116,6 +123,7 @@ actor BirdNETClassifier {
     func classify(
         _ samples: [Float],
         allowedIndices: Set<Int>? = nil,
+        rareIndices: Set<Int> = [],
         outOfRangeThreshold: Float = BirdNETClassifier.outOfRangeThreshold
     ) throws -> [Detection] {
         guard samples.count == Self.sampleCount else {
@@ -162,6 +170,7 @@ actor BirdNETClassifier {
                 confidence: confidence,
                 isNonBird: isNonBird,
                 inRange: inRange,
+                isRare: rareIndices.contains(index),
                 outOfRangeThreshold: outOfRangeThreshold
             ) else { continue }
             let (sci, common) = labels[index]
@@ -205,7 +214,8 @@ actor BirdNETClassifier {
     ///     bar is reachable (see `confidence`), so that argument never held.
     ///   • **The soft range filter** then asks an out-of-range species for more
     ///     acoustic evidence than an in-range one, rather than dropping it. See
-    ///     `outOfRangeThreshold`.
+    ///     `outOfRangeThreshold`. An in-range species that is rare there sits
+    ///     between the two — see `rareThreshold`.
     ///
     /// Extracted as a pure function, in the shape `LifeListStore.recordsHandover`
     /// and `RemoteSpeciesImageStore.staleOutcome` take, because the alternative is
@@ -215,9 +225,11 @@ actor BirdNETClassifier {
         confidence: Float,
         isNonBird: Bool,
         inRange: Bool,
+        isRare: Bool = false,
         outOfRangeThreshold: Float = BirdNETClassifier.outOfRangeThreshold
     ) -> Bool {
         guard !isNonBird else { return false }
-        return confidence >= (inRange ? detectionThreshold : outOfRangeThreshold)
+        guard inRange else { return confidence >= outOfRangeThreshold }
+        return confidence >= (isRare ? rareThreshold : detectionThreshold)
     }
 }

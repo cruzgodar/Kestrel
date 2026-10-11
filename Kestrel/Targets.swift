@@ -5,15 +5,18 @@ import SwiftUI
 /// place in one month, ranked from most to least likely, and what that place
 /// is called.
 ///
-/// **Ranking.** The geo model (`SpeciesRangeFilter`) scores every catalog
-/// species with an occurrence likelihood for a place and BirdNET week — the
-/// same numbers the recording filter thresholds into a yes/no list. A month
-/// is the four BirdNET weeks inside it (see `weeks(in:)`): a bird is a target
-/// if it clears the threshold in any of them, and is ranked by its average
-/// over all four, so a bird around all month outranks one passing through for
-/// a week. The order runs commonest first or rarest first — see `Sort`. The
-/// bundled offline grid only knows yes/no, so when the live model can't run,
-/// rarity order falls back to alphabetical.
+/// **Ranking.** From eBird where it can answer (`EBirdSpecies.ranking`): every
+/// species reported at the place in that month of past years, ranked by the
+/// fraction of sampled days it was reported on. Otherwise the geo model
+/// (`SpeciesRangeFilter`), which scores every catalog species with an
+/// occurrence likelihood for a place and BirdNET week — the same numbers the
+/// recording filter thresholds into a yes/no list. A month is the four
+/// BirdNET weeks inside it (see `weeks(in:)`): a bird is a target if it clears
+/// the threshold in any of them, and is ranked by its average over all four,
+/// so a bird around all month outranks one passing through for a week. The
+/// order runs commonest first or rarest first — see `Sort`. The bundled
+/// offline grid only knows yes/no, so when neither can run, rarity order falls
+/// back to alphabetical.
 ///
 /// **Which place and month.** The current location and month by default, or a
 /// spot picked on the map (one where the user is goes back to following them)
@@ -174,8 +177,8 @@ final class TargetsModel {
     private var generation = 0
 
     /// How far the current location has to move before the list is worked out
-    /// again. The geo model's resolution is far coarser than this, so anything
-    /// closer is the same list.
+    /// again. eBird's regions and the geo model's resolution are both far
+    /// coarser than this, so anything closer is the same list.
     private static let sameAreaRadius: CLLocationDistance = 2_000
 
     private static let sortKey = "Targets.sort"
@@ -287,6 +290,11 @@ final class TargetsModel {
         month: Int?,
         manager: RecordingManager
     ) async -> [AreaSpecies] {
+        if let entries = await EBirdSpecies.shared.ranking(
+            latitude: coordinate.latitude, longitude: coordinate.longitude, month: month
+        ) {
+            return rank(eBird: entries)
+        }
         let weeks = Array(weeks(in: month))
         if let likelihoods = await manager.areaLikelihoods(
             latitude: coordinate.latitude, longitude: coordinate.longitude, weeks: weeks
@@ -332,6 +340,19 @@ final class TargetsModel {
                 return a.species.commonName < b.species.commonName
             }
             .map { AreaSpecies(scientificName: $0.species.scientificName, commonName: $0.species.commonName) }
+    }
+
+    /// eBird's species, already commonest first; ties go alphabetically by
+    /// common name, as in `rank(weeklyLikelihoods:)`.
+    nonisolated static func rank(eBird entries: [EBirdSpecies.Frequencies.Entry]) -> [AreaSpecies] {
+        let catalog = SpeciesCatalog.shared.all
+        return entries
+            .filter { catalog.indices.contains($0.index) && isBird(catalog[$0.index]) }
+            .sorted { a, b in
+                if a.frequency != b.frequency { return a.frequency > b.frequency }
+                return catalog[a.index].commonName < catalog[b.index].commonName
+            }
+            .map { AreaSpecies(scientificName: catalog[$0.index].scientificName, commonName: catalog[$0.index].commonName) }
     }
 
     nonisolated static func alphabetical(_ indices: Set<Int>) -> [AreaSpecies] {

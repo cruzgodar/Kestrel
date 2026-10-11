@@ -18,6 +18,10 @@ private nonisolated struct CachedFilter: Codable {
     let week: Int
     let speciesCount: Int
     let allowedIndices: [Int]
+    /// The part of `allowedIndices` that is rare here — see
+    /// `BirdNETClassifier.rareThreshold`. Only an eBird list has one; `nil` for
+    /// the geo model's, and in files written before eBird.
+    var rareIndices: [Int]? = nil
     let savedAt: Date
 }
 
@@ -52,6 +56,23 @@ actor SpeciesRangeFilter {
         let outputs = try session.outputNames()
         self.inputName = inputs.first ?? "input"
         self.outputName = outputs.first ?? "output"
+    }
+
+    /// Persists a filter worked out elsewhere — an eBird list (see
+    /// `EBirdSpecies`) — exactly as `computeAndCache` persists the geo model's,
+    /// so every reader of the cache sees the better list.
+    nonisolated static func cache(
+        allowed: Set<Int>, rare: Set<Int>, lat: Double, lon: Double, week: Int
+    ) {
+        try? write(CachedFilter(
+            latitude: lat,
+            longitude: lon,
+            week: week,
+            speciesCount: allowed.count,
+            allowedIndices: allowed.sorted(),
+            rareIndices: rare.sorted(),
+            savedAt: Date()
+        ))
     }
 
     /// Runs the geo model for the given location and persists the result.
@@ -156,7 +177,7 @@ actor SpeciesRangeFilter {
     /// answers. It briefly wasn't: with the grid's coordinate coming solely from
     /// this process, a cold launch whose fix hadn't landed fell all the way
     /// through to no filter at all. See `cachedCoordinate`.
-    func loadCached(week: Int, now: Date = Date()) -> Set<Int>? {
+    func loadCached(week: Int, now: Date = Date()) -> (allowed: Set<Int>, rare: Set<Int>)? {
         guard let cached = Self.loadCacheFile() else { return nil }
         guard Self.isCurrent(
             cachedWeek: cached.week, savedAt: cached.savedAt, week: week, now: now
@@ -164,7 +185,7 @@ actor SpeciesRangeFilter {
             Log.info("SpeciesRangeFilter: cached filter is from week \(cached.week), not \(week) — ignoring")
             return nil
         }
-        return Set(cached.allowedIndices)
+        return (Set(cached.allowedIndices), Set(cached.rareIndices ?? []))
     }
 
     /// Reads the cached allowed-index set straight off disk without
@@ -239,7 +260,7 @@ actor SpeciesRangeFilter {
         }
     }
 
-    private static func cacheURL() throws -> URL {
+    private nonisolated static func cacheURL() throws -> URL {
         let dir = try FileManager.default.url(
             for: .applicationSupportDirectory,
             in: .userDomainMask,
@@ -249,7 +270,7 @@ actor SpeciesRangeFilter {
         return dir.appendingPathComponent("species_filter.json")
     }
 
-    private static func write(_ cached: CachedFilter) throws {
+    private nonisolated static func write(_ cached: CachedFilter) throws {
         let url = try cacheURL()
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

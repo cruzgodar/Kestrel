@@ -151,6 +151,10 @@ final class RecordingManager {
     private var classifierTask: Task<BirdNETClassifier, Error>?
     private var rangeFilterTask: Task<SpeciesRangeFilter, Error>?
     private var allowedIndices: Set<Int>?
+    /// The in-range species that are rare here, held to
+    /// `BirdNETClassifier.rareThreshold`. Only an eBird list knows; empty
+    /// under the geo model's.
+    private var rareIndices: Set<Int> = []
     private var detectionMap: [String: Detection] = [:]
     /// The session's per-species flash / haptic / notification clocks. One value
     /// rather than three dictionaries so `reset()` can't clear some of them and
@@ -1688,7 +1692,9 @@ final class RecordingManager {
     private func process(window: [Float]) async {
         guard let classifier = await getClassifier() else { return }
         do {
-            let results = try await classifier.classify(window, allowedIndices: allowedIndices)
+            let results = try await classifier.classify(
+                window, allowedIndices: allowedIndices, rareIndices: rareIndices
+            )
             if !results.isEmpty {
                 // Tint priority within a single window: starred > needs-add
                 // > known lifer. Picks the most attention-grabbing color
@@ -2023,10 +2029,6 @@ final class RecordingManager {
     }
 
     private func performSpeciesFilterRefresh() async {
-        guard let rangeFilter = await getRangeFilter() else {
-            allowedIndices = nil
-            return
-        }
         // Prefer a coordinate the watch supplied for this session — it's the only
         // location a watch-first user has — falling back to the phone's own fix.
         let location: CLLocation?
@@ -2044,6 +2046,60 @@ final class RecordingManager {
                 latitude: location.coordinate.latitude,
                 longitude: location.coordinate.longitude
             )
+        }
+
+        // eBird first (see `EBirdSpecies`): what is actually reported here this
+        // time of year, which the geo model only approximates. A list already
+        // on disk applies at once. Without one, the geo model's list goes in
+        // first and the eBird list replaces it when its requests land — a
+        // session must never wait seconds on the network with no filter at
+        // all, which `allowedIndices = nil` would be (see
+        // `offlineFilterCoordinate`).
+        if let location,
+           let eBird = await EBirdSpecies.shared.detectionFilter(
+               latitude: location.coordinate.latitude,
+               longitude: location.coordinate.longitude,
+               week: week, network: false
+           ) {
+            applyEBirdFilter(eBird, at: location, week: week)
+        } else {
+            await applyGeoFilter(at: location, week: week)
+        }
+        // Again with the network, which adds this fortnight's reviewed notable
+        // sightings even when the frequencies came off disk.
+        if let location,
+           let eBird = await EBirdSpecies.shared.detectionFilter(
+               latitude: location.coordinate.latitude,
+               longitude: location.coordinate.longitude,
+               week: week, network: true
+           ) {
+            applyEBirdFilter(eBird, at: location, week: week)
+        }
+    }
+
+    private func applyEBirdFilter(
+        _ filter: (allowed: Set<Int>, rare: Set<Int>), at location: CLLocation, week: Int
+    ) {
+        let changed = filter.allowed != allowedIndices
+        allowedIndices = filter.allowed
+        rareIndices = filter.rare
+        SpeciesRangeFilter.cache(
+            allowed: filter.allowed, rare: filter.rare,
+            lat: location.coordinate.latitude, lon: location.coordinate.longitude, week: week
+        )
+        if changed { prefetchRegionImages(filter.allowed) }
+    }
+
+    /// The BirdNET geo model's list, or the fallbacks under it: the last list
+    /// cached for this week, then the offline grid.
+    private func applyGeoFilter(at location: CLLocation?, week: Int) async {
+        guard let rangeFilter = await getRangeFilter() else {
+            allowedIndices = nil
+            rareIndices = []
+            return
+        }
+        rareIndices = []
+        if let location {
             do {
                 let allowed = try await rangeFilter.computeAndCache(
                     lat: location.coordinate.latitude,
@@ -2058,8 +2114,9 @@ final class RecordingManager {
             }
         }
         if let cached = await rangeFilter.loadCached(week: week) {
-            allowedIndices = cached
-            prefetchRegionImages(cached)
+            allowedIndices = cached.allowed
+            rareIndices = cached.rare
+            prefetchRegionImages(cached.allowed)
             return
         }
         // Offline fallback: the precomputed grid (birds by location + week),
