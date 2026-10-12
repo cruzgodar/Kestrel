@@ -31,8 +31,8 @@ actor BirdNETClassifier {
     static let outOfRangeThreshold: Float = 1.0
 
     /// Confidence a species must clear when it is in range but *rare* there —
-    /// reported around this place and season, but seldom (see
-    /// `EBirdSpecies.commonFrequency`). Between the two bars above: a rarity
+    /// plausible at this place and season, but not expected (see
+    /// `SpeciesRangeFilter.Tiers`). Between the two bars above: a rarity
     /// that really is singing gets through, but a half-heard one doesn't get
     /// the benefit of the doubt a Song Sparrow does.
     static let rareThreshold: Float = 0.6
@@ -62,7 +62,8 @@ actor BirdNETClassifier {
     private let inputName: String
     private let outputName: String
     private let labels: [(scientific: String, common: String)]
-    /// Label indices for `nonBirdLabels`, resolved once at load. Detections at
+    /// Label indices for `nonBirdLabels` and every other non-bird label (see
+    /// `SpeciesCatalog.nonBirdIndices`), resolved once at load. Detections at
     /// these indices are dropped unconditionally in `classify`.
     private let nonBirdIndices: Set<Int>
 
@@ -113,7 +114,9 @@ actor BirdNETClassifier {
             if parts.count == 2 { return (parts[0], parts[1]) }
             return (String(line), String(line))
         }
-        self.nonBirdIndices = Set(
+        // The catalog reads the same labels file in the same order, and also
+        // knows the frogs, insects and mammals — see `SpeciesCatalog.nonBirdIndices`.
+        self.nonBirdIndices = SpeciesCatalog.shared.nonBirdIndices.union(
             self.labels.enumerated()
                 .filter { Self.nonBirdLabels.contains($0.element.scientific) }
                 .map(\.offset)

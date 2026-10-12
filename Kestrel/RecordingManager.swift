@@ -152,8 +152,7 @@ final class RecordingManager {
     private var rangeFilterTask: Task<SpeciesRangeFilter, Error>?
     private var allowedIndices: Set<Int>?
     /// The in-range species that are rare here, held to
-    /// `BirdNETClassifier.rareThreshold`. Only an eBird list knows; empty
-    /// under the geo model's.
+    /// `BirdNETClassifier.rareThreshold`.
     private var rareIndices: Set<Int> = []
     private var detectionMap: [String: Detection] = [:]
     /// The session's per-species flash / haptic / notification clocks. One value
@@ -1659,18 +1658,14 @@ final class RecordingManager {
         }
     }
 
-    /// The geo model's per-species likelihoods at a place, one array per
+    /// The location models' per-species scores at a place, one array per
     /// BirdNET week asked for — see `SpeciesRangeFilter.likelihoods`. Shares
     /// the session recording already loads rather than standing up a second
-    /// one. `nil` when the model can't load or run.
+    /// one. `nil` when the models can't load or run.
     func areaLikelihoods(latitude: Double, longitude: Double, weeks: [Int]) async -> [[Float]]? {
         guard let rangeFilter = await getRangeFilter() else { return nil }
         do {
-            var result: [[Float]] = []
-            for week in weeks {
-                result.append(try await rangeFilter.likelihoods(lat: latitude, lon: longitude, week: week))
-            }
-            return result
+            return try await rangeFilter.likelihoods(lat: latitude, lon: longitude, weeks: weeks)
         } catch {
             Log.error("Area likelihoods failed — \(error)")
             return nil
@@ -2047,84 +2042,10 @@ final class RecordingManager {
                 longitude: location.coordinate.longitude
             )
         }
-
-        // eBird first (see `EBirdSpecies`): what is actually reported here this
-        // time of year, which the geo model only approximates. A list already
-        // on disk applies at once. Without one, the geo model's list goes in
-        // first and the eBird list replaces it when its requests land — a
-        // session must never wait seconds on the network with no filter at
-        // all, which `allowedIndices = nil` would be (see
-        // `offlineFilterCoordinate`).
-        if let location,
-           let eBird = await EBirdSpecies.shared.detectionFilter(
-               latitude: location.coordinate.latitude,
-               longitude: location.coordinate.longitude,
-               week: week, network: false
-           ) {
-            applyEBirdFilter(eBird, at: location, week: week)
-        } else {
-            await applyGeoFilter(at: location, week: week)
-        }
-        // Again with the network, which adds this fortnight's reviewed notable
-        // sightings even when the frequencies came off disk.
-        if let location,
-           let eBird = await EBirdSpecies.shared.detectionFilter(
-               latitude: location.coordinate.latitude,
-               longitude: location.coordinate.longitude,
-               week: week, network: true
-           ) {
-            applyEBirdFilter(eBird, at: location, week: week)
-        }
-    }
-
-    private func applyEBirdFilter(
-        _ filter: (allowed: Set<Int>, rare: Set<Int>), at location: CLLocation, week: Int
-    ) {
-        let changed = filter.allowed != allowedIndices
-        allowedIndices = filter.allowed
-        rareIndices = filter.rare
-        SpeciesRangeFilter.cache(
-            allowed: filter.allowed, rare: filter.rare,
-            lat: location.coordinate.latitude, lon: location.coordinate.longitude, week: week
-        )
-        if changed { prefetchRegionImages(filter.allowed) }
-    }
-
-    /// The BirdNET geo model's list, or the fallbacks under it: the last list
-    /// cached for this week, then the offline grid.
-    private func applyGeoFilter(at location: CLLocation?, week: Int) async {
-        guard let rangeFilter = await getRangeFilter() else {
-            allowedIndices = nil
-            rareIndices = []
-            return
-        }
-        rareIndices = []
-        if let location {
-            do {
-                let allowed = try await rangeFilter.computeAndCache(
-                    lat: location.coordinate.latitude,
-                    lon: location.coordinate.longitude,
-                    week: week
-                )
-                allowedIndices = allowed
-                prefetchRegionImages(allowed)
-                return
-            } catch {
-                Log.error("Geo inference failed — \(error)")
-            }
-        }
-        if let cached = await rangeFilter.loadCached(week: week) {
-            allowedIndices = cached.allowed
-            rareIndices = cached.rare
-            prefetchRegionImages(cached.allowed)
-            return
-        }
-        // Offline fallback: the precomputed grid (birds by location + week),
-        // bundled from `build_offline_species_filter.py` (outside this repo —
-        // see `OfflineSpeciesFilter`). Inert unless that data file ships in the
-        // bundle. Needs only a coordinate — the live model couldn't run, but we
-        // can still snap to the nearest grid sample, for *this* week — so it is
-        // asked wherever a coordinate can be found. See `offlineFilterCoordinate`.
+        // Wherever the user is best known to be. The models need nothing but a
+        // coordinate, so a cold start whose fix hasn't landed still gets a
+        // *live* list for this week from the last known place, rather than
+        // dropping to the fallbacks below — see `offlineFilterCoordinate`.
         let coordinate = Self.offlineFilterCoordinate(
             freshFix: location.map {
                 (latitude: $0.coordinate.latitude, longitude: $0.coordinate.longitude)
@@ -2132,20 +2053,54 @@ final class RecordingManager {
             lastKnown: LocationCache.shared.lastCoordinate,
             persisted: SpeciesRangeFilter.cachedCoordinate()
         )
+
+        if let rangeFilter = await getRangeFilter() {
+            if let coordinate {
+                do {
+                    // Only a fresh fix is saved. Saving a remembered place again
+                    // would restamp it as new, and `maxCacheAge` exists to stop
+                    // trusting a place the user may have long since left.
+                    let tiers = location != nil
+                        ? try await rangeFilter.computeAndCache(
+                            lat: coordinate.latitude, lon: coordinate.longitude, week: week
+                        )
+                        : try await rangeFilter.tiers(
+                            lat: coordinate.latitude, lon: coordinate.longitude, week: week
+                        )
+                    applyFilter(tiers.allowed, rare: tiers.rare)
+                    return
+                } catch {
+                    Log.error("Geo inference failed — \(error)")
+                }
+            }
+            if let cached = await rangeFilter.loadCached(week: week) {
+                applyFilter(cached.allowed, rare: cached.rare)
+                return
+            }
+        }
+        // The models couldn't load or run: the precomputed grid of the same
+        // models' tiers by location + week, bundled from
+        // `scripts/build_offline_species_filter.py` (see `OfflineSpeciesFilter`).
         if let coordinate,
-           let offline = OfflineSpeciesFilter.shared.allowedIndices(
+           let offline = OfflineSpeciesFilter.shared.tiers(
                lat: coordinate.latitude, lon: coordinate.longitude, week: week
            ) {
-            allowedIndices = offline
-            prefetchRegionImages(offline)
+            applyFilter(offline.allowed, rare: offline.rare)
         } else {
             allowedIndices = nil
+            rareIndices = []
         }
     }
 
-    /// Where the offline grid should snap to when the live geo model couldn't
-    /// run: this run's own fix, else the last one this process resolved, else the
-    /// one the geo cache recorded on disk.
+    private func applyFilter(_ allowed: Set<Int>, rare: Set<Int>) {
+        allowedIndices = allowed
+        rareIndices = rare
+        prefetchRegionImages(allowed)
+    }
+
+    /// Where the species filter is worked out for — by the location models, or
+    /// failing them the offline grid: this run's own fix, else the last one this
+    /// process resolved, else the one the geo cache recorded on disk.
     ///
     /// **Three sources, and the third is the whole point.** The first two are
     /// both empty on precisely the launch that reaches this line — a cold start

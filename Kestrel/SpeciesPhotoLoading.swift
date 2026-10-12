@@ -145,7 +145,7 @@ struct SpeciesPhotoPlaceholderGlyph: View {
     @Environment(\.speciesPhotoIsDownloading) private var isDownloading
 
     var body: some View {
-        Image(systemName: isDownloading ? "arrow.down.circle" : "bird")
+        Image(systemName: isDownloading ? "cloud" : "bird")
             .accessibilityLabel(isDownloading ? "Downloading photo" : "No photo")
     }
 }

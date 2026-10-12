@@ -36,33 +36,21 @@ final class SpeciesCatalog: @unchecked Sendable {
     /// `eBird_taxonomy_codes_2024E.json`. Empty if the file is missing.
     private let eBirdCodes: [String]
 
-    /// The reverse of `eBirdCodes`, in eBird's *current* taxonomy: which labels
-    /// a species code the eBird API reports counts as. Mostly one label under
-    /// the same code, but a split, lump or rename since 2024 can make it a
-    /// different label or several — "redpol1" is BirdNET's Common, Hoary and
-    /// Lesser Redpoll. The exceptions come from `eBird_code_aliases.txt`, made
-    /// by `scripts/build_ebird_code_aliases.py`.
-    private let indicesByEBirdCode: [String: [Int]]
+    /// Indices of every label that isn't a bird: the noise and human classes
+    /// (`BirdNETClassifier.nonBirdLabels`), and the 90 frogs, toads, insects
+    /// and mammals BirdNET also recognizes — the labels whose eBird code is a
+    /// `t-` placeholder, since eBird only has codes for birds. Kestrel is a
+    /// bird app: none of these is ever detected, suggested, targeted or
+    /// listed. See `isBird`.
+    let nonBirdIndices: Set<Int>
 
     private init() {
-        let eBirdCodes = Bundle.main.url(
+        self.eBirdCodes = Bundle.main.url(
             forResource: "BirdNET_GLOBAL_6K_V2.4_eBirdCodes",
             withExtension: "txt"
         )
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }
         .map { $0.split(whereSeparator: { $0.isNewline }).map(String.init) } ?? []
-        self.eBirdCodes = eBirdCodes
-        var byCode: [String: [Int]] = [:]
-        for (index, code) in eBirdCodes.enumerated() { byCode[code, default: []].append(index) }
-        let aliases = Bundle.main.url(forResource: "eBird_code_aliases", withExtension: "txt")
-            .flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? ""
-        for line in aliases.split(whereSeparator: { $0.isNewline }) {
-            let parts = line.split(separator: "\t")
-            guard parts.count == 2, let index = Int(parts[1]), eBirdCodes.indices.contains(index)
-            else { continue }
-            byCode[String(parts[0]), default: []].append(index)
-        }
-        self.indicesByEBirdCode = byCode
         guard
             let url = Bundle.main.url(
                 forResource: "BirdNET_GLOBAL_6K_V2.4_Labels",
@@ -72,6 +60,7 @@ final class SpeciesCatalog: @unchecked Sendable {
         else {
             self.all = []
             self.indexByScientificName = [:]
+            self.nonBirdIndices = []
             return
         }
         self.all = raw.split(whereSeparator: { $0.isNewline }).map { line in
@@ -88,6 +77,24 @@ final class SpeciesCatalog: @unchecked Sendable {
         index.reserveCapacity(all.count)
         for (i, sp) in all.enumerated() { index[sp.scientificName] = i }
         self.indexByScientificName = index
+        let codes = self.eBirdCodes
+        let species = self.all
+        self.nonBirdIndices = Set(species.indices.filter { i in
+            BirdNETClassifier.nonBirdLabels.contains(species[i].scientificName)
+                || (codes.indices.contains(i) && codes[i].hasPrefix("t-"))
+        })
+    }
+
+    /// Whether the label at a catalog index is a bird — see `nonBirdIndices`.
+    nonisolated func isBird(_ index: Int) -> Bool {
+        all.indices.contains(index) && !nonBirdIndices.contains(index)
+    }
+
+    /// Whether a scientific name is a bird: anything not in the catalog is
+    /// taken to be one (a life-list entry under an older name), since only the
+    /// catalog's own labels can be anything else.
+    nonisolated func isBird(scientificName: String) -> Bool {
+        indexByScientificName[scientificName].map(isBird) ?? true
     }
 
     /// Common name for a scientific name, or nil if it isn't in the catalog
@@ -107,15 +114,8 @@ final class SpeciesCatalog: @unchecked Sendable {
             ?? commonName.flatMap { name in
                 all.firstIndex { $0.commonName.caseInsensitiveCompare(name) == .orderedSame }
             }
-        guard let index, eBirdCodes.indices.contains(index),
-              !BirdNETClassifier.nonBirdLabels.contains(all[index].scientificName)
+        guard let index, eBirdCodes.indices.contains(index), isBird(index)
         else { return nil }
         return eBirdCodes[index]
-    }
-
-    /// The catalog indices an eBird species code from the API counts as — see
-    /// `indicesByEBirdCode`. Empty for a code BirdNET has no label for.
-    nonisolated func indices(forEBirdCode code: String) -> [Int] {
-        indicesByEBirdCode[code] ?? []
     }
 }

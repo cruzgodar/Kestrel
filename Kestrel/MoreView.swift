@@ -321,6 +321,12 @@ struct MoreView: View {
             credit(
                 "Bird photographs are contributed by individual photographers under [Creative Commons](https://creativecommons.org/licenses/) licenses, sourced from [Wikimedia Commons](https://commons.wikimedia.org) and [iNaturalist](https://www.inaturalist.org). Each photo is © its photographer under the license shown when you tap it; tap the credit to view the source."
             )
+
+            // Geomodel weights license notice (CC BY-SA 4.0 requires naming the
+            // license and linking it; the model is used unmodified).
+            credit(
+                "Which birds to expect where and when comes from the [BirdNET+ Geomodel](https://github.com/birdnet-team/geomodel), trained on [GBIF](https://www.gbif.org) occurrence records including [eBird](https://ebird.org) observations. It is developed by the BirdNET team at the Cornell Lab of Ornithology and used under the [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/) license."
+            )
         }
     }
 

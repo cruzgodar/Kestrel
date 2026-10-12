@@ -18,116 +18,221 @@ private nonisolated struct CachedFilter: Codable {
     let week: Int
     let speciesCount: Int
     let allowedIndices: [Int]
-    /// The part of `allowedIndices` that is rare here — see
-    /// `BirdNETClassifier.rareThreshold`. Only an eBird list has one; `nil` for
-    /// the geo model's, and in files written before eBird.
+    /// The part of `allowedIndices` that is rare here — see `Tiers`. `nil` in
+    /// files written before the filter had tiers.
     var rareIndices: [Int]? = nil
     let savedAt: Date
 }
 
+/// Which species are plausible at a place and week, from two bundled
+/// location models.
+///
+/// **The BirdNET+ Geomodel v3** (github.com/birdnet-team/geomodel, v3.0.3,
+/// weights CC BY-SA 4.0) answers for almost every label. It replaced the
+/// BirdNET v2.4 meta-model, whose list was far too strict: checked against
+/// eBird reports at five places in October, the v2.4 list at its 0.03
+/// threshold caught 76% of the species reported on a quarter of days or more,
+/// and 27% of the occasional ones; the geomodel's list at `rangeThreshold`
+/// catches 99% and 96%.
+///
+/// **The v2.4 model** still answers for the 33 labels the geomodel has no
+/// species for (some Hawaiian birds, Japanese Tit, a few insects and toads —
+/// see `scripts/build_geomodel_index.py`). Its scores run on a different
+/// scale, so they are mapped onto the geomodel's (`calibratedLegacy`) and
+/// every reader sees one score per catalog index.
 actor SpeciesRangeFilter {
-    static let threshold: Float = 0.03
+    /// At or above this score a species is common here, and judged at
+    /// BirdNET's normal bar. Also what makes a bird a Target.
+    static let commonThreshold: Float = 0.3
+    /// At or above this score (and below `commonThreshold`) a species is in
+    /// range but rare, held to `BirdNETClassifier.rareThreshold`. Below it,
+    /// it is out of range.
+    static let rangeThreshold: Float = 0.05
     static let speciesCount = 6_522
 
+    private struct Model {
+        let session: ORTSession
+        let inputName: String
+        let outputName: String
+    }
+
     private let env: ORTEnv
-    private let session: ORTSession
-    private let inputName: String
-    private let outputName: String
+    private let geomodel: Model
+    /// `nil` if it fails to load: the geomodel alone still covers all but 33
+    /// labels.
+    private let legacy: Model?
+    /// For each geomodel output, the catalog indices it counts for — usually
+    /// one, several for a lump, none for an animal BirdNET doesn't know. From
+    /// `geomodel_birdnet_index.txt`.
+    private let geomodelIndices: [[Int]]
+    /// Catalog indices no geomodel output covers; the v2.4 model scores these.
+    private let uncovered: [Int]
 
     init() throws {
-        guard let modelURL = Bundle.main.url(forResource: "birdnet_data_model", withExtension: "onnx") else {
-            throw NSError(domain: "SpeciesRangeFilter", code: 1, userInfo: [NSLocalizedDescriptionKey: "geo model missing"])
-        }
         let env = try ORTEnv(loggingLevel: .warning)
+        guard let indexURL = Bundle.main.url(forResource: "geomodel_birdnet_index", withExtension: "txt"),
+              let indexText = try? String(contentsOf: indexURL, encoding: .utf8) else {
+            throw NSError(domain: "SpeciesRangeFilter", code: 1, userInfo: [NSLocalizedDescriptionKey: "geomodel index missing"])
+        }
+        // Not split on newlines with `omittingEmptySubsequences`: an empty line
+        // is an output that maps to nothing, and dropping it would shift every
+        // output after it.
+        let rows = indexText.components(separatedBy: "\n")
+        let indices = rows.dropLast(rows.last == "" ? 1 : 0).map { row in
+            row.split(separator: ",").compactMap { Int($0) }
+        }
+        self.env = env
+        self.geomodel = try Self.load("geomodel_v3", env: env)
+        self.legacy = try? Self.load("birdnet_data_model", env: env)
+        self.geomodelIndices = indices
+        let covered = Set(indices.joined())
+        self.uncovered = (0..<Self.speciesCount).filter { !covered.contains($0) }
+    }
+
+    private static func load(_ name: String, env: ORTEnv) throws -> Model {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "onnx") else {
+            throw NSError(domain: "SpeciesRangeFilter", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(name) missing"])
+        }
         let options = try ORTSessionOptions()
         try options.setIntraOpNumThreads(1)
         try options.setGraphOptimizationLevel(.all)
         if ORTIsCoreMLExecutionProviderAvailable() {
             // Same leaked-temp-model story as BirdNET — see `CoreMLModelCache`.
             var coreML = ["MLComputeUnits": "ALL"]
-            if let cache = CoreMLModelCache.directory(forModel: "birdnet_data_model") {
+            if let cache = CoreMLModelCache.directory(forModel: name) {
                 coreML["ModelCacheDirectory"] = cache
             }
             try? options.appendCoreMLExecutionProvider(withOptionsV2: coreML)
         }
-        self.env = env
-        self.session = try ORTSession(env: env, modelPath: modelURL.path, sessionOptions: options)
-        let inputs = try session.inputNames()
-        let outputs = try session.outputNames()
-        self.inputName = inputs.first ?? "input"
-        self.outputName = outputs.first ?? "output"
+        let session = try ORTSession(env: env, modelPath: url.path, sessionOptions: options)
+        return Model(
+            session: session,
+            inputName: try session.inputNames().first ?? "input",
+            outputName: try session.outputNames().first ?? "output"
+        )
     }
 
-    /// Persists a filter worked out elsewhere — an eBird list (see
-    /// `EBirdSpecies`) — exactly as `computeAndCache` persists the geo model's,
-    /// so every reader of the cache sees the better list.
-    nonisolated static func cache(
-        allowed: Set<Int>, rare: Set<Int>, lat: Double, lon: Double, week: Int
-    ) {
-        try? write(CachedFilter(
-            latitude: lat,
-            longitude: lon,
-            week: week,
-            speciesCount: allowed.count,
-            allowedIndices: allowed.sorted(),
-            rareIndices: rare.sorted(),
-            savedAt: Date()
-        ))
+    // MARK: Tiers
+
+    /// A place-and-week species list, in the classifier's terms.
+    nonisolated struct Tiers: Sendable, Equatable {
+        /// Every species in range: `rangeThreshold` or above.
+        let allowed: Set<Int>
+        /// The part of `allowed` below `commonThreshold`.
+        let rare: Set<Int>
     }
 
-    /// Runs the geo model for the given location and persists the result.
-    func computeAndCache(lat: Double, lon: Double, week: Int) throws -> Set<Int> {
-        let probs = try likelihoods(lat: lat, lon: lon, week: week)
-
-        var allowed: Set<Int> = []
-        allowed.reserveCapacity(512)
-        for (index, p) in probs.enumerated() where p >= Self.threshold {
+    /// Birds only: the models also score frogs, insects and mammals, which
+    /// no list in the app should hold (see `SpeciesCatalog.nonBirdIndices`).
+    nonisolated static func tiers(
+        scores: [Float],
+        isBird: (Int) -> Bool = SpeciesCatalog.shared.isBird
+    ) -> Tiers {
+        var allowed = Set<Int>()
+        var rare = Set<Int>()
+        for (index, score) in scores.enumerated() where score >= rangeThreshold && isBird(index) {
             allowed.insert(index)
+            if score < commonThreshold { rare.insert(index) }
         }
+        return Tiers(allowed: allowed, rare: rare)
+    }
 
+    /// The tiers for a place and week, persisting nothing — for a place the
+    /// user was, rather than is (see `computeAndCache`).
+    func tiers(lat: Double, lon: Double, week: Int) throws -> Tiers {
+        Self.tiers(scores: try likelihoods(lat: lat, lon: lon, weeks: [week])[0])
+    }
+
+    /// Runs the models for the given location and persists the result.
+    func computeAndCache(lat: Double, lon: Double, week: Int) throws -> Tiers {
+        let tiers = Self.tiers(scores: try likelihoods(lat: lat, lon: lon, weeks: [week])[0])
         let cached = CachedFilter(
             latitude: lat,
             longitude: lon,
             week: week,
-            speciesCount: allowed.count,
-            allowedIndices: allowed.sorted(),
+            speciesCount: tiers.allowed.count,
+            allowedIndices: tiers.allowed.sorted(),
+            rareIndices: tiers.rare.sorted(),
             savedAt: Date()
         )
         try? Self.write(cached)
-        return allowed
+        return tiers
     }
 
-    /// The geo model's raw output for a place and week: one occurrence
-    /// likelihood per catalog index, in `SpeciesCatalog.all`'s order.
+    // MARK: Scores
+
+    /// Occurrence scores for a place, one array per BirdNET week asked for,
+    /// each with one score per catalog index in `SpeciesCatalog.all`'s order,
+    /// on the geomodel's scale. All weeks run as one batch.
     ///
     /// Persists nothing, unlike `computeAndCache`. The Targets tab asks about
     /// places the user has merely picked on a map, and the cache file is the
     /// app's record of where the user actually *is* — writing a browsed place
     /// into it would point the next recording's fallback filter at the wrong
     /// continent.
-    func likelihoods(lat: Double, lon: Double, week: Int) throws -> [Float] {
-        let samples: [Float] = [Float(lat), Float(lon), Float(week)]
+    func likelihoods(lat: Double, lon: Double, weeks: [Int]) throws -> [[Float]] {
+        guard !weeks.isEmpty else { return [] }
+        let geo = try Self.run(geomodel, lat: lat, lon: lon, weeks: weeks)
+        let old = try legacy.map { try Self.run($0, lat: lat, lon: lon, weeks: weeks) }
+        return weeks.indices.map { w in
+            var scores = [Float](repeating: 0, count: Self.speciesCount)
+            for (output, indices) in geomodelIndices.enumerated() where !indices.isEmpty {
+                let p = geo[w][output]
+                // A lump: the label takes its likeliest daughter species.
+                for index in indices where p > scores[index] { scores[index] = p }
+            }
+            if let old {
+                for index in uncovered { scores[index] = Self.calibratedLegacy(old[w][index]) }
+            }
+            return scores
+        }
+    }
+
+    /// Maps a v2.4 score onto the geomodel's scale, so the two can share
+    /// thresholds: v2.4's 0.03 (its long-standing range threshold) lands on
+    /// `commonThreshold`, and its 0.003 on `rangeThreshold` — at 0.003 the
+    /// v2.4 list caught 96% of the species eBird reports regularly, close to
+    /// the geomodel's 99% at `rangeThreshold`. Linear between those points,
+    /// and from 0 and to 1 either side.
+    nonisolated static func calibratedLegacy(_ p: Float) -> Float {
+        let anchors: [(legacy: Float, geomodel: Float)] = [
+            (0, 0), (0.003, rangeThreshold), (0.03, commonThreshold), (1, 1),
+        ]
+        let x = min(max(p, 0), 1)
+        for (a, b) in zip(anchors, anchors.dropFirst()) where x <= b.legacy {
+            return a.geomodel + (x - a.legacy) / (b.legacy - a.legacy) * (b.geomodel - a.geomodel)
+        }
+        return 1
+    }
+
+    /// One `[week][output]` batch through a model.
+    private static func run(_ model: Model, lat: Double, lon: Double, weeks: [Int]) throws -> [[Float]] {
+        let samples: [Float] = weeks.flatMap { [Float(lat), Float(lon), Float($0)] }
         let byteCount = samples.count * MemoryLayout<Float>.stride
         let data = NSMutableData(length: byteCount)!
         samples.withUnsafeBufferPointer { src in
             data.replaceBytes(in: NSRange(location: 0, length: byteCount), withBytes: src.baseAddress!)
         }
-        let input = try ORTValue(tensorData: data, elementType: .float, shape: [1, 3])
-        let outputs = try session.run(
-            withInputs: [inputName: input],
-            outputNames: [outputName],
+        let input = try ORTValue(
+            tensorData: data, elementType: .float,
+            shape: [NSNumber(value: weeks.count), 3]
+        )
+        let outputs = try model.session.run(
+            withInputs: [model.inputName: input],
+            outputNames: [model.outputName],
             runOptions: nil
         )
-        guard let outValue = outputs[outputName] else {
+        guard let outValue = outputs[model.outputName] else {
             throw NSError(domain: "SpeciesRangeFilter", code: 2)
         }
         let outData = try outValue.tensorData()
         let count = outData.length / MemoryLayout<Float>.stride
-        var probs = [Float](repeating: 0, count: count)
-        probs.withUnsafeMutableBytes { dst in
+        var flat = [Float](repeating: 0, count: count)
+        flat.withUnsafeMutableBytes { dst in
             outData.getBytes(dst.baseAddress!, length: outData.length)
         }
-        return probs
+        let perWeek = count / weeks.count
+        return (0..<weeks.count).map { Array(flat[($0 * perWeek)..<(($0 + 1) * perWeek)]) }
     }
 
     // MARK: Cache validity
@@ -177,7 +282,7 @@ actor SpeciesRangeFilter {
     /// answers. It briefly wasn't: with the grid's coordinate coming solely from
     /// this process, a cold launch whose fix hadn't landed fell all the way
     /// through to no filter at all. See `cachedCoordinate`.
-    func loadCached(week: Int, now: Date = Date()) -> (allowed: Set<Int>, rare: Set<Int>)? {
+    func loadCached(week: Int, now: Date = Date()) -> Tiers? {
         guard let cached = Self.loadCacheFile() else { return nil }
         guard Self.isCurrent(
             cachedWeek: cached.week, savedAt: cached.savedAt, week: week, now: now
@@ -185,7 +290,10 @@ actor SpeciesRangeFilter {
             Log.info("SpeciesRangeFilter: cached filter is from week \(cached.week), not \(week) — ignoring")
             return nil
         }
-        return (Set(cached.allowedIndices), Set(cached.rareIndices ?? []))
+        return Tiers(
+            allowed: Self.birds(cached.allowedIndices),
+            rare: Self.birds(cached.rareIndices ?? [])
+        )
     }
 
     /// Reads the cached allowed-index set straight off disk without
@@ -203,7 +311,15 @@ actor SpeciesRangeFilter {
     nonisolated static func cachedAllowedIndices(now: Date = Date()) -> Set<Int>? {
         guard let cached = loadCacheFile(),
               isWithinMaxAge(savedAt: cached.savedAt, now: now) else { return nil }
-        return Set(cached.allowedIndices)
+        return birds(cached.allowedIndices)
+    }
+
+    /// A cached list less anything that isn't a bird. Lists saved before the
+    /// filter went birds-only (see `tiers(scores:)`) can hold frogs and
+    /// crickets until they age out.
+    private nonisolated static func birds(_ indices: [Int]) -> Set<Int> {
+        let catalog = SpeciesCatalog.shared
+        return Set(indices.filter(catalog.isBird))
     }
 
     /// Where the last successful geo run was computed, read straight off the

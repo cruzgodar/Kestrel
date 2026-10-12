@@ -314,7 +314,9 @@ struct LifeListView: View {
         let allowFuzzy = needle.count >= 3
         var scored: [(inRange: Bool, score: Int, scientific: String, common: String)] = []
         scored.reserveCapacity(64)
-        for (idx, sp) in SpeciesCatalog.shared.all.enumerated() {
+        let catalog = SpeciesCatalog.shared
+        for (idx, sp) in catalog.all.enumerated() {
+            guard catalog.isBird(idx) else { continue }
             if lifeNames.contains(sp.scientificName) { continue }
             if lifeCommonNames.contains(sp.commonName.lowercased()) { continue }
             guard let s = scoreMatch(sp.searchHay, needle: needle, allowFuzzy: allowFuzzy) else { continue }
@@ -1389,7 +1391,7 @@ struct LifeListView: View {
 
     /// The Targets heading, in two lines: the count — "104 species" — and
     /// what it counts — "left to find in Ithaca in October", or with the life
-    /// list's birds included, "in Ithaca in October". Any Month names no month;
+    /// list's birds included, "in Ithaca in October". Any Time of Year names no month;
     /// a place whose name hasn't come back (offline) is "nearby" or "here".
     private func targetsHeading(_ targets: TargetsModel) -> (count: String, detail: String)? {
         guard let counts = targetCounts(targets) else { return nil }
@@ -1400,7 +1402,7 @@ struct LifeListView: View {
     }
 
     /// Where and when the Targets list is for — "in Ithaca in October", or
-    /// "in Ithaca" for Any Month. A place whose name hasn't come back
+    /// "in Ithaca" for Any Time of Year. A place whose name hasn't come back
     /// (offline) is "nearby" or "here".
     private func targetsWhereAndWhen(_ targets: TargetsModel) -> String {
         let place = targets.placeName.map { "in \($0)" }
@@ -1442,7 +1444,7 @@ struct LifeListView: View {
             ContentUnavailableView {
                 Label("No targets left", systemImage: "target")
             } description: {
-                Text("You\u{2019}ve found every bird expected here. Choose another place or month to find more!")
+                Text("You\u{2019}ve found every bird expected here. Choose another place or time of year to find more!")
             }
         } else if !trimmedSearch.isEmpty, visibleRows.isEmpty {
             ContentUnavailableView {
