@@ -70,6 +70,15 @@ private struct RootView<Content: View>: View {
 /// second window on a foldable's inner display, or Split View), where the
 /// first-listed scene can be a backgrounded one — and anything hung on *that*
 /// window lands on a screen nobody is looking at.
+///
+/// `nil` until the scene is foreground-active. Both callers accept that. The
+/// crossfade only runs once the welcome screen's permission prompts are done,
+/// which waits for the scene to be active again. The keyboard preheat runs a
+/// fixed 0.2s after launch, and on a launch slow enough — or a background one
+/// — that the scene isn't active yet, it is simply skipped: the cost is the
+/// first keyboard sliding up a little less smoothly, once. With multiple
+/// scenes turned off (`Info.plist`) the filter buys nothing today, and it is
+/// kept for when they are turned back on.
 @MainActor
 private var activeKeyWindow: UIWindow? {
     UIApplication.shared.connectedScenes

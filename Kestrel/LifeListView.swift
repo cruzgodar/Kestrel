@@ -962,8 +962,10 @@ struct LifeListView: View {
                 // starred. Not on the Targets tab, whose tiles carry none.
                 if targets == nil {
                     overlayControl {
-                        AddGlyphButton(isAdded: false, size: Self.gridOverlayRadius * 2, hereAndNow: {
-                            await beginHereAndNowAdd(scientificName: scientificName, commonName: commonName)
+                        AddGlyphButton(isAdded: false, size: Self.gridOverlayRadius * 2, hereAndNow: { askedAt in
+                            await beginHereAndNowAdd(
+                                scientificName: scientificName, commonName: commonName, askedAt: askedAt
+                            )
                         }) {
                             beginAdd(scientificName: scientificName, commonName: commonName)
                         }
@@ -1260,8 +1262,10 @@ struct LifeListView: View {
             // the species' real life-list row on the same frame (see
             // `visibleRows`). There is no in-between state for a checkmark to
             // describe.
-            AddGlyphButton(isAdded: false, hereAndNow: {
-                await beginHereAndNowAdd(scientificName: scientificName, commonName: commonName)
+            AddGlyphButton(isAdded: false, hereAndNow: { askedAt in
+                await beginHereAndNowAdd(
+                    scientificName: scientificName, commonName: commonName, askedAt: askedAt
+                )
             }) {
                 // A bird the user is recalling, so it asks when, then where,
                 // before writing anything. See `beginAdd`.
@@ -1328,12 +1332,18 @@ struct LifeListView: View {
 
     /// "Yes, here and now": filed outright, or the naming step when there is
     /// no named place close enough to file it under.
-    private func beginHereAndNowAdd(scientificName: String, commonName: String) async {
-        actions.draft = await ObservationDraft.fileHereAndNow(
+    ///
+    /// The step is only raised if nothing else has been opened while the
+    /// sighting found its place — and filing outright never touches `actions`
+    /// at all, so it can't close a flow the user started meanwhile.
+    private func beginHereAndNowAdd(scientificName: String, commonName: String, askedAt: Date) async {
+        guard let draft = await ObservationDraft.fileHereAndNow(
             scientificName: scientificName,
             commonName: commonName,
+            askedAt: askedAt,
             store: store
-        )
+        ), !actions.isBusy else { return }
+        actions.draft = draft
     }
 
     /// Edit, from a row that stands for the whole species. A bird seen once has

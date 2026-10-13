@@ -23,6 +23,12 @@ enum NearbySightings {
 
     /// Opens the map for a bird in the browser (or the eBird app, if it takes
     /// the link). Does nothing for a bird with no eBird code.
+    ///
+    /// Nothing is shown while it waits for a fix, which with no fix inside
+    /// `LocationCache.freshness` can be a few seconds. Left that way on
+    /// purpose: from a row's menu the menu has already closed, so there is
+    /// nothing on screen to show progress on, and either way the wait ends in
+    /// a whole app switching in.
     static func open(scientificName: String, commonName: String?) {
         guard let code = SpeciesCatalog.shared.eBirdCode(
             scientificName: scientificName,

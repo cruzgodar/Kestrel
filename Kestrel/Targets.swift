@@ -83,10 +83,41 @@ final class TargetsModel {
     }
 
     /// The time of year the list is for.
-    enum Season: Hashable {
-        /// This BirdNET week and one either side.
+    ///
+    /// `nonisolated` so `ListKey` can compare two of them off the main actor.
+    nonisolated enum Season: Hashable {
+        /// This BirdNET week and one either side — what the menu calls
+        /// "Current Month". Near either end of a month the span reaches a week
+        /// into the neighbouring one while the heading names only the month
+        /// its middle week is in (see `ListKey.month`). Left that way on
+        /// purpose: a bird arriving next week is worth showing now, and the
+        /// heading is a label rather than a promise.
         case current
         case anyTime
+    }
+
+    /// What a list was worked out for: where, which season, and which BirdNET
+    /// weeks that season meant at the time.
+    ///
+    /// The weeks are part of it because Current is not one fixed span — it is
+    /// whichever three weeks surround today. Without them a refresh compared
+    /// only the place and the season, so for as long as the app stayed alive
+    /// in one spot it kept the weeks it was first worked out for: past a week
+    /// boundary the list was a week behind, and past a month boundary the
+    /// heading named the new month over the old month's birds.
+    nonisolated struct ListKey {
+        let coordinate: CLLocationCoordinate2D
+        let season: Season
+        let weeks: [Int]
+
+        /// The month a Current list is named for: the one its middle week
+        /// falls in, four BirdNET weeks to a month (see
+        /// `SpeciesRangeFilter.birdnetWeek`). `nil` for Any Time of Year,
+        /// which names none.
+        var month: Int? {
+            guard season == .current, weeks.count == 3 else { return nil }
+            return (weeks[1] - 1) / 4 + 1
+        }
     }
 
     enum Status {
@@ -112,6 +143,10 @@ final class TargetsModel {
     /// The season the list is for. Can trail `season`, which changes the
     /// moment one is picked.
     private(set) var listSeason: Season = .current
+    /// The month the list is named for — see `ListKey.month`. Taken from the
+    /// list rather than the clock, so a heading on screen across a month
+    /// boundary goes on naming the month its birds are for.
+    private(set) var listMonth: Int?
     /// Whether the list is for wherever the user is, rather than a place
     /// picked on the map.
     private(set) var listFollowsUser = true
@@ -163,13 +198,10 @@ final class TargetsModel {
     /// The season the list is for. Current until another is picked.
     private(set) var season: Season = .current
 
-    /// The month Current is named for in the heading — the month it is now;
-    /// `nil` for Any Time of Year, which names none.
+    /// The month Current is named for in the heading; `nil` for Any Time of
+    /// Year, which names none.
     var listMonthName: String? {
-        switch listSeason {
-        case .current: Self.monthName(Calendar.current.component(.month, from: Date()))
-        case .anyTime: nil
-        }
+        listMonth.map { Self.monthName($0) }
     }
 
     static func monthName(_ month: Int) -> String {
@@ -199,9 +231,9 @@ final class TargetsModel {
         }
     }
 
-    /// Where and for which season `species` was worked out, so a refresh that
-    /// finds neither has moved can leave the list alone.
-    private var loaded: (coordinate: CLLocationCoordinate2D, season: Season)?
+    /// What `species` was worked out for, so a refresh that finds nothing has
+    /// moved can leave the list alone.
+    private var loaded: ListKey?
     /// Bumped by every refresh, so a slow one finishing after a newer one has
     /// started can't publish over it.
     private var generation = 0
@@ -209,7 +241,16 @@ final class TargetsModel {
     /// How far the current location has to move before the list is worked out
     /// again. The location models' resolution is far coarser than this, so
     /// anything closer is the same list.
-    private static let sameAreaRadius: CLLocationDistance = 2_000
+    private nonisolated static let sameAreaRadius: CLLocationDistance = 2_000
+
+    /// Whether the list worked out for `loaded` is also the list for `wanted`:
+    /// the same season over the same weeks, at a place no further than
+    /// `sameAreaRadius` away.
+    nonisolated static func describesSameList(_ loaded: ListKey, as wanted: ListKey) -> Bool {
+        loaded.season == wanted.season
+            && loaded.weeks == wanted.weeks
+            && distance(loaded.coordinate, wanted.coordinate) < sameAreaRadius
+    }
 
     private static let sortKey = "Targets.sort"
 
@@ -262,9 +303,9 @@ final class TargetsModel {
         guard run == generation else { return }
 
         let season = season
+        let wanted = ListKey(coordinate: target, season: season, weeks: Self.weeks(for: season))
         let followsUser = chosenCoordinate == nil
-        if let loaded, species != nil, loaded.season == season,
-           Self.distance(loaded.coordinate, target) < Self.sameAreaRadius {
+        if let loaded, species != nil, Self.describesSameList(loaded, as: wanted) {
             // Same list. A name that failed to look up last time (offline) is
             // worth another try, though.
             listFollowsUser = followsUser
@@ -285,15 +326,16 @@ final class TargetsModel {
         // out, and the town name is looked up alongside it so the two land on
         // screen together.
         async let name = ObservationNameSheet.townName(at: target)
-        let ranked = await Self.rankedSpecies(at: target, season: season, manager: manager)
+        let ranked = await Self.rankedSpecies(at: target, weeks: wanted.weeks, manager: manager)
         let town = await name
         guard run == generation else { return }
         species = ranked
         placeName = town
         listSeason = season
+        listMonth = wanted.month
         listFollowsUser = followsUser
         listRevision += 1
-        loaded = (target, season)
+        loaded = wanted
         status = .ready
         yearRoundSpecies = nil
         await loadYearRound(at: target, season: season, manager: manager, run: run)
@@ -310,7 +352,9 @@ final class TargetsModel {
             yearRoundSpecies = species
             return
         }
-        let all = await Self.rankedSpecies(at: coordinate, season: .anyTime, manager: manager)
+        let all = await Self.rankedSpecies(
+            at: coordinate, weeks: Self.weeks(for: .anyTime), manager: manager
+        )
         guard run == generation else { return }
         yearRoundSpecies = all
     }
@@ -339,12 +383,14 @@ final class TargetsModel {
         return nil
     }
 
+    /// The targets at `coordinate` over `weeks` — taken as worked out by the
+    /// caller rather than from a season, so the list is for exactly the weeks
+    /// its `ListKey` records even if one ends while this runs.
     private static func rankedSpecies(
         at coordinate: CLLocationCoordinate2D,
-        season: Season,
+        weeks: [Int],
         manager: RecordingManager
     ) async -> [AreaSpecies] {
-        let weeks = weeks(for: season)
         if let likelihoods = await manager.areaLikelihoods(
             latitude: coordinate.latitude, longitude: coordinate.longitude, weeks: weeks
         ) {
@@ -408,7 +454,7 @@ final class TargetsModel {
         SpeciesCatalog.shared.isBird(scientificName: species.scientificName)
     }
 
-    private static func distance(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> CLLocationDistance {
+    private nonisolated static func distance(_ a: CLLocationCoordinate2D, _ b: CLLocationCoordinate2D) -> CLLocationDistance {
         CLLocation(latitude: a.latitude, longitude: a.longitude)
             .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
     }

@@ -150,17 +150,14 @@ struct SpeciesPhotoFullScreen: View {
     var showsNearbySightingsButton = false
 
     @Environment(\.dismiss) private var dismiss
-    /// Chooses how the photo is sized at rest. Regular width means the app has a
-    /// large display to itself (a foldable's inner display), where the photo is
-    /// grown to span it edge to edge. Compact — an ordinary phone, the outer
-    /// display, or one pane of a split — keeps the photo inside the horizontal
-    /// safe area, so a vertical system bar never crosses it.
+    /// No longer read. The two size classes used to choose how the photo is
+    /// sized at rest, and how the chrome is laid out; `DisplayLayout` decides
+    /// both now, from the room the viewer measures rather than from the
+    /// classes, which could not tell a foldable's outer display from its inner
+    /// one. Left in place as harmless: the cost is a re-render of the viewer
+    /// when a class changes, which a change of display re-renders it for anyway.
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    /// Paired with the horizontal class to tell the big inner display of a
-    /// foldable from its outer one. The brief is explicit that the inner display
-    /// is regular in *both* axes; an outer display or a phone turned landscape
-    /// can report regular width but stays compact in height, and keying off
-    /// width alone let the outer display take layouts meant for the inner one.
+    /// See `horizontalSizeClass` — likewise unread.
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     /// Maps the photo's resting insets from leading/trailing onto physical
     /// left/right for the UIKit scroll view underneath.

@@ -248,7 +248,7 @@ struct ContentView: View {
         }
         // Floating record button + error caption pinned to the bottom, over
         // the scrolling list. The button slides from centered (start) to the
-        // leading edge (stop) via a GPU-composited `.offset` rather than an
+        // trailing edge (stop) via a GPU-composited `.offset` rather than an
         // animated layout (Spacer), so the move stays at full frame rate.
         .overlay(alignment: .bottom) {
             VStack(spacing: 0) {
@@ -669,10 +669,11 @@ struct ContentView: View {
                     // goes through a confirmation. Deleting a sighting belongs to
                     // the row's menu and swipe actions, which name what they act
                     // on and ask first.
-                    AddGlyphButton(isAdded: alreadyAdded, hereAndNow: {
+                    AddGlyphButton(isAdded: alreadyAdded, hereAndNow: { askedAt in
                         await beginHereAndNowAdd(
                             scientificName: detection.scientificName,
-                            commonName: detection.commonName
+                            commonName: detection.commonName,
+                            askedAt: askedAt
                         )
                     }) {
                         // Runs the same when → where → what's-it-called flow the
@@ -809,12 +810,19 @@ struct ContentView: View {
 
     /// "Yes, here and now": filed outright, or the naming step when there is
     /// no named place close enough to file it under.
-    private func beginHereAndNowAdd(scientificName: String, commonName: String) async {
-        pendingObservation = await ObservationDraft.fileHereAndNow(
+    ///
+    /// The step is only raised if nothing else has been opened while the
+    /// sighting found its place — and filing outright never touches
+    /// `pendingObservation` at all, so it can't close a flow the user started
+    /// on another row in the meantime.
+    private func beginHereAndNowAdd(scientificName: String, commonName: String, askedAt: Date) async {
+        guard let draft = await ObservationDraft.fileHereAndNow(
             scientificName: scientificName,
             commonName: commonName,
+            askedAt: askedAt,
             store: lifeListStore
-        )
+        ), pendingObservation == nil else { return }
+        pendingObservation = draft
     }
 }
 

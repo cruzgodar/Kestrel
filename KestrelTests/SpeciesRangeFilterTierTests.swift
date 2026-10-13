@@ -49,6 +49,87 @@ struct SpeciesRangeFilterTierTests {
         #expect(zip(increasing, increasing.dropFirst()).allSatisfy { $0 <= $1 })
     }
 
+    // MARK: the geomodel's label map
+
+    @Test("the label map keeps an output that maps to nothing in its place")
+    func indexKeepsEmptyRows() throws {
+        #expect(try SpeciesRangeFilter.parseGeomodelIndex("1,2\n\n3\n") == [[1, 2], [], [3]])
+        #expect(try SpeciesRangeFilter.parseGeomodelIndex("1,2\n\n3") == [[1, 2], [], [3]],
+                "no trailing newline")
+        #expect(try SpeciesRangeFilter.parseGeomodelIndex("4\n\n") == [[4], []],
+                "a last output that maps to nothing")
+    }
+
+    @Test("a label map naming a label outside the catalog is refused, not crashed on")
+    func indexOutOfRange() {
+        #expect(throws: (any Error).self) {
+            try SpeciesRangeFilter.parseGeomodelIndex("1\n\(SpeciesRangeFilter.speciesCount)\n")
+        }
+        #expect(throws: (any Error).self) {
+            try SpeciesRangeFilter.parseGeomodelIndex("-1\n")
+        }
+    }
+
+    @Test("the bundled label map parses and has a row per geomodel output")
+    func bundledIndex() throws {
+        let url = try #require(Bundle.main.url(forResource: "geomodel_birdnet_index", withExtension: "txt"))
+        let rows = try SpeciesRangeFilter.parseGeomodelIndex(String(contentsOf: url, encoding: .utf8))
+        #expect(rows.count == 12_314)
+    }
+
+    // MARK: one week's scores
+
+    private let speciesCount = SpeciesRangeFilter.speciesCount
+
+    @Test("each label takes its output's score, a lump its likeliest daughter's")
+    func scoresFromOutputs() throws {
+        // Output 0 → label 5; outputs 1 and 2 both → label 7 (a lump); output 3 → nothing.
+        let scores = try SpeciesRangeFilter.scores(
+            geomodel: [0.4, 0.2, 0.6, 0.9],
+            legacy: nil,
+            geomodelIndices: [[5], [7], [7], []],
+            uncovered: []
+        )
+        #expect(scores.count == speciesCount)
+        #expect(scores[5] == 0.4)
+        #expect(scores[7] == 0.6)
+        #expect(scores.enumerated().allSatisfy { [5, 7].contains($0.offset) || $0.element == 0 })
+    }
+
+    @Test("labels no output covers take the v2.4 score, calibrated")
+    func uncoveredFromLegacy() throws {
+        var legacy = [Float](repeating: 0, count: speciesCount)
+        legacy[9] = 0.03
+        legacy[5] = 1   // covered by the geomodel, so ignored
+        let scores = try SpeciesRangeFilter.scores(
+            geomodel: [0.4],
+            legacy: legacy,
+            geomodelIndices: [[5]],
+            uncovered: [9]
+        )
+        #expect(scores[9] == SpeciesRangeFilter.calibratedLegacy(0.03))
+        #expect(scores[5] == 0.4)
+    }
+
+    @Test("a model that doesn't match its label map throws rather than misreading it")
+    func mismatchedOutputs() {
+        #expect(throws: (any Error).self, "one output short of the map") {
+            try SpeciesRangeFilter.scores(
+                geomodel: [0.4], legacy: nil, geomodelIndices: [[5], [7]], uncovered: []
+            )
+        }
+        #expect(throws: (any Error).self, "one output past the map") {
+            try SpeciesRangeFilter.scores(
+                geomodel: [0.4, 0.2, 0.1], legacy: nil, geomodelIndices: [[5], [7]], uncovered: []
+            )
+        }
+        #expect(throws: (any Error).self, "a v2.4 model of the wrong size") {
+            try SpeciesRangeFilter.scores(
+                geomodel: [0.4], legacy: [0.1, 0.2], geomodelIndices: [[5]], uncovered: [9]
+            )
+        }
+    }
+
     @Test("Current's weeks are this week and one either side, wrapping")
     func currentWeeks() {
         let calendar = Calendar(identifier: .gregorian)

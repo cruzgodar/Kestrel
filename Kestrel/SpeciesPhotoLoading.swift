@@ -95,11 +95,32 @@ enum SpeciesPhotoLoading {
 final class PhotoRetrySignal {
     static let shared = PhotoRetrySignal()
 
-    private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
+    /// One suspended load: how to wake it, and the timer that will if nothing
+    /// else does first.
+    private struct Waiter {
+        let continuation: CheckedContinuation<Void, Never>
+        let timer: Task<Void, Never>
+    }
+
+    private var waiters: [UUID: Waiter] = [:]
     private let monitor = NWPathMonitor()
     private var wasOnline: Bool?
 
-    private init() {
+    /// How many loads are waiting. Read by the tests.
+    var waitingCount: Int { waiters.count }
+
+    /// Timers still asleep. Each wait's timer is stopped the moment its waiter
+    /// is woken any other way; it used to sleep out its whole delay — up to
+    /// five minutes for an unpublished species — and every foreground or
+    /// network change re-armed every waiter with another, so they piled up.
+    /// Read by the tests, which is how a timer left running shows up.
+    private(set) var sleepingTimers = 0
+
+    /// - Parameter watchesSystem: Whether the network coming back and the app
+    ///   coming to the foreground wake the waiters. Off only in tests, which
+    ///   call `fire` themselves; the handlers below reach the shared instance.
+    init(watchesSystem: Bool = true) {
+        guard watchesSystem else { return }
         monitor.pathUpdateHandler = { path in
             let online = path.status == .satisfied
             Task { @MainActor in PhotoRetrySignal.shared.pathChanged(online: online) }
@@ -122,7 +143,10 @@ final class PhotoRetrySignal {
     func fire() {
         let pending = waiters
         waiters = [:]
-        for continuation in pending.values { continuation.resume() }
+        for waiter in pending.values {
+            waiter.timer.cancel()
+            waiter.continuation.resume()
+        }
     }
 
     /// Suspends until `fire`, `delay` has passed, or the task is cancelled —
@@ -131,22 +155,28 @@ final class PhotoRetrySignal {
         let id = UUID()
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
-                waiters[id] = continuation
+                sleepingTimers += 1
+                let timer = Task { @MainActor in
+                    defer { self.sleepingTimers -= 1 }
+                    try? await Task.sleep(for: delay)
+                    // Stopped because its waiter was woken some other way.
+                    guard !Task.isCancelled else { return }
+                    self.resume(id)
+                }
+                waiters[id] = Waiter(continuation: continuation, timer: timer)
                 // Cancelled before it was registered: the handler below has
                 // already run and found nothing to resume.
                 if Task.isCancelled { resume(id) }
-                Task { @MainActor in
-                    try? await Task.sleep(for: delay)
-                    self.resume(id)
-                }
             }
         } onCancel: {
-            Task { @MainActor in PhotoRetrySignal.shared.resume(id) }
+            Task { @MainActor in self.resume(id) }
         }
     }
 
     private func resume(_ id: UUID) {
-        waiters.removeValue(forKey: id)?.resume()
+        guard let waiter = waiters.removeValue(forKey: id) else { return }
+        waiter.timer.cancel()
+        waiter.continuation.resume()
     }
 
     private func pathChanged(online: Bool) {

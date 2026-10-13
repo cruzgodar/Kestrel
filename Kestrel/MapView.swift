@@ -166,7 +166,9 @@ struct MapView: View {
         /// just to correct its date rewrote it to wherever the phone was
         /// standing and dropped a pin there, with no undo. With this off the map
         /// opens bare, Save Observation commits `nil`, and a coordinate is only
-        /// ever added by a deliberate long press.
+        /// ever added deliberately: by a long press, or by the recenter button,
+        /// which puts the pin on the user in every picker (see
+        /// `MapView.recenterOnUser`).
         var seedsCurrentLocation: Bool = true
         let onBack: () -> Void
         /// `nil` when the picker was confirmed with no pin down — see
@@ -501,14 +503,13 @@ struct MapView: View {
     /// layering correct; the content crossfades on a swap (see `MapCardSheet`),
     /// the map stays live behind it, and a tap on the empty map dismisses it.
     @State private var mapCard: MapCard?
-    /// A lone (non-clustered) pin tapped on the map *while no card is open*.
-    /// Presented full-screen from the root without a map button — there's nowhere
-    /// new to take the user.
+    /// A lone (non-clustered) pin tapped on the map. Presented full-screen from
+    /// the root without a map button — there's nowhere new to take the user. An
+    /// open card is put away as it opens; see `presentLoneBird`.
     @State private var presentedSinglePoint: PinnedBird?
     /// A full-screen photo presented from *inside* the open card's sheet (so it
-    /// appears instantly, with no wait for the sheet to dismiss): either a bird
-    /// tapped in a cluster grid (`.pinpoint`, keeps the card) or a lone pin
-    /// tapped on the map while a card is open (`.lone`, closes the card on exit).
+    /// appears instantly, with no wait for the sheet to dismiss): a bird tapped
+    /// in a cluster grid, which returns to the card when closed.
     @State private var sheetPhoto: MapSheetPhoto?
     /// When an annotation was last tapped. The map's own tap-to-dismiss gesture
     /// recognizes simultaneously (so it isn't delayed waiting for double-tap), so
@@ -790,7 +791,13 @@ struct MapView: View {
                                 if !handled { handleAnnotationTap(rep, fromTap: false) }
                                 return
                             }
-                            guard mapCard != nil else { return }
+                            // An annotation's own tap that landed outside the
+                            // footprint above — a lone bird's name label runs
+                            // wider than its thumbnail. That tap has already
+                            // done whatever it meant to, card included (see
+                            // `presentLoneBird`); dismissing here as well
+                            // would undo a card it had just opened.
+                            guard !handled, mapCard != nil else { return }
                             mapCard = nil
                         }
                     }
@@ -1026,11 +1033,6 @@ struct MapView: View {
                     navigator?.focus(
                         latitude: coordinate.latitude, longitude: coordinate.longitude
                     )
-                },
-                onLoneDismissed: {
-                    // The lone-bird photo opened over the card was dismissed —
-                    // put the card away instead of returning to it.
-                    mapCard = nil
                 }
             )
         }
@@ -1159,11 +1161,19 @@ struct MapView: View {
     /// Puts the camera back on the user, at a neighborhood-sized span. The
     /// recenter bar button's action. In the picker it moves the pin there too:
     /// recentering is how a picked place is put back to "here".
+    ///
+    /// In *every* picker, on purpose — the add flow and the edit flow as well
+    /// as the Targets tab, whose "follow me again" this is. So recenter is the
+    /// one thing besides a long press that puts a pin down, including on an
+    /// edit of a sighting recorded without coordinates (see
+    /// `LocationPicker.seedsCurrentLocation`). The pin moving is in plain
+    /// sight, and Back leaves the sighting as it was.
     private func recenterOnUser() {
         Task {
             guard let coord = await LocationCache.shared.current() else { return }
             cameraClaimed = true
             focusRequest = nil
+            // Deliberately not limited to the Targets picker — see above.
             if picker != nil {
                 dropPin(at: CLLocationCoordinate2D(latitude: coord.latitude, longitude: coord.longitude))
             }
@@ -1312,16 +1322,7 @@ struct MapView: View {
                 cluster.uniqueByEarliest.first ?? tappedInfo.representative,
                 in: cluster
             )
-            if mapCard != nil {
-                // A card is already open. Present the photo from the *sheet's own*
-                // context so it appears instantly — a root cover would have to wait for
-                // the sheet to finish dismissing first. The card is closed when this
-                // photo is dismissed (see MapCardSheet).
-                sheetPhoto = .lone(bird)
-            } else {
-                // No card open: present full-screen from the root (nothing to wait on).
-                presentedSinglePoint = bird
-            }
+            presentLoneBird(bird)
         }
     }
 
@@ -1344,14 +1345,31 @@ struct MapView: View {
             store: store,
             sightings: bird.sightings,
             actions: actions,
-            onViewImage: {
-                if mapCard != nil {
-                    sheetPhoto = .lone(bird)
-                } else {
-                    presentedSinglePoint = bird
-                }
-            }
+            onViewImage: { presentLoneBird(bird) }
         )
+    }
+
+    /// Opens a lone bird's photo full-screen, from the root — and, when a card
+    /// is open, puts the card away in the same moment, so it is already gone
+    /// when the photo is closed.
+    ///
+    /// The photo used to be presented from *inside* the card's sheet instead,
+    /// and the card closed only once the photo had been: a cover can't outlive
+    /// the sheet that presented it, so the card had to wait out the photo and
+    /// then slide away on its own, a second animation after the first.
+    ///
+    /// The card goes without its animation, which is what lets the photo open
+    /// at once: a cover presented from the root while the card is still
+    /// sliding away waits for the slide to finish, and an animated close is
+    /// exactly what made presenting from the root slow before. Nothing is lost
+    /// by it — the photo rises over the spot the card occupied.
+    private func presentLoneBird(_ bird: PinnedBird) {
+        if mapCard != nil {
+            var instant = Transaction()
+            instant.disablesAnimations = true
+            withTransaction(instant) { mapCard = nil }
+        }
+        presentedSinglePoint = bird
     }
 
     /// Record the live camera every frame (continuous callback). Mutates only the
@@ -2299,20 +2317,16 @@ private struct MapCardSheet: View {
     let columnCount: Int?
     /// Full-screen photo presented from *this sheet's* context (not the root) so
     /// it doesn't collide with the sheet's own presentation — that's what makes
-    /// it open instantly over the card. `.pinpoint` carries the map button and
-    /// returns to the card; `.lone` has no button and closes the card on exit.
+    /// it open instantly over the card, which it returns to when closed. A lone
+    /// pin tapped on the map while the card is open is not presented here: it
+    /// puts the card away — see `MapView.presentLoneBird`.
     @Binding var photo: MapSheetPhoto?
     /// "Pinpoint on Map" for a bird tapped inside a cluster card. Takes a bare
     /// coordinate rather than a `MapPoint` so the viewer can pinpoint a sighting
     /// it has *edited* — whose coordinate no longer matches any point this card
     /// was built from.
     let onPinpoint: (CLLocationCoordinate2D) -> Void
-    /// The lone-bird photo (opened over a card) was dismissed.
-    let onLoneDismissed: () -> Void
 
-    /// Whether dismissing the current photo should also close the card. Tracked
-    /// here because `onDismiss` can't read the (already-cleared) `photo` item.
-    @State private var closeCardOnPhotoDismiss = false
     /// Add / edit / delete started from a grid cell's haptic-touch menu. Hosted
     /// here rather than on the map so its presentations layer over the card
     /// instead of making it leave first.
@@ -2416,23 +2430,7 @@ private struct MapCardSheet: View {
         // Keep the map interactive (and undimmed) behind the card — this is what
         // lets you open other things from the card and tap the map to dismiss.
         .presentationBackgroundInteraction(.enabled(upThrough: .medium))
-        // Remember (before the item clears) whether to close the card on exit.
-        .onChange(of: photo) { _, newValue in
-            switch newValue {
-            case .lone:     closeCardOnPhotoDismiss = true
-            case .pinpoint: closeCardOnPhotoDismiss = false
-            case .none:     break   // keep the flag for onDismiss to read
-            }
-        }
-        .fullScreenCover(
-            item: $photo,
-            onDismiss: {
-                if closeCardOnPhotoDismiss {
-                    closeCardOnPhotoDismiss = false
-                    onLoneDismissed()
-                }
-            }
-        ) { photo in
+        .fullScreenCover(item: $photo) { photo in
             switch photo {
             case .pinpoint(let birds, let startIndex):
                 // Swipe between the birds in this card; the place-name tap
@@ -2472,18 +2470,6 @@ private struct MapCardSheet: View {
                     }
                 )
                 // Re-inject the store so the viewer's star toggle resolves it.
-                .environment(store)
-            case .lone(let bird):
-                // A lone pin tapped while a card was open — nothing to swipe to.
-                SpeciesPhotoFullScreen(
-                    items: [SpeciesPhotoItem(
-                        scientificName: bird.point.scientificName,
-                        placeName: bird.point.location,
-                        dateFound: bird.point.date,
-                        observation: bird.point.observation,
-                        pinnedSightings: bird.sightings
-                    )]
-                )
                 .environment(store)
             }
         }
@@ -2608,16 +2594,17 @@ private struct SheetTopCornerRadiusReader: UIViewRepresentable {
 
 /// A full-screen photo presented from within an open map card's sheet.
 ///
-/// Both cases carry `PinnedBird`s rather than bare `MapPoint`s, so the viewer's
-/// Edit and Delete know how many sightings the thumbnail they were opened from
-/// stands for — see `PinnedBird`.
+/// Carries `PinnedBird`s rather than bare `MapPoint`s, so the viewer's Edit and
+/// Delete know how many sightings the thumbnail they were opened from stands
+/// for — see `PinnedBird`.
+///
+/// There used to be a second case, for a lone pin tapped on the map while a
+/// card was open. That photo is now presented from the root, with the card put
+/// away in the same moment — see `MapView.presentLoneBird`.
 private enum MapSheetPhoto: Identifiable, Equatable {
     /// Birds in a cluster grid — opens the viewer over all of them (swipeable),
     /// starting on `index`. Shows "Pinpoint on Map"; keeps the card.
     case pinpoint(birds: [PinnedBird], index: Int)
-    /// A lone pin tapped on the map while a card was open — no button; closes
-    /// the card when dismissed.
-    case lone(PinnedBird)
 
     /// Distinct per *bird*, not just per cluster: the index is part of the
     /// identity because two cells of one card produce the same birds array and
@@ -2627,8 +2614,6 @@ private enum MapSheetPhoto: Identifiable, Equatable {
         switch self {
         case .pinpoint(let birds, let index):
             return "pinpoint-\(birds.first?.id ?? "")-\(birds.count)-\(index)"
-        case .lone(let bird):
-            return "lone-" + bird.id
         }
     }
 }

@@ -78,8 +78,9 @@ struct HalfScreenSpeciesView: View {
     /// the new one in over it is the dissolve that was wanted, and it does not
     /// depend on a hosted `UIPageViewController` honouring a removal
     /// transition.
-    @State private var current: PaneSlot?
-    @State private var outgoing: PaneSlot?
+    @State private var slots = PaneSlots()
+    private var current: PaneSlot? { slots.current }
+    private var outgoing: PaneSlot? { slots.outgoing }
     /// The incoming pager's opacity, animated from 0 to 1 across a crossfade.
     @State private var incomingOpacity: Double = 1
     /// The outgoing pager's, animated 1 to 0 when there is nothing coming in
@@ -615,19 +616,20 @@ struct HalfScreenSpeciesView: View {
         // full-resolution swap is free to land as soon as it arrives.
         paging.opened = true
 
-        guard current != nil else {
+        guard let leaving = slots.show(slot) else {
             // First bird of the session: nothing to dissolve out of.
-            current = slot
             incomingOpacity = 1
             return
         }
-        outgoing = current
-        current = slot
+        // Held at full strength underneath. It can be partway through a
+        // clear's fade-out if a bird lands moments after the pane emptied.
+        outgoingOpacity = 1
         incomingOpacity = 0
         withAnimation(.easeInOut(duration: Self.crossfade)) {
             incomingOpacity = 1
         } completion: {
-            outgoing = nil
+            // Only if it is still the one underneath — see `PaneSlots.finish`.
+            slots.finish(leaving)
         }
     }
 }
@@ -703,9 +705,7 @@ private struct PaneWash: View {
 /// because there is no incoming picture to fade *in* over the outgoing one.
 private extension HalfScreenSpeciesView {
     func clear() {
-        guard current != nil else { return }
-        outgoing = current
-        current = nil
+        guard let leaving = slots.clear() else { return }
         pagedIndex = 0
         swipe.from = 0
         swipe.fraction = 0
@@ -715,8 +715,10 @@ private extension HalfScreenSpeciesView {
         withAnimation(.easeInOut(duration: Self.crossfade)) {
             outgoingOpacity = 0
         } completion: {
-            outgoing = nil
-            outgoingOpacity = 1
+            // Restored only along with the slot it faded. A dissolve started
+            // since has put another picture underneath, at the full strength
+            // it set; resetting now would pop a fade of its own.
+            if slots.finish(leaving) { outgoingOpacity = 1 }
         }
     }
 }
@@ -725,8 +727,51 @@ private extension HalfScreenSpeciesView {
 ///
 /// Identified per mount rather than per bird, so putting the same bird back on
 /// the pane still counts as a new picture to dissolve to.
-private struct PaneSlot: Identifiable, Equatable {
+struct PaneSlot: Identifiable, Equatable {
     let id: Int
     let names: [String]
     let index: Int
+}
+
+/// The pane's two mounted pagers — the one on show, and the one it is
+/// dissolving out of — and the rule for when the second is let go.
+///
+/// A dissolve ends by retiring the slot it faded out of. It used to retire
+/// whatever was underneath *at the end*, which is only the same slot when
+/// nothing else happened in the meantime: a second bird landing inside the
+/// first dissolve's 0.16s put the first incoming picture underneath, the first
+/// dissolve's completion then took it away mid-fade, and the pane blinked. So
+/// each dissolve hands back the slot it is leaving, and `finish` lets go of
+/// that slot only.
+struct PaneSlots {
+    private(set) var current: PaneSlot?
+    private(set) var outgoing: PaneSlot?
+
+    /// Puts `slot` on show. Returns the slot it dissolves out of, now held
+    /// underneath — or `nil` when nothing was on show, in which case there is
+    /// nothing to dissolve and whatever a clear left fading stays as it is.
+    mutating func show(_ slot: PaneSlot) -> PaneSlot? {
+        let leaving = current
+        if let leaving { outgoing = leaving }
+        current = slot
+        return leaving
+    }
+
+    /// Takes the slot on show off, to fade out underneath nothing. Returns it,
+    /// or `nil` when there was nothing on show.
+    mutating func clear() -> PaneSlot? {
+        guard let leaving = current else { return nil }
+        outgoing = leaving
+        current = nil
+        return leaving
+    }
+
+    /// A dissolve out of `leaving` has finished. Lets it go if it is still the
+    /// one underneath, and says whether it was.
+    @discardableResult
+    mutating func finish(_ leaving: PaneSlot) -> Bool {
+        guard outgoing?.id == leaving.id else { return false }
+        outgoing = nil
+        return true
+    }
 }

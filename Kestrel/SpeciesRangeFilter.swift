@@ -74,19 +74,32 @@ actor SpeciesRangeFilter {
               let indexText = try? String(contentsOf: indexURL, encoding: .utf8) else {
             throw NSError(domain: "SpeciesRangeFilter", code: 1, userInfo: [NSLocalizedDescriptionKey: "geomodel index missing"])
         }
-        // Not split on newlines with `omittingEmptySubsequences`: an empty line
-        // is an output that maps to nothing, and dropping it would shift every
-        // output after it.
-        let rows = indexText.components(separatedBy: "\n")
-        let indices = rows.dropLast(rows.last == "" ? 1 : 0).map { row in
-            row.split(separator: ",").compactMap { Int($0) }
-        }
+        let indices = try Self.parseGeomodelIndex(indexText)
         self.env = env
         self.geomodel = try Self.load("geomodel_v3", env: env)
         self.legacy = try? Self.load("birdnet_data_model", env: env)
         self.geomodelIndices = indices
         let covered = Set(indices.joined())
         self.uncovered = (0..<Self.speciesCount).filter { !covered.contains($0) }
+    }
+
+    /// `geomodel_birdnet_index.txt`, read: one row per geomodel output, each
+    /// the catalog indices that output counts for.
+    ///
+    /// Not split on newlines with `omittingEmptySubsequences`: an empty line
+    /// is an output that maps to nothing, and dropping it would shift every
+    /// output after it. Throws on an index outside the catalog, which would
+    /// otherwise be a crash on the first run rather than a filter that can't
+    /// load — and a filter that can't load falls back to the offline grid.
+    nonisolated static func parseGeomodelIndex(_ text: String) throws -> [[Int]] {
+        let rows = text.components(separatedBy: "\n")
+        let indices = rows.dropLast(rows.last == "" ? 1 : 0).map { row in
+            row.split(separator: ",").compactMap { Int($0) }
+        }
+        guard indices.joined().allSatisfy({ (0..<speciesCount).contains($0) }) else {
+            throw NSError(domain: "SpeciesRangeFilter", code: 3, userInfo: [NSLocalizedDescriptionKey: "geomodel index names a label outside the catalog"])
+        }
+        return indices
     }
 
     private static func load(_ name: String, env: ORTEnv) throws -> Model {
@@ -174,18 +187,47 @@ actor SpeciesRangeFilter {
         guard !weeks.isEmpty else { return [] }
         let geo = try Self.run(geomodel, lat: lat, lon: lon, weeks: weeks)
         let old = try legacy.map { try Self.run($0, lat: lat, lon: lon, weeks: weeks) }
-        return weeks.indices.map { w in
-            var scores = [Float](repeating: 0, count: Self.speciesCount)
-            for (output, indices) in geomodelIndices.enumerated() where !indices.isEmpty {
-                let p = geo[w][output]
-                // A lump: the label takes its likeliest daughter species.
-                for index in indices where p > scores[index] { scores[index] = p }
-            }
-            if let old {
-                for index in uncovered { scores[index] = Self.calibratedLegacy(old[w][index]) }
-            }
-            return scores
+        return try weeks.indices.map { w in
+            try Self.scores(
+                geomodel: geo[w],
+                legacy: old?[w],
+                geomodelIndices: geomodelIndices,
+                uncovered: uncovered
+            )
         }
+    }
+
+    /// One week's scores, one per catalog index, from one week of each model's
+    /// output.
+    ///
+    /// Checks the outputs against what they are about to be indexed by. The
+    /// label map and the model ship together, but nothing ties them together
+    /// beyond that: a model swapped without its map would put every species on
+    /// a neighbour's score at best and index past the end at worst. The
+    /// mismatch throws instead, which the recording filter answers from the
+    /// offline grid and the Targets tab from the same.
+    nonisolated static func scores(
+        geomodel: [Float],
+        legacy: [Float]?,
+        geomodelIndices: [[Int]],
+        uncovered: [Int]
+    ) throws -> [Float] {
+        guard geomodel.count == geomodelIndices.count else {
+            throw NSError(domain: "SpeciesRangeFilter", code: 4, userInfo: [NSLocalizedDescriptionKey: "geomodel has \(geomodel.count) outputs; its index has \(geomodelIndices.count) rows"])
+        }
+        if let legacy, legacy.count != speciesCount {
+            throw NSError(domain: "SpeciesRangeFilter", code: 4, userInfo: [NSLocalizedDescriptionKey: "v2.4 model has \(legacy.count) outputs, not \(speciesCount)"])
+        }
+        var scores = [Float](repeating: 0, count: speciesCount)
+        for (output, indices) in geomodelIndices.enumerated() where !indices.isEmpty {
+            let p = geomodel[output]
+            // A lump: the label takes its likeliest daughter species.
+            for index in indices where p > scores[index] { scores[index] = p }
+        }
+        if let legacy {
+            for index in uncovered { scores[index] = calibratedLegacy(legacy[index]) }
+        }
+        return scores
     }
 
     /// Maps a v2.4 score onto the geomodel's scale, so the two can share

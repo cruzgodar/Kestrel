@@ -16,7 +16,11 @@ import SwiftUI
 /// display — never reaches it and is laid out exactly as it was before.
 enum ReadableWidth {
     /// Roughly the measure of a page of prose.
-    static let cap: CGFloat = 450
+    ///
+    /// `nonisolated` because the two functions below are: under the project's
+    /// main-actor default a plain `static let` is main-actor isolated, and
+    /// reading it from them is an error in the Swift 6 language mode.
+    nonisolated static let cap: CGFloat = 450
 
     /// The **scroll-content margin** that puts a `cap`-wide column in the
     /// middle of the display, or `nil` where the column already fits and the

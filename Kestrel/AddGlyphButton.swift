@@ -21,6 +21,12 @@ import SwiftUI
 /// anchored to the button — whether the bird was seen here and now. Yes runs
 /// `hereAndNow`, which can file the sighting without opening anything; no
 /// runs `action`, the full when → where → name flow.
+///
+/// The question is only asked where the device's location is established
+/// (`ObservationDraft.canAskHereAndNow`). Anywhere else — a fix still loading,
+/// location not granted, or nothing but a watch fix that has gone stale — the
+/// tap goes straight to `action`, as a "no" would, rather than asking a
+/// question whose "yes" could not be acted on.
 struct AddGlyphButton: View {
     /// True once the species is on the life list — swaps the plus for a
     /// checkmark and retires the button's tap.
@@ -28,20 +34,29 @@ struct AddGlyphButton: View {
     /// Diameter of the glass circle. Row-sized by default; the glyph scales with
     /// it so a larger button stays proportioned.
     var size: CGFloat = 32
-    /// The "yes" answer to "did you see this bird here and now?". `nil` skips
-    /// the question and goes straight to `action`.
-    var hereAndNow: (() async -> Void)? = nil
+    /// The "yes" answer to "did you see this bird here and now?", handed the
+    /// moment the question was asked — see `ObservationDraft.fileHereAndNow`.
+    /// `nil` skips the question and goes straight to `action`.
+    var hereAndNow: ((_ askedAt: Date) async -> Void)? = nil
     let action: () -> Void
 
     @State private var isAsking = false
-    /// True while `hereAndNow` runs. Finding where the device is can take a
-    /// few seconds, and a button that did nothing for that long would read as
-    /// a tap that missed.
+    /// When the question went up, which is what "here and now" refers to.
+    @State private var askedAt = Date()
+    /// True while `hereAndNow` runs. Refreshing a stale fix can take a moment,
+    /// and a button that did nothing for that long would read as a tap that
+    /// missed.
     @State private var isFiling = false
 
     var body: some View {
         Button {
-            if hereAndNow == nil { action() } else { isAsking = true }
+            guard hereAndNow != nil, ObservationDraft.canAskHereAndNow() else {
+                action()
+                return
+            }
+            askedAt = Date()
+            ObservationDraft.prepareHereAndNow()
+            isAsking = true
         } label: {
             ZStack {
                 if isFiling {
@@ -80,8 +95,9 @@ struct AddGlyphButton: View {
             Button("Yes") {
                 guard let hereAndNow else { return }
                 isFiling = true
+                let askedAt = askedAt
                 Task {
-                    await hereAndNow()
+                    await hereAndNow(askedAt)
                     isFiling = false
                 }
             }

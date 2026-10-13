@@ -86,51 +86,144 @@ struct ObservationDraft: Identifiable {
     /// Ten miles. A sighting filed here and now goes straight onto the list
     /// under the nearest place already named, as long as that place is within
     /// this; any farther and the user is asked what to call where they are.
-    static let hereAndNowReuseRadius: CLLocationDistance = 16_093.44
+    nonisolated static let hereAndNowReuseRadius: CLLocationDistance = 16_093.44
+
+    /// Whether this phone may use its own location: granted, never prompted
+    /// for. Every here-and-now check reads it rather than asking, the same rule
+    /// the map picker's seed follows.
+    static var locationAuthorized: Bool {
+        let status = CLLocationManager().authorizationStatus
+        return status == .authorizedWhenInUse || status == .authorizedAlways
+    }
+
+    /// Whether an add button may ask "did you see this bird here and now?" at
+    /// all. When it may not, the button skips the question and goes straight
+    /// to the ordinary when → where → name flow.
+    ///
+    /// The question is only worth asking where a "yes" can be acted on: a
+    /// "yes" that then had to wait seconds on a fix, or turned out to have no
+    /// fix to file at, put a question in front of the same flow "no" opens.
+    /// So it is asked only where the location is established already — see
+    /// `hereAndNowIsAvailable` for exactly what that means.
+    ///
+    /// - Parameters:
+    ///   - cache: `nil` (the default) means `LocationCache.shared`.
+    ///   - authorized: `nil` (the default) means `locationAuthorized`.
+    ///
+    ///   Optional rather than defaulting to those two directly because a
+    ///   default argument is evaluated off the main actor, where neither can be
+    ///   read — the same shape `LocationCache.init` takes for the same reason.
+    static func canAskHereAndNow(
+        cache: LocationCache? = nil,
+        authorized: Bool? = nil,
+        now: Date = Date()
+    ) -> Bool {
+        let cache = cache ?? .shared
+        return hereAndNowIsAvailable(
+            phoneAuthorized: authorized ?? locationAuthorized,
+            hasFix: cache.lastCoordinate != nil,
+            fixIsFresh: cache.isFresh(at: now)
+        )
+    }
+
+    /// The rule behind `canAskHereAndNow`: a fix inside
+    /// `LocationCache.freshness`, from wherever it came — or, on a phone that
+    /// may use its own location, any fix at all, since a "yes" can refresh it.
+    ///
+    /// That leaves out the three cases with nothing to file at:
+    ///
+    /// - **Still loading** — the phone may look, but no fix has landed yet.
+    /// - **Not granted** — the phone may not look, and has nothing fresh from
+    ///   anywhere else.
+    /// - **A stale watch fix** — the watch sends its coordinate once, when its
+    ///   session starts, and the phone may not look for a newer one.
+    ///
+    /// A watch fix still inside the window counts, with or without the
+    /// phone's permission.
+    nonisolated static func hereAndNowIsAvailable(
+        phoneAuthorized: Bool,
+        hasFix: Bool,
+        fixIsFresh: Bool
+    ) -> Bool {
+        fixIsFresh || (phoneAuthorized && hasFix)
+    }
+
+    /// Run as the question goes up: a phone whose fix has gone stale starts
+    /// refreshing it now, so the answer usually finds a current one waiting
+    /// rather than waiting on it. `LocationCache` joins the answer's own
+    /// request to this one. Parameters as for `canAskHereAndNow`.
+    static func prepareHereAndNow(
+        cache: LocationCache? = nil,
+        authorized: Bool? = nil
+    ) {
+        let cache = cache ?? .shared
+        guard authorized ?? locationAuthorized, !cache.isFresh() else { return }
+        Task { _ = await cache.current() }
+    }
+
+    /// The place name a here-and-now sighting is filed under outright, or
+    /// `nil` when the user is to be asked what to call where they are.
+    ///
+    /// Only a place within `hereAndNowReuseRadius`. Past that the nearest name
+    /// is not offered even as a suggestion: it can be anywhere at all — on a
+    /// trip, the home patch a thousand miles away — and a name pre-filled in
+    /// the field wins over the town the naming step would otherwise look up
+    /// (see `ObservationNameSheet.initialName`), so one tap would file the
+    /// sighting under it.
+    nonisolated static func hereAndNowPlace(
+        nearest: (name: String, distance: CLLocationDistance)?
+    ) -> String? {
+        guard let nearest, nearest.distance <= hereAndNowReuseRadius else { return nil }
+        return nearest.name
+    }
 
     /// Files a sighting of `scientificName` at the device's current location,
     /// today — the "yes" answer to an add button's "did you see this bird here
-    /// and now?".
+    /// and now?", asked at `askedAt`.
     ///
     /// With a named place within `hereAndNowReuseRadius` the sighting is
     /// written outright under that name and this returns `nil`. Otherwise it
     /// returns the draft to present: a here-and-now draft that opens on the
-    /// naming step, pre-filled with the nearest place name however far away it
-    /// is — or, when there is no current fix to file it at, the ordinary
-    /// when → where → name flow.
+    /// naming step with nothing pre-filled, so the step suggests a name of its
+    /// own (see `hereAndNowPlace`) — or, when there turns out to be no current
+    /// fix to file it at after all, the ordinary when → where → name flow.
     ///
-    /// "Current" means a fix inside `LocationCache.freshness`. The cache's own
-    /// fallback to an older coordinate is right for a map's default pin, which
-    /// the user can see and move, and wrong here, where nothing is shown before
-    /// the sighting is written. A watch session's fix counts: the watch feeds
-    /// its own coordinate into the cache, with or without the phone's location
-    /// permission.
+    /// "Current" means a fix inside `LocationCache.freshness` *as of the
+    /// question*, or one that has landed since. The cache's own fallback to an
+    /// older coordinate is right for a map's default pin, which the user can
+    /// see and move, and wrong here, where nothing is shown before the sighting
+    /// is written. Measured from the question rather than the answer because
+    /// the "yes" vouches for where the user was when they were asked: a watch
+    /// fix that was current when the question went up still is, however long
+    /// the answer took.
+    ///
+    /// The ordinary flow is only reached when a refresh this started fails,
+    /// since the question is asked only where a fix is established (see
+    /// `canAskHereAndNow`). `cache` and `authorized` as for that function.
     static func fileHereAndNow(
         scientificName: String,
         commonName: String,
-        store: LifeListStore
+        askedAt: Date,
+        store: LifeListStore,
+        cache: LocationCache? = nil,
+        authorized: Bool? = nil
     ) async -> ObservationDraft? {
         let fallback = ObservationDraft.adding(scientificName: scientificName, commonName: commonName)
-        let cache = LocationCache.shared
-        if !cache.isFresh() {
-            // Never prompts — the same rule the map picker's seed follows. A
-            // phone that has never been granted location just takes the
-            // ordinary flow.
-            let status = CLLocationManager().authorizationStatus
-            guard status == .authorizedWhenInUse || status == .authorizedAlways else {
-                return fallback
-            }
+        let cache = cache ?? .shared
+        // Never prompts. A phone without permission files at whatever the watch
+        // supplied, or not at all.
+        if !cache.isFresh(at: askedAt), authorized ?? locationAuthorized {
             _ = await cache.current()
         }
-        guard cache.isFresh(), let fix = cache.lastCoordinate else { return fallback }
+        guard cache.isFresh(at: askedAt), let fix = cache.lastCoordinate else { return fallback }
         let coordinate = CLLocationCoordinate2D(latitude: fix.latitude, longitude: fix.longitude)
         let nearest = await store.nearestObservationPlace(to: coordinate)
-        if let nearest, nearest.distance <= hereAndNowReuseRadius {
+        if let name = hereAndNowPlace(nearest: nearest) {
             store.recordObservation(
                 scientificName: scientificName,
                 commonName: commonName,
                 date: ObservationDate.today,
-                location: nearest.name,
+                location: name,
                 latitude: coordinate.latitude,
                 longitude: coordinate.longitude
             )
@@ -141,7 +234,6 @@ struct ObservationDraft: Identifiable {
         }
         var draft = fallback
         draft.coordinate = coordinate
-        draft.placeName = nearest?.name
         draft.isHereAndNow = true
         return draft
     }
@@ -684,6 +776,12 @@ final class ObservationActions {
     var choice: ObservationChoice?
     /// A sighting awaiting its delete confirmation.
     var pendingDelete: PendingObservationDelete?
+
+    /// Whether any of the three is underway — a sheet or an alert is up, or on
+    /// its way. Something that finishes asynchronously checks this before
+    /// starting one of its own, so it never lands on top of a flow the user
+    /// opened in the meantime.
+    var isBusy: Bool { draft != nil || choice != nil || pendingDelete != nil }
 
     /// A sighting a host might still be holding → the record that stands in its
     /// place now.
