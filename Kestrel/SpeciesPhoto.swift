@@ -95,6 +95,7 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
                             speciesPhotoCredit(attr)
                         }
                     }
+                    .transition(.opacity)
             } else {
                 placeholder()
                     .environment(
@@ -140,7 +141,7 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
                 } else if store.isPhotographed(scientificName),
                           let thumb = await store.thumbnailImage(for: scientificName) {
                     guard !Task.isCancelled else { return }
-                    image = thumb
+                    reveal(thumb)
                 }
                 let medium = await SpeciesPhotoLoading.load(scientificName, phase: { phase in
                     // The thumbnail stays up while the medium image is retried.
@@ -149,7 +150,7 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
                     await store.image(for: scientificName)
                 }
                 guard !Task.isCancelled, let medium else { return }
-                image = medium
+                reveal(medium)
                 return
             }
 
@@ -168,8 +169,20 @@ private struct RemoteSpeciesImage<Placeholder: View>: View {
             }
             guard !Task.isCancelled, let loaded else { return }
             unpublished = false
-            image = loaded
+            reveal(loaded)
         }
+    }
+
+    /// Shows a photo that had to be waited for, fading it in over the
+    /// placeholder. A photo replacing another — the progressive upgrade from
+    /// thumbnail to medium — swaps in place, and memory hits are set directly
+    /// so they never fade at all.
+    private func reveal(_ loaded: UIImage) {
+        guard image == nil else {
+            image = loaded
+            return
+        }
+        withAnimation(.linear(duration: speciesPhotoFadeIn)) { image = loaded }
     }
 
     private struct LoadID: Hashable {
@@ -204,6 +217,9 @@ private struct PresentPhotoOnTap: ViewModifier {
 }
 
 // MARK: - Shared rendering helpers (used by both sources)
+
+/// How long a species photo takes to fade in once it has loaded.
+let speciesPhotoFadeIn: Double = 0.1
 
 func speciesPhotoFill(_ image: Image) -> some View {
     image

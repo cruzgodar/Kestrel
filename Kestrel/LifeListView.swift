@@ -184,14 +184,17 @@ struct LifeListView: View {
     /// Membership is read live from the store, so a bird added from here drops
     /// out on the same frame its sighting is written.
     ///
-    /// The search narrows the place's birds and nothing more: it matches the
-    /// way the Life List's does, keeps the sort's order, and suggests nothing
-    /// from outside the place.
+    /// The search matches the way the Life List's does and keeps the sort's
+    /// order. It is looking for a bird, found or not, so it always includes
+    /// the life list's; and for the current month it also searches the birds
+    /// the place has at other times of year, which follow the rest under a
+    /// heading of their own. Nothing from outside the place is suggested.
     private func targetRows(_ targets: TargetsModel) -> [SearchRow] {
         guard let species = targets.sortedSpecies else { return [] }
         let lookup = lifeListLookup
         let needle = trimmedSearch.lowercased()
-        return species.compactMap { bird in
+        let includesLifeList = targets.includesLifeList || !needle.isEmpty
+        func row(_ bird: TargetsModel.AreaSpecies) -> SearchRow? {
             if !needle.isEmpty {
                 let hay = "\(bird.commonName) \(bird.scientificName)".lowercased()
                 guard Self.scoreMatch(hay, needle: needle, allowFuzzy: needle.count >= 3) != nil else {
@@ -199,10 +202,19 @@ struct LifeListView: View {
                 }
             }
             if let entry = lookup(bird) {
-                return targets.includesLifeList ? .existing(entry) : nil
+                return includesLifeList ? .existing(entry) : nil
             }
             return .suggestion(scientificName: bird.scientificName, commonName: bird.commonName)
         }
+        let now = species.compactMap(row)
+        guard !needle.isEmpty, targets.listSeason == .current,
+              let yearRound = targets.sortedYearRoundSpecies else { return now }
+        let expectedNow = Set(species.map(\.scientificName))
+        let otherTimes = yearRound
+            .filter { !expectedNow.contains($0.scientificName) }
+            .compactMap(row)
+        guard !otherTimes.isEmpty else { return now }
+        return now + [.header("Not found \(targetsPlace(targets)) this time of year")] + otherTimes
     }
 
     /// Finds a target's life-list entry. By common name as well as scientific,
@@ -537,12 +549,12 @@ struct LifeListView: View {
             .ignoresSafeArea(.container, edges: .bottom)
             .allowsHitTesting(searchFieldTop > 0)
         }
-        // On the Targets tab the field only narrows the place's birds — see
+        // On the Targets tab the field only searches the place's birds — see
         // `targetRows` — so it doesn't offer to add anything.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             BottomSearchField(
                 text: $searchText,
-                prompt: targets == nil ? "Search or add species" : "Search species",
+                prompt: targets.map(targetsSearchPrompt) ?? "Search or add species",
                 horizontalInset: Self.searchFieldHorizontalInset,
                 // The chooser counts too: an edit started from it runs the same
                 // date → map → name flow, but out of that sheet's own draft
@@ -851,7 +863,11 @@ struct LifeListView: View {
                         Text(title)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.secondary)
-                            .padding(.top, 4)
+                            // Targets: 32pt up to the birds above and 16pt
+                            // down to the ones below, with the stack's own
+                            // spacing.
+                            .padding(.top, targets == nil ? 4 : 32 - Self.gridSpacing)
+                            .padding(.bottom, targets == nil ? 0 : 16 - Self.gridSpacing)
                     }
                     LazyVGrid(
                         columns: gridColumns,
@@ -1405,10 +1421,21 @@ struct LifeListView: View {
     /// "in Ithaca" for Any Time of Year. A place whose name hasn't come back
     /// (offline) is "nearby" or "here".
     private func targetsWhereAndWhen(_ targets: TargetsModel) -> String {
-        let place = targets.placeName.map { "in \($0)" }
-            ?? (targets.listFollowsUser ? "nearby" : "here")
         let when = targets.listMonthName.map { " in \($0)" } ?? ""
-        return "\(place)\(when)"
+        return "\(targetsPlace(targets))\(when)"
+    }
+
+    /// Where the Targets list is for — "in Ithaca", or "nearby" or "here"
+    /// while the place's name hasn't come back (offline).
+    private func targetsPlace(_ targets: TargetsModel) -> String {
+        targets.placeName.map { "in \($0)" }
+            ?? (targets.listFollowsUser ? "nearby" : "here")
+    }
+
+    /// The Targets search field's placeholder, naming the place it searches.
+    private func targetsSearchPrompt(_ targets: TargetsModel) -> String {
+        targets.placeName.map { "Search \($0) species" }
+            ?? (targets.listFollowsUser ? "Search nearby species" : "Search species")
     }
 
     /// The Targets tab's line under its title: how many of the place's birds
@@ -1437,7 +1464,7 @@ struct LifeListView: View {
             } description: {
                 Text("Tap the location button above to choose another place.")
             }
-        } else if !targets.includesLifeList,
+        } else if !targets.includesLifeList, trimmedSearch.isEmpty,
                   let counts = targetCounts(targets), counts.found == counts.total {
             // Every bird here is on the life list: the grid is empty under
             // its "0 species left to find" heading.

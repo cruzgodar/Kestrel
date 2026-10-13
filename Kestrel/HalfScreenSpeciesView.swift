@@ -365,6 +365,11 @@ struct HalfScreenSpeciesView: View {
             guard let size, size.height > 0 else { return }
             photoAspect = size.width / size.height
         }
+        // Then the birds either side of it, as the viewer does.
+        .task(id: shown) {
+            guard let names = current?.names else { return }
+            await SpeciesPhotoLoading.prefetchNeighbors(of: names, at: pagedIndex)
+        }
         .accessibilityElement(children: .contain)
         .accessibilityLabel(shown.map { "Photo of \(commonName(for: $0))" } ?? "No bird heard yet")
     }

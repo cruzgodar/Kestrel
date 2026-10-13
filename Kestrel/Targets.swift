@@ -122,9 +122,25 @@ final class TargetsModel {
         didSet { UserDefaults.standard.set(sort.rawValue, forKey: Self.sortKey) }
     }
 
+    /// Every bird the location models expect at the list's place at any time
+    /// of year, ranked the same way. Searched alongside `species`, so a bird
+    /// that is only around in another season still turns up — under its own
+    /// heading. The same list as `species` for Any Time of Year; `nil` until it
+    /// has been worked out, which happens after `species` lands so the list on
+    /// screen never waits on it.
+    private(set) var yearRoundSpecies: [AreaSpecies]?
+
     /// `species` in the order the sort menu asks for.
     var sortedSpecies: [AreaSpecies]? {
-        guard let species else { return nil }
+        species.map(sorted)
+    }
+
+    /// `yearRoundSpecies` in the order the sort menu asks for.
+    var sortedYearRoundSpecies: [AreaSpecies]? {
+        yearRoundSpecies.map(sorted)
+    }
+
+    private func sorted(_ species: [AreaSpecies]) -> [AreaSpecies] {
         switch sort {
         case .mostCommonFirst: return species
         case .rarestFirst: return species.reversed()
@@ -257,6 +273,11 @@ final class TargetsModel {
                 guard run == generation else { return }
                 placeName = name
             }
+            // A refresh that published the list but was overtaken before its
+            // year-round list landed leaves this to the next one.
+            if yearRoundSpecies == nil {
+                await loadYearRound(at: loaded.coordinate, season: season, manager: manager, run: run)
+            }
             return
         }
 
@@ -274,12 +295,31 @@ final class TargetsModel {
         listRevision += 1
         loaded = (target, season)
         status = .ready
+        yearRoundSpecies = nil
+        await loadYearRound(at: target, season: season, manager: manager, run: run)
+    }
+
+    /// Works out `yearRoundSpecies` for the list just published.
+    private func loadYearRound(
+        at coordinate: CLLocationCoordinate2D,
+        season: Season,
+        manager: RecordingManager,
+        run: Int
+    ) async {
+        guard season != .anyTime else {
+            yearRoundSpecies = species
+            return
+        }
+        let all = await Self.rankedSpecies(at: coordinate, season: .anyTime, manager: manager)
+        guard run == generation else { return }
+        yearRoundSpecies = all
     }
 
     /// Drops the list when there is nothing to show in its place.
     private func clear() {
         loaded = nil
         species = nil
+        yearRoundSpecies = nil
         placeName = nil
         status = .loading
     }

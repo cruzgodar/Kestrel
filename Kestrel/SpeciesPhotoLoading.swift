@@ -58,6 +58,34 @@ enum SpeciesPhotoLoading {
         }
         return nil
     }
+
+    /// Warms the medium photos either side of `index` in a swipeable viewer,
+    /// so a swipe lands on a bird already in memory rather than on the
+    /// download indicator.
+    ///
+    /// Waits for the bird on screen first — it is the one being looked at, and
+    /// its neighbours shouldn't compete with it for the network — then fetches
+    /// the next bird, and only after that one the previous. Run it from a
+    /// `.task(id:)` keyed on the page, so turning the page cancels it and starts
+    /// over around the new bird. Neighbours get one try each: their own page
+    /// retries properly if the user does swipe to them.
+    static func prefetchNeighbors(of names: [String], at index: Int) async {
+        guard names.indices.contains(index) else { return }
+        let store = RemoteSpeciesImageStore.shared
+        let current = names[index]
+        if store.isPhotographed(current), store.memoryImage(for: current) == nil {
+            // Nil only when cancelled: the page has moved on.
+            guard await load(current, phase: { _ in }, attempt: {
+                await store.image(for: current)
+            }) != nil else { return }
+        }
+        for neighbor in [index + 1, index - 1] where names.indices.contains(neighbor) {
+            guard !Task.isCancelled else { return }
+            let name = names[neighbor]
+            guard store.isPhotographed(name), store.memoryImage(for: name) == nil else { continue }
+            _ = await store.image(for: name)
+        }
+    }
 }
 
 /// Wakes waiting photo loads early, when another try is likely to work: the
@@ -138,7 +166,7 @@ extension EnvironmentValues {
 }
 
 /// The glyph a species photo's placeholder shows: a bird when the species has
-/// no photo, and a download arrow in a circle while its photo is on the way.
+/// no photo, and a pulsing cloud while its photo is on the way.
 /// Callers dress it — font, colour, background — exactly as they did the bird
 /// symbol it replaces.
 struct SpeciesPhotoPlaceholderGlyph: View {
@@ -146,6 +174,7 @@ struct SpeciesPhotoPlaceholderGlyph: View {
 
     var body: some View {
         Image(systemName: isDownloading ? "cloud" : "bird")
+            .symbolEffect(.pulse, options: .repeating, isActive: isDownloading)
             .accessibilityLabel(isDownloading ? "Downloading photo" : "No photo")
     }
 }

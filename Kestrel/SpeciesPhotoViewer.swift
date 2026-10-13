@@ -541,6 +541,11 @@ struct SpeciesPhotoFullScreen: View {
         // this the container's `isZoomed`/`uiVisible` stay stuck on the previous
         // page's values — the new, un-zoomed bird would otherwise show with its bar
         // and info panel still hidden.
+        // Once the bird on screen has loaded, fetch the next one and then the
+        // previous, so a swipe either way lands on a photo already in memory.
+        .task(id: index) {
+            await SpeciesPhotoLoading.prefetchNeighbors(of: items.map(\.scientificName), at: index)
+        }
         .onChange(of: index) { _, _ in
             if isZoomed { isZoomed = false }
             // A fresh page sits at its top content edge.
@@ -1796,6 +1801,7 @@ struct ZoomablePhotoPage: View {
                 onAtTopEdgeChange: onAtTopEdgeChange,
                 onPageBeyondEdge: onPageBeyondEdge
             )
+            .transition(.opacity)
         } else {
             // A bird when no photo exists for this species, and a download
             // arrow in a circle while the photo is on its way. It fills
@@ -1850,7 +1856,9 @@ struct ZoomablePhotoPage: View {
             }
             guard !Task.isCancelled, let loaded else { return }
             loadFailed = false
-            image = loaded
+            // Waited for, so it fades in over the placeholder; a memory hit
+            // above, or the full-resolution swap, lands without one.
+            withAnimation(.linear(duration: speciesPhotoFadeIn)) { image = loaded }
         }
 
         guard image != nil else { return }
