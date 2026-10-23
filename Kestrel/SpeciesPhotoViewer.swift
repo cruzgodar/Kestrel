@@ -157,7 +157,8 @@ struct SpeciesPhotoFullScreen: View {
     /// one. Left in place as harmless: the cost is a re-render of the viewer
     /// when a class changes, which a change of display re-renders it for anyway.
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
-    /// See `horizontalSizeClass` — likewise unread.
+    /// Read only to notice the phone turning: compact while it's held sideways,
+    /// when the chrome steps aside for the photo (see the `onChange` in `body`).
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     /// Maps the photo's resting insets from leading/trailing onto physical
     /// left/right for the UIKit scroll view underneath.
@@ -301,7 +302,7 @@ struct SpeciesPhotoFullScreen: View {
 
     /// Duration of the chrome show/hide fade. Short so tapping to reveal/hide the
     /// UI feels immediate (and so the auto-hide on zoom gets out of the way fast).
-    private static let uiToggleDuration: Double = 0.12
+    fileprivate static let uiToggleDuration: Double = 0.12
 
     private func toggleUI() {
         // A slight drag that ends in a near-tap should not toggle the chrome — only
@@ -316,9 +317,15 @@ struct SpeciesPhotoFullScreen: View {
     /// (and back in) rather than fading them, however the change is animated.
     /// An empty bar would still have the photo's scroll views draw their edge
     /// effect under it, so those are switched off — see `hideTopEdgeEffect`.
+    ///
+    /// Not a `withAnimation`: the fade is scoped to the opacity alone
+    /// (`fadesWithChrome`). Turning the phone changes the chrome's visibility in
+    /// the same update as the viewer's size, and a transaction-wide animation
+    /// took the size along with it — the card resized on its own short curve
+    /// instead of the system's rotation, opening gaps onto the app behind.
     private func setUIVisible(_ visible: Bool) {
         guard visible != uiVisible else { return }
-        withAnimation(.easeInOut(duration: Self.uiToggleDuration)) { uiVisible = visible }
+        uiVisible = visible
     }
 
     /// Hides the chrome if it's showing — used when a zoom begins, so a zoomed-in
@@ -516,8 +523,7 @@ struct SpeciesPhotoFullScreen: View {
                 hugsCorner: panelHugsCorner,
                 cornerInset: cornerInset
             )
-                .opacity(uiVisible ? 1 : 0)
-                .allowsHitTesting(uiVisible)
+                .fadesWithChrome(uiVisible)
                 .colorScheme(.dark)
         }
         // Pin the inner card to the constant full-screen size. Because the frame
@@ -531,6 +537,11 @@ struct SpeciesPhotoFullScreen: View {
         .ignoresSafeArea()
         // Keep the dismiss slide-off target in sync with the (stable) card size.
         .onChange(of: fullHeight, initial: true) { _, h in viewSize = CGSize(width: fullWidth, height: h) }
+        // Turning the phone sideways is asking for the photo: hide the chrome.
+        // Turning it back upright brings the chrome back.
+        .onChange(of: verticalSizeClass) { _, sizeClass in
+            setUIVisible(sizeClass != .compact)
+        }
         // Swiping to a new bird starts it fresh: the incoming page is always built
         // at minimum zoom (the pager recreates pages, see `PhotoPager`), so clear
         // any lingering zoom state from the bird we left, and bring the chrome back
@@ -573,6 +584,9 @@ struct SpeciesPhotoFullScreen: View {
         }
         // Clear presentation background so the slide reveals the app behind.
         .presentationBackground(.clear)
+        // The one screen in the app that turns sideways — a photograph is
+        // wider than it is tall. See `InterfaceOrientations`.
+        .allowsLandscape()
         // Vertical-down dismiss, recognized alongside (not blocking) `PhotoPager`'s
         // horizontal paging. Not gated on zoom: a zoomed photo still dismisses on
         // a downward drag *once it is at its top content edge* and can't be panned
@@ -896,8 +910,7 @@ struct SpeciesPhotoFullScreen: View {
     /// top safe area — and in the light scheme the items' glass turns pale.
     private func barItem(_ content: some View) -> some View {
         content
-            .opacity(uiVisible ? 1 : 0)
-            .allowsHitTesting(uiVisible)
+            .fadesWithChrome(uiVisible)
             .environment(\.colorScheme, .dark)
     }
 
@@ -2437,5 +2450,16 @@ private struct NearbySightingsButton: View {
                 .contentShape(.capsule)
         }
         .buttonStyle(.plain)
+    }
+}
+
+private extension View {
+    /// Fades the viewer's chrome in and out, animating the opacity and nothing
+    /// else — see `SpeciesPhotoFullScreen.setUIVisible`.
+    func fadesWithChrome(_ visible: Bool) -> some View {
+        animation(.easeInOut(duration: SpeciesPhotoFullScreen.uiToggleDuration)) {
+            $0.opacity(visible ? 1 : 0)
+        }
+        .allowsHitTesting(visible)
     }
 }

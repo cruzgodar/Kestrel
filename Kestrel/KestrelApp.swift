@@ -120,6 +120,9 @@ private enum WindowCrossfade {
 
 @main
 struct KestrelApp: App {
+    /// Only here to answer which ways up each window may turn. See
+    /// `InterfaceOrientations`.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var recordingManager: RecordingManager
     @State private var lifeListStore: LifeListStore
     @State private var selectedTab: AppTab = .identify

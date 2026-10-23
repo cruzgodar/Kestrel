@@ -148,7 +148,7 @@ struct LifeListView: View {
     /// while hiding life-list birds that aren't. Those birds fall out of
     /// `lifeMatches` here and are excluded from the suggestion scan by
     /// `lifeNames`, so they appear nowhere, under a subtitle still reading
-    /// "Filtered to N starred species".
+    /// "N starred species".
     ///
     /// Left as is on purpose: the filter's job is to narrow *your list*, and
     /// searching is how you add a bird that isn't on it yet — suppressing
@@ -1134,26 +1134,33 @@ struct LifeListView: View {
             // haptic touch anywhere on the row (see `.contextMenu` below), so
             // the name has no tap action of its own. The star and the
             // thumbnail keep theirs.
-            VStack(alignment: .leading, spacing: 2) {
-                Text(entry.commonName)
-                    .font(.headline)
-                HStack(spacing: 4) {
-                    // The CSV's Location column for the earliest sighting, shown
-                    // in place of the scientific name. Falls back to a dash when
-                    // an entry has no recorded location (e.g. manually added
-                    // before a fix resolved).
-                    if let location = entry.firstLocation, !location.isEmpty {
-                        // Show the full place name, wrapping to as many lines as
-                        // it needs rather than truncating with an ellipsis.
-                        Text(location)
-                            .fixedSize(horizontal: false, vertical: true)
-                        Text("•")
+            HeightCappedColumn(height: Self.rowThumbnailHeight) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(entry.commonName)
+                        .font(.headline)
+                        // Always the whole name: it is the place name that gives
+                        // up lines when the column runs short.
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 4) {
+                        // The CSV's Location column for the earliest sighting, shown
+                        // in place of the scientific name. Falls back to a dash when
+                        // an entry has no recorded location (e.g. manually added
+                        // before a fix resolved).
+                        if let location = entry.firstLocation, !location.isEmpty {
+                            // Wraps to as many lines as fit beside the thumbnail,
+                            // then ends in an ellipsis rather than growing the row.
+                            Text(location)
+                            Text("•")
+                        }
+                        Text(observationDay: entry.firstSeen)
+                            .monospacedDigit()
+                            // Measured before the place name, so the date keeps
+                            // its width and the place name ellipsizes instead.
+                            .layoutPriority(1)
                     }
-                    Text(observationDay: entry.firstSeen)
-                        .monospacedDigit()
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
             }
             // Stretch to the full row height (set by the trailing thumbnail)
             // so a haptic touch beside the text still lands on the row.
@@ -1403,7 +1410,7 @@ struct LifeListView: View {
     /// the filter and the suggestions are likewise kept apart.
     private var speciesCountText: String {
         let n = matchingEntries.count
-        return showStarredOnly ? "Filtered to \(n) starred species" : "\(n) species"
+        return showStarredOnly ? "\(n) starred species" : "\(n) species"
     }
 
     /// How many of the place's birds are on the life list, out of how many it
@@ -2332,6 +2339,26 @@ extension View {
         chrome: CGFloat?
     ) -> some View {
         modifier(FittedCardDetent(card: card, ideal: ideal, chrome: chrome))
+    }
+}
+
+/// Offers its content no more height than `height`, whatever the row around
+/// it would offer, so text inside wraps to the lines that fit there and then
+/// truncates. Content that cannot be squeezed that far — a name that wraps at
+/// the largest text sizes, plus the one line every `Text` keeps — reports its
+/// real height and grows the row, as it has to.
+private struct HeightCappedColumn: Layout {
+    let height: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: height)) ?? .zero
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(
+            at: bounds.origin,
+            proposal: ProposedViewSize(width: bounds.width, height: height)
+        )
     }
 }
 
