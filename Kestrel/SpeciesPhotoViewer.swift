@@ -975,7 +975,7 @@ struct SpeciesPhotoFullScreen: View {
 
     /// Top-right menu for the current bird — the same actions every species row
     /// in the app offers, minus View Image, which is what this screen already
-    /// is. Identical to `backButton` apart from position and glyph.
+    /// is. Looks identical to `backButton` apart from position and glyph.
     private func menuButton(for item: SpeciesPhotoItem) -> some View {
         let starred = lifeListStore?.starredNames.contains(item.scientificName) ?? false
         let actionable = hasSighting(item)
@@ -1027,8 +1027,15 @@ struct SpeciesPhotoFullScreen: View {
             // star's own state is stated plainly inside that menu.
             SpeciesChromeButtonLabel(title: "More actions", systemImage: "ellipsis")
         }
-        // See `backButton`.
-        .barButtonInset(.trailing)
+        // Out of the bar's own button style, which holds the button to 36pt
+        // tall under the 44pt face. Closing the menu morphs back into the
+        // button through a layer clipped to its bounds, and that left the
+        // circle with its top and bottom cut off until the morph settled.
+        // Plain, the button is the face's own size — and loses the bar
+        // style's 10pt of side padding with it, which is all `barButtonInset`
+        // takes back, so this button needs none.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
     }
 
     /// Edit from the menu.
