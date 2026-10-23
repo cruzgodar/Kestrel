@@ -236,6 +236,12 @@ struct SpeciesPhotoFullScreen: View {
     /// screen's own chrome resolves a held sighting through — two objects, one
     /// answer to "where is that record now".
     @State private var listActions = ObservationActions()
+    /// Whether the viewer is landscape on a display too small for the chrome to
+    /// tuck into the corners — a phone on its side. There the chrome is out of
+    /// the way only when it is hidden, so zooming out or swiping to another
+    /// bird leaves it hidden rather than bringing it back. A large display held
+    /// landscape (`viewerChromeHugsCorners`) keeps the usual behavior.
+    @State private var chromeYieldsToPhoto = false
 
     /// Blank gutter (in points) shown between birds while paging horizontally,
     /// matching the iOS Photos app. Bump this to widen or tighten the gap.
@@ -337,7 +343,12 @@ struct SpeciesPhotoFullScreen: View {
     /// Shows the chrome if it's hidden — used when the photo returns to minimum
     /// zoom, so zooming back out reveals the bar and info panel again
     /// (mirroring `hideUIForZoom`).
+    ///
+    /// Not while the chrome has stepped aside for a sideways display
+    /// (`chromeYieldsToPhoto`): turning the phone hid it on purpose, and only a
+    /// tap brings it back there.
     private func revealUIAfterZoom() {
+        guard !chromeYieldsToPhoto else { return }
         setUIVisible(true)
     }
 
@@ -537,6 +548,9 @@ struct SpeciesPhotoFullScreen: View {
         .ignoresSafeArea()
         // Keep the dismiss slide-off target in sync with the (stable) card size.
         .onChange(of: fullHeight, initial: true) { _, h in viewSize = CGSize(width: fullWidth, height: h) }
+        .onChange(of: layout.isLandscape && !layout.viewerChromeHugsCorners, initial: true) { _, yields in
+            chromeYieldsToPhoto = yields
+        }
         // Turning the phone sideways is asking for the photo: hide the chrome.
         // Turning it back upright brings the chrome back.
         .onChange(of: verticalSizeClass) { _, sizeClass in
@@ -1403,7 +1417,9 @@ struct PhotoPager<Page: View>: UIViewControllerRepresentable {
     /// A page is a snapshot taken by `makeHost` when it scrolled in, and nothing
     /// pushed a later value into one — so whichever page was on screen when such
     /// a value settled went on showing the old one, while every page scrolled to
-    /// afterwards was built correctly. Changing this rebuilds the page on screen.
+    /// afterwards was built correctly. Changing this rebuilds every page still
+    /// alive — not just the one on screen, since the pager keeps the neighbor a
+    /// swipe left behind, and that page is shown again as-is on a swipe back.
     var pageInputs: AnyHashable = 0
     @ViewBuilder var page: (Int) -> Page
 
@@ -1448,7 +1464,7 @@ struct PhotoPager<Page: View>: UIViewControllerRepresentable {
         // needless SwiftUI update per frame.
         if context.coordinator.lastPageInputs != pageInputs {
             context.coordinator.lastPageInputs = pageInputs
-            if let host = pvc.viewControllers?.first as? IndexedHost<Page> {
+            for host in context.coordinator.hosts.allObjects {
                 host.rootView = page(host.index)
             }
         }
@@ -1484,6 +1500,10 @@ struct PhotoPager<Page: View>: UIViewControllerRepresentable {
 
         /// The `pageInputs` the page on screen was last built from.
         var lastPageInputs: AnyHashable
+        /// Every page built and not yet released — the one on screen and any
+        /// the pager is holding beside it — so a change to `pageInputs` reaches
+        /// all of them.
+        let hosts = NSHashTable<IndexedHost<Page>>.weakObjects()
 
         /// Programmatically turns the pager to `index` with the standard scroll
         /// animation. Used for the carry-over turn when a zoomed pan is dragged
@@ -1599,6 +1619,7 @@ struct PhotoPager<Page: View>: UIViewControllerRepresentable {
             let host = IndexedHost(rootView: parent.page(index))
             host.index = index
             host.view.backgroundColor = .clear
+            hosts.add(host)
             return host
         }
 

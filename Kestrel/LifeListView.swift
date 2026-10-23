@@ -470,7 +470,7 @@ struct LifeListView: View {
 
     /// Corner radius of the star capsule that rides on a grid photograph. Its
     /// height follows — a capsule is twice its own radius tall.
-    private static let gridOverlayRadius: CGFloat = 14
+    private static let gridOverlayRadius: CGFloat = 12
 
     /// Gap between that capsule and the two photo edges it sits in the corner
     /// of. Not a taste value: it is exactly what makes the capsule's corner
