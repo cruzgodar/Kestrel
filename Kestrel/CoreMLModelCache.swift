@@ -1,4 +1,5 @@
 import Foundation
+import onnxruntime_objc
 
 /// Where the CoreML execution provider parks the `.mlmodelc` it compiles from
 /// our ONNX models — and the cleanup for the temp copies earlier builds leaked.
@@ -54,6 +55,63 @@ nonisolated enum CoreMLModelCache {
             return nil
         }
         return dir.path
+    }
+
+    /// Opens an `ORTSession` on the CoreML EP, recovering from a corrupt cache.
+    ///
+    /// ORT reuses whatever sits at its cache path without validating it, so a
+    /// compile that was cut short (the process killed mid-write, a full disk)
+    /// leaves a truncated spec that fails every load with "Error reading
+    /// protobuf spec" until the next update wipes the cache — a restart doesn't
+    /// help. So a failed load clears this model's directory and tries once more
+    /// on a fresh compile, and if that fails too, runs on the CPU alone.
+    ///
+    /// `makeOptions` builds the caller's base options; it's called once per
+    /// attempt because an EP can't be removed from options once appended.
+    static func session(
+        env: ORTEnv,
+        modelPath: String,
+        model name: String,
+        makeOptions: () throws -> ORTSessionOptions
+    ) throws -> ORTSession {
+        guard ORTIsCoreMLExecutionProviderAvailable() else {
+            return try ORTSession(env: env, modelPath: modelPath, sessionOptions: makeOptions())
+        }
+
+        let cache = directory(forModel: name)
+        // Retrying only helps when there's a cache to clear; without one every
+        // attempt compiles afresh into tmp anyway.
+        let coreMLAttempts = cache == nil ? 1 : 2
+        for attempt in 1...coreMLAttempts {
+            do {
+                let options = try makeOptions()
+                var coreML = ["MLComputeUnits": "ALL"]
+                if let cache { coreML["ModelCacheDirectory"] = cache }
+                try options.appendCoreMLExecutionProvider(withOptionsV2: coreML)
+                return try ORTSession(env: env, modelPath: modelPath, sessionOptions: options)
+            } catch {
+                Log.warning("CoreMLModelCache: \(name) failed on CoreML (attempt \(attempt)) — \(error)")
+                // Clear it after the last attempt too, so the next launch starts
+                // from a fresh compile rather than whatever this one left.
+                clear(model: name)
+            }
+        }
+
+        Log.warning("CoreMLModelCache: \(name) falling back to CPU")
+        return try ORTSession(env: env, modelPath: modelPath, sessionOptions: makeOptions())
+    }
+
+    /// Deletes one model's compiled cache and recreates the empty directory, so
+    /// the path handed to the EP stays valid.
+    private static func clear(model name: String) {
+        guard let path = directory(forModel: name) else { return }
+        let url = URL(fileURLWithPath: path, isDirectory: true)
+        do {
+            try FileManager.default.removeItem(at: url)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        } catch {
+            Log.warning("CoreMLModelCache: couldn't clear \(name) — \(error)")
+        }
     }
 
     /// Resolves the cache root once per launch, wiping it first if it belongs to

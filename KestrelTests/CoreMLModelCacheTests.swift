@@ -50,3 +50,41 @@ struct CoreMLModelCacheTests {
         CoreMLModelCache.purgeLegacyTempModels()
     }
 }
+
+/// ORT reuses a cached model without validating it, so one truncated write
+/// fails every later load with "Error reading protobuf spec" — what a v1.2 user
+/// hit on one phone, through restarts, until the cache was rebuilt.
+///
+/// Goes through `BirdNETClassifier` rather than building ORT objects here: this
+/// target only has search paths, so importing `onnxruntime_objc` would autolink
+/// a second, category-less copy of the static framework into the test bundle.
+@Suite("CoreMLModelCache corrupt-cache recovery", .serialized)
+struct CoreMLModelCacheRecoveryTests {
+
+    private static let garbage = Data("not a protobuf".utf8)
+
+    @Test("a corrupted cache is cleared and recompiled rather than failing the load")
+    func corruptCacheIsRebuilt() throws {
+        let dir = URL(fileURLWithPath: try #require(CoreMLModelCache.directory(forModel: "birdnet")))
+
+        _ = try BirdNETClassifier()
+        let cached = files(in: dir)
+        try #require(!cached.isEmpty, "the first load should populate the cache")
+        for file in cached { try Self.garbage.write(to: file) }
+
+        _ = try BirdNETClassifier()
+        let rebuilt = files(in: dir)
+        #expect(!rebuilt.isEmpty)
+        #expect(rebuilt.allSatisfy { (try? Data(contentsOf: $0)) != Self.garbage },
+                "the corrupt entries should have been replaced by a fresh compile")
+    }
+
+    private func files(in dir: URL) -> [URL] {
+        let walker = FileManager.default.enumerator(
+            at: dir, includingPropertiesForKeys: [.isRegularFileKey]
+        )
+        return (walker?.allObjects as? [URL] ?? []).filter {
+            (try? $0.resourceValues(forKeys: [.isRegularFileKey]))?.isRegularFile == true
+        }
+    }
+}

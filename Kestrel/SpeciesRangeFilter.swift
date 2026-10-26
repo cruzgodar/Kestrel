@@ -106,18 +106,13 @@ actor SpeciesRangeFilter {
         guard let url = Bundle.main.url(forResource: name, withExtension: "onnx") else {
             throw NSError(domain: "SpeciesRangeFilter", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(name) missing"])
         }
-        let options = try ORTSessionOptions()
-        try options.setIntraOpNumThreads(1)
-        try options.setGraphOptimizationLevel(.all)
-        if ORTIsCoreMLExecutionProviderAvailable() {
-            // Same leaked-temp-model story as BirdNET — see `CoreMLModelCache`.
-            var coreML = ["MLComputeUnits": "ALL"]
-            if let cache = CoreMLModelCache.directory(forModel: name) {
-                coreML["ModelCacheDirectory"] = cache
-            }
-            try? options.appendCoreMLExecutionProvider(withOptionsV2: coreML)
+        // Same cache and corrupt-cache recovery as BirdNET — see `CoreMLModelCache`.
+        let session = try CoreMLModelCache.session(env: env, modelPath: url.path, model: name) {
+            let options = try ORTSessionOptions()
+            try options.setIntraOpNumThreads(1)
+            try options.setGraphOptimizationLevel(.all)
+            return options
         }
-        let session = try ORTSession(env: env, modelPath: url.path, sessionOptions: options)
         return Model(
             session: session,
             inputName: try session.inputNames().first ?? "input",
