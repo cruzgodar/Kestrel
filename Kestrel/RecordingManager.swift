@@ -1537,7 +1537,15 @@ final class RecordingManager {
     /// backgrounded — the case where audio tends to stall.
     private func sendPhoneHeartbeat() {
         guard Self.shouldSendPhoneHeartbeat(isRecording: isRecording) else { return }
-        sendToWatch(["cmd": "phoneHeartbeat"])
+        sendToWatch(["cmd": "phoneHeartbeat", "carPlay": isCarPlayConnected])
+    }
+
+    /// Whether the phone is plugged into CarPlay, riding along on every beat so
+    /// a watch-recorded walk can stop counting distance while the user drives
+    /// (see `WatchDrivingDetector`). The watch has no way to see CarPlay itself.
+    /// Read off the audio route, which needs no CarPlay entitlement.
+    private var isCarPlayConnected: Bool {
+        AVAudioSession.sharedInstance().currentRoute.outputs.contains { $0.portType == .carAudio }
     }
 
     /// Whether the phone owes the watch a beat right now.

@@ -1280,7 +1280,13 @@ private final class SessionDelegate: NSObject, WCSessionDelegate {
                     WatchSessionManager.shared.handlePhoneRecordingStopped(
                         session: payload["session"] as? Int
                     )
-                case "phoneHeartbeat":  WatchSessionManager.shared.handlePhoneHeartbeat()
+                case "phoneHeartbeat":
+                    WatchSessionManager.shared.handlePhoneHeartbeat()
+                    // Absent from an older phone build, which reads as "not
+                    // connected" — the speed check still applies.
+                    if let carPlay = payload["carPlay"] as? Bool {
+                        WatchDrivingDetector.shared.handleCarPlay(connected: carPlay)
+                    }
                 case "restartCapture":
                     WatchSessionManager.shared.handleRestartCapture(
                         session: payload["session"] as? Int
