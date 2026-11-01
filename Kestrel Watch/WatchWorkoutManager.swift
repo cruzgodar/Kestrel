@@ -35,9 +35,6 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     private let healthStore = HKHealthStore()
     private var session: HKWorkoutSession?
     private var builder: HKLiveWorkoutBuilder?
-    /// The live builder's data source, kept so distance collection can be
-    /// switched off while the wearer is driving. See `applyDriving`.
-    private var dataSource: HKLiveWorkoutDataSource?
     /// When the current walk began, so `end()` can discard walks shorter
     /// than `minimumDuration` rather than offering to log a trivially short one.
     ///
@@ -99,35 +96,10 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
 
     private override init() {
         super.init()
-        WatchDrivingDetector.shared.onChange = { [weak self] driving in
-            self?.applyDriving(driving)
-        }
-    }
-
-    /// What a walk stops collecting while the wearer is in a car: the distance
-    /// itself, and the active energy HealthKit estimates from walking pace.
-    private static let drivingExcludedTypes = [
-        HKQuantityType(.distanceWalkingRunning),
-        HKQuantityType(.activeEnergyBurned),
-    ]
-
-    /// Switches the drive-sensitive types off when driving starts and back on
-    /// when it ends.
-    ///
-    /// Re-enabling only collects samples that *start* from now on. Without that
-    /// the data source is free to pick up the samples the watch kept generating
-    /// during the drive, which is the whole thing we're trying to leave out.
-    private func applyDriving(_ driving: Bool) {
-        guard let dataSource else { return }
-        for type in Self.drivingExcludedTypes {
-            if driving {
-                dataSource.disableCollection(for: type)
-            } else {
-                dataSource.enableCollection(
-                    for: type,
-                    predicate: HKQuery.predicateForSamples(withStart: Date(), end: nil, options: .strictStartDate)
-                )
-            }
+        // A walk that turns into a drive ends there and is saved outright — see
+        // `WatchDrivingDetector`.
+        WatchDrivingDetector.shared.onDetect = { _, drivingSince in
+            WatchSessionManager.shared.handleDrivingDetected(since: drivingSince)
         }
     }
 
@@ -211,7 +183,6 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
 
             self.session = session
             self.builder = builder
-            self.dataSource = dataSource
             WatchDrivingDetector.shared.start()
 
             let start = startDate ?? Date()
@@ -224,7 +195,6 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
             Log.error("Workout start error: \(error) (sharing status: \(Self.describe(workoutSharingStatus)))")
             session = nil
             builder = nil
-            dataSource = nil
             WatchDrivingDetector.shared.stop()
             // `startDate` deliberately survives: the walk is still happening, and
             // the save prompt is keyed off its duration, not off HealthKit having
@@ -452,7 +422,6 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         guard let session, let builder else { return }
         self.session = nil
         self.builder = nil
-        dataSource = nil
         WatchDrivingDetector.shared.stop()
         pendingPause = false
         pausedForPrompt = false
@@ -489,15 +458,18 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
     /// This is the *unattended* teardown — a watchdog giving up, the system
     /// ending the session, an orphan being reclaimed — so the resulting prompt
     /// offers no Resume. A user-initiated stop goes through `pause()` instead.
-    func end() async {
+    ///
+    /// - Parameter endedAt: when the walk really ended, if earlier than now —
+    ///   the moment driving began, so the start of the drive isn't collected.
+    func end(at endedAt: Date? = nil) async {
         // A walk `pause()` already parked carries its true stop moment — the
         // instant the user tapped stop. Reaching here afterwards (a watchdog, the
         // system ending the session, a remote stop relayed from the phone) must
         // not restate that as *now*: a prompt left sitting for ten minutes would
         // silently stretch the walk by ten minutes, and Health would record a
         // birding walk that ran long after the user stopped birding. Only a walk
-        // nothing has parked yet ends at this moment.
-        let end = Self.endInstant(parked: pendingSpan?.end, now: Date())
+        // nothing has parked yet ends at this moment (or at `endedAt`).
+        let end = Self.endInstant(parked: pendingSpan?.end, now: endedAt ?? Date())
         let started = pendingSpan?.start ?? startDate
         self.startDate = nil
         pendingPause = false
@@ -523,7 +495,6 @@ final class WatchWorkoutManager: NSObject, HKWorkoutSessionDelegate {
         // a fresh session by mistake.
         self.session = nil
         self.builder = nil
-        dataSource = nil
         WatchDrivingDetector.shared.stop()
 
         session.end()

@@ -897,7 +897,10 @@ final class WatchSessionManager: NSObject {
     /// walk is saved or discarded outright instead of parking a duplicate prompt
     /// on the wrist. It's applied in the same task that winds the workout down,
     /// so it can't race the pause/end that has to precede it.
-    private func stop(resumable: Bool = true, decision: WorkoutDecision = .ask) {
+    ///
+    /// `endedAt` backdates an unattended end to when the walk really stopped
+    /// (see `handleDrivingDetected`).
+    private func stop(resumable: Bool = true, decision: WorkoutDecision = .ask, endedAt: Date? = nil) {
         guard isRecording else { return }
 
         // End the phone-liveness watchdog before tearing down.
@@ -947,7 +950,7 @@ final class WatchSessionManager: NSObject {
             if parked {
                 WatchWorkoutManager.shared.applyPause()
             } else {
-                await WatchWorkoutManager.shared.end()
+                await WatchWorkoutManager.shared.end(at: endedAt)
             }
             switch decision {
             case .ask:     break  // leave it in `pendingSave` and prompt here
@@ -1139,6 +1142,18 @@ final class WatchSessionManager: NSObject {
         )
         // The workout session is already gone — there's nothing left to pause.
         stop(resumable: false)
+    }
+
+    /// The wearer started driving (see `WatchDrivingDetector`). The walk is over
+    /// at `since`, so end the session there and save it without asking — the
+    /// user is behind the wheel, not looking at a prompt.
+    func handleDrivingDetected(since: Date) {
+        guard isRecording, !mirroringPhone else { return }
+        Log.warning("Driving detected — ending and saving the birding walk")
+        WatchNotifications.notifySessionEnded(
+            body: "Looks like you're driving, so your birding walk was saved."
+        )
+        stop(resumable: false, decision: .save, endedAt: since)
     }
 
     /// User picked "Resume" on the save prompt. Un-pauses the workout so the walk

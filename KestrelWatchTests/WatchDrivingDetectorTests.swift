@@ -2,39 +2,54 @@ import Foundation
 import Testing
 @testable import Kestrel_Watch
 
-/// The two rules behind leaving a drive out of a birding walk: which fixes count
-/// as faster than walking, and how long driving outlasts its last evidence.
+/// The rules behind ending a birding walk when the wearer starts driving: which
+/// fixes count as faster than walking, by their own speed or by distance covered.
 @Suite("Driving detection")
 struct WatchDrivingDetectorTests {
 
     @Test func highwaySpeedIsFast() {
-        #expect(WatchDrivingDetector.isFast(speed: 27, speedAccuracy: 1, horizontalAccuracy: 10))
+        #expect(WatchDrivingDetector.isFast(speed: 27, speedAccuracy: 1, horizontalAccuracy: 10) == true)
     }
 
     @Test func runningIsNotFast() {
-        #expect(!WatchDrivingDetector.isFast(speed: 5, speedAccuracy: 0.5, horizontalAccuracy: 5))
+        #expect(WatchDrivingDetector.isFast(speed: 5, speedAccuracy: 0.5, horizontalAccuracy: 5) == false)
     }
 
     /// A fix only counts when it is fast even at the bottom of its error bar.
     @Test func uncertainSpeedIsNotFast() {
-        #expect(!WatchDrivingDetector.isFast(speed: 10, speedAccuracy: 4, horizontalAccuracy: 10))
+        #expect(WatchDrivingDetector.isFast(speed: 10, speedAccuracy: 4, horizontalAccuracy: 10) == false)
     }
 
-    @Test func invalidOrImpreciseFixesAreNotFast() {
-        #expect(!WatchDrivingDetector.isFast(speed: -1, speedAccuracy: 1, horizontalAccuracy: 10))
-        #expect(!WatchDrivingDetector.isFast(speed: 27, speedAccuracy: -1, horizontalAccuracy: 10))
-        #expect(!WatchDrivingDetector.isFast(speed: 27, speedAccuracy: 1, horizontalAccuracy: 200))
+    /// A speed with no stated accuracy is taken at its word; the streak guards it.
+    @Test func speedWithoutAccuracyCounts() {
+        #expect(WatchDrivingDetector.isFast(speed: 27, speedAccuracy: -1, horizontalAccuracy: 10) == true)
     }
 
-    @Test func drivingHoldsThroughARedLight() {
-        let now = Date()
-        #expect(WatchDrivingDetector.isDriving(lastEvidenceAt: now.addingTimeInterval(-60), now: now))
+    @Test func impreciseFixesAreNotFast() {
+        #expect(WatchDrivingDetector.isFast(speed: 27, speedAccuracy: 1, horizontalAccuracy: 200) == false)
+        #expect(WatchDrivingDetector.isFast(speed: 27, speedAccuracy: 1, horizontalAccuracy: -1) == false)
     }
 
-    @Test func drivingEndsAfterTheHold() {
-        let now = Date()
-        let last = now.addingTimeInterval(-WatchDrivingDetector.hold)
-        #expect(!WatchDrivingDetector.isDriving(lastEvidenceAt: last, now: now))
-        #expect(!WatchDrivingDetector.isDriving(lastEvidenceAt: nil, now: now))
+    /// No speed at all defers to the distance check rather than answering.
+    @Test func missingSpeedIsUndecided() {
+        #expect(WatchDrivingDetector.isFast(speed: -1, speedAccuracy: -1, horizontalAccuracy: 10) == nil)
+    }
+
+    @Test func drivingDistanceIsFast() {
+        #expect(WatchDrivingDetector.isFast(distance: 270, interval: 10, accuracies: (10, 10)))
+    }
+
+    @Test func walkingDistanceIsNotFast() {
+        #expect(!WatchDrivingDetector.isFast(distance: 15, interval: 10, accuracies: (10, 10)))
+    }
+
+    /// Position error alone can't pass for motion: a jump inside both fixes'
+    /// accuracy says nothing.
+    @Test func jumpWithinAccuracyIsNotFast() {
+        #expect(!WatchDrivingDetector.isFast(distance: 150, interval: 10, accuracies: (80, 80)))
+    }
+
+    @Test func tooShortAnIntervalIsNotFast() {
+        #expect(!WatchDrivingDetector.isFast(distance: 100, interval: 2, accuracies: (5, 5)))
     }
 }
